@@ -144,10 +144,8 @@ export default function tauWorkedFor(pi: ExtensionAPI) {
 		turnStartTimestamp = Date.now();
 
 		if (ctx.hasUI) {
-			ctx.ui.setStatus(
-				"worked-for",
-				ctx.ui.theme.fg("dim", `Worked-for: ${enabled ? "on" : "off"} (${toolsEnabled ? "tools" : "no tools"})`),
-			);
+			// Avoid making the footer noisy; keep status empty by default.
+			ctx.ui.setStatus("worked-for", undefined);
 		}
 	});
 
