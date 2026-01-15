@@ -1,0 +1,8 @@
+{
+	"name": "praxis",
+	"private": true,
+	"type": "module",
+	"pi": {
+		"extensions": ["./src/terminal-prompt.ts"]
+	}
+}
