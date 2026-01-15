@@ -15,7 +15,10 @@ type ExaSearchResult = {
 };
 
 type ExaSearchResponse = {
+	requestId?: string;
 	results?: ExaSearchResult[];
+	searchType?: string;
+	context?: string;
 	[extra: string]: unknown;
 };
 
@@ -23,13 +26,33 @@ type ExaContentsResult = {
 	id?: string;
 	url?: string;
 	title?: string;
+	author?: string;
+	publishedDate?: string;
 	text?: string;
 	highlights?: string[];
+	highlightScores?: number[];
 	summary?: string;
+	subpages?: unknown[];
+	extras?: unknown;
 };
 
 type ExaContentsResponse = {
+	requestId?: string;
 	results?: ExaContentsResult[];
+	context?: string;
+	statuses?: unknown[];
+	costDollars?: unknown;
+	[extra: string]: unknown;
+};
+
+type ExaContextResponse = {
+	requestId?: string;
+	query?: string;
+	response?: string;
+	resultsCount?: number;
+	costDollars?: unknown;
+	searchTime?: number;
+	outputTokens?: number;
 	[extra: string]: unknown;
 };
 
@@ -53,9 +76,8 @@ async function exaPost<T>(path: string, body: JsonRecord, signal?: AbortSignal):
 		method: "POST",
 		headers: {
 			"content-type": "application/json",
-			// Exa accepts API keys via EXA_API_KEY (docs). Some clients use x-api-key,
-			// some use Authorization. Sending both keeps this extension resilient.
 			"x-api-key": apiKey,
+			// Some environments use Authorization; harmless to include.
 			authorization: `Bearer ${apiKey}`,
 		},
 		body: JSON.stringify(body),
@@ -84,6 +106,8 @@ function compactSearchResults(results: ExaSearchResult[] | undefined): Array<{
 	publishedDate?: string;
 	author?: string;
 	id?: string;
+	text?: string;
+	highlights?: string[];
 }> {
 	return (results || []).map((r) => ({
 		id: r.id,
@@ -92,6 +116,8 @@ function compactSearchResults(results: ExaSearchResult[] | undefined): Array<{
 		score: r.score,
 		publishedDate: r.publishedDate,
 		author: r.author,
+		text: r.text,
+		highlights: r.highlights,
 	}));
 }
 
@@ -102,6 +128,7 @@ export default function exa(pi: ExtensionAPI) {
 		description: "Search the web via Exa (replacement for exa-mcp web_search_exa).",
 		parameters: Type.Object({
 			query: Type.String({ description: "Search query" }),
+			text: Type.Optional(Type.Boolean({ description: "Include extracted text in results" })),
 			numResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 25, description: "Number of results" })),
 			includeDomains: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { description: "Only these domains" })),
 			excludeDomains: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { description: "Exclude these domains" })),
@@ -109,7 +136,7 @@ export default function exa(pi: ExtensionAPI) {
 				Type.String({ description: "ISO date string (YYYY-MM-DD or full ISO)" }),
 			),
 			endPublishedDate: Type.Optional(Type.String({ description: "ISO date string (YYYY-MM-DD or full ISO)" })),
-			type: Type.Optional(Type.String({ description: "Search type (per Exa API)" })),
+			searchType: Type.Optional(Type.String({ description: "Search type (per Exa API; defaults to auto)" })),
 			useAutoprompt: Type.Optional(Type.Boolean({ description: "Let Exa rewrite/expand query" })),
 		}),
 		async execute(_toolCallId, params, onUpdate, _ctx, signal) {
@@ -117,20 +144,30 @@ export default function exa(pi: ExtensionAPI) {
 
 			const body: JsonRecord = {
 				query: params.query,
-				numResults: params.numResults ?? 10,
 			};
+			if (typeof params.text === "boolean") body.text = params.text;
+			if (typeof params.numResults === "number") body.numResults = params.numResults;
 			if (params.includeDomains?.length) body.includeDomains = params.includeDomains;
 			if (params.excludeDomains?.length) body.excludeDomains = params.excludeDomains;
 			if (params.startPublishedDate) body.startPublishedDate = params.startPublishedDate;
 			if (params.endPublishedDate) body.endPublishedDate = params.endPublishedDate;
-			if (params.type) body.type = params.type;
+			if (params.searchType) body.searchType = params.searchType;
 			if (typeof params.useAutoprompt === "boolean") body.useAutoprompt = params.useAutoprompt;
 
 			const response = await exaPost<ExaSearchResponse>("/search", body, signal);
-			const results = compactSearchResults(response.results);
 
 			return {
-				content: [{ type: "json", json: { results } }],
+				content: [
+					{
+						type: "json",
+						json: {
+							requestId: response.requestId,
+							searchType: response.searchType,
+							results: compactSearchResults(response.results),
+							context: response.context,
+						},
+					},
+				],
 				details: response,
 			};
 		},
@@ -139,38 +176,61 @@ export default function exa(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "crawling_exa",
 		label: "Exa Crawl",
-		description: "Fetch page contents via Exa (replacement for exa-mcp crawling_exa).",
+		description: "Fetch contents (and optionally subpages) via Exa (replacement for exa-mcp crawling_exa).",
 		parameters: Type.Object({
-			urls: Type.Array(Type.String({ minLength: 1 }), { description: "URLs to fetch" }),
-			livecrawl: Type.Optional(Type.Boolean({ description: "Use Exa live crawling if supported" })),
+			urls: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { description: "URLs to fetch" })),
+			ids: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { description: "IDs to fetch (often same as URLs)" })),
 			text: Type.Optional(Type.Boolean({ description: "Include extracted text" })),
-			highlights: Type.Optional(Type.Boolean({ description: "Include highlights if supported" })),
-			summary: Type.Optional(Type.Boolean({ description: "Include summary if supported" })),
+			highlights: Type.Optional(Type.Boolean({ description: "Include highlights" })),
+			summary: Type.Optional(Type.Boolean({ description: "Include summary" })),
+			livecrawl: Type.Optional(
+				Type.String({ description: 'Live crawl mode (e.g. "preferred" or "always")' }),
+			),
+			livecrawlTimeout: Type.Optional(Type.Integer({ description: "Live crawl timeout in ms (e.g. 12000)" })),
+			subpages: Type.Optional(Type.Integer({ minimum: 1, description: "Number of subpages to crawl" })),
+			subpageTarget: Type.Optional(
+				Type.Array(Type.String({ minLength: 1 }), {
+					description: "Target subpages that match these keywords",
+				}),
+			),
 		}),
 		async execute(_toolCallId, params, onUpdate, _ctx, signal) {
 			onUpdate?.({ content: [{ type: "text", text: "Fetching contents from Exa…" }] });
 
+			const ids = (params.ids || []).filter(Boolean);
+			const urls = (params.urls || []).filter(Boolean);
+			if (ids.length === 0 && urls.length === 0) {
+				throw new Error("crawling_exa requires at least one of: ids or urls");
+			}
+
 			const body: JsonRecord = {
-				urls: params.urls,
 				text: params.text ?? true,
 			};
-			if (typeof params.livecrawl === "boolean") body.livecrawl = params.livecrawl;
+			if (ids.length > 0) body.ids = ids;
+			else body.urls = urls;
+
 			if (typeof params.highlights === "boolean") body.highlights = params.highlights;
 			if (typeof params.summary === "boolean") body.summary = params.summary;
+			if (params.livecrawl) body.livecrawl = params.livecrawl;
+			if (typeof params.livecrawlTimeout === "number") body.livecrawlTimeout = params.livecrawlTimeout;
+			if (typeof params.subpages === "number") body.subpages = params.subpages;
+			if (params.subpageTarget?.length) body.subpageTarget = params.subpageTarget;
 
 			const response = await exaPost<ExaContentsResponse>("/contents", body, signal);
 
-			const results = (response.results || []).map((r) => ({
-				id: r.id,
-				url: r.url,
-				title: r.title,
-				text: r.text,
-				highlights: r.highlights,
-				summary: r.summary,
-			}));
-
 			return {
-				content: [{ type: "json", json: { results } }],
+				content: [
+					{
+						type: "json",
+						json: {
+							requestId: response.requestId,
+							results: response.results || [],
+							statuses: response.statuses,
+							context: response.context,
+							costDollars: response.costDollars,
+						},
+					},
+				],
 				details: response,
 			};
 		},
@@ -178,67 +238,46 @@ export default function exa(pi: ExtensionAPI) {
 
 	pi.registerTool({
 		name: "get_code_context_exa",
-		label: "Exa Code Search",
+		label: "Exa Code Context",
 		description:
-			"Search for relevant code on GitHub via Exa, then fetch the matched pages' contents (replacement for exa-mcp get_code_context_exa).",
+			"Get relevant code snippets and examples via Exa Context API (replacement for exa-mcp get_code_context_exa).",
 		parameters: Type.Object({
 			query: Type.String({ description: "What code you are looking for" }),
-			numResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 10, description: "Number of matches" })),
-			repo: Type.Optional(
-				Type.String({ description: "Optional repo filter (e.g. owner/repo or full github.com URL)" }),
+			tokensNum: Type.Optional(
+				Type.Union([
+					Type.String({ description: '"dynamic" or another Exa tokens mode' }),
+					Type.Integer({ description: "Specific token limit (e.g. 5000)" }),
+				]),
 			),
 		}),
 		async execute(_toolCallId, params, onUpdate, _ctx, signal) {
-			onUpdate?.({ content: [{ type: "text", text: "Searching code via Exa…" }] });
-
-			const includeDomains = ["github.com"];
-
-			const repoHint = (() => {
-				const repo = (params.repo || "").trim();
-				if (!repo) return "";
-
-				// Best-effort: keep request schema minimal; just enrich the query string.
-				if (repo.includes("github.com/")) return repo;
-				if (repo.includes("/")) return `github.com/${repo}`;
-				return repo;
-			})();
-
-			const query = repoHint ? `${params.query} ${repoHint}` : params.query;
+			onUpdate?.({ content: [{ type: "text", text: "Getting code context from Exa…" }] });
 
 			const body: JsonRecord = {
-				query,
-				numResults: params.numResults ?? 5,
-				includeDomains,
+				query: params.query,
 			};
+			if (typeof params.tokensNum === "string" || typeof params.tokensNum === "number") {
+				body.tokensNum = params.tokensNum;
+			}
 
-			const search = await exaPost<ExaSearchResponse>("/search", body, signal);
-			const results = search.results || [];
-
-			const ids = results.map((r) => r.id).filter((id): id is string => typeof id === "string" && id.length > 0);
-			const urls = results.map((r) => r.url).filter((u): u is string => typeof u === "string" && u.length > 0);
-
-			onUpdate?.({ content: [{ type: "text", text: "Fetching code page contents…" }] });
-
-			const contentsBody: JsonRecord = {
-				text: true,
-			};
-			if (ids.length > 0) contentsBody.ids = ids;
-			else contentsBody.urls = urls;
-
-			const contents = await exaPost<ExaContentsResponse>("/contents", contentsBody, signal);
+			const response = await exaPost<ExaContextResponse>("/context", body, signal);
 
 			return {
 				content: [
 					{
 						type: "json",
 						json: {
-							query: params.query,
-							searchResults: compactSearchResults(search.results),
-							contents: contents.results || [],
+							requestId: response.requestId,
+							query: response.query,
+							response: response.response,
+							resultsCount: response.resultsCount,
+							costDollars: response.costDollars,
+							searchTime: response.searchTime,
+							outputTokens: response.outputTokens,
 						},
 					},
 				],
-				details: { search, contents },
+				details: response,
 			};
 		},
 	});
