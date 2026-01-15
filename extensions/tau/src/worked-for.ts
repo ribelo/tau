@@ -59,6 +59,26 @@ class WorkedForSeparator implements Component {
 	}
 }
 
+class WorkedForWidget implements Component {
+	private separator: WorkedForSeparator;
+
+	constructor(
+		durationText: string,
+		theme: any,
+	) {
+		this.separator = new WorkedForSeparator(durationText, theme);
+	}
+
+	render(width: number): string[] {
+		// Add one empty row of padding below the separator to visually separate it from the editor.
+		return [...this.separator.render(width), ""];
+	}
+
+	invalidate(): void {
+		this.separator.invalidate();
+	}
+}
+
 function parseToggleArg(mode: string, current: boolean): boolean | undefined {
 	if (mode === "on") return true;
 	if (mode === "off") return false;
@@ -90,7 +110,7 @@ export default function tauWorkedFor(pi: ExtensionAPI) {
 		lastRenderedDurationText = durationText;
 
 		// Widgets do not participate in LLM context and won't enqueue follow-ups.
-		ctx.ui.setWidget("worked-for-separator", (_tui: any, theme: any) => new WorkedForSeparator(durationText, theme));
+		ctx.ui.setWidget("worked-for-separator", (_tui: any, theme: any) => new WorkedForWidget(durationText, theme));
 	}
 
 	pi.registerMessageRenderer<WorkedForDetails>(WORKED_FOR_MESSAGE_TYPE, (message, _options, theme) => {
