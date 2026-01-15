@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { DynamicBorder, executeBash } from "@mariozechner/pi-coding-agent";
+import { DynamicBorder } from "@mariozechner/pi-coding-agent";
 import { Container, type SelectItem, SelectList, Text } from "@mariozechner/pi-tui";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -408,13 +408,6 @@ async function beadsReadyInteractive(pi: ExtensionAPI, ctx: any, options?: { cla
 }
 
 export default function beads(pi: ExtensionAPI) {
-	pi.on("session_start", async (_event, ctx) => {
-		if (!ctx.hasUI) return;
-		if (!hasBeadsDir(ctx.cwd)) return;
-		// Lightweight indicator that the decorator is active in this repo.
-		ctx.ui.setStatus("beads-decorator", "beads");
-	});
-
 	// Keep beads UI-only messages out of the LLM context.
 	pi.on("context", async (event) => {
 		const filtered = event.messages.filter((m: any) => !(m?.role === "custom" && m?.customType === BEADS_RENDER_TYPE));
