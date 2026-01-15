@@ -434,6 +434,9 @@ export default function beads(pi: ExtensionAPI) {
 		if (!/(^|\s)--json(\s|$)/.test(command)) return;
 
 		const kind = classifyBdCommand(command).kind;
+		if (debug) {
+			ctx.ui.notify(`Decorated bd (${kind})`, "info");
+		}
 
 		const details: any = (event as any).details;
 		const fullOutputPath: string | undefined = details?.fullOutputPath;
@@ -459,37 +462,6 @@ export default function beads(pi: ExtensionAPI) {
 		);
 	});
 
-	// Decorate user-executed bash commands (the `!` / `!!` flow).
-	// Without this, `!bd ... --json` won't emit tool_result events.
-	pi.on("user_bash", async (event, ctx) => {
-		if (!ctx.hasUI) return;
-		if (!hasBeadsDir(ctx.cwd)) return;
-		if (!looksLikeBdCommand(event.command)) return;
-		if (!/(^|\s)--json(\s|$)/.test(event.command)) return;
-
-		const result = await executeBash(event.command);
-
-		const kind = classifyBdCommand(event.command).kind;
-		const parsed = tryParseBdJson(result.output, result.truncated ? result.fullOutputPath : undefined);
-		if (parsed.json) {
-			pi.sendMessage(
-				{
-					customType: BEADS_RENDER_TYPE,
-					content: `beads ${kind}`,
-					display: true,
-					details: {
-						command: event.command,
-						kind,
-						json: parsed.json,
-						parseWarning: parsed.warning,
-					} satisfies BeadsRenderDetails,
-				},
-				{ triggerTurn: false },
-			);
-		}
-
-		return { result };
-	});
 
 	pi.registerMessageRenderer<BeadsRenderDetails>(BEADS_RENDER_TYPE, (message, options, theme) => {
 		const details = message.details;
@@ -539,6 +511,51 @@ export default function beads(pi: ExtensionAPI) {
 				0,
 			);
 		}
+	});
+
+	let debug = false;
+
+	pi.registerCommand("beads-debug", {
+		description: "Toggle beads decorator debug: /beads-debug on|off",
+		handler: async (args, ctx) => {
+			const mode = (args || "").trim();
+			if (mode === "on") debug = true;
+			else if (mode === "off") debug = false;
+			else debug = !debug;
+			ctx.ui.notify(`Beads decorator debug: ${debug ? "on" : "off"}`, "info");
+		},
+	});
+
+	pi.registerCommand("beads-render-test", {
+		description: "Render bd list JSON via beads renderer (tests extension loading)",
+		handler: async (_args, ctx) => {
+			if (!ctx.hasUI) {
+				ctx.ui.notify("/beads-render-test requires interactive mode", "error");
+				return;
+			}
+			if (!hasBeadsDir(ctx.cwd)) {
+				ctx.ui.notify("No .beads directory found in this repo", "error");
+				return;
+			}
+			try {
+				const { stdout } = await runBd(pi, ["list", "--json"]);
+				pi.sendMessage(
+					{
+						customType: BEADS_RENDER_TYPE,
+						content: "beads test",
+						display: true,
+						details: {
+							command: "bd -q list --json",
+							kind: "list",
+							json: JSON.parse(stdout),
+						} satisfies BeadsRenderDetails,
+					},
+					{ triggerTurn: false },
+				);
+			} catch (err) {
+				ctx.ui.notify((err as Error).message, "error");
+			}
+		},
 	});
 
 	// User commands
