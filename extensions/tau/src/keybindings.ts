@@ -23,7 +23,7 @@ function toKeyConfig(keys: KeyId[]): KeyId | KeyId[] {
 	return keys.length === 1 ? keys[0]! : keys;
 }
 
-export default function praxisKeybindings(pi: ExtensionAPI) {
+export default function tauKeybindings(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		if (!ctx.hasUI) return;
 
@@ -44,6 +44,6 @@ export default function praxisKeybindings(pi: ExtensionAPI) {
 
 		setEditorKeybindings(new EditorKeybindingsManager(config));
 
-		ctx.ui.notify("Praxis: Ctrl+J inserts a newline", "info");
+		ctx.ui.notify("Tau: Ctrl+J inserts a newline", "info");
 	});
 }

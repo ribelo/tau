@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-cod
 import { CustomEditor } from "@mariozechner/pi-coding-agent";
 import { visibleWidth } from "@mariozechner/pi-tui";
 
-const PRAXIS_STATE_TYPE = "praxis-state";
+const TAU_STATE_TYPE = "tau-state";
 
 // Codex-style composer look:
 // - bold "›" prompt
@@ -91,22 +91,22 @@ function applyEditor(enabled: boolean, ctx: ExtensionCommandContext | any): void
 	}
 }
 
-export default function praxisTerminalPrompt(pi: ExtensionAPI) {
+export default function tauTerminalPrompt(pi: ExtensionAPI) {
 	let enabled = true;
 
-	pi.registerCommand("praxis", {
-		description: "Praxis settings: /praxis prompt on|off|toggle",
+	pi.registerCommand("tau", {
+		description: "Tau settings: /tau prompt on|off|toggle",
 		handler: async (args, ctx) => {
 			const trimmed = (args || "").trim();
 			const parts = trimmed.split(/\s+/).filter(Boolean);
 
 			if (parts.length === 0) {
-				ctx.ui.notify(`Praxis prompt: ${enabled ? "on" : "off"}. Usage: /praxis prompt on|off|toggle`, "info");
+				ctx.ui.notify(`Tau prompt: ${enabled ? "on" : "off"}. Usage: /tau prompt on|off|toggle`, "info");
 				return;
 			}
 
 			if (parts[0] !== "prompt") {
-				ctx.ui.notify("Usage: /praxis prompt on|off|toggle", "info");
+				ctx.ui.notify("Usage: /tau prompt on|off|toggle", "info");
 				return;
 			}
 
@@ -115,13 +115,13 @@ export default function praxisTerminalPrompt(pi: ExtensionAPI) {
 			else if (mode === "off") enabled = false;
 			else if (mode === "toggle") enabled = !enabled;
 			else {
-				ctx.ui.notify("Usage: /praxis prompt on|off|toggle", "info");
+				ctx.ui.notify("Usage: /tau prompt on|off|toggle", "info");
 				return;
 			}
 
 			applyEditor(enabled, ctx);
-			pi.appendEntry(PRAXIS_STATE_TYPE, { terminalPrompt: enabled });
-			ctx.ui.notify(`Praxis prompt: ${enabled ? "on" : "off"}`, "info");
+			pi.appendEntry(TAU_STATE_TYPE, { terminalPrompt: enabled });
+			ctx.ui.notify(`Tau prompt: ${enabled ? "on" : "off"}`, "info");
 		},
 	});
 
@@ -131,7 +131,7 @@ export default function praxisTerminalPrompt(pi: ExtensionAPI) {
 		// Restore last known state from session (so it survives restarts).
 		const entries = ctx.sessionManager.getEntries();
 		const last = entries
-			.filter((e: { type: string; customType?: string }) => e.type === "custom" && e.customType === PRAXIS_STATE_TYPE)
+			.filter((e: { type: string; customType?: string }) => e.type === "custom" && e.customType === TAU_STATE_TYPE)
 			.pop() as { data?: { terminalPrompt?: boolean } } | undefined;
 
 		if (typeof last?.data?.terminalPrompt === "boolean") {
