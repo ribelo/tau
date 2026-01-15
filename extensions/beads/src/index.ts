@@ -78,9 +78,8 @@ function renderIssueLine(issue: BdIssue, theme: any): string {
 	const prio = issue.priority !== undefined ? theme.fg("muted", `P${issue.priority}`) : theme.fg("dim", "P?");
 	const type = issue.issue_type ? theme.fg("muted", issue.issue_type) : theme.fg("dim", "?");
 
-	// Example style:
-	//   └ ✔ tau-123 P2 task (closed) Title
-	return `  └ ${check} ${id} ${prio} ${type}${statusSuffix} ${title}`;
+	// Prefix/indent is applied by the caller.
+	return `${check} ${id} ${prio} ${type}${statusSuffix} ${title}`;
 }
 
 function renderHeader(title: string, theme: any): string {
@@ -94,11 +93,13 @@ function renderIssuesBlock(title: string, issues: BdIssue[], options: { expanded
 	const shown = options.expanded ? all : all.slice(0, 10);
 
 	let out = renderHeader(title, theme);
-	for (const issue of shown) {
-		out += `\n${renderIssueLine(issue, theme)}`;
+	for (let i = 0; i < shown.length; i++) {
+		const issue = shown[i]!;
+		const prefix = i === 0 ? "  └ " : "    ";
+		out += `\n${prefix}${renderIssueLine(issue, theme)}`;
 	}
 	if (!options.expanded && all.length > shown.length) {
-		out += `\n  ${theme.fg("dim", `└ … ${all.length - shown.length} more (expand to view)`)}`;
+		out += `\n    ${theme.fg("dim", `… ${all.length - shown.length} more (expand to view)`)}`;
 	}
 	return new Text(out, 0, 0);
 }
@@ -110,13 +111,11 @@ function renderTreeBlock(nodes: BdTreeNode[], options: { expanded: boolean }, th
 	let out = renderHeader("Dependency tree", theme);
 	for (const node of shown) {
 		const depth = typeof node.depth === "number" ? node.depth : 0;
-		const indent = "  ".repeat(Math.max(0, depth));
-		// Use the same style but add depth indentation before the connector.
-		const line = renderIssueLine(node, theme).replace(/^  └ /, `${indent}└ `);
-		out += `\n${line}`;
+		const prefix = "  ".repeat(Math.max(0, depth) + 1) + "└ ";
+		out += `\n${prefix}${renderIssueLine(node, theme)}`;
 	}
 	if (!options.expanded && all.length > shown.length) {
-		out += `\n  ${theme.fg("dim", `└ … ${all.length - shown.length} more (expand to view)`)}`;
+		out += `\n    ${theme.fg("dim", `… ${all.length - shown.length} more (expand to view)`)}`;
 	}
 	return new Text(out, 0, 0);
 }
