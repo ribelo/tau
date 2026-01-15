@@ -69,14 +69,19 @@ function parseToggleArg(mode: string, current: boolean): boolean | undefined {
 export default function tauWorkedFor(pi: ExtensionAPI) {
 	let enabled = true;
 	let toolsEnabled = true;
-	let turnStartTimestamp = Date.now();
+
+	// Start time for the current user prompt (one agent run).
+	// This must NOT reset per internal turn/tool call.
+	let promptStartTimestamp: number | undefined;
+	let agentRunning = false;
 
 	function persistState(): void {
 		pi.appendEntry<WorkedForState>(WORKED_FOR_STATE_TYPE, { enabled, toolsEnabled });
 	}
 
-	function emitWorkedFor(ctx: any): void {
-		const elapsedMs = Math.max(0, Date.now() - turnStartTimestamp);
+	function emitWorkedFor(): void {
+		if (promptStartTimestamp === undefined) return;
+		const elapsedMs = Math.max(0, Date.now() - promptStartTimestamp);
 		pi.sendMessage<WorkedForDetails>(
 			{
 				customType: WORKED_FOR_MESSAGE_TYPE,
@@ -140,8 +145,8 @@ export default function tauWorkedFor(pi: ExtensionAPI) {
 		if (typeof last?.data?.enabled === "boolean") enabled = last.data.enabled;
 		if (typeof last?.data?.toolsEnabled === "boolean") toolsEnabled = last.data.toolsEnabled;
 
-		// Ensure timestamp has a sane value on resume.
-		turnStartTimestamp = Date.now();
+		promptStartTimestamp = undefined;
+		agentRunning = false;
 
 		if (ctx.hasUI) {
 			// Avoid making the footer noisy; keep status empty by default.
@@ -149,22 +154,37 @@ export default function tauWorkedFor(pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("turn_start", async (event) => {
-		turnStartTimestamp = typeof event.timestamp === "number" ? event.timestamp : Date.now();
+	pi.on("before_agent_start", async () => {
+		// This is the right "start" moment: user has submitted a prompt and
+		// we're about to start the agent loop. This stays stable across tool calls
+		// and internal turns until agent_end.
+		promptStartTimestamp = Date.now();
+		agentRunning = true;
 	});
 
-	pi.on("tool_result", async (event, ctx) => {
+	pi.on("agent_end", async () => {
+		agentRunning = false;
+	});
+
+	pi.on("tool_result", async (event) => {
 		if (!enabled || !toolsEnabled) return;
+		if (!agentRunning) return;
 
 		// Avoid spamming on frequent "read" calls.
 		if (event.toolName === "read") return;
 
-		emitWorkedFor(ctx);
+		emitWorkedFor();
 	});
 
-	pi.on("turn_end", async (_event, ctx) => {
+	pi.on("turn_end", async (event) => {
 		persistState();
 		if (!enabled) return;
-		emitWorkedFor(ctx);
+		if (!agentRunning) return;
+
+		// Only show after assistant output (Codex-like).
+		const role = (event.message as any)?.role;
+		if (role !== "assistant") return;
+
+		emitWorkedFor();
 	});
 }
