@@ -74,28 +74,36 @@ export default function tauWorkedFor(pi: ExtensionAPI) {
 	// This must NOT reset per internal turn/tool call.
 	let promptStartTimestamp: number | undefined;
 	let agentRunning = false;
+	let lastRenderedDurationText: string | undefined;
 
 	function persistState(): void {
 		pi.appendEntry<WorkedForState>(WORKED_FOR_STATE_TYPE, { enabled, toolsEnabled });
 	}
 
-	function emitWorkedFor(): void {
+	function renderWorkedForWidget(ctx: any): void {
+		if (!ctx?.hasUI) return;
+		if (!enabled) return;
 		if (promptStartTimestamp === undefined) return;
 		const elapsedMs = Math.max(0, Date.now() - promptStartTimestamp);
-		pi.sendMessage<WorkedForDetails>(
-			{
-				customType: WORKED_FOR_MESSAGE_TYPE,
-				content: "",
-				display: true,
-				details: { elapsedMs },
-			},
-			{ deliverAs: "followUp", triggerTurn: false },
-		);
+		const durationText = formatDuration(elapsedMs);
+		if (durationText === lastRenderedDurationText) return;
+		lastRenderedDurationText = durationText;
+
+		// Widgets do not participate in LLM context and won't enqueue follow-ups.
+		ctx.ui.setWidget("worked-for-separator", (_tui: any, theme: any) => new WorkedForSeparator(durationText, theme));
 	}
 
 	pi.registerMessageRenderer<WorkedForDetails>(WORKED_FOR_MESSAGE_TYPE, (message, _options, theme) => {
 		const elapsedMs = typeof message.details?.elapsedMs === "number" ? message.details.elapsedMs : 0;
 		return new WorkedForSeparator(formatDuration(elapsedMs), theme);
+	});
+
+	pi.on("context", async (event) => {
+		// Never send UI-only worked-for separators to the model (old sessions may contain them).
+		const filtered = event.messages.filter(
+			(m: any) => !(m?.role === "custom" && m?.customType === WORKED_FOR_MESSAGE_TYPE),
+		);
+		return { messages: filtered };
 	});
 
 	pi.registerCommand("worked", {
@@ -131,6 +139,7 @@ export default function tauWorkedFor(pi: ExtensionAPI) {
 
 			enabled = next;
 			persistState();
+			if (ctx.hasUI && !enabled) ctx.ui.setWidget("worked-for-separator", undefined);
 			ctx.ui.notify(`Worked-for: ${enabled ? "on" : "off"}`, "info");
 		},
 	});
@@ -147,36 +156,39 @@ export default function tauWorkedFor(pi: ExtensionAPI) {
 
 		promptStartTimestamp = undefined;
 		agentRunning = false;
+		lastRenderedDurationText = undefined;
 
 		if (ctx.hasUI) {
-			// Avoid making the footer noisy; keep status empty by default.
-			ctx.ui.setStatus("worked-for", undefined);
+			ctx.ui.setWidget("worked-for-separator", undefined);
 		}
 	});
 
-	pi.on("before_agent_start", async () => {
+	pi.on("before_agent_start", async (_event, ctx) => {
 		// This is the right "start" moment: user has submitted a prompt and
 		// we're about to start the agent loop. This stays stable across tool calls
 		// and internal turns until agent_end.
 		promptStartTimestamp = Date.now();
 		agentRunning = true;
+		lastRenderedDurationText = undefined;
+		if (ctx.hasUI) ctx.ui.setWidget("worked-for-separator", undefined);
 	});
 
-	pi.on("agent_end", async () => {
+	pi.on("agent_end", async (_event, ctx) => {
+		renderWorkedForWidget(ctx);
 		agentRunning = false;
 	});
 
-	pi.on("tool_result", async (event) => {
+	pi.on("tool_result", async (event, ctx) => {
 		if (!enabled || !toolsEnabled) return;
 		if (!agentRunning) return;
 
 		// Avoid spamming on frequent "read" calls.
 		if (event.toolName === "read") return;
 
-		emitWorkedFor();
+		renderWorkedForWidget(ctx);
 	});
 
-	pi.on("turn_end", async (event) => {
+	pi.on("turn_end", async (event, ctx) => {
 		persistState();
 		if (!enabled) return;
 		if (!agentRunning) return;
@@ -185,6 +197,6 @@ export default function tauWorkedFor(pi: ExtensionAPI) {
 		const role = (event.message as any)?.role;
 		if (role !== "assistant") return;
 
-		emitWorkedFor();
+		renderWorkedForWidget(ctx);
 	});
 }
