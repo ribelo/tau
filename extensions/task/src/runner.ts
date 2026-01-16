@@ -2,9 +2,17 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { Message } from "@mariozechner/pi-ai";
+import type { Api, Message, Model } from "@mariozechner/pi-ai";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import {
+	SessionManager as SdkSessionManager,
+	SettingsManager,
+	createAgentSession,
+	discoverAuthStorage,
+	discoverModels,
+	type AgentSession,
+	type ExtensionAPI,
+} from "@mariozechner/pi-coding-agent";
 import type { Difficulty, ResolvedPolicy } from "./types.js";
 import type { LoadedSkill } from "./skills.js";
 
@@ -59,6 +67,7 @@ type WorkerBackendResult = {
 
 type WorkerBackendOptions = {
 	cwd: string;
+	parentSessionId: string;
 	sessionId: string;
 	sessionFile: string;
 	prompt: string;
@@ -66,6 +75,7 @@ type WorkerBackendOptions = {
 	tools: string[];
 	model?: string;
 	thinking?: string;
+	maxDepth: number;
 	onEvent: (event: WorkerEvent) => void;
 	onSpawn?: (proc: ChildProcess) => void;
 	signal?: AbortSignal;
@@ -74,6 +84,37 @@ type WorkerBackendOptions = {
 
 interface WorkerBackend {
 	run(options: WorkerBackendOptions): Promise<WorkerBackendResult>;
+}
+
+const MAX_TASK_NESTING = 3;
+
+type WorkerSession = {
+	session: AgentSession;
+	promptRef: { value: string };
+	depth: number;
+};
+
+function resolveModelPattern(pattern: string, models: Model<Api>[]): Model<Api> | undefined {
+	const trimmed = pattern.trim();
+	if (!trimmed) return undefined;
+
+	const slashIndex = trimmed.indexOf("/");
+	if (slashIndex !== -1) {
+		const provider = trimmed.slice(0, slashIndex).toLowerCase();
+		const modelId = trimmed.slice(slashIndex + 1).toLowerCase();
+		const match = models.find(
+			(m) => m.provider.toLowerCase() === provider && m.id.toLowerCase() === modelId,
+		);
+		if (match) return match;
+	}
+
+	const exact = models.find((m) => m.id.toLowerCase() === trimmed.toLowerCase());
+	if (exact) return exact;
+
+	const partial = models.find(
+		(m) => m.id.toLowerCase().includes(trimmed.toLowerCase()) || m.name?.toLowerCase().includes(trimmed.toLowerCase()),
+	);
+	return partial;
 }
 
 type LatestText =
@@ -234,6 +275,105 @@ export function buildWorkerSystemPrompt(options: {
 	return lines.join("\n").trim() + "\n";
 }
 
+const inProcessRuntime = (() => {
+	const authStorage = discoverAuthStorage();
+	const modelRegistry = discoverModels(authStorage);
+	const sessions = new Map<string, WorkerSession>();
+	return { authStorage, modelRegistry, sessions };
+})();
+
+class InProcessWorkerBackend implements WorkerBackend {
+	async run(options: WorkerBackendOptions): Promise<WorkerBackendResult> {
+		const existing = inProcessRuntime.sessions.get(options.sessionId);
+		if (!existing) {
+			const parentDepth = inProcessRuntime.sessions.get(options.parentSessionId)?.depth ?? 0;
+			const depth = parentDepth + 1;
+			if (depth > options.maxDepth) {
+				return {
+					status: "failed",
+					error: `Max task nesting depth (${options.maxDepth}) exceeded`,
+				};
+			}
+
+			const promptRef = { value: options.systemPrompt };
+			const resolvedModel = options.model
+				? resolveModelPattern(options.model, inProcessRuntime.modelRegistry.getAll())
+				: undefined;
+			if (options.model && !resolvedModel) {
+				return { status: "failed", error: `Unknown model: ${options.model}` };
+			}
+
+			const { session } = await createAgentSession({
+				cwd: options.cwd,
+				authStorage: inProcessRuntime.authStorage,
+				modelRegistry: inProcessRuntime.modelRegistry,
+				sessionManager: SdkSessionManager.inMemory(options.cwd),
+				settingsManager: SettingsManager.inMemory(),
+				systemPrompt: (defaultPrompt) => `${defaultPrompt}\n\n${promptRef.value}`,
+				skills: [],
+				model: resolvedModel,
+			});
+
+			inProcessRuntime.sessions.set(options.sessionId, { session, promptRef, depth });
+		}
+
+		const entry = inProcessRuntime.sessions.get(options.sessionId)!;
+		entry.promptRef.value = options.systemPrompt;
+
+		const toolList = Array.from(new Set(options.tools.filter(Boolean)));
+		entry.session.setActiveToolsByName(toolList);
+
+		if (options.model) {
+			const resolvedModel = resolveModelPattern(options.model, inProcessRuntime.modelRegistry.getAll());
+			if (!resolvedModel) {
+				return { status: "failed", error: `Unknown model: ${options.model}` };
+			}
+
+			const current = entry.session.model;
+			if (!current || current.provider !== resolvedModel.provider || current.id !== resolvedModel.id) {
+				try {
+					await entry.session.setModel(resolvedModel);
+				} catch (err) {
+					return { status: "failed", error: (err as Error).message };
+				}
+			}
+		}
+
+		if (options.thinking) {
+			entry.session.setThinkingLevel(options.thinking as any);
+		}
+
+		let aborted = false;
+		const abortRun = () => {
+			aborted = true;
+			entry.session.abort().catch(() => undefined);
+		};
+
+		if (options.signal) {
+			if (options.signal.aborted) abortRun();
+			else options.signal.addEventListener("abort", abortRun, { once: true });
+		}
+
+		const unsubscribe = entry.session.subscribe((event) => {
+			if (event.type === "message_end") {
+				options.onEvent({ message: event.message as Message });
+			}
+		});
+
+		try {
+			await entry.session.prompt(`Task: ${options.prompt}`, { source: "extension" });
+		} catch (err) {
+			if (aborted) return { status: "aborted" };
+			return { status: "failed", error: (err as Error).message };
+		} finally {
+			unsubscribe();
+			if (options.signal) options.signal.removeEventListener("abort", abortRun);
+		}
+
+		return { status: aborted ? "aborted" : "completed" };
+	}
+}
+
 class SubprocessWorkerBackend implements WorkerBackend {
 	constructor(private pi: ExtensionAPI) {}
 
@@ -359,7 +499,7 @@ class SubprocessWorkerBackend implements WorkerBackend {
 export class TaskRunner {
 	constructor(
 		private pi: ExtensionAPI,
-		private backend: WorkerBackend = new SubprocessWorkerBackend(pi),
+		private backend: WorkerBackend = new InProcessWorkerBackend(),
 	) {}
 
 	async run(options: {
@@ -387,8 +527,7 @@ export class TaskRunner {
 		const resolvedThinking = options.policy.thinking ?? (options.parentThinking as any);
 
 		// tools: explicit for all task types so "all tools" really means "current tools".
-		// Exclude the task tool itself to avoid runaway recursion.
-		const tools = (options.policy.tools ?? options.parentTools).filter((t) => t !== "task");
+		const tools = Array.from(new Set((options.policy.tools ?? options.parentTools).filter(Boolean)));
 
 		const systemPrompt = buildWorkerSystemPrompt({
 			parentSessionId: options.parentSessionId,
@@ -442,6 +581,7 @@ export class TaskRunner {
 		try {
 			backendResult = await this.backend.run({
 				cwd: options.parentCwd,
+				parentSessionId: options.parentSessionId,
 				sessionId: options.sessionId,
 				sessionFile: options.sessionFile,
 				prompt: options.prompt,
@@ -449,6 +589,7 @@ export class TaskRunner {
 				tools,
 				model: resolvedModel,
 				thinking: resolvedThinking,
+				maxDepth: MAX_TASK_NESTING,
 				onEvent: handleEvent,
 				onSpawn: options.onSpawn,
 				signal: options.signal,
