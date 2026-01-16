@@ -3,6 +3,11 @@
 This project uses **bd (beads)** for issue tracking.
 Run `bd prime` for workflow context, or install hooks (`bd hooks install`) for auto-injection.
 
+## Naming Conventions
+
+- All tool names, tool labels, and command names that are visible to the user should be **lowercase** to match pi's built-in tools (`read`, `bash`, `edit`, `write`, etc.).
+- If you need namespaces, use lowercase separators like `.` or `_` (e.g. `exa.web_search`, `exa.code_context`, `bd`).
+
 ## Quick Reference
 
 ```bash
