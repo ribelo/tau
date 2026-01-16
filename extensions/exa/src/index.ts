@@ -211,6 +211,37 @@ function compactContentsResults(results: ExaContentsResult[] | undefined): Array
 	}));
 }
 
+function formatSearchResultsAsText(results: ReturnType<typeof compactSearchResults>): string {
+	if (results.length === 0) return "No results found.";
+	return results
+		.map((r, i) => {
+			let out = `[${i + 1}] ${r.title || r.url || "(no title)"}\nURL: ${r.url || "(no url)"}`;
+			if (r.publishedDate) out += `\nPublished: ${r.publishedDate}`;
+			if (r.author) out += `\nAuthor: ${r.author}`;
+			if (r.text) out += `\nSnippet: ${r.text}`;
+			if (r.highlights && r.highlights.length > 0) {
+				out += `\nHighlights: ${r.highlights.join(" | ")}`;
+			}
+			return out;
+		})
+		.join("\n\n");
+}
+
+function formatContentsResultsAsText(results: ReturnType<typeof compactContentsResults>): string {
+	if (results.length === 0) return "No results found.";
+	return results
+		.map((r, i) => {
+			let out = `[${i + 1}] ${r.title || r.url || "(no title)"}\nURL: ${r.url || "(no url)"}`;
+			if (r.summary) out += `\nSummary: ${r.summary}`;
+			if (r.text) out += `\nContent: ${r.text}`;
+			if (r.highlights && r.highlights.length > 0) {
+				out += `\nHighlights: ${r.highlights.join(" | ")}`;
+			}
+			return out;
+		})
+		.join("\n\n");
+}
+
 export default function exa(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "web_search_exa",
@@ -416,15 +447,20 @@ export default function exa(pi: ExtensionAPI) {
 			if (typeof params.moderation === "boolean") body.moderation = params.moderation;
 
 			const response = await exaPost<ExaSearchResponse>("/search", body, signal);
+			const results = compactSearchResults(response.results);
 
 			return {
 				content: [
+					{
+						type: "text",
+						text: formatSearchResultsAsText(results),
+					},
 					{
 						type: "json",
 						json: {
 							requestId: response.requestId,
 							resolvedSearchType: (response as any).resolvedSearchType,
-							results: compactSearchResults(response.results),
+							results,
 							context: (response as any).context,
 						},
 					},
@@ -572,14 +608,19 @@ export default function exa(pi: ExtensionAPI) {
 			if (params.subpageTarget?.length) body.subpageTarget = params.subpageTarget;
 
 			const response = await exaPost<ExaContentsResponse>("/contents", body, signal);
+			const results = compactContentsResults(response.results);
 
 			return {
 				content: [
 					{
+						type: "text",
+						text: formatContentsResultsAsText(results),
+					},
+					{
 						type: "json",
 						json: {
 							requestId: response.requestId,
-							results: compactContentsResults(response.results),
+							results,
 							statuses: response.statuses,
 							context: response.context,
 							costDollars: response.costDollars,
@@ -672,6 +713,10 @@ export default function exa(pi: ExtensionAPI) {
 
 			return {
 				content: [
+					{
+						type: "text",
+						text: response.response || "(no response)",
+					},
 					{
 						type: "json",
 						json: {
