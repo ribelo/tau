@@ -1,7 +1,3 @@
-import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 import type { Api, Message, Model } from "@mariozechner/pi-ai";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import {
@@ -11,7 +7,6 @@ import {
 	discoverAuthStorage,
 	discoverModels,
 	type AgentSession,
-	type ExtensionAPI,
 } from "@mariozechner/pi-coding-agent";
 import type { Difficulty, ResolvedPolicy } from "./types.js";
 import type { LoadedSkill } from "./skills.js";
@@ -69,7 +64,6 @@ type WorkerBackendOptions = {
 	cwd: string;
 	parentSessionId: string;
 	sessionId: string;
-	sessionFile: string;
 	prompt: string;
 	systemPrompt: string;
 	tools: string[];
@@ -77,9 +71,7 @@ type WorkerBackendOptions = {
 	thinking?: string;
 	maxDepth: number;
 	onEvent: (event: WorkerEvent) => void;
-	onSpawn?: (proc: ChildProcess) => void;
 	signal?: AbortSignal;
-	noSandbox?: boolean;
 };
 
 interface WorkerBackend {
@@ -220,22 +212,6 @@ function emptyUsage(): UsageStats {
 	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
 }
 
-function writePromptToTempFile(sessionId: string, prompt: string): { dir: string; filePath: string } {
-	const tmpDir = mkdtempSync(path.join(os.tmpdir(), "pi-task-"));
-	const safe = sessionId.replace(/[^\w.-]+/g, "_");
-	const filePath = path.join(tmpDir, `prompt-${safe}.md`);
-	writeFileSync(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
-	return { dir: tmpDir, filePath };
-}
-
-function safeCleanup(tmpDir: string) {
-	try {
-		rmSync(tmpDir, { recursive: true, force: true });
-	} catch {
-		// ignore
-	}
-}
-
 export function buildWorkerSystemPrompt(options: {
 	parentSessionId: string;
 	parallelCount: number;
@@ -374,133 +350,8 @@ class InProcessWorkerBackend implements WorkerBackend {
 	}
 }
 
-class SubprocessWorkerBackend implements WorkerBackend {
-	constructor(private pi: ExtensionAPI) {}
-
-	async run(options: WorkerBackendOptions): Promise<WorkerBackendResult> {
-		const tmp = writePromptToTempFile(options.sessionId, options.systemPrompt);
-		let proc: ChildProcess | null = null;
-		let buffer = "";
-		let stderr = "";
-		let exitCode = -1;
-		let aborted = false;
-
-		const forward = (event: any) => {
-			if (event.type === "message_end" && event.message) {
-				options.onEvent({ message: event.message as Message });
-			}
-
-			if (event.type === "tool_result_end" && event.message) {
-				options.onEvent({ message: event.message as Message });
-			}
-		};
-
-		try {
-			const args: string[] = [
-				"--mode",
-				"json",
-				"-p",
-				"--session",
-				options.sessionFile,
-				"--no-skills",
-				"--append-system-prompt",
-				tmp.filePath,
-			];
-
-			if (options.tools.length > 0) {
-				args.push("--tools", options.tools.join(","));
-			}
-
-			if (options.model) args.push("--model", options.model);
-			if (options.thinking) args.push("--thinking", String(options.thinking));
-			if (options.noSandbox) args.push("--no-sandbox");
-
-			args.push(`Task: ${options.prompt}`);
-
-			await new Promise<void>((resolve) => {
-				proc = spawn("pi", args, {
-					cwd: options.cwd,
-					shell: false,
-					stdio: ["ignore", "pipe", "pipe"],
-				});
-				if (proc) options.onSpawn?.(proc);
-
-				const processLine = (line: string) => {
-					if (!line.trim()) return;
-					let event: any;
-					try {
-						event = JSON.parse(line);
-					} catch {
-						return;
-					}
-
-					forward(event);
-				};
-
-				proc.stdout?.on("data", (data) => {
-					buffer += data.toString();
-					const lines = buffer.split("\n");
-					buffer = lines.pop() || "";
-					for (const l of lines) processLine(l);
-				});
-
-				proc.stderr?.on("data", (data) => {
-					stderr += data.toString();
-				});
-
-				proc.on("close", (code) => {
-					exitCode = code ?? 0;
-					if (buffer.trim()) processLine(buffer);
-					resolve();
-				});
-
-				proc.on("error", () => {
-					exitCode = 1;
-					resolve();
-				});
-
-				if (options.signal) {
-					const killProc = () => {
-						aborted = true;
-						try {
-							proc?.kill("SIGTERM");
-						} catch {
-							// ignore
-						}
-						setTimeout(() => {
-							try {
-								if (proc && !proc.killed) proc.kill("SIGKILL");
-							} catch {
-								// ignore
-							}
-						}, 5000);
-					};
-
-					if (options.signal.aborted) killProc();
-					else options.signal.addEventListener("abort", killProc, { once: true });
-				}
-			});
-		} finally {
-			safeCleanup(tmp.dir);
-		}
-
-		if (aborted) return { status: "aborted" };
-		if (exitCode !== 0) {
-			return {
-				status: "failed",
-				error: stderr.trim() || `pi exited with code ${exitCode}`,
-			};
-		}
-
-		return { status: "completed" };
-	}
-}
-
 export class TaskRunner {
-	constructor(
-		private pi: ExtensionAPI,
-		private backend: WorkerBackend = new InProcessWorkerBackend(),
-	) {}
+	constructor(private backend: WorkerBackend = new InProcessWorkerBackend()) {}
 
 	async run(options: {
 		parentCwd: string;
@@ -510,13 +361,11 @@ export class TaskRunner {
 		parentTools: string[];
 		policy: ResolvedPolicy;
 		sessionId: string;
-		sessionFile: string;
 		description: string;
 		prompt: string;
 		skills: LoadedSkill[];
 		parallelCount: number;
 		onUpdate?: OnUpdateCallback;
-		onSpawn?: (proc: ChildProcess) => void;
 		signal?: AbortSignal;
 	}): Promise<TaskResult> {
 		const startedAt = Date.now();
@@ -583,7 +432,6 @@ export class TaskRunner {
 				cwd: options.parentCwd,
 				parentSessionId: options.parentSessionId,
 				sessionId: options.sessionId,
-				sessionFile: options.sessionFile,
 				prompt: options.prompt,
 				systemPrompt,
 				tools,
@@ -591,9 +439,7 @@ export class TaskRunner {
 				thinking: resolvedThinking,
 				maxDepth: MAX_TASK_NESTING,
 				onEvent: handleEvent,
-				onSpawn: options.onSpawn,
 				signal: options.signal,
-				noSandbox: (this.pi.getFlag("no-sandbox") as boolean | undefined) === true,
 			});
 		} catch (err) {
 			backendResult = { status: "failed", error: (err as Error).message };

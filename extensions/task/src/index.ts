@@ -60,7 +60,7 @@ const TaskParams = Type.Object({
 export default function task(pi: ExtensionAPI) {
 
 	const sessions = new SessionManager();
-	const runner = new TaskRunner(pi);
+	const runner = new TaskRunner();
 
 	// Track how many task tool calls are requested per turn to inject parallel constraints.
 	let currentTurnIndex = -1;
@@ -179,17 +179,13 @@ export default function task(pi: ExtensionAPI) {
 					parentTools: pi.getActiveTools(),
 					policy,
 					sessionId: session.sessionId,
-					sessionFile: session.sessionFile,
 					description,
 					prompt,
 					skills: loaded,
 					parallelCount,
 					onUpdate: wrapUpdate,
-					onSpawn: (proc) => sessions.setProcess(session.sessionId, proc),
 					signal,
 				});
-
-				sessions.setProcess(session.sessionId, undefined);
 
 				const outputType = res.output.type;
 				const message =
