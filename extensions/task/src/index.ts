@@ -192,14 +192,26 @@ export default function task(pi: ExtensionAPI) {
 				sessions.setProcess(session.sessionId, undefined);
 
 				const outputType = res.output.type;
-				const message = res.output.type === "completed" ? res.output.message : outputType === "failed" ? res.output.reason : "";
+				const message =
+					outputType === "completed"
+						? res.output.message
+						: outputType === "completed_tool"
+							? res.output.toolOutput
+							: outputType === "failed"
+								? res.output.reason
+								: "";
 
 				const details: TaskToolDetails = {
 					taskType,
 					difficulty,
 					description,
 					sessionId: res.sessionId,
-					status: outputType === "completed" || outputType === "completed_empty" ? "completed" : outputType === "interrupted" ? "interrupted" : "failed",
+					status:
+						outputType === "completed" || outputType === "completed_tool" || outputType === "completed_empty"
+							? "completed"
+							: outputType === "interrupted"
+								? "interrupted"
+								: "failed",
 					model: res.model,
 					usage: res.usage,
 					activities: res.activities,
@@ -210,17 +222,18 @@ export default function task(pi: ExtensionAPI) {
 				};
 
 				const isError = outputType === "failed";
+				const baseText = (() => {
+					if (outputType === "failed") return message ? `ERROR: ${message}` : "ERROR";
+					if (outputType === "interrupted") return "(interrupted; resumable)";
+					if (outputType === "completed_empty") return "(no output)";
+					return message || "(no output)";
+				})();
+
 				return {
 					content: [
 						{
-							type: "json",
-							json: {
-								session_id: res.sessionId,
-								output: res.output,
-								usage: res.usage,
-								model: res.model,
-								missing_skills: missing,
-							},
+							type: "text",
+							text: `${baseText}\n\nsession_id: ${res.sessionId}`,
 						},
 					],
 					details,

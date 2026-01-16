@@ -20,6 +20,7 @@ export interface UsageStats {
 
 export type TaskOutput =
 	| { type: "completed"; message: string }
+	| { type: "completed_tool"; toolOutput: string }
 	| { type: "completed_empty" }
 	| { type: "interrupted"; resumable: true }
 	| { type: "failed"; reason: string; resumable: boolean };
@@ -47,15 +48,37 @@ export type TaskRunnerUpdateDetails = {
 
 type OnUpdateCallback = (partial: AgentToolResult<TaskRunnerUpdateDetails>) => void;
 
-function getFinalOutput(messages: Message[]): string {
+type LatestText =
+	| { source: "assistant"; text: string }
+	| { source: "toolResult"; text: string }
+	| null;
+
+function getLatestText(messages: Message[]): LatestText {
 	for (let i = messages.length - 1; i >= 0; i--) {
-		const msg = messages[i];
-		if (msg.role !== "assistant") continue;
-		for (const part of msg.content) {
-			if (part.type === "text") return part.text;
+		const msg = messages[i]!;
+
+		if (msg.role === "assistant") {
+			const parts = msg.content
+				.filter((p) => p.type === "text")
+				.map((p: any) => String(p.text ?? "").trim())
+				.filter(Boolean);
+			if (parts.length > 0) return { source: "assistant", text: parts.join("\n") };
+		}
+
+		if (msg.role === "toolResult") {
+			const parts = msg.content
+				.filter((p) => p.type === "text")
+				.map((p: any) => String(p.text ?? "").trimEnd())
+				.filter(Boolean);
+			if (parts.length > 0) return { source: "toolResult", text: parts.join("\n") };
 		}
 	}
-	return "";
+
+	return null;
+}
+
+function getLatestTextOnly(messages: Message[]): string {
+	return getLatestText(messages)?.text ?? "";
 }
 
 function extractActivities(messages: Message[]): Array<{ name: string; args: Record<string, unknown> }> {
@@ -175,8 +198,9 @@ export class TaskRunner {
 
 		const emit = (status: TaskRunnerUpdateDetails["status"]) => {
 			if (!options.onUpdate) return;
+			const latest = getLatestTextOnly(messages);
 			options.onUpdate({
-				content: [{ type: "text", text: getFinalOutput(messages) || "(running...)" }],
+				content: [{ type: "text", text: latest || "(running...)" }],
 				details: {
 					taskType: options.policy.taskType,
 					difficulty: options.policy.difficulty,
@@ -186,7 +210,7 @@ export class TaskRunner {
 					model: resolvedModel,
 					usage: { ...usage },
 					activities: extractActivities(messages),
-					message: getFinalOutput(messages) || undefined,
+					message: latest || undefined,
 				},
 			});
 		};
@@ -322,7 +346,7 @@ export class TaskRunner {
 		}
 
 		if (exitCode !== 0) {
-			const reason = stderr.trim() || getFinalOutput(messages) || `pi exited with code ${exitCode}`;
+			const reason = stderr.trim() || getLatestTextOnly(messages) || `pi exited with code ${exitCode}`;
 			emit("failed");
 			return {
 				sessionId: options.sessionId,
@@ -334,7 +358,8 @@ export class TaskRunner {
 			};
 		}
 
-		const final = getFinalOutput(messages).trim();
+		const latest = getLatestText(messages);
+		const final = latest?.text.trim() ?? "";
 		if (!final) {
 			emit("completed");
 			return {
@@ -354,7 +379,10 @@ export class TaskRunner {
 			model: resolvedModel,
 			messages,
 			activities,
-			output: { type: "completed", message: final },
+			output:
+				latest?.source === "toolResult"
+					? { type: "completed_tool", toolOutput: final }
+					: { type: "completed", message: final },
 		};
 	}
 }
