@@ -352,9 +352,9 @@ export default function exa(pi: ExtensionAPI) {
 		}),
 
 		renderCall(args, theme) {
-			let out = theme.fg("toolTitle", theme.bold("$ ")) + theme.fg("toolTitle", "exa.web_search");
+			let out = theme.fg("toolTitle", theme.bold("exa.web_search"));
 			const query = typeof (args as any)?.query === "string" ? truncate(oneLine((args as any).query), 140) : "";
-			if (query) out += `\n  ${theme.fg("muted", "query:")} ${theme.fg("toolOutput", query)}`;
+			if (query) out += ` ${theme.fg("toolOutput", query)}`;
 
 			const extras: Array<[string, unknown]> = [
 				["type", (args as any).type],
@@ -375,9 +375,14 @@ export default function exa(pi: ExtensionAPI) {
 				["moderation", (args as any).moderation],
 			];
 
+			let firstExtra = true;
 			for (const [k, v] of extras) {
 				if (v === undefined) continue;
-				out += `\n  ${theme.fg("muted", k + ":")} ${theme.fg("dim", fmtValue(v))}`;
+				if (firstExtra) {
+					out += "\n ";
+					firstExtra = false;
+				}
+				out += ` ${theme.fg("muted", k + ":")} ${theme.fg("dim", fmtValue(v))}`;
 			}
 
 			return new Text(out, 0, 0);
@@ -392,9 +397,12 @@ export default function exa(pi: ExtensionAPI) {
 			const results: ExaSearchResult[] = Array.isArray(json?.results) ? json.results : [];
 			const shown = options.expanded ? results : results.slice(0, 3);
 
-			let out = renderHeader("Exa web search", theme);
-			if (json?.requestId) out += `\n  ${theme.fg("muted", "requestId:")} ${theme.fg("dim", String(json.requestId))}`;
-			if (json?.resolvedSearchType) out += `\n  ${theme.fg("muted", "resolvedSearchType:")} ${theme.fg("dim", String(json.resolvedSearchType))}`;
+			let out = "";
+			if (json?.requestId || json?.resolvedSearchType) {
+				out += "  ";
+				if (json?.requestId) out += `${theme.fg("muted", "requestId:")} ${theme.fg("dim", String(json.requestId))} `;
+				if (json?.resolvedSearchType) out += `${theme.fg("muted", "resolvedSearchType:")} ${theme.fg("dim", String(json.resolvedSearchType))}`;
+			}
 
 			for (let i = 0; i < shown.length; i++) {
 				const r = shown[i]!;
@@ -418,7 +426,7 @@ export default function exa(pi: ExtensionAPI) {
 			}
 			if (shown.length === 0) out += `\n  ${theme.fg("dim", "(no results)")}`;
 
-			return new Text(out, 0, 0);
+			return new Text(out.trim(), 0, 0);
 		},
 
 		async execute(_toolCallId, params: any, onUpdate, _ctx, signal) {
@@ -525,9 +533,9 @@ export default function exa(pi: ExtensionAPI) {
 		}),
 
 		renderCall(args, theme) {
-			let out = theme.fg("toolTitle", theme.bold("$ ")) + theme.fg("toolTitle", "exa.crawl");
+			let out = theme.fg("toolTitle", theme.bold("exa.crawl"));
 			const urls = Array.isArray((args as any)?.urls) ? ((args as any).urls as string[]) : [];
-			if (urls.length > 0) out += `\n  ${theme.fg("muted", "urls:")} ${theme.fg("dim", fmtValue(urls))}`;
+			if (urls.length > 0) out += ` ${theme.fg("dim", fmtValue(urls))}`;
 
 			const extras: Array<[string, unknown]> = [
 				["text", (args as any).text],
@@ -539,9 +547,15 @@ export default function exa(pi: ExtensionAPI) {
 				["subpages", (args as any).subpages],
 				["subpageTarget", (args as any).subpageTarget],
 			];
+
+			let firstExtra = true;
 			for (const [k, v] of extras) {
 				if (v === undefined) continue;
-				out += `\n  ${theme.fg("muted", k + ":")} ${theme.fg("dim", fmtValue(v))}`;
+				if (firstExtra) {
+					out += "\n ";
+					firstExtra = false;
+				}
+				out += ` ${theme.fg("muted", k + ":")} ${theme.fg("dim", fmtValue(v))}`;
 			}
 			return new Text(out, 0, 0);
 		},
@@ -555,8 +569,8 @@ export default function exa(pi: ExtensionAPI) {
 			const results: ExaContentsResult[] = Array.isArray(json?.results) ? json.results : [];
 			const shown = options.expanded ? results : results.slice(0, 2);
 
-			let out = renderHeader("Exa crawl", theme);
-			if (json?.requestId) out += `\n  ${theme.fg("muted", "requestId:")} ${theme.fg("dim", String(json.requestId))}`;
+			let out = "";
+			if (json?.requestId) out += `  ${theme.fg("muted", "requestId:")} ${theme.fg("dim", String(json.requestId))}`;
 
 			for (let i = 0; i < shown.length; i++) {
 				const r = shown[i]!;
@@ -586,7 +600,7 @@ export default function exa(pi: ExtensionAPI) {
 				out += `\n\n  ${theme.fg("dim", `… ${results.length - shown.length} more (expand to view)`)}`;
 			}
 			if (shown.length === 0) out += `\n  ${theme.fg("dim", "(no results)")}`;
-			return new Text(out, 0, 0);
+			return new Text(out.trim(), 0, 0);
 		},
 
 		async execute(_toolCallId, params: any, onUpdate, _ctx, signal) {
@@ -652,15 +666,13 @@ export default function exa(pi: ExtensionAPI) {
 		}),
 
 		renderCall(args, theme) {
-			let out = theme.fg("toolTitle", theme.bold("$ ")) + theme.fg("toolTitle", "exa.code_context");
+			let out = theme.fg("toolTitle", theme.bold("exa.code_context"));
 			const query = typeof (args as any)?.query === "string" ? truncate(oneLine((args as any).query), 140) : "";
-			if (query) out += `\n  ${theme.fg("muted", "query:")} ${theme.fg("toolOutput", query)}`;
+			if (query) out += ` ${theme.fg("toolOutput", query)}`;
 
 			const tokensNum = (args as any).tokensNum;
 			if (typeof tokensNum === "string" && tokensNum.trim().length > 0) {
 				out += `\n  ${theme.fg("muted", "tokensNum:")} ${theme.fg("dim", fmtValue(tokensNum.trim()))}`;
-			} else {
-				out += `\n  ${theme.fg("muted", "tokensNum:")} ${theme.fg("dim", "\"dynamic\" (default)")}`;
 			}
 
 			return new Text(out, 0, 0);
@@ -677,14 +689,13 @@ export default function exa(pi: ExtensionAPI) {
 
 			if (options.expanded) {
 				const mdTheme = getMarkdownTheme();
-				return new Markdown(`# Exa code context\n\n${responseText}`, 0, 0, mdTheme);
+				return new Markdown(responseText, 0, 0, mdTheme);
 			}
 
 			const head = truncateLines(responseText, 20);
-			let out = renderHeader("Exa code context", theme);
-			out += `\n\n${theme.fg("toolOutput", head.text)}`;
+			let out = theme.fg("toolOutput", head.text);
 			if (head.truncated) out += `\n\n${theme.fg("dim", "… (expand to view full context)")}`;
-			return new Text(out, 0, 0);
+			return new Text(out.trim(), 0, 0);
 		},
 
 		async execute(_toolCallId, params: any, onUpdate, _ctx, signal) {
