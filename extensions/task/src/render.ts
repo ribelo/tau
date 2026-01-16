@@ -3,7 +3,7 @@ import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 import { Markdown, Text } from "@mariozechner/pi-tui";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import type { ToolRenderResultOptions } from "@mariozechner/pi-coding-agent";
-import type { TaskRunnerUpdateDetails, UsageStats } from "./runner.js";
+import type { TaskActivity, TaskRunnerUpdateDetails, UsageStats } from "./runner.js";
 
 export type TaskToolDetails = TaskRunnerUpdateDetails & {
 	missingSkills?: string[];
@@ -45,7 +45,7 @@ function formatToolCall(toolName: string, args: Record<string, unknown>, theme: 
 	switch (toolName) {
 		case "bash": {
 			const command = typeof (args as any).command === "string" ? (args as any).command : "...";
-			return theme.fg("muted", "$ ") + theme.fg("toolOutput", truncate(oneLine(command), 80));
+			return theme.fg("muted", "$ ") + theme.fg("toolOutput", truncate(oneLine(command), 120));
 		}
 		case "read": {
 			const rawPath = (args as any).path || (args as any).file_path || "...";
@@ -66,15 +66,23 @@ function formatToolCall(toolName: string, args: Record<string, unknown>, theme: 
 		case "find": {
 			const pat = (args as any).pattern || "*";
 			const rawPath = (args as any).path || ".";
-			return theme.fg("muted", "find ") + theme.fg("accent", String(pat)) + theme.fg("dim", ` in ${shortenPath(String(rawPath))}`);
+			return (
+				theme.fg("muted", "find ") +
+				theme.fg("accent", String(pat)) +
+				theme.fg("dim", ` in ${shortenPath(String(rawPath))}`)
+			);
 		}
 		case "grep": {
 			const pat = (args as any).pattern || "";
 			const rawPath = (args as any).path || ".";
-			return theme.fg("muted", "grep ") + theme.fg("accent", `/${String(pat)}/`) + theme.fg("dim", ` in ${shortenPath(String(rawPath))}`);
+			return (
+				theme.fg("muted", "grep ") +
+				theme.fg("accent", `/${String(pat)}/`) +
+				theme.fg("dim", ` in ${shortenPath(String(rawPath))}`)
+			);
 		}
 		default:
-			return theme.fg("accent", toolName) + theme.fg("dim", ` ${truncate(oneLine(JSON.stringify(args)), 80)}`);
+			return theme.fg("accent", toolName) + theme.fg("dim", ` ${truncate(oneLine(JSON.stringify(args)), 120)}`);
 	}
 }
 
@@ -88,17 +96,24 @@ function statusMark(status: TaskToolDetails["status"], theme: any): string {
 	return blinkOn ? theme.fg("muted", "•") : theme.fg("dim", "◦");
 }
 
-export function renderTaskCall(args: any, theme: any): Text {
-	const type = typeof args?.task_type === "string" ? args.task_type : "?";
-	const difficulty = typeof args?.difficulty === "string" ? args.difficulty : "medium";
-	const desc = typeof args?.description === "string" ? args.description : "";
-
-	let out = theme.fg("toolTitle", `• ${theme.bold("task")} ${theme.fg("accent", `${type}:${difficulty}`)}`);
-	if (desc) out += `\n  ${theme.fg("dim", "└ ")}${theme.fg("dim", truncate(oneLine(desc), 140))}`;
-	return new Text(out, 0, 0);
+function activityMark(a: TaskActivity, theme: any): string {
+	if (a.status === "success") return theme.fg("success", "✓");
+	if (a.status === "error") return theme.fg("error", "✗");
+	return theme.fg("dim", "•");
 }
 
-export function renderTaskResult(result: AgentToolResult<TaskToolDetails>, options: ToolRenderResultOptions, theme: any) {
+/**
+ * Hide tool call rendering so task appears as a single cell (like subagent).
+ */
+export function renderTaskCall(_args: any, _theme: any): Text {
+	return new Text("", 0, 0);
+}
+
+export function renderTaskResult(
+	result: AgentToolResult<TaskToolDetails>,
+	options: ToolRenderResultOptions,
+	theme: any,
+) {
 	const details = result.details as TaskToolDetails | undefined;
 	if (!details) {
 		const first = result.content?.[0];
@@ -107,11 +122,8 @@ export function renderTaskResult(result: AgentToolResult<TaskToolDetails>, optio
 	}
 
 	const header = `${statusMark(details.status, theme)} ${theme.bold("task")} ${theme.fg("accent", `${details.taskType}:${details.difficulty}`)} ${theme.fg("dim", `(session: ${details.sessionId})`)}`;
-	const usageLine = details.usage ? theme.fg("dim", `└ ${formatUsage(details.usage, details.model)}`) : "";
 
 	const missing = (details.missingSkills || []).filter(Boolean);
-	const missingLine = missing.length > 0 ? theme.fg("warning", `└ missing skills: ${missing.join(", ")}`) : "";
-
 	const message = typeof details.message === "string" ? details.message : "";
 
 	if (options.expanded) {
@@ -120,31 +132,44 @@ export function renderTaskResult(result: AgentToolResult<TaskToolDetails>, optio
 		bodyParts.push(`# task ${details.taskType}:${details.difficulty}`);
 		bodyParts.push("");
 		bodyParts.push(`session: ${details.sessionId}`);
+		if (details.description) bodyParts.push(`description: ${details.description}`);
 		if (details.model) bodyParts.push(`model: ${details.model}`);
-		if (missingLine) bodyParts.push(`missing skills: ${missing.join(", ")}`);
+		if (missing.length > 0) bodyParts.push(`missing skills: ${missing.join(", ")}`);
+		if (details.usage) bodyParts.push(`usage: ${formatUsage(details.usage, details.model)}`);
 		bodyParts.push("");
 		bodyParts.push(message || "(no output)");
 		return new Markdown(bodyParts.join("\n"), 0, 0, mdTheme);
 	}
 
 	const lines: string[] = [header];
-	if (usageLine) lines.push(`  ${usageLine}`);
-	if (missingLine) lines.push(`  ${missingLine}`);
 
-	// Streaming: show recent activity
+	if (details.description) {
+		lines.push(`  ${theme.fg("dim", "└ ")}${theme.fg("toolOutput", truncate(oneLine(details.description), 140))}`);
+	}
+
+	if (missing.length > 0) {
+		lines.push(`  ${theme.fg("warning", `missing skills: ${missing.join(", ")}`)}`);
+	}
+
 	const activities = details.activities || [];
-	const shown = options.isPartial ? activities.slice(-8) : activities.slice(-3);
-	const skipped = activities.length - shown.length;
+	const shown = options.isPartial ? activities.slice(0, 8) : activities.slice(0, 3);
+	const skipped = Math.max(0, activities.length - shown.length);
 	if (skipped > 0) {
-		lines.push(`  ${theme.fg("dim", `└ ... +${skipped} more`)}`);
-	}
-	for (const a of shown) {
-		lines.push(`  ${theme.fg("dim", "└ ")}${theme.fg("dim", formatToolCall(a.name, a.args, theme))}`);
+		lines.push(`    ${theme.fg("dim", `... +${skipped} more`)}`);
 	}
 
-	if (!options.isPartial) {
-		const summary = truncate(oneLine(message || ""), 180);
-		if (summary) lines.push(`  ${theme.fg("dim", "└ ")}${theme.fg("toolOutput", summary)}`);
+	for (const a of shown) {
+		lines.push(`  ${activityMark(a, theme)} ${formatToolCall(a.name, a.args, theme)}`);
+	}
+
+	if (message) {
+		const summary = options.isPartial ? truncate(oneLine(message), 180) : truncate(oneLine(message), 400);
+		lines.push(`  ${theme.fg("dim", "↩ ")}${theme.fg("toolOutput", summary)}`);
+	}
+
+	if (details.usage && !options.isPartial) {
+		lines.push("");
+		lines.push(theme.fg("dim", formatUsage(details.usage, details.model)));
 	}
 
 	return new Text(lines.join("\n"), 0, 0);

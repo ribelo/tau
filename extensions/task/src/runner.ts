@@ -31,7 +31,7 @@ export interface TaskResult {
 	usage: UsageStats;
 	model?: string;
 	messages: Message[];
-	activities: Array<{ name: string; args: Record<string, unknown> }>;
+	activities: TaskActivity[];
 }
 
 export type TaskRunnerUpdateDetails = {
@@ -42,7 +42,7 @@ export type TaskRunnerUpdateDetails = {
 	status: "running" | "completed" | "failed" | "interrupted";
 	model?: string;
 	usage: UsageStats;
-	activities: Array<{ name: string; args: Record<string, unknown> }>;
+	activities: TaskActivity[];
 	message?: string;
 };
 
@@ -81,17 +81,52 @@ function getLatestTextOnly(messages: Message[]): string {
 	return getLatestText(messages)?.text ?? "";
 }
 
-function extractActivities(messages: Message[]): Array<{ name: string; args: Record<string, unknown> }> {
-	const out: Array<{ name: string; args: Record<string, unknown> }> = [];
+export type TaskActivityStatus = "pending" | "success" | "error";
+
+export type TaskActivity = {
+	toolCallId: string;
+	name: string;
+	args: Record<string, unknown>;
+	status: TaskActivityStatus;
+};
+
+function extractActivities(messages: Message[]): TaskActivity[] {
+	const calls: TaskActivity[] = [];
+	const byId = new Map<string, TaskActivity>();
+
 	for (const msg of messages) {
-		if (msg.role !== "assistant") continue;
-		for (const part of msg.content) {
-			if (part.type === "toolCall") {
-				out.push({ name: part.name, args: part.arguments as Record<string, unknown> });
+		if (msg.role === "assistant") {
+			for (const part of msg.content) {
+				if (part.type !== "toolCall") continue;
+				const id = String((part as any).id ?? "");
+				if (!id) continue;
+				const activity: TaskActivity = {
+					toolCallId: id,
+					name: part.name,
+					args: (part.arguments ?? {}) as Record<string, unknown>,
+					status: "pending",
+				};
+				calls.push(activity);
+				byId.set(id, activity);
+			}
+			continue;
+		}
+
+		if (msg.role === "toolResult") {
+			const id = String((msg as any).toolCallId ?? "");
+			const toolName = String((msg as any).toolName ?? "");
+			const isError = Boolean((msg as any).isError);
+			const existing = byId.get(id);
+			if (existing) {
+				existing.status = isError ? "error" : "success";
+			} else if (id) {
+				// Fallback: tool result without a tool call (shouldn't happen, but keep UI stable)
+				calls.push({ toolCallId: id, name: toolName || "(tool)", args: {}, status: isError ? "error" : "success" });
 			}
 		}
 	}
-	return out;
+
+	return calls;
 }
 
 function emptyUsage(): UsageStats {
