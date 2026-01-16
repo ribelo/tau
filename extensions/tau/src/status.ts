@@ -243,15 +243,13 @@ async function fetchGeminiQuota(token: string, projectId: string): Promise<Gemin
 		headers: {
 			Authorization: `Bearer ${token}`,
 			"Content-Type": "application/json",
-			"User-Agent": "google-cloud-sdk vscode_cloudshelleditor/0.1",
+			// Match Codex headers for this endpoint.
+			"User-Agent": "google-api-nodejs-client/9.15.1",
 			"X-Goog-Api-Client": "gl-node/22.17.0",
-			"Client-Metadata": JSON.stringify({
-				ideType: "IDE_UNSPECIFIED",
-				platform: "PLATFORM_UNSPECIFIED",
-				pluginType: "GEMINI",
-			}),
+			"Client-Metadata": "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI",
 		},
-		body: JSON.stringify({ project: projectId, user_agent: null }),
+		// IMPORTANT: omit user_agent (null breaks proto JSON parsing and yields "Invalid JSON")
+		body: JSON.stringify({ project: projectId }),
 	});
 
 	if (!res.ok) {
@@ -578,9 +576,11 @@ function buildStatusText(details: StatusMessageDetails, width: number): string[]
 	};
 
 	// OpenAI
+	const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
+
 	pushSectionTitle("OpenAI");
 	if (!details.openai.ok) {
-		lines.push(`  ${details.openai.notConfigured ? "Not configured" : `Error: ${details.openai.error}`}`);
+		lines.push(`  ${details.openai.notConfigured ? "Not configured" : `Error: ${oneLine(details.openai.error)}`}`);
 	} else {
 		const openai = details.openai.data;
 		const labelWidth = Math.max(
@@ -624,7 +624,7 @@ function buildStatusText(details: StatusMessageDetails, width: number): string[]
 	// Gemini CLI
 	pushSectionTitle("Gemini CLI");
 	if (!details.geminiCli.ok) {
-		lines.push(`  ${details.geminiCli.notConfigured ? "Not configured" : `Error: ${details.geminiCli.error}`}`);
+		lines.push(`  ${details.geminiCli.notConfigured ? "Not configured" : `Error: ${oneLine(details.geminiCli.error)}`}`);
 	} else {
 		const gemini = details.geminiCli.data;
 		const labels = ["OAuth", "API Key", ...gemini.rows.map((r) => r.label)];
@@ -646,7 +646,7 @@ function buildStatusText(details: StatusMessageDetails, width: number): string[]
 	pushSectionTitle("Antigravity");
 	if (!details.antigravity.ok) {
 		lines.push(
-			`  ${details.antigravity.notConfigured ? "Not running" : `Error: ${details.antigravity.error}`}`,
+			`  ${details.antigravity.notConfigured ? "Not running" : `Error: ${oneLine(details.antigravity.error)}`}`,
 		);
 	} else {
 		const ag = details.antigravity.data;
