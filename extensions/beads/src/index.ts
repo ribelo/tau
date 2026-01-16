@@ -219,9 +219,24 @@ function commandKind(args: string[]): RenderKind {
 	return "unknown";
 }
 
-function withQuietFlag(args: string[]): string[] {
+function withQuietFlag(args: string[], kind: RenderKind): string[] {
+	// Quiet mode is useful to keep JSON clean, but can hide important output for
+	// interactive/setup commands like `init`/`onboard`.
 	if (args.includes("-q") || args.includes("--quiet")) return args;
-	return ["-q", ...args];
+	if (args.includes("--json")) return ["-q", ...args];
+	if (
+		kind === "ready" ||
+		kind === "list" ||
+		kind === "blocked" ||
+		kind === "show" ||
+		kind === "dep_tree" ||
+		kind === "create" ||
+		kind === "update" ||
+		kind === "close"
+	) {
+		return ["-q", ...args];
+	}
+	return args;
 }
 
 function helpRewrite(args: string[]): string[] {
@@ -269,11 +284,10 @@ export default function beads(pi: ExtensionAPI) {
 				"- Use the `beads` tool (not bash) for bd operations.\n" +
 				"- Use `command` and omit the leading `bd`.\n\n" +
 				"Steps:\n" +
-				"1) Ensure the global Beads skill is installed and up-to-date.\n" +
-				"   - Local path: ~/.pi/agent/skills/beads/SKILL.md\n" +
-				"   - Upstream reference: https://github.com/steveyegge/beads/tree/main/claude-plugin/skills/beads\n" +
-				"   - If missing or different, update it by fetching the upstream SKILL.md and writing it to the local path.\n" +
-				"     (Raw URL: https://raw.githubusercontent.com/steveyegge/beads/main/claude-plugin/skills/beads/SKILL.md)\n" +
+				"1) Ensure the global Beads skill folder is installed and up-to-date.\n" +
+				"   - Local dir: ~/.pi/agent/skills/beads/\n" +
+				"   - Upstream dir: https://github.com/steveyegge/beads/tree/main/claude-plugin/skills/beads\n" +
+				"   - If missing or outdated, sync the whole folder (not just SKILL.md).\n" +
 				"2) Run `init`.\n" +
 				"3) Run `onboard` and follow the instructions it prints.\n" +
 				"4) If onboard requires manual user steps, summarize them and ask the user to confirm when done.",
@@ -321,10 +335,9 @@ export default function beads(pi: ExtensionAPI) {
 			const withoutBd = stripLeadingBd(tokens);
 
 			let args = helpRewrite(withoutBd);
-			args = withQuietFlag(args);
 			args = ensureJsonFlag(args);
-
 			const kind = commandKind(args);
+			args = withQuietFlag(args, kind);
 
 			const res = await pi.exec("bd", args, { signal, timeout: 30_000 });
 
