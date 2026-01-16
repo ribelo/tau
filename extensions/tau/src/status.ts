@@ -308,20 +308,22 @@ function wrapRow(
 	return lines;
 }
 
-function buildLimitRow(row: {
-	label: string;
-	percentLeft?: number;
-	resetsAt?: number;
-	burnRatePerHour?: number;
-	exhaustsAt?: number;
-	exhaustsBeforeReset?: boolean;
-}): { value: string; extraLines?: string[] } {
+function buildLimitRow(
+	row: {
+		label: string;
+		percentLeft?: number;
+		resetsAt?: number;
+		burnRatePerHour?: number;
+		exhaustsAt?: number;
+		exhaustsBeforeReset?: boolean;
+	},
+	fetchedAtMs: number,
+): { value: string; extraLines?: string[] } {
 	const bar = renderProgressBar(row.percentLeft, 20);
 	const pct = typeof row.percentLeft === "number" ? Math.round(row.percentLeft) : undefined;
 	const percent = typeof pct === "number" ? `${pct}% left` : "? left";
 
 	const value = `${bar} ${percent}`;
-
 	const extraLines: string[] = [];
 
 	// Reset line
@@ -339,7 +341,18 @@ function buildLimitRow(row: {
 		extraLines.push(compare ? `(${base}; ${compare})` : `(${base})`);
 	}
 
-	// Burn + empty line
+	// Pace line (always available when we know reset + remaining)
+	if (typeof row.resetsAt === "number" && typeof row.percentLeft === "number") {
+		const hoursToReset = (row.resetsAt * 1000 - fetchedAtMs) / (1000 * 60 * 60);
+		if (Number.isFinite(hoursToReset) && hoursToReset > 0.01) {
+			const pace = row.percentLeft / hoursToReset;
+			if (Number.isFinite(pace) && pace > 0) {
+				extraLines.push(`pace ${pace.toFixed(1)}%/h to empty at reset`);
+			}
+		}
+	}
+
+	// Burn + empty line (only when we have burn)
 	const burn =
 		typeof row.burnRatePerHour === "number" && Number.isFinite(row.burnRatePerHour)
 			? `burn ${row.burnRatePerHour.toFixed(1)}%/h`
@@ -742,11 +755,11 @@ function buildStatusText(details: StatusMessageDetails, width: number): string[]
 		lines.push(...wrapRow("API Key", apiKeyLine ?? "(not set)", undefined, { labelWidth, innerWidth }));
 
 		if (openai.primary) {
-			const row = buildLimitRow(openai.primary);
+			const row = buildLimitRow(openai.primary, details.fetchedAt);
 			lines.push(...wrapRow(openai.primary.label, row.value, row.extraLines, { labelWidth, innerWidth }));
 		}
 		if (openai.secondary) {
-			const row = buildLimitRow(openai.secondary);
+			const row = buildLimitRow(openai.secondary, details.fetchedAt);
 			lines.push(...wrapRow(openai.secondary.label, row.value, row.extraLines, { labelWidth, innerWidth }));
 		}
 	}
@@ -767,7 +780,7 @@ function buildStatusText(details: StatusMessageDetails, width: number): string[]
 		lines.push(...wrapRow("API Key", apiKeyLine ?? "(not set)", undefined, { labelWidth, innerWidth }));
 
 		for (const r of gemini.rows) {
-			const row = buildLimitRow({ label: r.label, percentLeft: r.percentLeft, resetsAt: r.resetsAt });
+			const row = buildLimitRow({ label: r.label, percentLeft: r.percentLeft, resetsAt: r.resetsAt }, details.fetchedAt);
 			lines.push(...wrapRow(r.label, row.value, row.extraLines, { labelWidth, innerWidth }));
 		}
 	}
@@ -817,7 +830,7 @@ function buildStatusText(details: StatusMessageDetails, width: number): string[]
 		}
 
 		for (const r of ag.rows) {
-			const row = buildLimitRow({ label: r.label, percentLeft: r.percentLeft, resetsAt: r.resetsAt });
+			const row = buildLimitRow({ label: r.label, percentLeft: r.percentLeft, resetsAt: r.resetsAt }, details.fetchedAt);
 			lines.push(...wrapRow(r.label, row.value, row.extraLines, { labelWidth, innerWidth }));
 		}
 	}
