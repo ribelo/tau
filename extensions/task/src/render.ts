@@ -15,8 +15,8 @@ type NestedTaskInfo = {
 
 export type TaskBatchItemDetails = {
 	index: number;
-	taskType: string;
-	difficulty: string;
+	type: string;
+	size: string;
 	description?: string;
 	sessionId?: string;
 	status: TaskRunnerUpdateDetails["status"];
@@ -88,18 +88,14 @@ function parseNestedTaskInfo(args: Record<string, unknown>, resultText: string |
 
 	if (tasks && tasks.length > 0) {
 		if (tasks.length === 1) {
-			taskType = typeof firstTask?.task_type === "string" ? firstTask.task_type : "?";
-			difficulty = typeof firstTask?.difficulty === "string" ? firstTask.difficulty : "medium";
+			taskType = typeof firstTask?.type === "string" ? firstTask.type : "?";
+			difficulty = typeof firstTask?.size === "string" ? firstTask.size : "medium";
 			description = typeof firstTask?.description === "string" ? firstTask.description : undefined;
 		} else {
 			taskType = "batch";
 			difficulty = `${tasks.length}`;
 			description = `${tasks.length} tasks`;
 		}
-	} else {
-		taskType = typeof (args as any).task_type === "string" ? (args as any).task_type : "?";
-		difficulty = typeof (args as any).difficulty === "string" ? (args as any).difficulty : "medium";
-		description = typeof (args as any).description === "string" ? (args as any).description : undefined;
 	}
 
 	let sessionId: string | undefined;
@@ -335,7 +331,7 @@ export function renderTaskResult(
 
 		for (const item of results) {
 			const missing = (item.missingSkills || []).filter(Boolean);
-			bodyParts.push(`## [${item.index}] ${item.taskType}:${item.difficulty}`);
+			bodyParts.push(`## [${item.index}] ${item.type}:${item.size}`);
 			bodyParts.push(`status: ${item.status}`);
 			if (item.sessionId) bodyParts.push(`session: ${item.sessionId}`);
 			if (item.description) bodyParts.push(`description: ${item.description}`);
@@ -360,7 +356,7 @@ export function renderTaskResult(
 
 	for (const item of shown) {
 		const missing = (item.missingSkills || []).filter(Boolean);
-		let line = `${statusMark(item.status, theme)} ${theme.fg("accent", `${item.taskType}:${item.difficulty}`)}`;
+		let line = `${statusMark(item.status, theme)} ${theme.fg("accent", `${item.type}:${item.size}`)}`;
 		if (item.sessionId) line += theme.fg("dim", ` (session: ${item.sessionId})`);
 		lines.push(`  ${line}`);
 

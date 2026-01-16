@@ -394,13 +394,13 @@ class InProcessWorkerBackend implements WorkerBackend {
 			});
 		} else {
 			if (outputSchemaKey && existing.outputSchemaKey && existing.outputSchemaKey !== outputSchemaKey) {
-				return { status: "failed", error: "output_schema does not match existing session" };
+				return { status: "failed", error: "result_schema does not match existing session" };
 			}
 			if (!outputSchemaKey && existing.outputSchemaKey) {
-				return { status: "failed", error: "output_schema is required for this session" };
+				return { status: "failed", error: "result_schema is required for this session" };
 			}
 			if (outputSchemaKey && !existing.outputSchemaKey) {
-				return { status: "failed", error: "output_schema cannot be added to an existing session" };
+				return { status: "failed", error: "result_schema cannot be added to an existing session" };
 			}
 		}
 

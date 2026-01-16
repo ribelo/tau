@@ -11,7 +11,7 @@ export interface TaskSession {
 	workerSession?: AgentSession;
 	/** Recorded nesting depth for this task session. */
 	nestingDepth?: number;
-	/** Canonical JSON string for output_schema, if any. */
+	/** Canonical JSON string for result_schema, if any. */
 	outputSchemaKey?: string;
 }
 
@@ -38,18 +38,16 @@ export class SessionManager {
 			const existing = this.sessions.get(sessionId);
 			if (existing) {
 				if (existing.taskType !== taskType) {
-					throw new Error(
-						`session_id ${sessionId} belongs to task_type=${existing.taskType}, not ${taskType}`,
-					);
+					throw new Error(`session_id ${sessionId} belongs to type=${existing.taskType}, not ${taskType}`);
 				}
 				if (outputSchemaKey && existing.outputSchemaKey && existing.outputSchemaKey !== outputSchemaKey) {
-					throw new Error(`session_id ${sessionId} uses a different output_schema`);
+					throw new Error(`session_id ${sessionId} uses a different result_schema`);
 				}
 				if (outputSchemaKey && !existing.outputSchemaKey) {
 					existing.outputSchemaKey = outputSchemaKey;
 				}
 				if (!outputSchemaKey && existing.outputSchemaKey) {
-					throw new Error(`session_id ${sessionId} requires output_schema`);
+					throw new Error(`session_id ${sessionId} requires result_schema`);
 				}
 				return existing;
 			}

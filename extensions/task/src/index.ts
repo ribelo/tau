@@ -19,7 +19,7 @@ addFormats(ajv);
 
 function validateOutputSchema(schema: unknown): { ok: true } | { ok: false; error: string } {
 	if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
-		return { ok: false, error: "output_schema must be a JSON schema object" };
+		return { ok: false, error: "result_schema must be a JSON schema object" };
 	}
 	try {
 		ajv.compile(schema as any);
@@ -72,7 +72,7 @@ function buildToolDescription(registry: TaskRegistry): string {
 	lines.push("- Provide tasks[] array; each entry runs as its own worker");
 	lines.push("- Use a single-item array to run one task");
 	lines.push("");
-	lines.push("## Difficulty");
+	lines.push("## Size");
 	lines.push("- small: trivial");
 	lines.push("- medium: standard (default)");
 	lines.push("- large: complex\n");
@@ -80,15 +80,15 @@ function buildToolDescription(registry: TaskRegistry): string {
 	lines.push("- Provide session_id on each task entry to resume the same worker context");
 	lines.push("- Do not reuse the same session_id within a single batch\n");
 	lines.push("## Skills");
-	lines.push("- Each task entry with task_type=custom accepts skills[] to inject additional skills");
+	lines.push("- Each task entry with type=custom accepts skills[] to inject additional skills");
 	lines.push("");
 	lines.push("## Structured output");
-	lines.push("- Provide output_schema per task to require a submit_result tool call that matches the schema");
+	lines.push("- Provide result_schema per task to require a submit_result tool call that matches the schema");
 	return lines.join("\n").trim();
 }
 
 const TaskItem = Type.Object({
-	task_type: Type.String({
+	type: Type.String({
 		description: "Type of work: code, search, review, planning, custom",
 	}),
 	description: Type.String({
@@ -97,9 +97,9 @@ const TaskItem = Type.Object({
 	prompt: Type.String({
 		description: "The full prompt for the worker",
 	}),
-	difficulty: Type.Optional(
+	size: Type.Optional(
 		StringEnum(["small", "medium", "large"] as const, {
-			description: "Task complexity. small=trivial, medium=standard (default), large=complex",
+			description: "Task size. small=trivial, medium=standard (default), large=complex",
 			default: "medium",
 		}),
 	),
@@ -110,10 +110,10 @@ const TaskItem = Type.Object({
 	),
 	skills: Type.Optional(
 		Type.Array(Type.String(), {
-			description: "Skills to inject (only valid for task_type=custom)",
+			description: "Skills to inject (only valid for type=custom)",
 		}),
 	),
-	output_schema: Type.Optional(
+	result_schema: Type.Optional(
 		Type.Any({
 			description: "JSON schema for structured output; when provided, worker must call submit_result",
 		}),
@@ -176,8 +176,8 @@ export default function task(pi: ExtensionAPI) {
 
 			const results: TaskBatchItemDetails[] = tasks.map((task, index) => ({
 				index,
-				taskType: typeof task.task_type === "string" ? task.task_type.trim() : "",
-				difficulty: typeof task.difficulty === "string" ? task.difficulty : "medium",
+				type: typeof task.type === "string" ? task.type.trim() : "",
+				size: typeof task.size === "string" ? task.size : "medium",
 				description: typeof task.description === "string" ? task.description.trim() : undefined,
 				sessionId: typeof task.session_id === "string" ? task.session_id : undefined,
 				status: "running",
@@ -220,15 +220,15 @@ export default function task(pi: ExtensionAPI) {
 			activeTaskCalls += tasks.length;
 
 			const runTask = async (task: any, index: number) => {
-				const taskType = (task.task_type || "").trim();
+				const taskType = (task.type || "").trim();
 				const description = (task.description || "").trim();
 				const prompt = task.prompt || "";
-				const difficulty = (task.difficulty || "medium") as Difficulty;
-				const outputSchema = task.output_schema as unknown;
+				const size = (task.size || "medium") as Difficulty;
+				const outputSchema = task.result_schema as unknown;
 				const outputSchemaKey = outputSchema ? JSON.stringify(outputSchema) : undefined;
 				const taskSessionId = typeof task.session_id === "string" ? task.session_id : undefined;
 
-				updateItem(index, { taskType, difficulty, description, sessionId: taskSessionId });
+				updateItem(index, { type: taskType, size, description, sessionId: taskSessionId });
 
 				if (taskSessionId && (sessionIdCounts.get(taskSessionId) || 0) > 1) {
 					updateItem(index, {
@@ -244,7 +244,7 @@ export default function task(pi: ExtensionAPI) {
 				if (!registry.get(taskType)) {
 					updateItem(index, {
 						status: "failed",
-						message: `Unknown task_type: ${taskType}. Available: ${availableTypes}`,
+						message: `Unknown type: ${taskType}. Available: ${availableTypes}`,
 						usage: { ...EMPTY_USAGE },
 						activities: [],
 						outputType: "failed",
@@ -255,7 +255,7 @@ export default function task(pi: ExtensionAPI) {
 				if (task.skills && taskType !== "custom") {
 					updateItem(index, {
 						status: "failed",
-						message: "skills is only valid for task_type=custom",
+						message: "skills is only valid for type=custom",
 						usage: { ...EMPTY_USAGE },
 						activities: [],
 						outputType: "failed",
@@ -268,7 +268,7 @@ export default function task(pi: ExtensionAPI) {
 					if (!validation.ok) {
 						updateItem(index, {
 							status: "failed",
-							message: `Invalid output_schema: ${validation.error}`,
+							message: `Invalid result_schema: ${validation.error}`,
 							usage: { ...EMPTY_USAGE },
 							activities: [],
 							outputType: "failed",
@@ -277,7 +277,7 @@ export default function task(pi: ExtensionAPI) {
 					}
 				}
 
-				let policy = registry.resolve(taskType, difficulty);
+				let policy = registry.resolve(taskType, size);
 				if (taskType === "custom" && Array.isArray(task.skills)) {
 					policy.skills.push(...task.skills);
 					// de-dupe
@@ -313,7 +313,7 @@ export default function task(pi: ExtensionAPI) {
 
 				let session: ReturnType<SessionManager["createSession"]>;
 				try {
-					session = sessions.createSession(taskType, difficulty, taskSessionId, outputSchemaKey);
+					session = sessions.createSession(taskType, size, taskSessionId, outputSchemaKey);
 				} catch (err) {
 					updateItem(index, {
 						status: "failed",
@@ -328,8 +328,8 @@ export default function task(pi: ExtensionAPI) {
 				const wrapUpdate = (partial: AgentToolResult<any>) => {
 					const d = partial.details as any;
 					updateItem(index, {
-						taskType,
-						difficulty,
+						type: taskType,
+						size,
 						description,
 						sessionId: d.sessionId ?? session.sessionId,
 						status: d.status,
@@ -436,11 +436,11 @@ export default function task(pi: ExtensionAPI) {
 
 			const summary = summarizeBatch(results);
 			const payload = results.map((item) => ({
-				task_type: item.taskType,
-				difficulty: item.difficulty,
+				type: item.type,
+				size: item.size,
 				session_id: item.sessionId ?? null,
 				status: item.status,
-				output_type: item.outputType ?? (item.status === "failed" ? "failed" : undefined),
+				output_type: item.status,
 				message: item.message ?? "",
 				structured_output: item.structuredOutput ?? undefined,
 			}));
