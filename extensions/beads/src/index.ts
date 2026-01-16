@@ -254,11 +254,49 @@ export default function beads(pi: ExtensionAPI) {
 		return { systemPrompt: `${hint}\n\n${event.systemPrompt}` };
 	});
 
+	pi.registerCommand("beads-init", {
+		description: "Initialize Beads in the current repo (guides + runs bd init/onboard)",
+		handler: async (_args, ctx) => {
+			if (!ctx.hasUI) {
+				ctx.ui.notify("/beads-init requires interactive mode", "error");
+				return;
+			}
+
+			const instructions =
+				"Beads init checklist:\n\n" +
+				"1) Verify the Beads skill is installed globally and up-to-date.\n" +
+				"   Compare to upstream: https://github.com/steveyegge/beads/tree/main/claude-plugin/skills/beads\n\n" +
+				"2) If it is up-to-date, proceed to initialize this repo:\n" +
+				"   - Run `bd init` (creates .beads and config)\n" +
+				"   - Run `bd onboard` and follow its instructions\n";
+
+			ctx.ui.setEditorText(instructions);
+
+			const ok = await ctx.ui.confirm(
+				"Beads Init",
+				"Skill checked and up-to-date? Run bd init + bd onboard now?",
+			);
+			if (!ok) return;
+
+			// Use the agent (tool calls) to execute the init steps.
+			pi.sendUserMessage(
+				"Initialize Beads in this repository.\n\n" +
+					"Rules:\n" +
+					"- Use the `beads` tool (not bash).\n" +
+					"- Use `command` and omit the leading `bd`.\n\n" +
+					"Steps:\n" +
+					"1) Run `init`.\n" +
+					"2) Run `onboard`.\n" +
+					"3) If onboard prints manual instructions, summarize them and ask the user to confirm they are done.",
+			);
+		},
+	});
+
 	pi.registerTool({
 		name: "beads",
 		label: "Beads",
 		description:
-			"Wrapper around the `bd` (Beads) CLI created mainly to render output nicely for the user. Provide `command` and omit the leading `bd` (it will be stripped if present).\n\nCommon examples:\n- List all issues: `list`\n- List ready work (unblocked): `ready`\n- List blocked work: `blocked`\n- Show issue: `show tau-xxxx`\n- Create task: `create \"Title\" --type task --priority 2 --description \"...\"`\n- Create epic: `create \"Epic title\" --type epic --priority 1 --description \"...\"`\n- Update status: `update tau-xxxx --status in_progress`\n- Close issue: `close tau-xxxx --reason \"Done\"`\n- Help: `help` (forwarded to `bd --help`) or `help show`\n\nBeads skill docs (SKILL.md): https://github.com/steveyegge/beads/blob/main/.claude/skills/handoff/SKILL.md",
+			"Wrapper around the `bd` (Beads) CLI created mainly to render output nicely for the user. Provide `command` and omit the leading `bd` (it will be stripped if present).\n\nCommon examples:\n- List all issues: `list`\n- List ready work (unblocked): `ready`\n- List blocked work: `blocked`\n- Show issue: `show tau-xxxx`\n- Create task: `create \"Title\" --type task --priority 2 --description \"...\"`\n- Create epic: `create \"Epic title\" --type epic --priority 1 --description \"...\"`\n- Update status: `update tau-xxxx --status in_progress`\n- Close issue: `close tau-xxxx --reason \"Done\"`\n- Help: `help` (forwarded to `bd --help`) or `help show`",
 		parameters: beadsParams,
 
 		async execute(_toolCallId, params, _onUpdate, _ctx, signal) {
