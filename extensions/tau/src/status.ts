@@ -797,10 +797,17 @@ export default function tauStatus(pi: ExtensionAPI) {
 				})();
 
 				const geminiPromise = (async (): Promise<StatusMessageDetails["geminiCli"]> => {
-					const apiKey = await ctx.modelRegistry.getApiKeyForProvider("google-gemini-cli");
-					const cred = ctx.modelRegistry.authStorage.get("google-gemini-cli") as
-						| { type: string; email?: string }
-						| undefined;
+					// Prefer real Gemini CLI OAuth.
+					// Fallback: if only Antigravity OAuth is configured, try using it to fetch quota buckets as well.
+					let provider: "google-gemini-cli" | "google-antigravity" = "google-gemini-cli";
+					let apiKey = await ctx.modelRegistry.getApiKeyForProvider(provider);
+					if (!apiKey) {
+						provider = "google-antigravity";
+						apiKey = await ctx.modelRegistry.getApiKeyForProvider(provider);
+					}
+
+					const cred = ctx.modelRegistry.authStorage.get(provider) as | { type: string; email?: string } | undefined;
+
 					if (!apiKey) {
 						return { ok: false, error: "Not logged in", notConfigured: true };
 					}
