@@ -145,10 +145,54 @@ export default function task(pi: ExtensionAPI) {
 				policy.skills = Array.from(new Set(policy.skills.map((s) => s.trim()).filter(Boolean)));
 			}
 
-			const session = sessions.createSession(taskType, difficulty, params.session_id);
+			if (params.session_id && !sessions.hasSession(params.session_id)) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Unknown session_id: ${params.session_id}. Omit session_id to start a new task session.`,
+						},
+					],
+					isError: true,
+					details: {
+						taskType,
+						difficulty,
+						description,
+						sessionId: params.session_id,
+						status: "failed",
+						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+						activities: [],
+					} satisfies TaskToolDetails,
+				};
+			}
 
 			const { loaded, missing } = loadSkills(policy.skills, ctx.cwd);
 			const loadedSkillsMeta = loaded.map((s) => ({ name: s.name, path: s.path }));
+
+			if (missing.length > 0) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Missing skills: ${missing.join(", ")}`,
+						},
+					],
+					isError: true,
+					details: {
+						taskType,
+						difficulty,
+						description,
+						sessionId: params.session_id ?? "(none)",
+						status: "failed",
+						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+						activities: [],
+						missingSkills: missing,
+						loadedSkills: loadedSkillsMeta,
+					} satisfies TaskToolDetails,
+				};
+			}
+
+			const session = sessions.createSession(taskType, difficulty, params.session_id);
 
 			// Give the runtime a tick to emit any additional tool_call events for this turn,
 			// so plannedTaskCalls reflects the full parallel batch.
