@@ -50,6 +50,32 @@ export type TaskRunnerUpdateDetails = {
 
 type OnUpdateCallback = (partial: AgentToolResult<TaskRunnerUpdateDetails>) => void;
 
+type WorkerEvent = { message: Message };
+
+type WorkerBackendResult = {
+	status: "completed" | "failed" | "aborted";
+	error?: string;
+};
+
+type WorkerBackendOptions = {
+	cwd: string;
+	sessionId: string;
+	sessionFile: string;
+	prompt: string;
+	systemPrompt: string;
+	tools: string[];
+	model?: string;
+	thinking?: string;
+	onEvent: (event: WorkerEvent) => void;
+	onSpawn?: (proc: ChildProcess) => void;
+	signal?: AbortSignal;
+	noSandbox?: boolean;
+};
+
+interface WorkerBackend {
+	run(options: WorkerBackendOptions): Promise<WorkerBackendResult>;
+}
+
 type LatestText =
 	| { source: "assistant"; text: string }
 	| { source: "toolResult"; text: string }
@@ -208,73 +234,28 @@ export function buildWorkerSystemPrompt(options: {
 	return lines.join("\n").trim() + "\n";
 }
 
-export class TaskRunner {
+class SubprocessWorkerBackend implements WorkerBackend {
 	constructor(private pi: ExtensionAPI) {}
 
-	async run(options: {
-		parentCwd: string;
-		parentSessionId: string;
-		parentModelId?: string;
-		parentThinking: string;
-		parentTools: string[];
-		policy: ResolvedPolicy;
-		sessionId: string;
-		sessionFile: string;
-		description: string;
-		prompt: string;
-		skills: LoadedSkill[];
-		parallelCount: number;
-		onUpdate?: OnUpdateCallback;
-		onSpawn?: (proc: ChildProcess) => void;
-		signal?: AbortSignal;
-	}): Promise<TaskResult> {
-		const startedAt = Date.now();
-		const usage = emptyUsage();
-		const messages: Message[] = [];
-
-		const resolvedModel = options.policy.model ?? options.parentModelId;
-		const resolvedThinking = options.policy.thinking ?? (options.parentThinking as any);
-
-		// tools: explicit for all task types so "all tools" really means "current tools".
-		// Exclude the task tool itself to avoid runaway recursion.
-		const tools = (options.policy.tools ?? options.parentTools).filter((t) => t !== "task");
-
-		const systemPrompt = buildWorkerSystemPrompt({
-			parentSessionId: options.parentSessionId,
-			parallelCount: options.parallelCount,
-			skills: options.skills,
-		});
-
-		const tmp = writePromptToTempFile(options.sessionId, systemPrompt);
+	async run(options: WorkerBackendOptions): Promise<WorkerBackendResult> {
+		const tmp = writePromptToTempFile(options.sessionId, options.systemPrompt);
 		let proc: ChildProcess | null = null;
 		let buffer = "";
 		let stderr = "";
 		let exitCode = -1;
 		let aborted = false;
 
-		const emit = (status: TaskRunnerUpdateDetails["status"]) => {
-			if (!options.onUpdate) return;
-			const latest = getLatestTextOnly(messages);
-			options.onUpdate({
-				content: [{ type: "text", text: latest || "(running...)" }],
-				details: {
-					taskType: options.policy.taskType,
-					difficulty: options.policy.difficulty,
-					description: options.description,
-					sessionId: options.sessionId,
-					durationMs: Math.max(0, Date.now() - startedAt),
-					status,
-					model: resolvedModel,
-					usage: { ...usage },
-					activities: extractActivities(messages),
-					message: latest || undefined,
-				},
-			});
+		const forward = (event: any) => {
+			if (event.type === "message_end" && event.message) {
+				options.onEvent({ message: event.message as Message });
+			}
+
+			if (event.type === "tool_result_end" && event.message) {
+				options.onEvent({ message: event.message as Message });
+			}
 		};
 
 		try {
-			emit("running");
-
 			const args: string[] = [
 				"--mode",
 				"json",
@@ -284,23 +265,21 @@ export class TaskRunner {
 				"--no-skills",
 				"--append-system-prompt",
 				tmp.filePath,
-				"--tools",
-				tools.join(","),
 			];
 
-			if (resolvedModel) args.push("--model", resolvedModel);
-			if (resolvedThinking) args.push("--thinking", String(resolvedThinking));
-
-			// Forward sandbox choice if the parent was launched with it.
-			if ((this.pi.getFlag("no-sandbox") as boolean | undefined) === true) {
-				args.push("--no-sandbox");
+			if (options.tools.length > 0) {
+				args.push("--tools", options.tools.join(","));
 			}
+
+			if (options.model) args.push("--model", options.model);
+			if (options.thinking) args.push("--thinking", String(options.thinking));
+			if (options.noSandbox) args.push("--no-sandbox");
 
 			args.push(`Task: ${options.prompt}`);
 
 			await new Promise<void>((resolve) => {
 				proc = spawn("pi", args, {
-					cwd: options.parentCwd,
+					cwd: options.cwd,
 					shell: false,
 					stdio: ["ignore", "pipe", "pipe"],
 				});
@@ -315,30 +294,7 @@ export class TaskRunner {
 						return;
 					}
 
-					if (event.type === "message_end" && event.message) {
-						const msg = event.message as Message;
-						messages.push(msg);
-
-						if (msg.role === "assistant") {
-							usage.turns++;
-							const u = msg.usage;
-							if (u) {
-								usage.input += u.input || 0;
-								usage.output += u.output || 0;
-								usage.cacheRead += u.cacheRead || 0;
-								usage.cacheWrite += u.cacheWrite || 0;
-								usage.cost += u.cost?.total || 0;
-								usage.contextTokens = u.totalTokens || 0;
-							}
-						}
-
-						emit("running");
-					}
-
-					if (event.type === "tool_result_end" && event.message) {
-						messages.push(event.message as Message);
-						emit("running");
-					}
+					forward(event);
 				};
 
 				proc.stdout?.on("data", (data) => {
@@ -388,11 +344,125 @@ export class TaskRunner {
 			safeCleanup(tmp.dir);
 		}
 
+		if (aborted) return { status: "aborted" };
+		if (exitCode !== 0) {
+			return {
+				status: "failed",
+				error: stderr.trim() || `pi exited with code ${exitCode}`,
+			};
+		}
+
+		return { status: "completed" };
+	}
+}
+
+export class TaskRunner {
+	constructor(
+		private pi: ExtensionAPI,
+		private backend: WorkerBackend = new SubprocessWorkerBackend(pi),
+	) {}
+
+	async run(options: {
+		parentCwd: string;
+		parentSessionId: string;
+		parentModelId?: string;
+		parentThinking: string;
+		parentTools: string[];
+		policy: ResolvedPolicy;
+		sessionId: string;
+		sessionFile: string;
+		description: string;
+		prompt: string;
+		skills: LoadedSkill[];
+		parallelCount: number;
+		onUpdate?: OnUpdateCallback;
+		onSpawn?: (proc: ChildProcess) => void;
+		signal?: AbortSignal;
+	}): Promise<TaskResult> {
+		const startedAt = Date.now();
+		const usage = emptyUsage();
+		const messages: Message[] = [];
+
+		const resolvedModel = options.policy.model ?? options.parentModelId;
+		const resolvedThinking = options.policy.thinking ?? (options.parentThinking as any);
+
+		// tools: explicit for all task types so "all tools" really means "current tools".
+		// Exclude the task tool itself to avoid runaway recursion.
+		const tools = (options.policy.tools ?? options.parentTools).filter((t) => t !== "task");
+
+		const systemPrompt = buildWorkerSystemPrompt({
+			parentSessionId: options.parentSessionId,
+			parallelCount: options.parallelCount,
+			skills: options.skills,
+		});
+
+		const emit = (status: TaskRunnerUpdateDetails["status"]) => {
+			if (!options.onUpdate) return;
+			const latest = getLatestTextOnly(messages);
+			options.onUpdate({
+				content: [{ type: "text", text: latest || "(running...)" }],
+				details: {
+					taskType: options.policy.taskType,
+					difficulty: options.policy.difficulty,
+					description: options.description,
+					sessionId: options.sessionId,
+					durationMs: Math.max(0, Date.now() - startedAt),
+					status,
+					model: resolvedModel,
+					usage: { ...usage },
+					activities: extractActivities(messages),
+					message: latest || undefined,
+				},
+			});
+		};
+
+		const handleEvent = (event: WorkerEvent) => {
+			const msg = event.message;
+			messages.push(msg);
+
+			if (msg.role === "assistant") {
+				usage.turns++;
+				const u = msg.usage;
+				if (u) {
+					usage.input += u.input || 0;
+					usage.output += u.output || 0;
+					usage.cacheRead += u.cacheRead || 0;
+					usage.cacheWrite += u.cacheWrite || 0;
+					usage.cost += u.cost?.total || 0;
+					usage.contextTokens = u.totalTokens || 0;
+				}
+			}
+
+			emit("running");
+		};
+
+		emit("running");
+
+		let backendResult: WorkerBackendResult;
+		try {
+			backendResult = await this.backend.run({
+				cwd: options.parentCwd,
+				sessionId: options.sessionId,
+				sessionFile: options.sessionFile,
+				prompt: options.prompt,
+				systemPrompt,
+				tools,
+				model: resolvedModel,
+				thinking: resolvedThinking,
+				onEvent: handleEvent,
+				onSpawn: options.onSpawn,
+				signal: options.signal,
+				noSandbox: (this.pi.getFlag("no-sandbox") as boolean | undefined) === true,
+			});
+		} catch (err) {
+			backendResult = { status: "failed", error: (err as Error).message };
+		}
+
 		const activities = extractActivities(messages);
 
 		const durationMs = Math.max(0, Date.now() - startedAt);
 
-		if (aborted) {
+		if (backendResult.status === "aborted") {
 			emit("interrupted");
 			return {
 				sessionId: options.sessionId,
@@ -405,8 +475,8 @@ export class TaskRunner {
 			};
 		}
 
-		if (exitCode !== 0) {
-			const reason = stderr.trim() || getLatestTextOnly(messages) || `pi exited with code ${exitCode}`;
+		if (backendResult.status === "failed") {
+			const reason = backendResult.error || getLatestTextOnly(messages) || "worker failed";
 			emit("failed");
 			return {
 				sessionId: options.sessionId,
