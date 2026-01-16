@@ -180,10 +180,21 @@ function computeBurnInfo(
 	if (elapsedHours < 1 / 3600) return {};
 
 	const usedPercent = prevPercentLeft - currentPercentLeft;
-	if (!Number.isFinite(usedPercent) || usedPercent <= 0) return {};
+	if (!Number.isFinite(usedPercent) || usedPercent < 0) return {};
 
 	const burnRatePerHour = usedPercent / elapsedHours;
-	if (!Number.isFinite(burnRatePerHour) || burnRatePerHour < 0.01) return {};
+	if (!Number.isFinite(burnRatePerHour)) return {};
+
+	// If nothing changed since the last snapshot, show 0.0%/h so the user
+	// understands burn rate is based on deltas.
+	if (burnRatePerHour === 0) {
+		return { burnRatePerHour: 0 };
+	}
+
+	// For very tiny deltas, keep the burn rate but skip exhaustion estimates.
+	if (burnRatePerHour < 0.01) {
+		return { burnRatePerHour };
+	}
 
 	const exhaustHours = currentPercentLeft / burnRatePerHour;
 	if (!Number.isFinite(exhaustHours) || exhaustHours <= 0) {
