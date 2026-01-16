@@ -85,7 +85,7 @@ class TerminalPromptEditor extends CustomEditor {
 function applyEditor(enabled: boolean, ctx: ExtensionCommandContext | any): void {
 	if (!ctx.hasUI) return;
 	if (enabled) {
-		ctx.ui.setEditorComponent((_tui: any, theme: any, keybindings: any) => new TerminalPromptEditor(theme, keybindings));
+		ctx.ui.setEditorComponent((tui: any, theme: any, keybindings: any) => new TerminalPromptEditor(tui, theme, keybindings));
 	} else {
 		ctx.ui.setEditorComponent(undefined);
 	}
