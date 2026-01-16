@@ -91,6 +91,7 @@ type WorkerSession = {
 	depth: number;
 	outputSchemaKey?: string;
 	structuredRef?: { value?: unknown };
+	submittedRef?: { value: boolean };
 };
 
 function resolveModelPattern(pattern: string, models: Model<Api>[]): Model<Api> | undefined {
@@ -126,14 +127,30 @@ const TOOL_CHOICE_APIS = new Set([
 	"amazon-bedrock",
 ]);
 
-function createSubmitTool(schema: Record<string, unknown>, target: { value?: unknown }): ToolDefinition {
+function createSubmitTool(
+	schema: Record<string, unknown>,
+	target: { value?: unknown },
+	submitted: { value: boolean },
+	onSubmit?: () => void,
+): ToolDefinition {
 	return {
 		name: "submit_result",
 		label: "submit_result",
 		description: "Submit structured result for the task",
 		parameters: Type.Unsafe(schema as any),
-		async execute(_toolCallId, params) {
+		async execute(_toolCallId, params, _onUpdate, _ctx, signal) {
+			if (signal?.aborted) {
+				throw new Error("submit_result aborted");
+			}
+			if (submitted.value) {
+				return {
+					content: [{ type: "text", text: "Result already submitted." }],
+					details: { ok: false, duplicate: true },
+				};
+			}
+			submitted.value = true;
 			target.value = params;
+			onSubmit?.();
 			return {
 				content: [{ type: "text", text: "Result received." }],
 				details: { ok: true },
@@ -337,6 +354,7 @@ class InProcessWorkerBackend implements WorkerBackend {
 
 			const promptRef = { value: options.systemPrompt };
 			const structuredRef = { value: undefined as unknown };
+			const submittedRef = { value: false };
 			const resolvedModel = options.model
 				? resolveModelPattern(options.model, inProcessRuntime.modelRegistry.getAll())
 				: undefined;
@@ -344,8 +362,9 @@ class InProcessWorkerBackend implements WorkerBackend {
 				return { status: "failed", error: `Unknown model: ${options.model}` };
 			}
 
+			let abortAfterSubmit: (() => void) | undefined;
 			const customTools = options.outputSchema
-				? [createSubmitTool(options.outputSchema, structuredRef)]
+				? [createSubmitTool(options.outputSchema, structuredRef, submittedRef, () => abortAfterSubmit?.())]
 				: undefined;
 
 			const { session } = await createAgentSession({
@@ -360,6 +379,10 @@ class InProcessWorkerBackend implements WorkerBackend {
 				model: resolvedModel,
 			});
 
+			abortAfterSubmit = () => {
+				session.abort().catch(() => undefined);
+			};
+
 			inProcessRuntime.depthBySessionId.set(session.sessionId, depth);
 			inProcessRuntime.sessions.set(options.sessionId, {
 				session,
@@ -367,6 +390,7 @@ class InProcessWorkerBackend implements WorkerBackend {
 				depth,
 				outputSchemaKey,
 				structuredRef: options.outputSchema ? structuredRef : undefined,
+				submittedRef: options.outputSchema ? submittedRef : undefined,
 			});
 		} else {
 			if (outputSchemaKey && existing.outputSchemaKey && existing.outputSchemaKey !== outputSchemaKey) {
@@ -408,10 +432,11 @@ class InProcessWorkerBackend implements WorkerBackend {
 				return { status: "failed", error: `Structured output not supported for provider ${activeModel?.provider ?? "unknown"}` };
 			}
 			entry.session.agent.streamFn = toolOnlyStreamFn;
-			if (!entry.structuredRef) {
+			if (!entry.structuredRef || !entry.submittedRef) {
 				return { status: "failed", error: "Structured output is not configured for this session" };
 			}
 			entry.structuredRef.value = undefined;
+			entry.submittedRef.value = false;
 		} else {
 			entry.session.agent.streamFn = streamSimple as any;
 		}
@@ -440,6 +465,9 @@ class InProcessWorkerBackend implements WorkerBackend {
 		try {
 			await entry.session.prompt(`Task: ${options.prompt}`, { source: "extension" });
 		} catch (err) {
+			if (options.outputSchema && entry.structuredRef?.value !== undefined) {
+				return { status: "completed", structuredOutput: entry.structuredRef.value };
+			}
 			if (aborted) return { status: "aborted" };
 			return { status: "failed", error: (err as Error).message };
 		} finally {
@@ -447,15 +475,16 @@ class InProcessWorkerBackend implements WorkerBackend {
 			if (options.signal) options.signal.removeEventListener("abort", abortRun);
 		}
 
-		if (aborted) return { status: "aborted" };
-
 		if (options.outputSchema) {
 			const structured = entry.structuredRef?.value;
 			if (structured === undefined) {
+				if (aborted) return { status: "aborted" };
 				return { status: "failed", error: "submit_result was not called" };
 			}
 			return { status: "completed", structuredOutput: structured };
 		}
+
+		if (aborted) return { status: "aborted" };
 
 		return { status: "completed" };
 	}
@@ -500,7 +529,7 @@ export class TaskRunner {
 		});
 
 		const systemPrompt = options.outputSchema
-			? `${basePrompt}\n\n## Structured Output\n- You must call submit_result with JSON matching the provided schema.\n- Do not respond with free text.\n\nSchema:\n\n\`\`\`json\n${JSON.stringify(options.outputSchema, null, 2)}\n\`\`\`\n`
+			? `${basePrompt}\n\n## Structured Output\n- You must call submit_result exactly once with JSON matching the provided schema.\n- Do not respond with free text.\n- Stop immediately after calling submit_result.\n\nSchema:\n\n\`\`\`json\n${JSON.stringify(options.outputSchema, null, 2)}\n\`\`\`\n`
 			: basePrompt;
 
 		const emit = (status: TaskRunnerUpdateDetails["status"]) => {
