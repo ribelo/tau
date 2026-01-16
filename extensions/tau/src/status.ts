@@ -3,6 +3,18 @@ import { Text, visibleWidth, type Component } from "@mariozechner/pi-tui";
 import https from "node:https";
 
 const STATUS_MESSAGE_TYPE = "tau:status";
+const STATUS_STATE_TYPE = "tau:status-state";
+
+type StatusState = {
+	fetchedAt: number;
+	values: Record<string, { percentLeft: number }>;
+};
+
+type BurnInfo = {
+	burnRatePerHour?: number;
+	exhaustsAt?: number;
+	exhaustsBeforeReset?: boolean;
+};
 
 type OpenAiUsagePayload = {
 	plan_type?: string;
@@ -94,19 +106,19 @@ type RateLimitRow = {
 	label: string;
 	percentLeft?: number;
 	resetsAt?: number;
-};
+} & BurnInfo;
 
 type GeminiRow = {
 	label: string;
 	percentLeft?: number;
 	resetsAt?: number;
-};
+} & BurnInfo;
 
 type AntigravityRow = {
 	label: string;
 	percentLeft?: number;
 	resetsAt?: number;
-};
+} & BurnInfo;
 
 function envVarNameOrMissing(value: string | undefined, envVarName: string): string | undefined {
 	return value ? envVarName : undefined;
@@ -119,7 +131,7 @@ function percentLeftFromUsedPercent(usedPercent: number | undefined): number | u
 
 function percentLeftFromRemainingFraction(frac: number | undefined): number | undefined {
 	if (typeof frac !== "number" || Number.isNaN(frac)) return undefined;
-	return Math.max(0, Math.min(100, Math.round(frac * 100)));
+	return Math.max(0, Math.min(100, frac * 100));
 }
 
 function parseIsoTimeSeconds(iso: string | undefined): number | undefined {
@@ -147,6 +159,41 @@ function parseOpenAiUsageWindow(window: RateLimitWindowSnapshot | null | undefin
 		percentLeft: percentLeftFromUsedPercent(window.used_percent),
 		resetsAt: typeof window.reset_at === "number" ? window.reset_at : undefined,
 	};
+}
+
+function computeBurnInfo(
+	prev: StatusState | undefined,
+	key: string,
+	fetchedAtMs: number,
+	currentPercentLeft: number | undefined,
+	resetsAt: number | undefined,
+): BurnInfo {
+	if (typeof currentPercentLeft !== "number" || !Number.isFinite(currentPercentLeft)) return {};
+	if (!prev) return {};
+
+	const prevPercentLeft = prev.values[key]?.percentLeft;
+	if (typeof prevPercentLeft !== "number" || !Number.isFinite(prevPercentLeft)) return {};
+
+	const elapsedMs = fetchedAtMs - prev.fetchedAt;
+	if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) return {};
+	const elapsedHours = elapsedMs / (1000 * 60 * 60);
+	if (elapsedHours < 1 / 3600) return {};
+
+	const usedPercent = prevPercentLeft - currentPercentLeft;
+	if (!Number.isFinite(usedPercent) || usedPercent <= 0) return {};
+
+	const burnRatePerHour = usedPercent / elapsedHours;
+	if (!Number.isFinite(burnRatePerHour) || burnRatePerHour < 0.01) return {};
+
+	const exhaustHours = currentPercentLeft / burnRatePerHour;
+	if (!Number.isFinite(exhaustHours) || exhaustHours <= 0) {
+		return { burnRatePerHour };
+	}
+
+	const exhaustsAtMs = fetchedAtMs + exhaustHours * 60 * 60 * 1000;
+	const exhaustsAt = Math.floor(exhaustsAtMs / 1000);
+	const exhaustsBeforeReset = typeof resetsAt === "number" ? exhaustsAt < resetsAt : undefined;
+	return { burnRatePerHour, exhaustsAt, exhaustsBeforeReset };
 }
 
 function renderProgressBar(percentLeft: number | undefined, width: number): string {
@@ -209,21 +256,49 @@ function wrapRow(
 	return lines;
 }
 
-function buildLimitRow(row: { label: string; percentLeft?: number; resetsAt?: number }): { value: string; extra?: string } {
+function buildLimitRow(row: {
+	label: string;
+	percentLeft?: number;
+	resetsAt?: number;
+	burnRatePerHour?: number;
+	exhaustsAt?: number;
+	exhaustsBeforeReset?: boolean;
+}): { value: string; extra?: string } {
 	const bar = renderProgressBar(row.percentLeft, 20);
-	const percent = typeof row.percentLeft === "number" ? `${row.percentLeft}% left` : "? left";
+	const pct = typeof row.percentLeft === "number" ? Math.round(row.percentLeft) : undefined;
+	const percent = typeof pct === "number" ? `${pct}% left` : "? left";
+
+	const burn =
+		typeof row.burnRatePerHour === "number" && Number.isFinite(row.burnRatePerHour)
+			? `burn ${row.burnRatePerHour.toFixed(1)}%/h`
+			: undefined;
+
+	const empty = (() => {
+		if (typeof row.exhaustsAt !== "number") return undefined;
+		const fmt = formatTime(row.exhaustsAt);
+		return fmt.date ? `empty ${fmt.time} on ${fmt.date}` : `empty ${fmt.time}`;
+	})();
+
+	let value = `${bar} ${percent}`;
+	if (burn) value += ` · ${burn}`;
+	if (empty) value += ` · ${empty}`;
 
 	let extra: string | undefined;
 	if (typeof row.resetsAt === "number") {
 		const fmt = formatTime(row.resetsAt);
-		if (fmt.date) {
-			extra = `(resets ${fmt.time} on ${fmt.date})`;
-		} else {
-			extra = `(resets ${fmt.time})`;
-		}
+		const base = fmt.date ? `resets ${fmt.time} on ${fmt.date}` : `resets ${fmt.time}`;
+
+		const compare =
+			typeof row.exhaustsAt === "number" && typeof row.exhaustsBeforeReset === "boolean"
+				? row.exhaustsBeforeReset
+					? "empty before reset"
+					: "empty after reset"
+				: undefined;
+
+		extra = compare ? `(${base}; ${compare})` : `(${base})`;
 	}
 
-	return { value: `${bar} ${percent}`, extra };
+	return { value, extra };
 }
 
 function parseGoogleProjectToken(apiKey: string): { token: string; projectId: string } | null {
@@ -764,6 +839,21 @@ export default function tauStatus(pi: ExtensionAPI) {
 
 				const fetchedAt = Date.now();
 
+				const prevState = (() => {
+					const entries = ctx.sessionManager.getEntries();
+					const last = entries
+						.filter((e: any) => e?.type === "custom" && e?.customType === STATUS_STATE_TYPE)
+						.pop() as { data?: unknown } | undefined;
+					const data = last?.data;
+					if (!data || typeof data !== "object") return undefined;
+					const candidate = data as { fetchedAt?: unknown; values?: unknown };
+					if (typeof candidate.fetchedAt !== "number") return undefined;
+					if (!candidate.values || typeof candidate.values !== "object") return undefined;
+					return candidate as StatusState;
+				})();
+
+				const nextState: StatusState = { fetchedAt, values: {} };
+
 				const openaiPromise = (async (): Promise<StatusMessageDetails["openai"]> => {
 					const cred = ctx.modelRegistry.authStorage.get("openai-codex") as
 						| { type: string; access?: string; accountId?: string; email?: string }
@@ -900,6 +990,35 @@ export default function tauStatus(pi: ExtensionAPI) {
 						return { ok: false, error: msg, notConfigured } as StatusMessageDetails["antigravity"];
 					}),
 				]);
+
+				const applyBurn = (key: string, row: any) => {
+					if (!row) return;
+					if (typeof row.percentLeft === "number" && Number.isFinite(row.percentLeft)) {
+						nextState.values[key] = { percentLeft: row.percentLeft };
+						Object.assign(row, computeBurnInfo(prevState, key, fetchedAt, row.percentLeft, row.resetsAt));
+					}
+				};
+
+				if (openai.ok) {
+					if (openai.data.primary) applyBurn(`openai:${openai.data.primary.label}`, openai.data.primary);
+					if (openai.data.secondary) applyBurn(`openai:${openai.data.secondary.label}`, openai.data.secondary);
+				}
+
+				if (geminiCli.ok) {
+					for (const row of geminiCli.data.rows) {
+						applyBurn(`gemini-cli:${row.label}`, row);
+					}
+				}
+
+				if (antigravity.ok) {
+					for (const row of antigravity.data.rows) {
+						applyBurn(`antigravity:${row.label}`, row);
+					}
+				}
+
+				if (Object.keys(nextState.values).length > 0) {
+					pi.appendEntry(STATUS_STATE_TYPE, nextState);
+				}
 
 				pi.sendMessage(
 					{
