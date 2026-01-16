@@ -1,4 +1,4 @@
-import type { Api, Message, Model } from "@mariozechner/pi-ai";
+import { stream, streamSimple, type Api, type Message, type Model, type SimpleStreamOptions } from "@mariozechner/pi-ai";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import {
 	SessionManager as SdkSessionManager,
@@ -7,7 +7,9 @@ import {
 	discoverAuthStorage,
 	discoverModels,
 	type AgentSession,
+	type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
+import { Type } from "@sinclair/typebox";
 import type { Difficulty, ResolvedPolicy } from "./types.js";
 import type { LoadedSkill } from "./skills.js";
 
@@ -24,6 +26,7 @@ export interface UsageStats {
 export type TaskOutput =
 	| { type: "completed"; message: string }
 	| { type: "completed_tool"; toolOutput: string }
+	| { type: "completed_structured"; data: unknown }
 	| { type: "completed_empty" }
 	| { type: "interrupted"; resumable: true }
 	| { type: "failed"; reason: string; resumable: boolean };
@@ -58,6 +61,7 @@ type WorkerEvent = { message: Message };
 type WorkerBackendResult = {
 	status: "completed" | "failed" | "aborted";
 	error?: string;
+	structuredOutput?: unknown;
 };
 
 type WorkerBackendOptions = {
@@ -70,6 +74,7 @@ type WorkerBackendOptions = {
 	model?: string;
 	thinking?: string;
 	maxDepth: number;
+	outputSchema?: Record<string, unknown>;
 	onEvent: (event: WorkerEvent) => void;
 	signal?: AbortSignal;
 };
@@ -84,6 +89,8 @@ type WorkerSession = {
 	session: AgentSession;
 	promptRef: { value: string };
 	depth: number;
+	outputSchemaKey?: string;
+	structuredRef?: { value?: unknown };
 };
 
 function resolveModelPattern(pattern: string, models: Model<Api>[]): Model<Api> | undefined {
@@ -107,6 +114,61 @@ function resolveModelPattern(pattern: string, models: Model<Api>[]): Model<Api> 
 		(m) => m.id.toLowerCase().includes(trimmed.toLowerCase()) || m.name?.toLowerCase().includes(trimmed.toLowerCase()),
 	);
 	return partial;
+}
+
+const TOOL_CHOICE_APIS = new Set([
+	"anthropic-messages",
+	"openai-completions",
+	"google-generative-ai",
+	"google-vertex",
+	"google-gemini-cli",
+	"bedrock-converse-stream",
+	"amazon-bedrock",
+]);
+
+function createSubmitTool(schema: Record<string, unknown>, target: { value?: unknown }): ToolDefinition {
+	return {
+		name: "submit_result",
+		label: "submit_result",
+		description: "Submit structured result for the task",
+		parameters: Type.Unsafe(schema as any),
+		async execute(_toolCallId, params) {
+			target.value = params;
+			return {
+				content: [{ type: "text", text: "Result received." }],
+				details: { ok: true },
+			};
+		},
+	};
+}
+
+function toolOnlyStreamFn(model: Model<Api>, context: any, options?: SimpleStreamOptions) {
+	const base = {
+		temperature: options?.temperature,
+		maxTokens: options?.maxTokens || Math.min(model.maxTokens, 32000),
+		signal: options?.signal,
+		apiKey: (options as any)?.apiKey,
+		sessionId: options?.sessionId,
+	};
+
+	switch (model.api) {
+		case "anthropic-messages":
+			return stream(model as any, context, { ...base, thinkingEnabled: false, toolChoice: "any" } as any);
+		case "openai-completions":
+			return stream(model as any, context, { ...base, toolChoice: "required" } as any);
+		case "google-generative-ai":
+			return stream(model as any, context, { ...base, toolChoice: "any", thinking: { enabled: false } } as any);
+		case "google-vertex":
+			return stream(model as any, context, { ...base, toolChoice: "any", thinking: { enabled: false } } as any);
+		case "google-gemini-cli":
+			return stream(model as any, context, { ...base, toolChoice: "any", thinking: { enabled: false } } as any);
+		case "bedrock-converse-stream":
+			return stream(model as any, context, { ...base, toolChoice: "any" } as any);
+		case "amazon-bedrock":
+			return stream(model as any, context, { ...base, toolChoice: "any" } as any);
+		default:
+			return streamSimple(model as any, context, options);
+	}
 }
 
 type LatestText =
@@ -255,14 +317,16 @@ const inProcessRuntime = (() => {
 	const authStorage = discoverAuthStorage();
 	const modelRegistry = discoverModels(authStorage);
 	const sessions = new Map<string, WorkerSession>();
-	return { authStorage, modelRegistry, sessions };
+	const depthBySessionId = new Map<string, number>();
+	return { authStorage, modelRegistry, sessions, depthBySessionId };
 })();
 
 class InProcessWorkerBackend implements WorkerBackend {
 	async run(options: WorkerBackendOptions): Promise<WorkerBackendResult> {
 		const existing = inProcessRuntime.sessions.get(options.sessionId);
+		const outputSchemaKey = options.outputSchema ? JSON.stringify(options.outputSchema) : undefined;
 		if (!existing) {
-			const parentDepth = inProcessRuntime.sessions.get(options.parentSessionId)?.depth ?? 0;
+			const parentDepth = inProcessRuntime.depthBySessionId.get(options.parentSessionId) ?? 0;
 			const depth = parentDepth + 1;
 			if (depth > options.maxDepth) {
 				return {
@@ -272,12 +336,17 @@ class InProcessWorkerBackend implements WorkerBackend {
 			}
 
 			const promptRef = { value: options.systemPrompt };
+			const structuredRef = { value: undefined as unknown };
 			const resolvedModel = options.model
 				? resolveModelPattern(options.model, inProcessRuntime.modelRegistry.getAll())
 				: undefined;
 			if (options.model && !resolvedModel) {
 				return { status: "failed", error: `Unknown model: ${options.model}` };
 			}
+
+			const customTools = options.outputSchema
+				? [createSubmitTool(options.outputSchema, structuredRef)]
+				: undefined;
 
 			const { session } = await createAgentSession({
 				cwd: options.cwd,
@@ -287,10 +356,28 @@ class InProcessWorkerBackend implements WorkerBackend {
 				settingsManager: SettingsManager.inMemory(),
 				systemPrompt: (defaultPrompt) => `${defaultPrompt}\n\n${promptRef.value}`,
 				skills: [],
+				customTools,
 				model: resolvedModel,
 			});
 
-			inProcessRuntime.sessions.set(options.sessionId, { session, promptRef, depth });
+			inProcessRuntime.depthBySessionId.set(session.sessionId, depth);
+			inProcessRuntime.sessions.set(options.sessionId, {
+				session,
+				promptRef,
+				depth,
+				outputSchemaKey,
+				structuredRef: options.outputSchema ? structuredRef : undefined,
+			});
+		} else {
+			if (outputSchemaKey && existing.outputSchemaKey && existing.outputSchemaKey !== outputSchemaKey) {
+				return { status: "failed", error: "output_schema does not match existing session" };
+			}
+			if (!outputSchemaKey && existing.outputSchemaKey) {
+				return { status: "failed", error: "output_schema is required for this session" };
+			}
+			if (outputSchemaKey && !existing.outputSchemaKey) {
+				return { status: "failed", error: "output_schema cannot be added to an existing session" };
+			}
 		}
 
 		const entry = inProcessRuntime.sessions.get(options.sessionId)!;
@@ -313,6 +400,20 @@ class InProcessWorkerBackend implements WorkerBackend {
 					return { status: "failed", error: (err as Error).message };
 				}
 			}
+		}
+
+		const activeModel = entry.session.model;
+		if (options.outputSchema) {
+			if (!activeModel || !TOOL_CHOICE_APIS.has(activeModel.api)) {
+				return { status: "failed", error: `Structured output not supported for provider ${activeModel?.provider ?? "unknown"}` };
+			}
+			entry.session.agent.streamFn = toolOnlyStreamFn;
+			if (!entry.structuredRef) {
+				return { status: "failed", error: "Structured output is not configured for this session" };
+			}
+			entry.structuredRef.value = undefined;
+		} else {
+			entry.session.agent.streamFn = streamSimple as any;
 		}
 
 		if (options.thinking) {
@@ -346,7 +447,17 @@ class InProcessWorkerBackend implements WorkerBackend {
 			if (options.signal) options.signal.removeEventListener("abort", abortRun);
 		}
 
-		return { status: aborted ? "aborted" : "completed" };
+		if (aborted) return { status: "aborted" };
+
+		if (options.outputSchema) {
+			const structured = entry.structuredRef?.value;
+			if (structured === undefined) {
+				return { status: "failed", error: "submit_result was not called" };
+			}
+			return { status: "completed", structuredOutput: structured };
+		}
+
+		return { status: "completed" };
 	}
 }
 
@@ -365,6 +476,7 @@ export class TaskRunner {
 		prompt: string;
 		skills: LoadedSkill[];
 		parallelCount: number;
+		outputSchema?: Record<string, unknown>;
 		onUpdate?: OnUpdateCallback;
 		signal?: AbortSignal;
 	}): Promise<TaskResult> {
@@ -376,13 +488,20 @@ export class TaskRunner {
 		const resolvedThinking = options.policy.thinking ?? (options.parentThinking as any);
 
 		// tools: explicit for all task types so "all tools" really means "current tools".
-		const tools = Array.from(new Set((options.policy.tools ?? options.parentTools).filter(Boolean)));
+		const baseTools = Array.from(new Set((options.policy.tools ?? options.parentTools).filter(Boolean)));
+		const tools = options.outputSchema
+			? Array.from(new Set([...baseTools, "submit_result"]))
+			: baseTools;
 
-		const systemPrompt = buildWorkerSystemPrompt({
+		const basePrompt = buildWorkerSystemPrompt({
 			parentSessionId: options.parentSessionId,
 			parallelCount: options.parallelCount,
 			skills: options.skills,
 		});
+
+		const systemPrompt = options.outputSchema
+			? `${basePrompt}\n\n## Structured Output\n- You must call submit_result with JSON matching the provided schema.\n- Do not respond with free text.\n\nSchema:\n\n\`\`\`json\n${JSON.stringify(options.outputSchema, null, 2)}\n\`\`\`\n`
+			: basePrompt;
 
 		const emit = (status: TaskRunnerUpdateDetails["status"]) => {
 			if (!options.onUpdate) return;
@@ -438,6 +557,7 @@ export class TaskRunner {
 				model: resolvedModel,
 				thinking: resolvedThinking,
 				maxDepth: MAX_TASK_NESTING,
+				outputSchema: options.outputSchema,
 				onEvent: handleEvent,
 				signal: options.signal,
 			});
@@ -473,6 +593,19 @@ export class TaskRunner {
 				messages,
 				activities,
 				output: { type: "failed", reason, resumable: true },
+			};
+		}
+
+		if (backendResult.structuredOutput !== undefined) {
+			emit("completed");
+			return {
+				sessionId: options.sessionId,
+				durationMs,
+				usage,
+				model: resolvedModel,
+				messages,
+				activities,
+				output: { type: "completed_structured", data: backendResult.structuredOutput },
 			};
 		}
 

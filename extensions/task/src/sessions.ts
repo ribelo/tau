@@ -11,6 +11,8 @@ export interface TaskSession {
 	workerSession?: AgentSession;
 	/** Recorded nesting depth for this task session. */
 	nestingDepth?: number;
+	/** Canonical JSON string for output_schema, if any. */
+	outputSchemaKey?: string;
 }
 
 export class SessionManager {
@@ -31,7 +33,7 @@ export class SessionManager {
 	 *
 	 * If sessionId is provided and exists, validates it matches taskType.
 	 */
-	createSession(taskType: string, difficulty: Difficulty, sessionId?: string): TaskSession {
+	createSession(taskType: string, difficulty: Difficulty, sessionId?: string, outputSchemaKey?: string): TaskSession {
 		if (sessionId) {
 			const existing = this.sessions.get(sessionId);
 			if (existing) {
@@ -40,13 +42,22 @@ export class SessionManager {
 						`session_id ${sessionId} belongs to task_type=${existing.taskType}, not ${taskType}`,
 					);
 				}
+				if (outputSchemaKey && existing.outputSchemaKey && existing.outputSchemaKey !== outputSchemaKey) {
+					throw new Error(`session_id ${sessionId} uses a different output_schema`);
+				}
+				if (outputSchemaKey && !existing.outputSchemaKey) {
+					existing.outputSchemaKey = outputSchemaKey;
+				}
+				if (!outputSchemaKey && existing.outputSchemaKey) {
+					throw new Error(`session_id ${sessionId} requires output_schema`);
+				}
 				return existing;
 			}
 		}
 
 		const id = sessionId ?? randomUUID();
 		const createdAt = Date.now();
-		const session: TaskSession = { sessionId: id, taskType, difficulty, createdAt };
+		const session: TaskSession = { sessionId: id, taskType, difficulty, createdAt, outputSchemaKey };
 		this.sessions.set(id, session);
 		return session;
 	}

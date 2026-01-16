@@ -2,6 +2,8 @@ import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import { StringEnum } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import AjvModule from "ajv";
+import addFormatsModule from "ajv-formats";
 
 import { TaskRegistry } from "./registry.js";
 import { loadSkills } from "./skills.js";
@@ -9,6 +11,23 @@ import { SessionManager } from "./sessions.js";
 import { TaskRunner } from "./runner.js";
 import type { Difficulty } from "./types.js";
 import { renderTaskCall, renderTaskResult, type TaskToolDetails } from "./render.js";
+
+const Ajv = (AjvModule as any).default || AjvModule;
+const addFormats = (addFormatsModule as any).default || addFormatsModule;
+const ajv = new Ajv({ allErrors: true, strict: false });
+addFormats(ajv);
+
+function validateOutputSchema(schema: unknown): { ok: true } | { ok: false; error: string } {
+	if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+		return { ok: false, error: "output_schema must be a JSON schema object" };
+	}
+	try {
+		ajv.compile(schema as any);
+		return { ok: true };
+	} catch (err) {
+		return { ok: false, error: (err as Error).message };
+	}
+}
 
 function buildToolDescription(registry: TaskRegistry): string {
 	const lines: string[] = [];
@@ -26,6 +45,9 @@ function buildToolDescription(registry: TaskRegistry): string {
 	lines.push("- Provide session_id to resume the same worker context\n");
 	lines.push("## Skills");
 	lines.push("- task_type=custom accepts a skills[] parameter to inject additional skills");
+	lines.push("");
+	lines.push("## Structured output");
+	lines.push("- Provide output_schema to require a submit_result tool call that matches the schema");
 	return lines.join("\n").trim();
 }
 
@@ -53,6 +75,11 @@ const TaskParams = Type.Object({
 	skills: Type.Optional(
 		Type.Array(Type.String(), {
 			description: "Skills to inject (only valid for task_type=custom)",
+		}),
+	),
+	output_schema: Type.Optional(
+		Type.Any({
+			description: "JSON schema for structured output; when provided, worker must call submit_result",
 		}),
 	),
 });
@@ -90,6 +117,8 @@ export default function task(pi: ExtensionAPI) {
 			const description = (params.description || "").trim();
 			const prompt = params.prompt || "";
 			const difficulty = (params.difficulty || "medium") as Difficulty;
+			const outputSchema = params.output_schema as unknown;
+			const outputSchemaKey = outputSchema ? JSON.stringify(outputSchema) : undefined;
 
 			const registry = TaskRegistry.load(ctx.cwd);
 			const typeDef = registry.get(taskType);
@@ -136,6 +165,30 @@ export default function task(pi: ExtensionAPI) {
 						activities: [],
 					} satisfies TaskToolDetails,
 				};
+			}
+
+			if (outputSchema !== undefined) {
+				const validation = validateOutputSchema(outputSchema);
+				if (!validation.ok) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Invalid output_schema: ${validation.error}`,
+							},
+						],
+						isError: true,
+						details: {
+							taskType,
+							difficulty,
+							description,
+							sessionId: params.session_id ?? "(none)",
+							status: "failed",
+							usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+							activities: [],
+						} satisfies TaskToolDetails,
+					};
+				}
 			}
 
 			let policy = registry.resolve(taskType, difficulty);
@@ -192,7 +245,29 @@ export default function task(pi: ExtensionAPI) {
 				};
 			}
 
-			const session = sessions.createSession(taskType, difficulty, params.session_id);
+			let session: ReturnType<SessionManager["createSession"]>;
+			try {
+				session = sessions.createSession(taskType, difficulty, params.session_id, outputSchemaKey);
+			} catch (err) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: (err as Error).message,
+						},
+					],
+					isError: true,
+					details: {
+						taskType,
+						difficulty,
+						description,
+						sessionId: params.session_id ?? "(none)",
+						status: "failed",
+						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+						activities: [],
+					} satisfies TaskToolDetails,
+				};
+			}
 
 			// Give the runtime a tick to emit any additional tool_call events for this turn,
 			// so plannedTaskCalls reflects the full parallel batch.
@@ -227,19 +302,25 @@ export default function task(pi: ExtensionAPI) {
 					prompt,
 					skills: loaded,
 					parallelCount,
+					outputSchema,
 					onUpdate: wrapUpdate,
 					signal,
 				});
 
 				const outputType = res.output.type;
+				const structuredOutput = outputType === "completed_structured" ? res.output.data : undefined;
+				const structuredText =
+					structuredOutput !== undefined ? JSON.stringify(structuredOutput, null, 2) : "";
 				const message =
 					outputType === "completed"
 						? res.output.message
 						: outputType === "completed_tool"
 							? res.output.toolOutput
-							: outputType === "failed"
-								? res.output.reason
-								: "";
+							: outputType === "completed_structured"
+								? structuredText
+								: outputType === "failed"
+									? res.output.reason
+									: "";
 
 				const details: TaskToolDetails = {
 					taskType,
@@ -248,7 +329,10 @@ export default function task(pi: ExtensionAPI) {
 					sessionId: res.sessionId,
 					durationMs: res.durationMs,
 					status:
-						outputType === "completed" || outputType === "completed_tool" || outputType === "completed_empty"
+						outputType === "completed" ||
+						outputType === "completed_tool" ||
+						outputType === "completed_structured" ||
+						outputType === "completed_empty"
 							? "completed"
 							: outputType === "interrupted"
 								? "interrupted"
@@ -260,6 +344,7 @@ export default function task(pi: ExtensionAPI) {
 					missingSkills: missing,
 					loadedSkills: loadedSkillsMeta,
 					outputType,
+					structuredOutput,
 				};
 
 				const isError = outputType === "failed";

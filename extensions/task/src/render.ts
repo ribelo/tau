@@ -17,6 +17,7 @@ export type TaskToolDetails = TaskRunnerUpdateDetails & {
 	missingSkills?: string[];
 	loadedSkills?: Array<{ name: string; path: string }>;
 	outputType?: string;
+	structuredOutput?: unknown;
 };
 
 function oneLine(s: string): string {
