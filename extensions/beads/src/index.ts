@@ -260,33 +260,23 @@ export default function beads(pi: ExtensionAPI) {
 			return;
 		}
 
-		const instructions =
-			"Beads init checklist:\n\n" +
-			"1) Verify Beads skill is installed globally and up-to-date:\n" +
-			"   - Ensure `~/.pi/agent/skills/beads/SKILL.md` exists\n" +
-			"   - Compare to upstream: https://github.com/steveyegge/beads/tree/main/claude-plugin/skills/beads\n\n" +
-			"2) If skill is OK, let the agent initialize this repo:\n" +
-			"   - Agent runs `bd init` (creates .beads and config)\n" +
-			"   - Agent runs `bd onboard` and follows its instructions (may ask you to do manual steps)\n";
-
-		ctx.ui.setEditorText(instructions);
-
-		const ok = await ctx.ui.confirm(
-			"Beads Init",
-			"Skill checked and up-to-date? Let the agent run bd init + bd onboard now?",
-		);
-		if (!ok) return;
+		ctx.ui.notify("Starting Beads init…", "info");
 
 		// Use the agent (tool calls) to execute the init steps.
 		pi.sendUserMessage(
 			"Initialize Beads in this repository.\n\n" +
 				"Rules:\n" +
-				"- Use the `beads` tool (not bash).\n" +
+				"- Use the `beads` tool (not bash) for bd operations.\n" +
 				"- Use `command` and omit the leading `bd`.\n\n" +
 				"Steps:\n" +
-				"1) Run `init`.\n" +
-				"2) Run `onboard` and follow the instructions it prints.\n" +
-				"3) If onboard requires manual user steps, summarize them and ask the user to confirm when done.",
+				"1) Ensure the global Beads skill is installed and up-to-date.\n" +
+				"   - Local path: ~/.pi/agent/skills/beads/SKILL.md\n" +
+				"   - Upstream reference: https://github.com/steveyegge/beads/tree/main/claude-plugin/skills/beads\n" +
+				"   - If missing or different, update it by fetching the upstream SKILL.md and writing it to the local path.\n" +
+				"     (Raw URL: https://raw.githubusercontent.com/steveyegge/beads/main/claude-plugin/skills/beads/SKILL.md)\n" +
+				"2) Run `init`.\n" +
+				"3) Run `onboard` and follow the instructions it prints.\n" +
+				"4) If onboard requires manual user steps, summarize them and ask the user to confirm when done.",
 		);
 	};
 
