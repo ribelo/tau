@@ -28,6 +28,7 @@ export type TaskOutput =
 export interface TaskResult {
 	output: TaskOutput;
 	sessionId: string;
+	durationMs: number;
 	usage: UsageStats;
 	model?: string;
 	messages: Message[];
@@ -39,6 +40,7 @@ export type TaskRunnerUpdateDetails = {
 	difficulty: Difficulty;
 	description: string;
 	sessionId: string;
+	durationMs: number;
 	status: "running" | "completed" | "failed" | "interrupted";
 	model?: string;
 	usage: UsageStats;
@@ -208,6 +210,7 @@ export class TaskRunner {
 		onSpawn?: (proc: ChildProcess) => void;
 		signal?: AbortSignal;
 	}): Promise<TaskResult> {
+		const startedAt = Date.now();
 		const usage = emptyUsage();
 		const messages: Message[] = [];
 
@@ -241,6 +244,7 @@ export class TaskRunner {
 					difficulty: options.policy.difficulty,
 					description: options.description,
 					sessionId: options.sessionId,
+					durationMs: Math.max(0, Date.now() - startedAt),
 					status,
 					model: resolvedModel,
 					usage: { ...usage },
@@ -368,10 +372,13 @@ export class TaskRunner {
 
 		const activities = extractActivities(messages);
 
+		const durationMs = Math.max(0, Date.now() - startedAt);
+
 		if (aborted) {
 			emit("interrupted");
 			return {
 				sessionId: options.sessionId,
+				durationMs,
 				usage,
 				model: resolvedModel,
 				messages,
@@ -385,6 +392,7 @@ export class TaskRunner {
 			emit("failed");
 			return {
 				sessionId: options.sessionId,
+				durationMs,
 				usage,
 				model: resolvedModel,
 				messages,
@@ -399,6 +407,7 @@ export class TaskRunner {
 			emit("completed");
 			return {
 				sessionId: options.sessionId,
+				durationMs,
 				usage,
 				model: resolvedModel,
 				messages,
@@ -410,6 +419,7 @@ export class TaskRunner {
 		emit("completed");
 		return {
 			sessionId: options.sessionId,
+			durationMs,
 			usage,
 			model: resolvedModel,
 			messages,

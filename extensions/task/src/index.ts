@@ -206,6 +206,7 @@ export default function task(pi: ExtensionAPI) {
 					difficulty,
 					description,
 					sessionId: res.sessionId,
+					durationMs: res.durationMs,
 					status:
 						outputType === "completed" || outputType === "completed_tool" || outputType === "completed_empty"
 							? "completed"

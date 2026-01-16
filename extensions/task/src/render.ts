@@ -26,8 +26,19 @@ function formatTokens(count: number): string {
 	return `${(count / 1000000).toFixed(1)}M`;
 }
 
-function formatUsage(usage: UsageStats, model?: string): string {
+function formatDuration(ms: number | undefined): string | undefined {
+	if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return undefined;
+	const s = Math.round(ms / 1000);
+	if (s < 60) return `${s}s`;
+	const m = Math.floor(s / 60);
+	const rem = s % 60;
+	return `${m}m${String(rem).padStart(2, "0")}s`;
+}
+
+function formatUsage(usage: UsageStats, model?: string, durationMs?: number): string {
 	const parts: string[] = [];
+	const dur = formatDuration(durationMs);
+	if (dur) parts.push(dur);
 	if (usage.turns) parts.push(`${usage.turns} turn${usage.turns === 1 ? "" : "s"}`);
 	if (usage.input) parts.push(`↑${formatTokens(usage.input)}`);
 	if (usage.output) parts.push(`↓${formatTokens(usage.output)}`);
@@ -135,7 +146,7 @@ export function renderTaskResult(
 		if (details.description) bodyParts.push(`description: ${details.description}`);
 		if (details.model) bodyParts.push(`model: ${details.model}`);
 		if (missing.length > 0) bodyParts.push(`missing skills: ${missing.join(", ")}`);
-		if (details.usage) bodyParts.push(`usage: ${formatUsage(details.usage, details.model)}`);
+		if (details.usage) bodyParts.push(`usage: ${formatUsage(details.usage, details.model, details.durationMs)}`);
 		bodyParts.push("");
 		bodyParts.push(message || "(no output)");
 		return new Markdown(bodyParts.join("\n"), 0, 0, mdTheme);
@@ -169,7 +180,7 @@ export function renderTaskResult(
 
 	if (details.usage && !options.isPartial) {
 		lines.push("");
-		lines.push(theme.fg("dim", formatUsage(details.usage, details.model)));
+		lines.push(theme.fg("dim", formatUsage(details.usage, details.model, details.durationMs)));
 	}
 
 	return new Text(lines.join("\n"), 0, 0);
