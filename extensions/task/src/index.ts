@@ -25,13 +25,13 @@ function buildToolDescription(registry: TaskRegistry): string {
 	lines.push("## Session continuation");
 	lines.push("- Provide session_id to resume the same worker context\n");
 	lines.push("## Skills");
-	lines.push("- task_type=general accepts a skills[] parameter to inject additional skills");
+	lines.push("- task_type=custom accepts a skills[] parameter to inject additional skills");
 	return lines.join("\n").trim();
 }
 
 const TaskParams = Type.Object({
 	task_type: Type.String({
-		description: "Type of work: code, search, review, planning, general",
+		description: "Type of work: code, search, review, planning, custom",
 	}),
 	description: Type.String({
 		description: "Short description of the task (for logging/UI)",
@@ -52,7 +52,7 @@ const TaskParams = Type.Object({
 	),
 	skills: Type.Optional(
 		Type.Array(Type.String(), {
-			description: "Skills to inject (only valid for task_type=general)",
+			description: "Skills to inject (only valid for task_type=custom)",
 		}),
 	),
 });
@@ -117,12 +117,12 @@ export default function task(pi: ExtensionAPI) {
 				};
 			}
 
-			if (params.skills && taskType !== "general") {
+			if (params.skills && taskType !== "custom") {
 				return {
 					content: [
 						{
 							type: "text",
-							text: "skills is only valid for task_type=general",
+							text: "skills is only valid for task_type=custom",
 						},
 					],
 					isError: true,
@@ -139,7 +139,7 @@ export default function task(pi: ExtensionAPI) {
 			}
 
 			let policy = registry.resolve(taskType, difficulty);
-			if (taskType === "general" && Array.isArray(params.skills)) {
+			if (taskType === "custom" && Array.isArray(params.skills)) {
 				policy.skills.push(...params.skills);
 				// de-dupe
 				policy.skills = Array.from(new Set(policy.skills.map((s) => s.trim()).filter(Boolean)));

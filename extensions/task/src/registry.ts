@@ -140,8 +140,8 @@ export class TaskRegistry {
 				skills: ["planning"],
 			},
 			{
-				name: "general",
-				description: "General task with user-specified skills",
+				name: "custom",
+				description: "Custom task with user-specified skills",
 				tools: undefined, // all
 				defaultModel: "inherit",
 				skills: [],
