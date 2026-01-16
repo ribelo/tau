@@ -264,17 +264,18 @@ export default function beads(pi: ExtensionAPI) {
 
 			const instructions =
 				"Beads init checklist:\n\n" +
-				"1) Verify the Beads skill is installed globally and up-to-date.\n" +
-				"   Compare to upstream: https://github.com/steveyegge/beads/tree/main/claude-plugin/skills/beads\n\n" +
-				"2) If it is up-to-date, proceed to initialize this repo:\n" +
-				"   - Run `bd init` (creates .beads and config)\n" +
-				"   - Run `bd onboard` and follow its instructions\n";
+				"1) Verify Beads skill is installed globally and up-to-date:\n" +
+				"   - Ensure `~/.pi/agent/skills/beads/SKILL.md` exists\n" +
+				"   - Compare to upstream: https://github.com/steveyegge/beads/tree/main/claude-plugin/skills/beads\n\n" +
+				"2) If skill is OK, let the agent initialize this repo:\n" +
+				"   - Agent runs `bd init` (creates .beads and config)\n" +
+				"   - Agent runs `bd onboard` and follows its instructions (may ask you to do manual steps)\n";
 
 			ctx.ui.setEditorText(instructions);
 
 			const ok = await ctx.ui.confirm(
 				"Beads Init",
-				"Skill checked and up-to-date? Run bd init + bd onboard now?",
+				"Skill checked and up-to-date? Let the agent run bd init + bd onboard now?",
 			);
 			if (!ok) return;
 
@@ -286,8 +287,8 @@ export default function beads(pi: ExtensionAPI) {
 					"- Use `command` and omit the leading `bd`.\n\n" +
 					"Steps:\n" +
 					"1) Run `init`.\n" +
-					"2) Run `onboard`.\n" +
-					"3) If onboard prints manual instructions, summarize them and ask the user to confirm they are done.",
+					"2) Run `onboard` and follow the instructions it prints.\n" +
+					"3) If onboard requires manual user steps, summarize them and ask the user to confirm when done.",
 			);
 		},
 	});
