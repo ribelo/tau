@@ -96,8 +96,17 @@ export default function tauWorkedFor(pi: ExtensionAPI) {
 	let agentRunning = false;
 	let lastRenderedDurationText: string | undefined;
 
+	let tickInterval: ReturnType<typeof setInterval> | undefined;
+	let tickCtx: any;
+
 	function persistState(): void {
 		pi.appendEntry<WorkedForState>(WORKED_FOR_STATE_TYPE, { enabled, toolsEnabled });
+	}
+
+	function stopTick(): void {
+		if (tickInterval) clearInterval(tickInterval);
+		tickInterval = undefined;
+		tickCtx = undefined;
 	}
 
 	function renderWorkedForWidget(ctx: any): void {
@@ -113,6 +122,36 @@ export default function tauWorkedFor(pi: ExtensionAPI) {
 		ctx.ui.setWidget("worked-for-separator", (_tui: any, theme: any) => new WorkedForWidget(durationText, theme));
 	}
 
+	function startTick(ctx: any): void {
+		stopTick();
+		tickCtx = ctx;
+		// Update like the "Working..." indicator: periodically re-render while the agent is running.
+		// formatDuration() only changes once per second, so this is cheap.
+		tickInterval = setInterval(() => {
+			if (!agentRunning) return;
+			renderWorkedForWidget(tickCtx);
+		}, 250);
+	}
+
+	function sendWorkedForSeparator(ctx: any): void {
+		if (!enabled) return;
+		if (promptStartTimestamp === undefined) return;
+		const elapsedMs = Math.max(0, Date.now() - promptStartTimestamp);
+
+		// UI-only history entry (Codex-like). Must not trigger a new turn.
+		pi.sendMessage(
+			{
+				customType: WORKED_FOR_MESSAGE_TYPE,
+				content: "",
+				display: true,
+				details: { elapsedMs } satisfies WorkedForDetails,
+			},
+			{ triggerTurn: false },
+		);
+
+		if (ctx?.hasUI) ctx.ui.setWidget("worked-for-separator", undefined);
+	}
+
 	pi.registerMessageRenderer<WorkedForDetails>(WORKED_FOR_MESSAGE_TYPE, (message, _options, theme) => {
 		const elapsedMs = typeof message.details?.elapsedMs === "number" ? message.details.elapsedMs : 0;
 		return new WorkedForSeparator(formatDuration(elapsedMs), theme);
@@ -120,9 +159,7 @@ export default function tauWorkedFor(pi: ExtensionAPI) {
 
 	pi.on("context", async (event) => {
 		// Never send UI-only worked-for separators to the model (old sessions may contain them).
-		const filtered = event.messages.filter(
-			(m: any) => !(m?.role === "custom" && m?.customType === WORKED_FOR_MESSAGE_TYPE),
-		);
+		const filtered = event.messages.filter((m: any) => m?.customType !== WORKED_FOR_MESSAGE_TYPE);
 		return { messages: filtered };
 	});
 
@@ -147,6 +184,11 @@ export default function tauWorkedFor(pi: ExtensionAPI) {
 				}
 				toolsEnabled = next;
 				persistState();
+
+				if (agentRunning && enabled) {
+					renderWorkedForWidget(ctx);
+				}
+
 				ctx.ui.notify(`Worked-for tools: ${toolsEnabled ? "on" : "off"}`, "info");
 				return;
 			}
@@ -159,7 +201,15 @@ export default function tauWorkedFor(pi: ExtensionAPI) {
 
 			enabled = next;
 			persistState();
-			if (ctx.hasUI && !enabled) ctx.ui.setWidget("worked-for-separator", undefined);
+
+			if (!enabled) {
+				stopTick();
+				if (ctx.hasUI) ctx.ui.setWidget("worked-for-separator", undefined);
+			} else {
+				renderWorkedForWidget(ctx);
+				if (agentRunning && ctx.hasUI) startTick(ctx);
+			}
+
 			ctx.ui.notify(`Worked-for: ${enabled ? "on" : "off"}`, "info");
 		},
 	});
@@ -177,6 +227,7 @@ export default function tauWorkedFor(pi: ExtensionAPI) {
 		promptStartTimestamp = undefined;
 		agentRunning = false;
 		lastRenderedDurationText = undefined;
+		stopTick();
 
 		if (ctx.hasUI) {
 			ctx.ui.setWidget("worked-for-separator", undefined);
@@ -190,12 +241,18 @@ export default function tauWorkedFor(pi: ExtensionAPI) {
 		promptStartTimestamp = Date.now();
 		agentRunning = true;
 		lastRenderedDurationText = undefined;
+
 		if (ctx.hasUI) ctx.ui.setWidget("worked-for-separator", undefined);
+		renderWorkedForWidget(ctx);
+		if (enabled && ctx.hasUI) startTick(ctx);
 	});
 
 	pi.on("agent_end", async (_event, ctx) => {
-		renderWorkedForWidget(ctx);
 		agentRunning = false;
+		stopTick();
+		sendWorkedForSeparator(ctx);
+		promptStartTimestamp = undefined;
+		lastRenderedDurationText = undefined;
 	});
 
 	pi.on("tool_result", async (event, ctx) => {
@@ -209,11 +266,10 @@ export default function tauWorkedFor(pi: ExtensionAPI) {
 	});
 
 	pi.on("turn_end", async (event, ctx) => {
-		persistState();
 		if (!enabled) return;
 		if (!agentRunning) return;
 
-		// Only show after assistant output (Codex-like).
+		// Only update the widget after assistant output.
 		const role = (event.message as any)?.role;
 		if (role !== "assistant") return;
 
