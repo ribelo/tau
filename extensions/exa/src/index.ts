@@ -400,8 +400,11 @@ export default function exa(pi: ExtensionAPI) {
 			let out = "";
 			if (json?.requestId || json?.resolvedSearchType) {
 				out += "  ";
-				if (json?.requestId) out += `${theme.fg("muted", "requestId:")} ${theme.fg("dim", String(json.requestId))} `;
-				if (json?.resolvedSearchType) out += `${theme.fg("muted", "resolvedSearchType:")} ${theme.fg("dim", String(json.resolvedSearchType))}`;
+				if (json?.requestId) out += `${theme.fg("muted", "requestId:")} ${theme.fg("dim", String(json.requestId))}`;
+				if (json?.resolvedSearchType) {
+					if (json?.requestId) out += "\n  ";
+					out += `${theme.fg("muted", "resolvedSearchType:")} ${theme.fg("dim", String(json.resolvedSearchType))}`;
+				}
 			}
 
 			for (let i = 0; i < shown.length; i++) {
