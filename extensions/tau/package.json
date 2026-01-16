@@ -3,6 +3,11 @@
 	"private": true,
 	"type": "module",
 	"pi": {
-		"extensions": ["./src/terminal-prompt.ts", "./src/worked-for.ts", "./src/commit.ts"]
+		"extensions": [
+			"./src/terminal-prompt.ts",
+			"./src/worked-for.ts",
+			"./src/commit.ts",
+			"./src/status.ts"
+		]
 	}
 }
