@@ -7,7 +7,8 @@
 			"./src/terminal-prompt.ts",
 			"./src/worked-for.ts",
 			"./src/commit.ts",
-			"./src/status.ts"
+			"./src/status.ts",
+			"./src/keybindings.ts"
 		]
 	}
 }
