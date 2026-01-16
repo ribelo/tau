@@ -161,6 +161,54 @@ function parseOpenAiUsageWindow(window: RateLimitWindowSnapshot | null | undefin
 	};
 }
 
+function openAiRowFromWindow(window: RateLimitWindowSnapshot | null | undefined, fetchedAtMs: number): RateLimitRow | undefined {
+	if (!window) return undefined;
+
+	const seconds = typeof window.limit_window_seconds === "number" ? window.limit_window_seconds : undefined;
+	const minutes = seconds && seconds > 0 ? Math.ceil(seconds / 60) : undefined;
+	const label = (() => {
+		if (minutes === 300) return "5h limit";
+		if (minutes === 10080) return "Weekly limit";
+		if (minutes === 43200) return "Monthly limit";
+		if (minutes) return `${minutes}m limit`;
+		return "Limit";
+	})();
+
+	const resetsAt = typeof window.reset_at === "number" ? window.reset_at : undefined;
+	const usedPercent = typeof window.used_percent === "number" ? window.used_percent : undefined;
+	const percentLeft = percentLeftFromUsedPercent(usedPercent);
+
+	let burnRatePerHour: number | undefined;
+	let exhaustsAt: number | undefined;
+	let exhaustsBeforeReset: boolean | undefined;
+
+	if (
+		typeof usedPercent === "number" &&
+		Number.isFinite(usedPercent) &&
+		usedPercent > 0 &&
+		typeof seconds === "number" &&
+		Number.isFinite(seconds) &&
+		seconds > 0 &&
+		typeof resetsAt === "number" &&
+		Number.isFinite(resetsAt)
+	) {
+		const windowStartMs = (resetsAt - seconds) * 1000;
+		const elapsedMs = fetchedAtMs - windowStartMs;
+		const elapsedHours = elapsedMs / (1000 * 60 * 60);
+		if (elapsedHours > 0) {
+			burnRatePerHour = usedPercent / elapsedHours;
+			if (Number.isFinite(burnRatePerHour) && burnRatePerHour > 0.01 && typeof percentLeft === "number") {
+				const exhaustHours = percentLeft / burnRatePerHour;
+				const exhaustMs = fetchedAtMs + exhaustHours * 60 * 60 * 1000;
+				exhaustsAt = Math.floor(exhaustMs / 1000);
+				exhaustsBeforeReset = exhaustsAt < resetsAt;
+			}
+		}
+	}
+
+	return { label, percentLeft, resetsAt, burnRatePerHour, exhaustsAt, exhaustsBeforeReset };
+}
+
 function computeBurnInfo(
 	prev: StatusState | undefined,
 	key: string,
@@ -180,21 +228,11 @@ function computeBurnInfo(
 	if (elapsedHours < 1 / 3600) return {};
 
 	const usedPercent = prevPercentLeft - currentPercentLeft;
-	if (!Number.isFinite(usedPercent) || usedPercent < 0) return {};
+	// No delta => we can't infer burn, don't show anything.
+	if (!Number.isFinite(usedPercent) || usedPercent <= 0) return {};
 
 	const burnRatePerHour = usedPercent / elapsedHours;
-	if (!Number.isFinite(burnRatePerHour)) return {};
-
-	// If nothing changed since the last snapshot, show 0.0%/h so the user
-	// understands burn rate is based on deltas.
-	if (burnRatePerHour === 0) {
-		return { burnRatePerHour: 0 };
-	}
-
-	// For very tiny deltas, keep the burn rate but skip exhaustion estimates.
-	if (burnRatePerHour < 0.01) {
-		return { burnRatePerHour };
-	}
+	if (!Number.isFinite(burnRatePerHour) || burnRatePerHour < 0.01) return {};
 
 	const exhaustHours = currentPercentLeft / burnRatePerHour;
 	if (!Number.isFinite(exhaustHours) || exhaustHours <= 0) {
@@ -237,7 +275,7 @@ function formatTime(tsSeconds: number): { time: string; date?: string } {
 function wrapRow(
 	label: string,
 	value: string,
-	extra: string | undefined,
+	extraLines: string[] | undefined,
 	options: { labelWidth: number; innerWidth: number },
 ): string[] {
 	const labelCol = `${label}:`;
@@ -254,13 +292,16 @@ function wrapRow(
 		lines.push(prefix + value.slice(0, maxValueWidth));
 	}
 
-	if (extra) {
-		const extraLine = `  ${" ".repeat(options.labelWidth)} ${extra}`;
-		if (visibleWidth(extraLine) <= options.innerWidth) {
-			lines.push(extraLine);
-		} else {
-			const maxExtraWidth = Math.max(0, options.innerWidth - visibleWidth(`  ${" ".repeat(options.labelWidth)} `));
-			lines.push(`  ${" ".repeat(options.labelWidth)} ${extra.slice(0, maxExtraWidth)}`);
+	if (extraLines && extraLines.length > 0) {
+		for (const extra of extraLines) {
+			const extraPrefix = `  ${" ".repeat(options.labelWidth)} `;
+			const extraLine = extraPrefix + extra;
+			if (visibleWidth(extraLine) <= options.innerWidth) {
+				lines.push(extraLine);
+			} else {
+				const maxExtraWidth = Math.max(0, options.innerWidth - visibleWidth(extraPrefix));
+				lines.push(extraPrefix + extra.slice(0, maxExtraWidth));
+			}
 		}
 	}
 
@@ -274,27 +315,16 @@ function buildLimitRow(row: {
 	burnRatePerHour?: number;
 	exhaustsAt?: number;
 	exhaustsBeforeReset?: boolean;
-}): { value: string; extra?: string } {
+}): { value: string; extraLines?: string[] } {
 	const bar = renderProgressBar(row.percentLeft, 20);
 	const pct = typeof row.percentLeft === "number" ? Math.round(row.percentLeft) : undefined;
 	const percent = typeof pct === "number" ? `${pct}% left` : "? left";
 
-	const burn =
-		typeof row.burnRatePerHour === "number" && Number.isFinite(row.burnRatePerHour)
-			? `burn ${row.burnRatePerHour.toFixed(1)}%/h`
-			: undefined;
+	const value = `${bar} ${percent}`;
 
-	const empty = (() => {
-		if (typeof row.exhaustsAt !== "number") return undefined;
-		const fmt = formatTime(row.exhaustsAt);
-		return fmt.date ? `empty ${fmt.time} on ${fmt.date}` : `empty ${fmt.time}`;
-	})();
+	const extraLines: string[] = [];
 
-	let value = `${bar} ${percent}`;
-	if (burn) value += ` · ${burn}`;
-	if (empty) value += ` · ${empty}`;
-
-	let extra: string | undefined;
+	// Reset line
 	if (typeof row.resetsAt === "number") {
 		const fmt = formatTime(row.resetsAt);
 		const base = fmt.date ? `resets ${fmt.time} on ${fmt.date}` : `resets ${fmt.time}`;
@@ -306,10 +336,26 @@ function buildLimitRow(row: {
 					: "empty after reset"
 				: undefined;
 
-		extra = compare ? `(${base}; ${compare})` : `(${base})`;
+		extraLines.push(compare ? `(${base}; ${compare})` : `(${base})`);
 	}
 
-	return { value, extra };
+	// Burn + empty line
+	const burn =
+		typeof row.burnRatePerHour === "number" && Number.isFinite(row.burnRatePerHour)
+			? `burn ${row.burnRatePerHour.toFixed(1)}%/h`
+			: undefined;
+
+	const empty = (() => {
+		if (typeof row.exhaustsAt !== "number") return undefined;
+		const fmt = formatTime(row.exhaustsAt);
+		return fmt.date ? `empty ${fmt.time} on ${fmt.date}` : `empty ${fmt.time}`;
+	})();
+
+	if (burn || empty) {
+		extraLines.push([burn, empty].filter(Boolean).join(" · "));
+	}
+
+	return { value, extraLines: extraLines.length > 0 ? extraLines : undefined };
 }
 
 function parseGoogleProjectToken(apiKey: string): { token: string; projectId: string } | null {
@@ -697,11 +743,11 @@ function buildStatusText(details: StatusMessageDetails, width: number): string[]
 
 		if (openai.primary) {
 			const row = buildLimitRow(openai.primary);
-			lines.push(...wrapRow(openai.primary.label, row.value, row.extra, { labelWidth, innerWidth }));
+			lines.push(...wrapRow(openai.primary.label, row.value, row.extraLines, { labelWidth, innerWidth }));
 		}
 		if (openai.secondary) {
 			const row = buildLimitRow(openai.secondary);
-			lines.push(...wrapRow(openai.secondary.label, row.value, row.extra, { labelWidth, innerWidth }));
+			lines.push(...wrapRow(openai.secondary.label, row.value, row.extraLines, { labelWidth, innerWidth }));
 		}
 	}
 
@@ -722,7 +768,7 @@ function buildStatusText(details: StatusMessageDetails, width: number): string[]
 
 		for (const r of gemini.rows) {
 			const row = buildLimitRow({ label: r.label, percentLeft: r.percentLeft, resetsAt: r.resetsAt });
-			lines.push(...wrapRow(r.label, row.value, row.extra, { labelWidth, innerWidth }));
+			lines.push(...wrapRow(r.label, row.value, row.extraLines, { labelWidth, innerWidth }));
 		}
 	}
 
@@ -772,7 +818,7 @@ function buildStatusText(details: StatusMessageDetails, width: number): string[]
 
 		for (const r of ag.rows) {
 			const row = buildLimitRow({ label: r.label, percentLeft: r.percentLeft, resetsAt: r.resetsAt });
-			lines.push(...wrapRow(r.label, row.value, row.extra, { labelWidth, innerWidth }));
+			lines.push(...wrapRow(r.label, row.value, row.extraLines, { labelWidth, innerWidth }));
 		}
 	}
 
@@ -875,8 +921,8 @@ export default function tauStatus(pi: ExtensionAPI) {
 					}
 
 					const usage = await fetchOpenAiUsage(token, { accountId: cred?.accountId });
-					const primary = parseOpenAiUsageWindow(usage.rate_limit?.primary_window ?? undefined);
-					const secondary = parseOpenAiUsageWindow(usage.rate_limit?.secondary_window ?? undefined);
+					const primary = openAiRowFromWindow(usage.rate_limit?.primary_window ?? undefined, fetchedAt);
+					const secondary = openAiRowFromWindow(usage.rate_limit?.secondary_window ?? undefined, fetchedAt);
 
 					const email = (() => {
 						if (cred?.email) return cred.email;
@@ -1011,8 +1057,12 @@ export default function tauStatus(pi: ExtensionAPI) {
 				};
 
 				if (openai.ok) {
-					if (openai.data.primary) applyBurn(`openai:${openai.data.primary.label}`, openai.data.primary);
-					if (openai.data.secondary) applyBurn(`openai:${openai.data.secondary.label}`, openai.data.secondary);
+					if (openai.data.primary && typeof openai.data.primary.percentLeft === "number") {
+						nextState.values[`openai:${openai.data.primary.label}`] = { percentLeft: openai.data.primary.percentLeft };
+					}
+					if (openai.data.secondary && typeof openai.data.secondary.percentLeft === "number") {
+						nextState.values[`openai:${openai.data.secondary.label}`] = { percentLeft: openai.data.secondary.percentLeft };
+					}
 				}
 
 				if (geminiCli.ok) {
