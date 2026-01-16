@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
-import { Markdown, Text } from "@mariozechner/pi-tui";
+import { Markdown, Text, type AutocompleteItem } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 
 type BdIssue = {
@@ -391,6 +391,24 @@ export default function beads(pi: ExtensionAPI) {
 
 	pi.registerCommand("bd", {
 		description: "bd wrapper: /bd <command> (plus /bd init)",
+		getArgumentCompletions: (prefix: string): AutocompleteItem[] | null => {
+			const candidates: AutocompleteItem[] = [
+				{ value: "ready", label: "ready", description: "List ready work" },
+				{ value: "list", label: "list", description: "List issues" },
+				{ value: "blocked", label: "blocked", description: "List blocked issues" },
+				{ value: "show ", label: "show", description: "Show issue" },
+				{ value: "dep tree ", label: "dep tree", description: "Dependency tree" },
+				{ value: "init", label: "init", description: "Initialize repository" },
+				{ value: "onboard", label: "onboard", description: "Onboarding instructions" },
+				{ value: "sync", label: "sync", description: "Sync issues with git" },
+				{ value: "prime", label: "prime", description: "Prime local cache" },
+				{ value: "help", label: "help", description: "Show help" },
+			];
+
+			const normalized = prefix.toLowerCase();
+			const filtered = candidates.filter((c) => c.value.toLowerCase().startsWith(normalized));
+			return filtered.length > 0 ? filtered : null;
+		},
 		handler: async (args, ctx) => {
 			const trimmed = (args || "").trim();
 			if (!trimmed || trimmed === "help") {
