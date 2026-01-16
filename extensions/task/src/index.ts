@@ -58,9 +58,6 @@ const TaskParams = Type.Object({
 });
 
 export default function task(pi: ExtensionAPI) {
-	pi.on("session_start", async () => {
-		console.log("task extension loaded");
-	});
 
 	const sessions = new SessionManager();
 	const runner = new TaskRunner(pi);
