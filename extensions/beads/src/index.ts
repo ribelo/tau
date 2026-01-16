@@ -254,42 +254,67 @@ export default function beads(pi: ExtensionAPI) {
 		return { systemPrompt: `${hint}\n\n${event.systemPrompt}` };
 	});
 
-	pi.registerCommand("beads-init", {
-		description: "Initialize Beads in the current repo (guides + runs bd init/onboard)",
-		handler: async (_args, ctx) => {
-			if (!ctx.hasUI) {
-				ctx.ui.notify("/beads-init requires interactive mode", "error");
+	const beadsInitFlow = async (ctx: any): Promise<void> => {
+		if (!ctx.hasUI) {
+			ctx.ui.notify("/beads init requires interactive mode", "error");
+			return;
+		}
+
+		const instructions =
+			"Beads init checklist:\n\n" +
+			"1) Verify Beads skill is installed globally and up-to-date:\n" +
+			"   - Ensure `~/.pi/agent/skills/beads/SKILL.md` exists\n" +
+			"   - Compare to upstream: https://github.com/steveyegge/beads/tree/main/claude-plugin/skills/beads\n\n" +
+			"2) If skill is OK, let the agent initialize this repo:\n" +
+			"   - Agent runs `bd init` (creates .beads and config)\n" +
+			"   - Agent runs `bd onboard` and follows its instructions (may ask you to do manual steps)\n";
+
+		ctx.ui.setEditorText(instructions);
+
+		const ok = await ctx.ui.confirm(
+			"Beads Init",
+			"Skill checked and up-to-date? Let the agent run bd init + bd onboard now?",
+		);
+		if (!ok) return;
+
+		// Use the agent (tool calls) to execute the init steps.
+		pi.sendUserMessage(
+			"Initialize Beads in this repository.\n\n" +
+				"Rules:\n" +
+				"- Use the `beads` tool (not bash).\n" +
+				"- Use `command` and omit the leading `bd`.\n\n" +
+				"Steps:\n" +
+				"1) Run `init`.\n" +
+				"2) Run `onboard` and follow the instructions it prints.\n" +
+				"3) If onboard requires manual user steps, summarize them and ask the user to confirm when done.",
+		);
+	};
+
+	pi.registerCommand("beads", {
+		description: "Beads commands: /beads init",
+		handler: async (args, ctx) => {
+			const parts = (args || "").trim().split(/\s+/).filter(Boolean);
+			const sub = parts[0] || "";
+
+			if (!sub || sub === "help") {
+				ctx.ui.notify("Usage: /beads init", "info");
 				return;
 			}
 
-			const instructions =
-				"Beads init checklist:\n\n" +
-				"1) Verify Beads skill is installed globally and up-to-date:\n" +
-				"   - Ensure `~/.pi/agent/skills/beads/SKILL.md` exists\n" +
-				"   - Compare to upstream: https://github.com/steveyegge/beads/tree/main/claude-plugin/skills/beads\n\n" +
-				"2) If skill is OK, let the agent initialize this repo:\n" +
-				"   - Agent runs `bd init` (creates .beads and config)\n" +
-				"   - Agent runs `bd onboard` and follows its instructions (may ask you to do manual steps)\n";
+			if (sub === "init") {
+				await beadsInitFlow(ctx);
+				return;
+			}
 
-			ctx.ui.setEditorText(instructions);
+			ctx.ui.notify("Usage: /beads init", "info");
+		},
+	});
 
-			const ok = await ctx.ui.confirm(
-				"Beads Init",
-				"Skill checked and up-to-date? Let the agent run bd init + bd onboard now?",
-			);
-			if (!ok) return;
-
-			// Use the agent (tool calls) to execute the init steps.
-			pi.sendUserMessage(
-				"Initialize Beads in this repository.\n\n" +
-					"Rules:\n" +
-					"- Use the `beads` tool (not bash).\n" +
-					"- Use `command` and omit the leading `bd`.\n\n" +
-					"Steps:\n" +
-					"1) Run `init`.\n" +
-					"2) Run `onboard` and follow the instructions it prints.\n" +
-					"3) If onboard requires manual user steps, summarize them and ask the user to confirm when done.",
-			);
+	// Backwards-compatible alias
+	pi.registerCommand("beads-init", {
+		description: "Alias for /beads init",
+		handler: async (_args, ctx) => {
+			await beadsInitFlow(ctx);
 		},
 	});
 
