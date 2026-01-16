@@ -10,7 +10,7 @@ import { loadSkills } from "./skills.js";
 import { SessionManager } from "./sessions.js";
 import { TaskRunner } from "./runner.js";
 import type { Difficulty } from "./types.js";
-import { renderTaskCall, renderTaskResult, type TaskToolDetails } from "./render.js";
+import { renderTaskCall, renderTaskResult, type TaskBatchItemDetails, type TaskToolDetails } from "./render.js";
 
 const Ajv = (AjvModule as any).default || AjvModule;
 const addFormats = (addFormatsModule as any).default || addFormatsModule;
@@ -29,6 +29,37 @@ function validateOutputSchema(schema: unknown): { ok: true } | { ok: false; erro
 	}
 }
 
+const EMPTY_USAGE = {
+	input: 0,
+	output: 0,
+	cacheRead: 0,
+	cacheWrite: 0,
+	cost: 0,
+	contextTokens: 0,
+	turns: 0,
+};
+
+function summarizeBatch(results: TaskBatchItemDetails[]): string {
+	const total = results.length;
+	const counts = { completed: 0, failed: 0, interrupted: 0, running: 0 };
+	for (const result of results) {
+		counts[result.status]++;
+	}
+	const parts: string[] = [];
+	if (counts.completed) parts.push(`${counts.completed} completed`);
+	if (counts.failed) parts.push(`${counts.failed} failed`);
+	if (counts.interrupted) parts.push(`${counts.interrupted} interrupted`);
+	if (counts.running) parts.push(`${counts.running} running`);
+	return parts.length > 0 ? `${parts.join(", ")} of ${total}` : `0 of ${total}`;
+}
+
+function aggregateBatchStatus(results: TaskBatchItemDetails[]): TaskBatchItemDetails["status"] {
+	if (results.some((r) => r.status === "running")) return "running";
+	if (results.some((r) => r.status === "failed")) return "failed";
+	if (results.some((r) => r.status === "interrupted")) return "interrupted";
+	return "completed";
+}
+
 function buildToolDescription(registry: TaskRegistry): string {
 	const lines: string[] = [];
 	lines.push("Delegate a task to a worker pi process (task-based, not persona-based).\n");
@@ -37,21 +68,26 @@ function buildToolDescription(registry: TaskRegistry): string {
 		lines.push(`- ${t.name}: ${t.description || ""}`.trim());
 	}
 	lines.push("");
+	lines.push("## Tasks");
+	lines.push("- Provide tasks[] array; each entry runs as its own worker");
+	lines.push("- Use a single-item array to run one task");
+	lines.push("");
 	lines.push("## Difficulty");
 	lines.push("- small: trivial");
 	lines.push("- medium: standard (default)");
 	lines.push("- large: complex\n");
 	lines.push("## Session continuation");
-	lines.push("- Provide session_id to resume the same worker context\n");
+	lines.push("- Provide session_id on each task entry to resume the same worker context");
+	lines.push("- Do not reuse the same session_id within a single batch\n");
 	lines.push("## Skills");
-	lines.push("- task_type=custom accepts a skills[] parameter to inject additional skills");
+	lines.push("- Each task entry with task_type=custom accepts skills[] to inject additional skills");
 	lines.push("");
 	lines.push("## Structured output");
-	lines.push("- Provide output_schema to require a submit_result tool call that matches the schema");
+	lines.push("- Provide output_schema per task to require a submit_result tool call that matches the schema");
 	return lines.join("\n").trim();
 }
 
-const TaskParams = Type.Object({
+const TaskItem = Type.Object({
 	task_type: Type.String({
 		description: "Type of work: code, search, review, planning, custom",
 	}),
@@ -84,25 +120,32 @@ const TaskParams = Type.Object({
 	),
 });
 
+const TaskParams = Type.Object({
+	tasks: Type.Array(TaskItem, {
+		minItems: 1,
+		description: "List of tasks to run concurrently. Use a single-item array for one task.",
+	}),
+});
+
 export default function task(pi: ExtensionAPI) {
 
 	const sessions = new SessionManager();
 	const runner = new TaskRunner();
 
 	// Track how many task tool calls are requested per turn to inject parallel constraints.
-	let currentTurnIndex = -1;
 	let plannedTaskCalls = 0;
 	let activeTaskCalls = 0;
 
-	pi.on("turn_start", async (event) => {
-		currentTurnIndex = event.turnIndex;
+	pi.on("turn_start", async () => {
 		plannedTaskCalls = 0;
 		activeTaskCalls = 0;
 	});
 
 	pi.on("tool_call", async (event) => {
 		if (event.toolName === "task") {
-			plannedTaskCalls++;
+			const tasks = Array.isArray((event.input as any).tasks) ? (event.input as any).tasks : undefined;
+			const count = Array.isArray(tasks) && tasks.length > 0 ? tasks.length : 1;
+			plannedTaskCalls += count;
 		}
 	});
 
@@ -113,199 +156,220 @@ export default function task(pi: ExtensionAPI) {
 		parameters: TaskParams,
 
 		async execute(_toolCallId, params, onUpdate, ctx, signal) {
-			const taskType = (params.task_type || "").trim();
-			const description = (params.description || "").trim();
-			const prompt = params.prompt || "";
-			const difficulty = (params.difficulty || "medium") as Difficulty;
-			const outputSchema = params.output_schema as unknown;
-			const outputSchemaKey = outputSchema ? JSON.stringify(outputSchema) : undefined;
+			const tasks = Array.isArray((params as any).tasks) ? (params as any).tasks : [];
+			if (tasks.length === 0) {
+				const details: TaskToolDetails = { status: "failed", results: [], message: "No tasks provided" };
+				return {
+					content: [{ type: "text", text: "No tasks provided." }],
+					isError: true,
+					details,
+				};
+			}
 
 			const registry = TaskRegistry.load(ctx.cwd);
-			const typeDef = registry.get(taskType);
-			if (!typeDef) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Unknown task_type: ${taskType}\nAvailable: ${registry
-								.list()
-								.map((t) => t.name)
-								.join(", ")}`,
-						},
-					],
-					isError: true,
+			const availableTypes = registry.list().map((t) => t.name).join(", ");
+			const sessionIdCounts = new Map<string, number>();
+			for (const task of tasks) {
+				const sessionId = typeof task.session_id === "string" ? task.session_id : undefined;
+				if (sessionId) sessionIdCounts.set(sessionId, (sessionIdCounts.get(sessionId) || 0) + 1);
+			}
+
+			const results: TaskBatchItemDetails[] = tasks.map((task, index) => ({
+				index,
+				taskType: typeof task.task_type === "string" ? task.task_type.trim() : "",
+				difficulty: typeof task.difficulty === "string" ? task.difficulty : "medium",
+				description: typeof task.description === "string" ? task.description.trim() : undefined,
+				sessionId: typeof task.session_id === "string" ? task.session_id : undefined,
+				status: "running",
+				model: undefined,
+				usage: { ...EMPTY_USAGE },
+				activities: [],
+				message: undefined,
+				missingSkills: undefined,
+				loadedSkills: undefined,
+				outputType: undefined,
+				structuredOutput: undefined,
+				durationMs: undefined,
+			}));
+
+			const emitBatchUpdate = () => {
+				if (!onUpdate) return;
+				const summary = summarizeBatch(results);
+				onUpdate({
+					content: [{ type: "text", text: summary || "(running...)" }],
 					details: {
-						taskType,
-						difficulty,
-						description,
-						sessionId: params.session_id ?? "(none)",
-						status: "failed",
-						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-						activities: [],
+						status: aggregateBatchStatus(results),
+						results: results.map((item) => ({ ...item })),
+						message: summary,
 					} satisfies TaskToolDetails,
-				};
-			}
+				});
+			};
 
-			if (params.skills && taskType !== "custom") {
-				return {
-					content: [
-						{
-							type: "text",
-							text: "skills is only valid for task_type=custom",
-						},
-					],
-					isError: true,
-					details: {
-						taskType,
-						difficulty,
-						description,
-						sessionId: params.session_id ?? "(none)",
-						status: "failed",
-						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-						activities: [],
-					} satisfies TaskToolDetails,
-				};
-			}
+			const updateItem = (index: number, patch: Partial<TaskBatchItemDetails>) => {
+				results[index] = { ...results[index], ...patch };
+				emitBatchUpdate();
+			};
 
-			if (outputSchema !== undefined) {
-				const validation = validateOutputSchema(outputSchema);
-				if (!validation.ok) {
-					return {
-						content: [
-							{
-								type: "text",
-								text: `Invalid output_schema: ${validation.error}`,
-							},
-						],
-						isError: true,
-						details: {
-							taskType,
-							difficulty,
-							description,
-							sessionId: params.session_id ?? "(none)",
-							status: "failed",
-							usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-							activities: [],
-						} satisfies TaskToolDetails,
-					};
-				}
-			}
-
-			let policy = registry.resolve(taskType, difficulty);
-			if (taskType === "custom" && Array.isArray(params.skills)) {
-				policy.skills.push(...params.skills);
-				// de-dupe
-				policy.skills = Array.from(new Set(policy.skills.map((s) => s.trim()).filter(Boolean)));
-			}
-
-			if (params.session_id && !sessions.hasSession(params.session_id)) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Unknown session_id: ${params.session_id}. Omit session_id to start a new task session.`,
-						},
-					],
-					isError: true,
-					details: {
-						taskType,
-						difficulty,
-						description,
-						sessionId: params.session_id,
-						status: "failed",
-						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-						activities: [],
-					} satisfies TaskToolDetails,
-				};
-			}
-
-			const { loaded, missing } = loadSkills(policy.skills, ctx.cwd);
-			const loadedSkillsMeta = loaded.map((s) => ({ name: s.name, path: s.path }));
-
-			if (missing.length > 0) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Missing skills: ${missing.join(", ")}`,
-						},
-					],
-					isError: true,
-					details: {
-						taskType,
-						difficulty,
-						description,
-						sessionId: params.session_id ?? "(none)",
-						status: "failed",
-						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-						activities: [],
-						missingSkills: missing,
-						loadedSkills: loadedSkillsMeta,
-					} satisfies TaskToolDetails,
-				};
-			}
-
-			let session: ReturnType<SessionManager["createSession"]>;
-			try {
-				session = sessions.createSession(taskType, difficulty, params.session_id, outputSchemaKey);
-			} catch (err) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: (err as Error).message,
-						},
-					],
-					isError: true,
-					details: {
-						taskType,
-						difficulty,
-						description,
-						sessionId: params.session_id ?? "(none)",
-						status: "failed",
-						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-						activities: [],
-					} satisfies TaskToolDetails,
-				};
-			}
+			emitBatchUpdate();
 
 			// Give the runtime a tick to emit any additional tool_call events for this turn,
 			// so plannedTaskCalls reflects the full parallel batch.
 			await new Promise((r) => setTimeout(r, 0));
 
-			const parallelCount = Math.max(1, plannedTaskCalls || 1, activeTaskCalls + 1);
-			activeTaskCalls++;
+			const parallelCount = Math.max(1, plannedTaskCalls || tasks.length, activeTaskCalls + tasks.length);
+			activeTaskCalls += tasks.length;
 
-			const wrapUpdate = (partial: AgentToolResult<any>) => {
-				if (!onUpdate) return;
-				const d = partial.details as any;
-				onUpdate({
-					...partial,
-					details: {
-						...d,
+			const runTask = async (task: any, index: number) => {
+				const taskType = (task.task_type || "").trim();
+				const description = (task.description || "").trim();
+				const prompt = task.prompt || "";
+				const difficulty = (task.difficulty || "medium") as Difficulty;
+				const outputSchema = task.output_schema as unknown;
+				const outputSchemaKey = outputSchema ? JSON.stringify(outputSchema) : undefined;
+				const taskSessionId = typeof task.session_id === "string" ? task.session_id : undefined;
+
+				updateItem(index, { taskType, difficulty, description, sessionId: taskSessionId });
+
+				if (taskSessionId && (sessionIdCounts.get(taskSessionId) || 0) > 1) {
+					updateItem(index, {
+						status: "failed",
+						message: `session_id ${taskSessionId} is duplicated in this batch`,
+						usage: { ...EMPTY_USAGE },
+						activities: [],
+						outputType: "failed",
+					});
+					return;
+				}
+
+				if (!registry.get(taskType)) {
+					updateItem(index, {
+						status: "failed",
+						message: `Unknown task_type: ${taskType}. Available: ${availableTypes}`,
+						usage: { ...EMPTY_USAGE },
+						activities: [],
+						outputType: "failed",
+					});
+					return;
+				}
+
+				if (task.skills && taskType !== "custom") {
+					updateItem(index, {
+						status: "failed",
+						message: "skills is only valid for task_type=custom",
+						usage: { ...EMPTY_USAGE },
+						activities: [],
+						outputType: "failed",
+					});
+					return;
+				}
+
+				if (outputSchema !== undefined) {
+					const validation = validateOutputSchema(outputSchema);
+					if (!validation.ok) {
+						updateItem(index, {
+							status: "failed",
+							message: `Invalid output_schema: ${validation.error}`,
+							usage: { ...EMPTY_USAGE },
+							activities: [],
+							outputType: "failed",
+						});
+						return;
+					}
+				}
+
+				let policy = registry.resolve(taskType, difficulty);
+				if (taskType === "custom" && Array.isArray(task.skills)) {
+					policy.skills.push(...task.skills);
+					// de-dupe
+					policy.skills = Array.from(new Set(policy.skills.map((s: string) => s.trim()).filter(Boolean)));
+				}
+
+				if (taskSessionId && !sessions.hasSession(taskSessionId)) {
+					updateItem(index, {
+						status: "failed",
+						message: `Unknown session_id: ${taskSessionId}. Omit session_id to start a new task session.`,
+						usage: { ...EMPTY_USAGE },
+						activities: [],
+						outputType: "failed",
+					});
+					return;
+				}
+
+				const { loaded, missing } = loadSkills(policy.skills, ctx.cwd);
+				const loadedSkillsMeta = loaded.map((s) => ({ name: s.name, path: s.path }));
+
+				if (missing.length > 0) {
+					updateItem(index, {
+						status: "failed",
+						message: `Missing skills: ${missing.join(", ")}`,
+						usage: { ...EMPTY_USAGE },
+						activities: [],
 						missingSkills: missing,
 						loadedSkills: loadedSkillsMeta,
-					} satisfies TaskToolDetails,
-				});
-			};
+						outputType: "failed",
+					});
+					return;
+				}
 
-			try {
-				const res = await runner.run({
-					parentCwd: ctx.cwd,
-					parentSessionId: ctx.sessionManager.getSessionId(),
-					parentModelId: ctx.model?.id,
-					parentThinking: pi.getThinkingLevel(),
-					parentTools: pi.getActiveTools(),
-					policy,
-					sessionId: session.sessionId,
-					description,
-					prompt,
-					skills: loaded,
-					parallelCount,
-					outputSchema,
-					onUpdate: wrapUpdate,
-					signal,
-				});
+				let session: ReturnType<SessionManager["createSession"]>;
+				try {
+					session = sessions.createSession(taskType, difficulty, taskSessionId, outputSchemaKey);
+				} catch (err) {
+					updateItem(index, {
+						status: "failed",
+						message: (err as Error).message,
+						usage: { ...EMPTY_USAGE },
+						activities: [],
+						outputType: "failed",
+					});
+					return;
+				}
+
+				const wrapUpdate = (partial: AgentToolResult<any>) => {
+					const d = partial.details as any;
+					updateItem(index, {
+						taskType,
+						difficulty,
+						description,
+						sessionId: d.sessionId ?? session.sessionId,
+						status: d.status,
+						model: d.model,
+						usage: d.usage,
+						activities: d.activities,
+						message: d.message,
+						missingSkills: missing,
+						loadedSkills: loadedSkillsMeta,
+					});
+				};
+
+				let res;
+				try {
+					res = await runner.run({
+						parentCwd: ctx.cwd,
+						parentSessionId: ctx.sessionManager.getSessionId(),
+						parentModelId: ctx.model?.id,
+						parentThinking: pi.getThinkingLevel(),
+						parentTools: pi.getActiveTools(),
+						policy,
+						sessionId: session.sessionId,
+						description,
+						prompt,
+						skills: loaded,
+						parallelCount,
+						outputSchema,
+						onUpdate: wrapUpdate,
+						signal,
+					});
+				} catch (err) {
+					updateItem(index, {
+						status: "failed",
+						message: (err as Error).message,
+						usage: { ...EMPTY_USAGE },
+						activities: [],
+						outputType: "failed",
+					});
+					return;
+				}
 
 				const outputType = res.output.type;
 				const structuredOutput = outputType === "completed_structured" ? res.output.data : undefined;
@@ -321,11 +385,15 @@ export default function task(pi: ExtensionAPI) {
 								: outputType === "failed"
 									? res.output.reason
 									: "";
+				const finalMessage =
+					message ||
+					(outputType === "completed_empty"
+						? "(no output)"
+						: outputType === "interrupted"
+							? "(interrupted; resumable)"
+							: "");
 
-				const details: TaskToolDetails = {
-					taskType,
-					difficulty,
-					description,
+				updateItem(index, {
 					sessionId: res.sessionId,
 					durationMs: res.durationMs,
 					status:
@@ -340,34 +408,59 @@ export default function task(pi: ExtensionAPI) {
 					model: res.model,
 					usage: res.usage,
 					activities: res.activities,
-					message,
+					message: finalMessage,
 					missingSkills: missing,
 					loadedSkills: loadedSkillsMeta,
 					outputType,
 					structuredOutput,
-				};
+				});
+			};
 
-				const isError = outputType === "failed";
-				const baseText = (() => {
-					if (outputType === "failed") return message ? `ERROR: ${message}` : "ERROR";
-					if (outputType === "interrupted") return "(interrupted; resumable)";
-					if (outputType === "completed_empty") return "(no output)";
-					return message || "(no output)";
-				})();
-
-				return {
-					content: [
-						{
-							type: "text",
-							text: `${baseText}\n\nsession_id: ${res.sessionId}`,
-						},
-					],
-					details,
-					isError,
-				};
+			try {
+				await Promise.all(
+					tasks.map((task, index) =>
+						runTask(task, index).catch((err) => {
+							updateItem(index, {
+								status: "failed",
+								message: (err as Error).message,
+								usage: { ...EMPTY_USAGE },
+								activities: [],
+								outputType: "failed",
+							});
+						}),
+					),
+				);
 			} finally {
-				activeTaskCalls = Math.max(0, activeTaskCalls - 1);
+				activeTaskCalls = Math.max(0, activeTaskCalls - tasks.length);
 			}
+
+			const summary = summarizeBatch(results);
+			const payload = results.map((item) => ({
+				task_type: item.taskType,
+				difficulty: item.difficulty,
+				session_id: item.sessionId ?? null,
+				status: item.status,
+				output_type: item.outputType ?? (item.status === "failed" ? "failed" : undefined),
+				message: item.message ?? "",
+				structured_output: item.structuredOutput ?? undefined,
+			}));
+
+			const details: TaskToolDetails = {
+				status: aggregateBatchStatus(results),
+				results: results.map((item) => ({ ...item })),
+				message: summary,
+			};
+
+			return {
+				content: [
+					{
+						type: "text",
+						text: JSON.stringify(payload, null, 2),
+					},
+				],
+				details,
+				isError: results.some((item) => item.status === "failed"),
+			};
 		},
 
 		renderCall(args, theme) {

@@ -13,11 +13,28 @@ type NestedTaskInfo = {
 	outputPreview?: string;
 };
 
-export type TaskToolDetails = TaskRunnerUpdateDetails & {
+export type TaskBatchItemDetails = {
+	index: number;
+	taskType: string;
+	difficulty: string;
+	description?: string;
+	sessionId?: string;
+	status: TaskRunnerUpdateDetails["status"];
+	model?: string;
+	usage: UsageStats;
+	activities: TaskActivity[];
+	message?: string;
 	missingSkills?: string[];
 	loadedSkills?: Array<{ name: string; path: string }>;
 	outputType?: string;
 	structuredOutput?: unknown;
+	durationMs?: number;
+};
+
+export type TaskToolDetails = {
+	status: TaskRunnerUpdateDetails["status"];
+	results: TaskBatchItemDetails[];
+	message?: string;
 };
 
 function oneLine(s: string): string {
@@ -62,17 +79,79 @@ function shortenPath(p: string): string {
 }
 
 function parseNestedTaskInfo(args: Record<string, unknown>, resultText: string | undefined): NestedTaskInfo {
-	const taskType = typeof (args as any).task_type === "string" ? (args as any).task_type : "?";
-	const difficulty = typeof (args as any).difficulty === "string" ? (args as any).difficulty : "medium";
-	const description = typeof (args as any).description === "string" ? (args as any).description : undefined;
+	const tasks = Array.isArray((args as any).tasks) ? (args as any).tasks : undefined;
+	const firstTask = tasks && tasks.length > 0 ? tasks[0] : undefined;
+
+	let taskType = "?";
+	let difficulty = "medium";
+	let description: string | undefined;
+
+	if (tasks && tasks.length > 0) {
+		if (tasks.length === 1) {
+			taskType = typeof firstTask?.task_type === "string" ? firstTask.task_type : "?";
+			difficulty = typeof firstTask?.difficulty === "string" ? firstTask.difficulty : "medium";
+			description = typeof firstTask?.description === "string" ? firstTask.description : undefined;
+		} else {
+			taskType = "batch";
+			difficulty = `${tasks.length}`;
+			description = `${tasks.length} tasks`;
+		}
+	} else {
+		taskType = typeof (args as any).task_type === "string" ? (args as any).task_type : "?";
+		difficulty = typeof (args as any).difficulty === "string" ? (args as any).difficulty : "medium";
+		description = typeof (args as any).description === "string" ? (args as any).description : undefined;
+	}
 
 	let sessionId: string | undefined;
 	let outputPreview: string | undefined;
 	if (typeof resultText === "string" && resultText.trim().length > 0) {
-		const m = resultText.match(/\bsession_id:\s*([a-f0-9\-]{8,})/i);
-		if (m?.[1]) sessionId = m[1];
-		outputPreview = oneLine(resultText.replace(/\n\s*session_id:.*$/is, "").trim());
-		if (!outputPreview) outputPreview = oneLine(resultText.trim());
+		const trimmed = resultText.trim();
+
+		if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+			try {
+				const parsed = JSON.parse(trimmed) as any;
+				if (Array.isArray(parsed)) {
+					const counts = { completed: 0, failed: 0, interrupted: 0, running: 0 };
+					for (const entry of parsed) {
+						const status = typeof entry?.status === "string" ? entry.status : "";
+						if (status === "completed") counts.completed++;
+						else if (status === "failed") counts.failed++;
+						else if (status === "interrupted") counts.interrupted++;
+						else if (status === "running") counts.running++;
+					}
+
+					const sessionEntry = parsed.find(
+						(entry: any) => entry && typeof entry.session_id === "string" && entry.session_id.length > 0,
+					);
+					if (sessionEntry) sessionId = sessionEntry.session_id;
+
+					const parts: string[] = [];
+					if (counts.completed) parts.push(`${counts.completed} completed`);
+					if (counts.failed) parts.push(`${counts.failed} failed`);
+					if (counts.interrupted) parts.push(`${counts.interrupted} interrupted`);
+					if (counts.running) parts.push(`${counts.running} running`);
+					if (parts.length > 0) outputPreview = `results: ${parts.join(", ")}`;
+				} else if (parsed && typeof parsed === "object") {
+					const parsedSessionId = (parsed as any).session_id;
+					if (typeof parsedSessionId === "string" && parsedSessionId.length > 0) {
+						sessionId = parsedSessionId;
+					}
+					const parsedMessage = (parsed as any).message;
+					if (typeof parsedMessage === "string" && parsedMessage.trim().length > 0) {
+						outputPreview = oneLine(parsedMessage.trim());
+					}
+				}
+			} catch {
+				// ignore parse errors
+			}
+		}
+
+		if (!outputPreview) {
+			const m = trimmed.match(/\bsession_id:\s*([a-f0-9\-]{8,})/i);
+			if (m?.[1]) sessionId = m[1];
+			outputPreview = oneLine(trimmed.replace(/\n\s*session_id:.*$/is, "").trim());
+			if (!outputPreview) outputPreview = oneLine(trimmed);
+		}
 	}
 
 	return { taskType, difficulty, description, sessionId, outputPreview };
@@ -139,6 +218,20 @@ function activityMark(a: TaskActivity, theme: any): string {
 	return theme.fg("dim", "•");
 }
 
+function summarizeBatchResults(results: TaskBatchItemDetails[]): string {
+	const total = results.length;
+	const counts = { completed: 0, failed: 0, interrupted: 0, running: 0 };
+	for (const result of results) {
+		counts[result.status]++;
+	}
+	const parts: string[] = [];
+	if (counts.completed) parts.push(`${counts.completed} completed`);
+	if (counts.failed) parts.push(`${counts.failed} failed`);
+	if (counts.interrupted) parts.push(`${counts.interrupted} interrupted`);
+	if (counts.running) parts.push(`${counts.running} running`);
+	return parts.length > 0 ? `${parts.join(", ")} of ${total}` : `0 of ${total}`;
+}
+
 /**
  * Hide tool call rendering so task appears as a single cell (like subagent).
  */
@@ -158,69 +251,162 @@ export function renderTaskResult(
 		return new Text(text, 0, 0);
 	}
 
-	const header = `${statusMark(details.status, theme)} ${theme.bold("task")} ${theme.fg("accent", `${details.taskType}:${details.difficulty}`)} ${theme.fg("dim", `(session: ${details.sessionId})`)}`;
+	const maybeResults = (details as any).results;
+	if (!Array.isArray(maybeResults)) {
+		const legacy = details as any;
+		const header = `${statusMark(legacy.status, theme)} ${theme.bold("task")} ${theme.fg("accent", `${legacy.taskType}:${legacy.difficulty}`)} ${theme.fg("dim", `(session: ${legacy.sessionId})`)}`;
 
-	const missing = (details.missingSkills || []).filter(Boolean);
-	const message = typeof details.message === "string" ? details.message : "";
+		const missing = (legacy.missingSkills || []).filter(Boolean);
+		const message = typeof legacy.message === "string" ? legacy.message : "";
+
+		if (options.expanded) {
+			const mdTheme = getMarkdownTheme();
+			const bodyParts: string[] = [];
+			bodyParts.push(`# task ${legacy.taskType}:${legacy.difficulty}`);
+			bodyParts.push("");
+			bodyParts.push(`session: ${legacy.sessionId}`);
+			if (legacy.description) bodyParts.push(`description: ${legacy.description}`);
+			if (legacy.model) bodyParts.push(`model: ${legacy.model}`);
+			if (missing.length > 0) bodyParts.push(`missing skills: ${missing.join(", ")}`);
+			if (legacy.usage) bodyParts.push(`usage: ${formatUsage(legacy.usage, legacy.model, legacy.durationMs)}`);
+			bodyParts.push("");
+			bodyParts.push(message || "(no output)");
+			return new Markdown(bodyParts.join("\n"), 0, 0, mdTheme);
+		}
+
+		const lines: string[] = [header];
+
+		if (legacy.description) {
+			lines.push(`  ${theme.fg("dim", "└ ")}${theme.fg("toolOutput", truncate(oneLine(legacy.description), 140))}`);
+		}
+
+		if (missing.length > 0) {
+			lines.push(`  ${theme.fg("warning", `missing skills: ${missing.join(", ")}`)}`);
+		}
+
+		const activities = legacy.activities || [];
+		const shown = options.isPartial ? activities.slice(0, 8) : activities.slice(0, 3);
+		const skipped = Math.max(0, activities.length - shown.length);
+		if (skipped > 0) {
+			lines.push(`    ${theme.fg("dim", `... +${skipped} more`)}`);
+		}
+
+		for (const a of shown) {
+			if (a.name === "task") {
+				const info = parseNestedTaskInfo(a.args, a.resultText);
+				let nested = `${activityMark(a, theme)} ${theme.fg("muted", "task ")}${theme.fg("accent", `${info.taskType}:${info.difficulty}`)}`;
+				if (info.sessionId) nested += theme.fg("dim", ` (session: ${info.sessionId})`);
+				lines.push(`  ${nested}`);
+				if (info.description) {
+					lines.push(`    ${theme.fg("dim", "└ ")}${theme.fg("toolOutput", truncate(oneLine(info.description), 140))}`);
+				}
+				if (info.outputPreview) {
+					lines.push(`    ${theme.fg("dim", "↩ ")}${theme.fg("toolOutput", truncate(info.outputPreview, 180))}`);
+				}
+				continue;
+			}
+
+			lines.push(`  ${activityMark(a, theme)} ${formatToolCall(a.name, a.args, theme)}`);
+		}
+
+		if (message) {
+			const summary = options.isPartial ? truncate(oneLine(message), 180) : truncate(oneLine(message), 400);
+			lines.push(`  ${theme.fg("dim", "↩ ")}${theme.fg("toolOutput", summary)}`);
+		}
+
+		if (legacy.usage && !options.isPartial) {
+			lines.push("");
+			lines.push(theme.fg("dim", formatUsage(legacy.usage, legacy.model, legacy.durationMs)));
+		}
+
+		return new Text(lines.join("\n"), 0, 0);
+	}
+
+	const results = maybeResults as TaskBatchItemDetails[];
+	const summary = summarizeBatchResults(results);
+	const header = `${statusMark(details.status, theme)} ${theme.bold("task")} ${theme.fg("accent", `batch:${results.length}`)}`;
 
 	if (options.expanded) {
 		const mdTheme = getMarkdownTheme();
 		const bodyParts: string[] = [];
-		bodyParts.push(`# task ${details.taskType}:${details.difficulty}`);
+		bodyParts.push(`# task batch (${results.length})`);
+		if (summary) bodyParts.push(`status: ${summary}`);
 		bodyParts.push("");
-		bodyParts.push(`session: ${details.sessionId}`);
-		if (details.description) bodyParts.push(`description: ${details.description}`);
-		if (details.model) bodyParts.push(`model: ${details.model}`);
-		if (missing.length > 0) bodyParts.push(`missing skills: ${missing.join(", ")}`);
-		if (details.usage) bodyParts.push(`usage: ${formatUsage(details.usage, details.model, details.durationMs)}`);
-		bodyParts.push("");
-		bodyParts.push(message || "(no output)");
+
+		for (const item of results) {
+			const missing = (item.missingSkills || []).filter(Boolean);
+			bodyParts.push(`## [${item.index}] ${item.taskType}:${item.difficulty}`);
+			bodyParts.push(`status: ${item.status}`);
+			if (item.sessionId) bodyParts.push(`session: ${item.sessionId}`);
+			if (item.description) bodyParts.push(`description: ${item.description}`);
+			if (item.model) bodyParts.push(`model: ${item.model}`);
+			if (missing.length > 0) bodyParts.push(`missing skills: ${missing.join(", ")}`);
+			if (item.usage) bodyParts.push(`usage: ${formatUsage(item.usage, item.model, item.durationMs)}`);
+			bodyParts.push("");
+			bodyParts.push(item.message || "(no output)");
+			bodyParts.push("");
+		}
+
 		return new Markdown(bodyParts.join("\n"), 0, 0, mdTheme);
 	}
 
 	const lines: string[] = [header];
-
-	if (details.description) {
-		lines.push(`  ${theme.fg("dim", "└ ")}${theme.fg("toolOutput", truncate(oneLine(details.description), 140))}`);
+	if (summary) {
+		lines.push(`  ${theme.fg("dim", summary)}`);
 	}
 
-	if (missing.length > 0) {
-		lines.push(`  ${theme.fg("warning", `missing skills: ${missing.join(", ")}`)}`);
-	}
+	const shown = options.isPartial ? results.slice(0, 3) : results.slice(0, 5);
+	const skipped = Math.max(0, results.length - shown.length);
 
-	const activities = details.activities || [];
-	const shown = options.isPartial ? activities.slice(0, 8) : activities.slice(0, 3);
-	const skipped = Math.max(0, activities.length - shown.length);
-	if (skipped > 0) {
-		lines.push(`    ${theme.fg("dim", `... +${skipped} more`)}`);
-	}
+	for (const item of shown) {
+		const missing = (item.missingSkills || []).filter(Boolean);
+		let line = `${statusMark(item.status, theme)} ${theme.fg("accent", `${item.taskType}:${item.difficulty}`)}`;
+		if (item.sessionId) line += theme.fg("dim", ` (session: ${item.sessionId})`);
+		lines.push(`  ${line}`);
 
-	for (const a of shown) {
-		if (a.name === "task") {
-			const info = parseNestedTaskInfo(a.args, a.resultText);
-			let nested = `${activityMark(a, theme)} ${theme.fg("muted", "task ")}${theme.fg("accent", `${info.taskType}:${info.difficulty}`)}`;
-			if (info.sessionId) nested += theme.fg("dim", ` (session: ${info.sessionId})`);
-			lines.push(`  ${nested}`);
-			if (info.description) {
-				lines.push(`    ${theme.fg("dim", "└ ")}${theme.fg("toolOutput", truncate(oneLine(info.description), 140))}`);
-			}
-			if (info.outputPreview) {
-				lines.push(`    ${theme.fg("dim", "↩ ")}${theme.fg("toolOutput", truncate(info.outputPreview, 180))}`);
-			}
-			continue;
+		if (item.description) {
+			lines.push(`    ${theme.fg("dim", "└ ")}${theme.fg("toolOutput", truncate(oneLine(item.description), 140))}`);
 		}
 
-		lines.push(`  ${activityMark(a, theme)} ${formatToolCall(a.name, a.args, theme)}`);
+		if (missing.length > 0) {
+			lines.push(`    ${theme.fg("warning", `missing skills: ${missing.join(", ")}`)}`);
+		}
+
+		const activities = item.activities || [];
+		const shownActivities = options.isPartial ? activities.slice(0, 2) : activities.slice(0, 3);
+		const skippedActivities = Math.max(0, activities.length - shownActivities.length);
+		if (skippedActivities > 0) {
+			lines.push(`    ${theme.fg("dim", `... +${skippedActivities} more`)}`);
+		}
+
+		for (const activity of shownActivities) {
+			if (activity.name === "task") {
+				const info = parseNestedTaskInfo(activity.args, activity.resultText);
+				let nested = `${activityMark(activity, theme)} ${theme.fg("muted", "task ")}${theme.fg("accent", `${info.taskType}:${info.difficulty}`)}`;
+				if (info.sessionId) nested += theme.fg("dim", ` (session: ${info.sessionId})`);
+				lines.push(`    ${nested}`);
+				if (info.description) {
+					lines.push(`      ${theme.fg("dim", "└ ")}${theme.fg("toolOutput", truncate(oneLine(info.description), 140))}`);
+				}
+				if (info.outputPreview) {
+					lines.push(`      ${theme.fg("dim", "↩ ")}${theme.fg("toolOutput", truncate(info.outputPreview, 180))}`);
+				}
+				continue;
+			}
+
+			lines.push(`    ${activityMark(activity, theme)} ${formatToolCall(activity.name, activity.args, theme)}`);
+		}
+
+		if (item.message) {
+			const itemSummary = options.isPartial
+				? truncate(oneLine(item.message), 160)
+				: truncate(oneLine(item.message), 320);
+			lines.push(`    ${theme.fg("dim", "↩ ")}${theme.fg("toolOutput", itemSummary)}`);
+		}
 	}
 
-	if (message) {
-		const summary = options.isPartial ? truncate(oneLine(message), 180) : truncate(oneLine(message), 400);
-		lines.push(`  ${theme.fg("dim", "↩ ")}${theme.fg("toolOutput", summary)}`);
-	}
-
-	if (details.usage && !options.isPartial) {
-		lines.push("");
-		lines.push(theme.fg("dim", formatUsage(details.usage, details.model, details.durationMs)));
+	if (skipped > 0) {
+		lines.push(`  ${theme.fg("dim", `... +${skipped} more`)}`);
 	}
 
 	return new Text(lines.join("\n"), 0, 0);
