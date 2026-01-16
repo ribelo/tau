@@ -5,6 +5,14 @@ import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import type { ToolRenderResultOptions } from "@mariozechner/pi-coding-agent";
 import type { TaskActivity, TaskRunnerUpdateDetails, UsageStats } from "./runner.js";
 
+type NestedTaskInfo = {
+	taskType: string;
+	difficulty: string;
+	description?: string;
+	sessionId?: string;
+	outputPreview?: string;
+};
+
 export type TaskToolDetails = TaskRunnerUpdateDetails & {
 	missingSkills?: string[];
 	loadedSkills?: Array<{ name: string; path: string }>;
@@ -50,6 +58,23 @@ function formatUsage(usage: UsageStats, model?: string, durationMs?: number): st
 function shortenPath(p: string): string {
 	const home = os.homedir();
 	return p.startsWith(home) ? `~${p.slice(home.length)}` : p;
+}
+
+function parseNestedTaskInfo(args: Record<string, unknown>, resultText: string | undefined): NestedTaskInfo {
+	const taskType = typeof (args as any).task_type === "string" ? (args as any).task_type : "?";
+	const difficulty = typeof (args as any).difficulty === "string" ? (args as any).difficulty : "medium";
+	const description = typeof (args as any).description === "string" ? (args as any).description : undefined;
+
+	let sessionId: string | undefined;
+	let outputPreview: string | undefined;
+	if (typeof resultText === "string" && resultText.trim().length > 0) {
+		const m = resultText.match(/\bsession_id:\s*([a-f0-9\-]{8,})/i);
+		if (m?.[1]) sessionId = m[1];
+		outputPreview = oneLine(resultText.replace(/\n\s*session_id:.*$/is, "").trim());
+		if (!outputPreview) outputPreview = oneLine(resultText.trim());
+	}
+
+	return { taskType, difficulty, description, sessionId, outputPreview };
 }
 
 function formatToolCall(toolName: string, args: Record<string, unknown>, theme: any): string {
@@ -170,6 +195,20 @@ export function renderTaskResult(
 	}
 
 	for (const a of shown) {
+		if (a.name === "task") {
+			const info = parseNestedTaskInfo(a.args, a.resultText);
+			let nested = `${activityMark(a, theme)} ${theme.fg("muted", "task ")}${theme.fg("accent", `${info.taskType}:${info.difficulty}`)}`;
+			if (info.sessionId) nested += theme.fg("dim", ` (session: ${info.sessionId})`);
+			lines.push(`  ${nested}`);
+			if (info.description) {
+				lines.push(`    ${theme.fg("dim", "└ ")}${theme.fg("toolOutput", truncate(oneLine(info.description), 140))}`);
+			}
+			if (info.outputPreview) {
+				lines.push(`    ${theme.fg("dim", "↩ ")}${theme.fg("toolOutput", truncate(info.outputPreview, 180))}`);
+			}
+			continue;
+		}
+
 		lines.push(`  ${activityMark(a, theme)} ${formatToolCall(a.name, a.args, theme)}`);
 	}
 

@@ -90,6 +90,8 @@ export type TaskActivity = {
 	name: string;
 	args: Record<string, unknown>;
 	status: TaskActivityStatus;
+	/** One-line (or small) text preview of the tool result, if available. */
+	resultText?: string;
 };
 
 function extractActivities(messages: Message[]): TaskActivity[] {
@@ -118,12 +120,28 @@ function extractActivities(messages: Message[]): TaskActivity[] {
 			const id = String((msg as any).toolCallId ?? "");
 			const toolName = String((msg as any).toolName ?? "");
 			const isError = Boolean((msg as any).isError);
+
+			const text = Array.isArray(msg.content)
+				? msg.content
+						.filter((p: any) => p?.type === "text")
+						.map((p: any) => String(p.text ?? ""))
+						.join("\n")
+						.trim()
+				: "";
+
 			const existing = byId.get(id);
 			if (existing) {
 				existing.status = isError ? "error" : "success";
+				if (text) existing.resultText = text;
 			} else if (id) {
 				// Fallback: tool result without a tool call (shouldn't happen, but keep UI stable)
-				calls.push({ toolCallId: id, name: toolName || "(tool)", args: {}, status: isError ? "error" : "success" });
+				calls.push({
+					toolCallId: id,
+					name: toolName || "(tool)",
+					args: {},
+					status: isError ? "error" : "success",
+					resultText: text || undefined,
+				});
 			}
 		}
 	}
