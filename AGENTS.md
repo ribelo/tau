@@ -21,6 +21,7 @@ Multiple agents may work in the same checkout concurrently.
 - **Do not run destructive git commands** outside the extension directory you are actively working on.
   - Never `git restore`, `git checkout`, `git reset`, `git clean`, or similar on other extensions’ files.
 - If the repo is dirty due to someone else’s work and it blocks `bd sync`/`git pull`, **stop and ask** instead of trying to “fix” it.
+  - Safe fallback: `bd sync --flush-only` (exports beads JSONL without git pull/rebase/push)
 - It is always safe to run `bd` commands; `.beads/*` is designed for parallelism.
 
 ## Naming Conventions
