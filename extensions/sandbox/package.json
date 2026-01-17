@@ -6,7 +6,11 @@
     "extensions": ["./src/index.ts"]
   },
   "scripts": {
-    "test": "vitest --run"
+    "test": "vitest --run",
+    "asrt:smoke": "node ./scripts/asrt-smoke.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "^0.0.28"
   },
   "devDependencies": {
     "vitest": "^3.2.4"
