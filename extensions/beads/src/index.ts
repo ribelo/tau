@@ -64,6 +64,9 @@ const bdParams = Type.Object({
 		description:
 			"bd command to run. Omit the leading `bd` (it will be stripped if present). Examples: `ready`, `list`, `show tau-xyz`, `dep tree tau-xyz --direction up`.",
 	}),
+	cwd: Type.Optional(Type.String({
+		description: "Optional current working directory to run the command in.",
+	})),
 });
 
 function statusMark(status: string | undefined): "done" | "todo" {
@@ -74,7 +77,9 @@ function statusMark(status: string | undefined): "done" | "todo" {
 function renderIssueInline(issue: BdIssue, theme: any): string {
 	const check = statusMark(issue.status) === "done" ? theme.fg("success", "✔") : theme.fg("dim", "□");
 	const id = (issue.id || "(no-id)").padEnd(12);
-	const prio = `[${issue.priority !== undefined ? `P${issue.priority}` : "P?"}]`.padEnd(6);
+	const prioNum = issue.priority;
+	const prioStr = prioNum !== undefined && prioNum !== null ? `P${prioNum}` : "P?";
+	const prio = `[${prioStr}]`.padEnd(6);
 	const type = `[${issue.issue_type || "?"}]`.padEnd(10);
 	const status = `(${issue.status || "???"})`.padEnd(12);
 	const title = issue.title || "(no title)";
@@ -292,9 +297,9 @@ function buildArgs(command: string): { args: string[]; kind: RenderKind } {
 	return { args, kind };
 }
 
-async function runBd(pi: ExtensionAPI, command: string, signal?: AbortSignal): Promise<BdToolDetails> {
+async function runBd(pi: ExtensionAPI, command: string, signal?: AbortSignal, cwd?: string): Promise<BdToolDetails> {
 	const { args, kind } = buildArgs(command);
-	const res = await pi.exec("bd", args, { signal, timeout: 60_000 });
+	const res = await pi.exec("bd", args, { signal, timeout: 60_000, cwd });
 
 	const stdout = res.stdout || "";
 	const stderr = res.stderr || "";
@@ -454,7 +459,7 @@ export default function beads(pi: ExtensionAPI) {
 		parameters: bdParams,
 
 		async execute(_toolCallId, params, _onUpdate, _ctx, signal) {
-			const details = await runBd(pi, params.command, signal);
+			const details = await runBd(pi, params.command, signal, params.cwd);
 
 			if (details.code && details.code !== 0) {
 				const errText = details.outputText || `bd exited with code ${details.code}`;
@@ -498,6 +503,9 @@ export default function beads(pi: ExtensionAPI) {
 			}
 
 			let out = theme.fg("toolTitle", theme.bold(`bd ${positional.join(" ")}`));
+			if (args?.cwd) {
+				out += `\n${theme.fg("muted", `cwd: ${args.cwd}`)}`;
+			}
 			for (const [key, value] of Object.entries(flags)) {
 				let k = key;
 				let v = value === true ? "true" : String(value);
