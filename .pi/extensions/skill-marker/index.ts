@@ -188,6 +188,34 @@ class SkillMarkerEditor extends CustomEditor {
 		}
 		super.setAutocompleteProvider(this.wrapper);
 	}
+
+	/**
+	 * Auto-trigger $skill autocomplete like pi does for slash commands.
+	 *
+	 * The base Editor only auto-triggers on '/' and '@'. For '$', we call into the
+	 * Editor's internal autocomplete trigger via runtime access.
+	 */
+	override handleInput(data: string): void {
+		super.handleInput(data);
+
+		// Only for single-character inserts (typing). Avoid interfering with navigation keys.
+		if (data.length !== 1) return;
+
+		// Only trigger when not already showing suggestions.
+		if (this.isShowingAutocomplete()) return;
+
+		// Trigger when typing '$' or continuing a $token.
+		if (data !== "$" && !/[a-z0-9-]/.test(data)) return;
+
+		const { line, col } = this.getCursor();
+		const currentLine = this.getLines()[line] ?? "";
+		const textBeforeCursor = currentLine.slice(0, col);
+		if (!textBeforeCursor.match(SKILL_AUTOCOMPLETE_REGEX)) return;
+
+		// Call Editor private method (TS private is runtime-accessible)
+		const self = this as unknown as { tryTriggerAutocomplete?: (explicitTab?: boolean) => void };
+		self.tryTriggerAutocomplete?.(false);
+	}
 }
 
 // ============================================================================

@@ -23,7 +23,7 @@ Type a skill marker in your prompt:
 
 - `$beads`
 
-Press Tab to autocomplete.
+Autocomplete triggers as soon as you type `$` (like slash commands). You can also press Tab to force completion.
 
 Escape a marker to keep it literal:
 
