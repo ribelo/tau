@@ -34,7 +34,7 @@ mkdir -p "$TARGET"
 
 echo "Installing pi extensions to: $TARGET ($MODE)"
 
-EXTS=(beads exa task tau sandbox skill-marker)
+EXTS=(beads exa task tau editor-hub sandbox skill-marker)
 
 for ext in "${EXTS[@]}"; do
   src="$ROOT/extensions/$ext"

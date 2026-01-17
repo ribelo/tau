@@ -44,3 +44,7 @@ Escape a marker to keep it literal:
 - Markers are only recognized at beginning-of-line or after whitespace.
 - Skill names are restricted to `[a-z0-9-]+`.
 - Injected instructions strip YAML frontmatter and are truncated at pi defaults (50KB / 2000 lines).
+
+## Autocomplete implementation
+
+Autocomplete is enabled via `extensions/editor-hub` (plugin composition). No extension should directly call `ctx.ui.setEditorComponent(...)`.

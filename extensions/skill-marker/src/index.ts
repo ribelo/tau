@@ -1,6 +1,5 @@
-import type { ExtensionAPI, KeybindingsManager } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import {
-	CustomEditor,
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
 	discoverSkills,
@@ -10,34 +9,32 @@ import {
 	truncateHead,
 	type Skill,
 } from "@mariozechner/pi-coding-agent";
-import type { AutocompleteItem, AutocompleteProvider, EditorTheme, TUI } from "@mariozechner/pi-tui";
-import { fuzzyFilter } from "@mariozechner/pi-tui";
+import type { AutocompleteProvider } from "@mariozechner/pi-tui";
 import { readFile } from "node:fs/promises";
+
+import { registerEditorPlugin } from "../../editor-hub/src/registry.js";
+import {
+	SkillMarkerAutocompleteProvider,
+	shouldAutoTriggerSkillAutocomplete,
+	type SkillCandidate,
+} from "./autocomplete.js";
 
 /**
  * skill-marker
  *
  * Codex-inspired behavior:
  * - `$skillname` stays in the user prompt (marker)
- * - Extension injects a separate `<skill>...</skill>` message before the model is called
- * - Autocomplete:
- *   - typing `$` (after whitespace / at start) auto-opens the suggestion list
- *   - Tab also forces completion
+ * - Inject a separate `<skill>...</skill>` message before the model is called
+ *
+ * Autocomplete integration:
+ * - This extension does NOT call ctx.ui.setEditorComponent().
+ * - It registers an editor-hub plugin to add $skill autocomplete to whichever editor is active.
  */
-
-// ============================================================================
-// Configuration
-// ============================================================================
 
 const ENABLED = true;
 
-// Skill marker rules (as decided in tau-2lq.1)
+// Marker rules (see tau-2lq.1)
 const SKILL_MARKER_REGEX = /(?:^|\s)\$([a-z0-9][a-z0-9-]*)(?=$|[^a-z0-9-])/g;
-const SKILL_AUTOCOMPLETE_REGEX = /(?:^|\s)(\$[a-z0-9-]*)$/;
-
-// ============================================================================
-// Skill registry (discovery + caching)
-// ============================================================================
 
 type SkillInfo = {
 	name: string;
@@ -69,18 +66,18 @@ class SkillRegistry {
 		this.bodyCache.clear();
 	}
 
-	getAll(): SkillInfo[] {
-		return [...this.byName.values()];
-	}
-
 	get(name: string): SkillInfo | undefined {
 		return this.byName.get(name);
 	}
 
-	/**
-	 * Read and cache the SKILL.md body (frontmatter stripped).
-	 * Applies truncation to avoid blowing up context.
-	 */
+	getCandidates(): SkillCandidate[] {
+		return [...this.byName.values()].map((s) => ({ name: s.name, description: s.description }));
+	}
+
+	getAllNames(): string[] {
+		return [...this.byName.keys()];
+	}
+
 	async getBody(name: string): Promise<SkillBody | undefined> {
 		const cached = this.bodyCache.get(name);
 		if (cached) return cached;
@@ -101,128 +98,6 @@ class SkillRegistry {
 		return result;
 	}
 }
-
-// ============================================================================
-// Autocomplete provider wrapper
-// ============================================================================
-
-class SkillMarkerAutocompleteProvider implements AutocompleteProvider {
-	private base: AutocompleteProvider;
-	private registry: SkillRegistry;
-
-	constructor(base: AutocompleteProvider, registry: SkillRegistry) {
-		this.base = base;
-		this.registry = registry;
-	}
-
-	setBase(base: AutocompleteProvider): void {
-		this.base = base;
-	}
-
-	getSuggestions(
-		lines: string[],
-		cursorLine: number,
-		cursorCol: number,
-	): { items: AutocompleteItem[]; prefix: string } | null {
-		const currentLine = lines[cursorLine] ?? "";
-		const textBeforeCursor = currentLine.slice(0, cursorCol);
-
-		const m = textBeforeCursor.match(SKILL_AUTOCOMPLETE_REGEX);
-		if (m) {
-			const prefix = m[1] ?? "$";
-			const query = prefix.slice(1);
-
-			const candidates = this.registry.getAll().map((s) => ({ name: s.name, description: s.description }));
-			const filtered = fuzzyFilter(candidates, query, (c) => c.name).slice(0, 30);
-			if (filtered.length === 0) return null;
-
-			return {
-				items: filtered.map((c) => ({ value: c.name, label: c.name, description: c.description })),
-				prefix,
-			};
-		}
-
-		return this.base.getSuggestions(lines, cursorLine, cursorCol);
-	}
-
-	applyCompletion(
-		lines: string[],
-		cursorLine: number,
-		cursorCol: number,
-		item: AutocompleteItem,
-		prefix: string,
-	): { lines: string[]; cursorLine: number; cursorCol: number } {
-		if (prefix.startsWith("$")) {
-			const currentLine = lines[cursorLine] ?? "";
-			const beforePrefix = currentLine.slice(0, cursorCol - prefix.length);
-			const afterCursor = currentLine.slice(cursorCol);
-
-			const insertion = `$${item.value}`;
-			const newLine = beforePrefix + insertion + afterCursor;
-			const newLines = [...lines];
-			newLines[cursorLine] = newLine;
-
-			return {
-				lines: newLines,
-				cursorLine,
-				cursorCol: beforePrefix.length + insertion.length,
-			};
-		}
-
-		return this.base.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
-	}
-}
-
-class SkillMarkerEditor extends CustomEditor {
-	private registry: SkillRegistry;
-	private wrapper?: SkillMarkerAutocompleteProvider;
-
-	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, registry: SkillRegistry) {
-		super(tui, theme, keybindings);
-		this.registry = registry;
-	}
-
-	override setAutocompleteProvider(provider: AutocompleteProvider): void {
-		if (!this.wrapper) {
-			this.wrapper = new SkillMarkerAutocompleteProvider(provider, this.registry);
-		} else {
-			this.wrapper.setBase(provider);
-		}
-		super.setAutocompleteProvider(this.wrapper);
-	}
-
-	/**
-	 * Auto-trigger $skill autocomplete like pi does for slash commands.
-	 *
-	 * The base Editor only auto-triggers on '/' and '@'. For '$', we call into the
-	 * Editor's internal autocomplete trigger via runtime access.
-	 */
-	override handleInput(data: string): void {
-		super.handleInput(data);
-
-		// Only for single-character inserts (typing). Avoid interfering with navigation keys.
-		if (data.length !== 1) return;
-
-		// Only trigger when not already showing suggestions.
-		if (this.isShowingAutocomplete()) return;
-
-		// Trigger when typing '$' or continuing a $token.
-		if (data !== "$" && !/[a-z0-9-]/.test(data)) return;
-
-		const { line, col } = this.getCursor();
-		const currentLine = this.getLines()[line] ?? "";
-		const textBeforeCursor = currentLine.slice(0, col);
-		if (!textBeforeCursor.match(SKILL_AUTOCOMPLETE_REGEX)) return;
-
-		// Call Editor private method (TS private is runtime-accessible)
-		const self = this as unknown as { tryTriggerAutocomplete?: (explicitTab?: boolean) => void };
-		self.tryTriggerAutocomplete?.(false);
-	}
-}
-
-// ============================================================================
-// Helpers
-// ============================================================================
 
 function collectMentionedSkills(prompt: string): string[] {
 	const out: string[] = [];
@@ -246,10 +121,6 @@ function escapeXml(str: string): string {
 		.replace(/'/g, "&apos;");
 }
 
-// ============================================================================
-// Extension
-// ============================================================================
-
 export default function skillMarker(pi: ExtensionAPI) {
 	if (!ENABLED) return;
 
@@ -262,6 +133,26 @@ export default function skillMarker(pi: ExtensionAPI) {
 		registry.refresh(skills);
 	}
 
+	// Editor plugin: adds $skill autocomplete without owning the editor
+	let wrapper: SkillMarkerAutocompleteProvider | undefined;
+	registerEditorPlugin({
+		id: "skill-marker:autocomplete",
+		priority: 50,
+		wrapAutocompleteProvider: (provider: AutocompleteProvider, editor: any) => {
+			if (!wrapper) {
+				wrapper = new SkillMarkerAutocompleteProvider(provider, () => registry.getCandidates());
+			} else {
+				wrapper.setBase(provider);
+			}
+			return wrapper;
+		},
+		afterInput: (data: string, editor: any) => {
+			if (!shouldAutoTriggerSkillAutocomplete(editor, data)) return;
+			const self = editor as unknown as { tryTriggerAutocomplete?: (explicitTab?: boolean) => void };
+			self.tryTriggerAutocomplete?.(false);
+		},
+	});
+
 	pi.on("session_start", async (_event, ctx) => {
 		try {
 			await reloadSkills(ctx.cwd);
@@ -273,14 +164,11 @@ export default function skillMarker(pi: ExtensionAPI) {
 				);
 			}
 		}
-
-		// Install editor with $skill autocomplete.
-		ctx.ui.setEditorComponent((tui, theme, keybindings) => new SkillMarkerEditor(tui, theme, keybindings, registry));
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
-		// Ensure registry is populated (best-effort)
-		if (registry.getAll().length === 0) {
+		// Best-effort: ensure we have skills loaded
+		if (registry.getAllNames().length === 0) {
 			try {
 				await reloadSkills(ctx.cwd);
 			} catch {

@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
-import { CustomEditor } from "@mariozechner/pi-coding-agent";
 import { visibleWidth } from "@mariozechner/pi-tui";
+import { registerEditorPlugin } from "../../editor-hub/src/registry.js";
 
 const TAU_STATE_TYPE = "tau-state";
 
@@ -27,68 +27,65 @@ function withBg(line: string, width: number): string {
 	return `${BG}${patched}\x1b[0m`;
 }
 
-class TerminalPromptEditor extends CustomEditor {
-	render(width: number): string[] {
-		const promptPrefix = "\x1b[1m›\x1b[0m ";
-		const continuationPrefix = "  ";
-		const prefixWidth = 2; // visible width of "› "
+function renderTerminalPrompt(width: number, next: (w: number) => string[]): string[] {
+	const promptPrefix = "\x1b[1m›\x1b[0m ";
+	const continuationPrefix = "  ";
+	const prefixWidth = 2; // visible width of "› "
 
-		if (width <= prefixWidth) return super.render(width);
-		const contentWidth = Math.max(1, width - prefixWidth);
+	if (width <= prefixWidth) return next(width);
+	const contentWidth = Math.max(1, width - prefixWidth);
 
-		// Let the built-in editor do all the hard stuff (layout, cursor, autocomplete),
-		// then remove its borders and add our prompt prefix.
-		const base = super.render(contentWidth);
-		if (base.length < 2) return base;
+	// Let the built-in editor do all the hard stuff (layout, cursor, autocomplete),
+	// then remove its borders and add our prompt prefix.
+	const base = next(contentWidth);
+	if (base.length < 2) return base;
 
-		// base format: [topBorder, ...contentLines, bottomBorder, ...autocomplete]
-		const bottomBorderIndex = (() => {
-			for (let i = base.length - 1; i >= 1; i--) {
-				if (isHorizontalBorderLine(base[i]!)) return i;
-			}
-			return -1;
-		})();
-
-		if (bottomBorderIndex === -1) {
-			// Unexpected, but don't crash; just prefix everything.
-			return base.map((line, i) => withBg(`${i === 0 ? promptPrefix : continuationPrefix}${line}`, width));
+	// base format: [topBorder, ...contentLines, bottomBorder, ...autocomplete]
+	const bottomBorderIndex = (() => {
+		for (let i = base.length - 1; i >= 1; i--) {
+			if (isHorizontalBorderLine(base[i]!)) return i;
 		}
+		return -1;
+	})();
 
-		const contentLines = base.slice(1, bottomBorderIndex);
-		const autocompleteLines = base.slice(bottomBorderIndex + 1);
-
-		const result: string[] = [];
-
-		// Top Y padding
-		result.push(withBg("", width));
-
-		for (let i = 0; i < contentLines.length; i++) {
-			const line = contentLines[i] ?? "";
-			const prefix = i === 0 ? promptPrefix : continuationPrefix;
-			// Content lines are already padded to contentWidth by Editor.render().
-			result.push(withBg(prefix + line, width));
-		}
-
-		// Bottom Y padding
-		result.push(withBg("", width));
-
-		// Keep autocomplete outside of the "input area" background (more Codex-like popup).
-		for (const line of autocompleteLines) {
-			const padding = " ".repeat(Math.max(0, contentWidth - visibleWidth(line)));
-			result.push(continuationPrefix + line + padding);
-		}
-
-		return result;
+	if (bottomBorderIndex === -1) {
+		// Unexpected, but don't crash; just prefix everything.
+		return base.map((line, i) => withBg(`${i === 0 ? promptPrefix : continuationPrefix}${line}`, width));
 	}
+
+	const contentLines = base.slice(1, bottomBorderIndex);
+	const autocompleteLines = base.slice(bottomBorderIndex + 1);
+
+	const result: string[] = [];
+
+	// Top Y padding
+	result.push(withBg("", width));
+
+	for (let i = 0; i < contentLines.length; i++) {
+		const line = contentLines[i] ?? "";
+		const prefix = i === 0 ? promptPrefix : continuationPrefix;
+		// Content lines are already padded to contentWidth by Editor.render().
+		result.push(withBg(prefix + line, width));
+	}
+
+	// Bottom Y padding
+	result.push(withBg("", width));
+
+	// Keep autocomplete outside of the "input area" background (more Codex-like popup).
+	for (const line of autocompleteLines) {
+		const padding = " ".repeat(Math.max(0, contentWidth - visibleWidth(line)));
+		result.push(continuationPrefix + line + padding);
+	}
+
+	return result;
 }
 
-function applyEditor(enabled: boolean, ctx: ExtensionCommandContext | any): void {
-	if (!ctx.hasUI) return;
-	if (enabled) {
-		ctx.ui.setEditorComponent((tui: any, theme: any, keybindings: any) => new TerminalPromptEditor(tui, theme, keybindings));
-	} else {
-		ctx.ui.setEditorComponent(undefined);
-	}
+function applyEditor(enabled: boolean): void {
+	registerEditorPlugin({
+		id: "tau:terminal-prompt",
+		priority: 10,
+		render: (width, next) => (enabled ? renderTerminalPrompt(width, next) : next(width)),
+	});
 }
 
 export default function tauTerminalPrompt(pi: ExtensionAPI) {
@@ -119,7 +116,7 @@ export default function tauTerminalPrompt(pi: ExtensionAPI) {
 				return;
 			}
 
-			applyEditor(enabled, ctx);
+			applyEditor(enabled);
 			pi.appendEntry(TAU_STATE_TYPE, { terminalPrompt: enabled });
 			ctx.ui.notify(`Tau prompt: ${enabled ? "on" : "off"}`, "info");
 		},
@@ -138,6 +135,6 @@ export default function tauTerminalPrompt(pi: ExtensionAPI) {
 			enabled = last.data.terminalPrompt;
 		}
 
-		applyEditor(enabled, ctx);
+		applyEditor(enabled);
 	});
 }
