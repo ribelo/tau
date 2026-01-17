@@ -352,15 +352,14 @@ export default function exa(pi: ExtensionAPI) {
 		}),
 
 		renderCall(args, theme) {
+			const query = typeof (args as any)?.query === "string" ? (args as any).query : "";
 			let out = theme.fg("toolTitle", theme.bold("exa.web_search"));
-			const query = typeof (args as any)?.query === "string" ? truncate(oneLine((args as any).query), 140) : "";
-			if (query) out += ` ${theme.fg("toolOutput", query)}`;
+			if (query) out += ` ${theme.fg("toolOutput", truncate(oneLine(query), 140))}`;
 
 			const extras: Array<[string, unknown]> = [
 				["type", (args as any).type],
 				["category", (args as any).category],
 				["userLocation", (args as any).userLocation],
-				["additionalQueries", (args as any).additionalQueries],
 				["numResults", (args as any).numResults],
 				["text", (args as any).text],
 				["context", (args as any).context],
@@ -375,14 +374,9 @@ export default function exa(pi: ExtensionAPI) {
 				["moderation", (args as any).moderation],
 			];
 
-			let firstExtra = true;
 			for (const [k, v] of extras) {
 				if (v === undefined) continue;
-				if (firstExtra) {
-					out += "\n ";
-					firstExtra = false;
-				}
-				out += ` ${theme.fg("muted", k + ":")} ${theme.fg("dim", fmtValue(v))}`;
+				out += `\n${theme.fg("muted", k + ":")} ${theme.fg("dim", fmtValue(v))}`;
 			}
 
 			return new Text(out, 0, 0);
@@ -397,14 +391,12 @@ export default function exa(pi: ExtensionAPI) {
 			const results: ExaSearchResult[] = Array.isArray(json?.results) ? json.results : [];
 			const shown = options.expanded ? results : results.slice(0, 3);
 
-			let out = "";
+			const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+			let out = theme.fg("dim", separator);
+
 			if (json?.requestId || json?.resolvedSearchType) {
-				out += "  ";
-				if (json?.requestId) out += `${theme.fg("muted", "requestId:")} ${theme.fg("dim", String(json.requestId))}`;
-				if (json?.resolvedSearchType) {
-					if (json?.requestId) out += "\n  ";
-					out += `${theme.fg("muted", "resolvedSearchType:")} ${theme.fg("dim", String(json.resolvedSearchType))}`;
-				}
+				if (json?.requestId) out += `\n${theme.fg("muted", "requestId:")} ${theme.fg("dim", String(json.requestId))}`;
+				if (json?.resolvedSearchType) out += `\n${theme.fg("muted", "resolvedSearchType:")} ${theme.fg("dim", String(json.resolvedSearchType))}`;
 			}
 
 			for (let i = 0; i < shown.length; i++) {
@@ -429,7 +421,7 @@ export default function exa(pi: ExtensionAPI) {
 			}
 			if (shown.length === 0) out += `\n  ${theme.fg("dim", "(no results)")}`;
 
-			return new Text(out.trim(), 0, 0);
+			return new Text(out, 0, 0);
 		},
 
 		async execute(_toolCallId, params: any, onUpdate, _ctx, signal) {
@@ -551,14 +543,9 @@ export default function exa(pi: ExtensionAPI) {
 				["subpageTarget", (args as any).subpageTarget],
 			];
 
-			let firstExtra = true;
 			for (const [k, v] of extras) {
 				if (v === undefined) continue;
-				if (firstExtra) {
-					out += "\n ";
-					firstExtra = false;
-				}
-				out += ` ${theme.fg("muted", k + ":")} ${theme.fg("dim", fmtValue(v))}`;
+				out += `\n${theme.fg("muted", k + ":")} ${theme.fg("dim", fmtValue(v))}`;
 			}
 			return new Text(out, 0, 0);
 		},
@@ -572,8 +559,10 @@ export default function exa(pi: ExtensionAPI) {
 			const results: ExaContentsResult[] = Array.isArray(json?.results) ? json.results : [];
 			const shown = options.expanded ? results : results.slice(0, 2);
 
-			let out = "";
-			if (json?.requestId) out += `  ${theme.fg("muted", "requestId:")} ${theme.fg("dim", String(json.requestId))}`;
+			const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+			let out = theme.fg("dim", separator);
+
+			if (json?.requestId) out += `\n${theme.fg("muted", "requestId:")} ${theme.fg("dim", String(json.requestId))}`;
 
 			for (let i = 0; i < shown.length; i++) {
 				const r = shown[i]!;
@@ -603,7 +592,7 @@ export default function exa(pi: ExtensionAPI) {
 				out += `\n\n  ${theme.fg("dim", `… ${results.length - shown.length} more (expand to view)`)}`;
 			}
 			if (shown.length === 0) out += `\n  ${theme.fg("dim", "(no results)")}`;
-			return new Text(out.trim(), 0, 0);
+			return new Text(out, 0, 0);
 		},
 
 		async execute(_toolCallId, params: any, onUpdate, _ctx, signal) {
@@ -670,12 +659,12 @@ export default function exa(pi: ExtensionAPI) {
 
 		renderCall(args, theme) {
 			let out = theme.fg("toolTitle", theme.bold("exa.code_context"));
-			const query = typeof (args as any)?.query === "string" ? truncate(oneLine((args as any).query), 140) : "";
-			if (query) out += ` ${theme.fg("toolOutput", query)}`;
+			const query = typeof (args as any)?.query === "string" ? (args as any).query : "";
+			if (query) out += ` ${theme.fg("toolOutput", truncate(oneLine(query), 140))}`;
 
 			const tokensNum = (args as any).tokensNum;
 			if (typeof tokensNum === "string" && tokensNum.trim().length > 0) {
-				out += `\n  ${theme.fg("muted", "tokensNum:")} ${theme.fg("dim", fmtValue(tokensNum.trim()))}`;
+				out += `\n${theme.fg("muted", "tokensNum:")} ${theme.fg("dim", fmtValue(tokensNum.trim()))}`;
 			}
 
 			return new Text(out, 0, 0);
@@ -690,13 +679,17 @@ export default function exa(pi: ExtensionAPI) {
 			const responseText = typeof json?.response === "string" ? json.response : "";
 			if (!responseText) return new Text(theme.fg("dim", "(no response)"), 0, 0);
 
+			const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+			const sepLine = theme.fg("dim", separator);
+
 			if (options.expanded) {
 				const mdTheme = getMarkdownTheme();
-				return new Markdown(responseText, 0, 0, mdTheme);
+				const md = new Markdown(responseText, 0, 0, mdTheme);
+				return new Text(`${sepLine}\n${md.render(theme)}`, 0, 0);
 			}
 
 			const head = truncateLines(responseText, 20);
-			let out = theme.fg("toolOutput", head.text);
+			let out = `${sepLine}\n${theme.fg("toolOutput", head.text)}`;
 			if (head.truncated) out += `\n\n${theme.fg("dim", "… (expand to view full context)")}`;
 			return new Text(out.trim(), 0, 0);
 		},
