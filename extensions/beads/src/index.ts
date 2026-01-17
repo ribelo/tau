@@ -37,6 +37,14 @@ type RenderKind =
 	| "create"
 	| "update"
 	| "close"
+	| "reopen"
+	| "search"
+	| "stale"
+	| "defer"
+	| "undefer"
+	| "pin"
+	| "unpin"
+	| "status"
 	| "init"
 	| "onboard"
 	| "sync"
@@ -221,6 +229,14 @@ function commandKind(args: string[]): RenderKind {
 	if (first === "create" || first === "new") return "create";
 	if (first === "update") return "update";
 	if (first === "close") return "close";
+	if (first === "reopen") return "reopen";
+	if (first === "search") return "search";
+	if (first === "stale") return "stale";
+	if (first === "defer") return "defer";
+	if (first === "undefer") return "undefer";
+	if (first === "pin") return "pin";
+	if (first === "unpin") return "unpin";
+	if (first === "status") return "status";
 	if (first === "dep" && nonFlags[1] === "tree") return "dep_tree";
 	if (first === "init") return "init";
 	if (first === "onboard") return "onboard";
@@ -247,16 +263,26 @@ function ensureJsonFlag(args: string[], kind: RenderKind): string[] {
 	if (args.includes("--json")) return args;
 
 	// Only auto-enable JSON for commands we know how to render as issues.
-	if (
-		kind === "ready" ||
-		kind === "list" ||
-		kind === "blocked" ||
-		kind === "show" ||
-		kind === "dep_tree" ||
-		kind === "create" ||
-		kind === "update" ||
-		kind === "close"
-	) {
+	const jsonCapable: RenderKind[] = [
+		"ready",
+		"list",
+		"blocked",
+		"show",
+		"dep_tree",
+		"create",
+		"update",
+		"close",
+		"reopen",
+		"search",
+		"stale",
+		"defer",
+		"undefer",
+		"pin",
+		"unpin",
+		"status",
+	];
+
+	if (jsonCapable.includes(kind)) {
 		return [...args, "--json"];
 	}
 
@@ -268,16 +294,27 @@ function withQuietFlag(args: string[], kind: RenderKind): string[] {
 	// commands like init/onboard/sync/prime.
 	if (args.includes("-q") || args.includes("--quiet")) return args;
 	if (args.includes("--json")) return ["-q", ...args];
-	if (
-		kind === "ready" ||
-		kind === "list" ||
-		kind === "blocked" ||
-		kind === "show" ||
-		kind === "dep_tree" ||
-		kind === "create" ||
-		kind === "update" ||
-		kind === "close"
-	) {
+
+	const quietCapable: RenderKind[] = [
+		"ready",
+		"list",
+		"blocked",
+		"show",
+		"dep_tree",
+		"create",
+		"update",
+		"close",
+		"reopen",
+		"search",
+		"stale",
+		"defer",
+		"undefer",
+		"pin",
+		"unpin",
+		"status",
+	];
+
+	if (quietCapable.includes(kind)) {
 		return ["-q", ...args];
 	}
 	return args;
@@ -330,6 +367,31 @@ async function runBd(pi: ExtensionAPI, command: string, signal?: AbortSignal, cw
 	};
 }
 
+function renderStatusBlock(json: any, theme: any): Text {
+	const summary = json.summary || {};
+	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+	let out = theme.fg("dim", separator);
+	out += `\n${theme.fg("toolTitle", theme.bold("Beads Status"))}`;
+
+	const row = (label: string, value: any) => `\n  ${label.padEnd(20)}: ${theme.fg("toolOutput", String(value))}`;
+
+	out += row("Total Issues", summary.total_issues);
+	out += row("Open", summary.open_issues);
+	out += row("In Progress", summary.in_progress_issues);
+	out += row("Closed", summary.closed_issues);
+	out += row("Blocked", summary.blocked_issues);
+	out += row("Ready", summary.ready_issues);
+	out += row("Deferred", summary.deferred_issues);
+	out += row("Pinned", summary.pinned_issues);
+
+	if (summary.average_lead_time_hours) {
+		const hours = Number(summary.average_lead_time_hours).toFixed(1);
+		out += row("Avg Lead Time", `${hours}h`);
+	}
+
+	return new Text(out, 0, 0);
+}
+
 function renderBd(details: BdToolDetails, options: { expanded: boolean }, theme: any) {
 	if (!details.isJson) {
 		const text = details.outputText || "(no output)";
@@ -343,15 +405,24 @@ function renderBd(details: BdToolDetails, options: { expanded: boolean }, theme:
 	}
 
 	const json = details.json;
+	if (details.kind === "status") return renderStatusBlock(json, theme);
+
 	const issues = normalizeIssues(json);
 	if (details.kind === "ready") return renderIssuesBlock(issues, options, theme);
 	if (details.kind === "list") return renderIssuesBlock(issues, options, theme);
 	if (details.kind === "blocked") return renderIssuesBlock(issues, options, theme);
+	if (details.kind === "search") return renderIssuesBlock(issues, options, theme);
+	if (details.kind === "stale") return renderIssuesBlock(issues, options, theme);
 	if (details.kind === "show") return renderIssuesBlock(issues, { expanded: true }, theme);
 	if (details.kind === "dep_tree") return renderTreeBlock(issues as BdTreeNode[], options, theme);
 	if (details.kind === "create") return renderIssuesBlock(issues, { expanded: true }, theme);
 	if (details.kind === "update") return renderIssuesBlock(issues, { expanded: true }, theme);
 	if (details.kind === "close") return renderIssuesBlock(issues, { expanded: true }, theme);
+	if (details.kind === "reopen") return renderIssuesBlock(issues, { expanded: true }, theme);
+	if (details.kind === "defer") return renderIssuesBlock(issues, { expanded: true }, theme);
+	if (details.kind === "undefer") return renderIssuesBlock(issues, { expanded: true }, theme);
+	if (details.kind === "pin") return renderIssuesBlock(issues, { expanded: true }, theme);
+	if (details.kind === "unpin") return renderIssuesBlock(issues, { expanded: true }, theme);
 
 	return renderFallback("unknown", JSON.stringify(json, null, 2), theme);
 }
@@ -402,10 +473,18 @@ export default function beads(pi: ExtensionAPI) {
 				{ value: "blocked", label: "blocked", description: "List blocked issues" },
 				{ value: "show ", label: "show", description: "Show issue" },
 				{ value: "dep tree ", label: "dep tree", description: "Dependency tree" },
+				{ value: "search ", label: "search", description: "Search issues" },
+				{ value: "reopen ", label: "reopen", description: "Reopen issues" },
+				{ value: "stale", label: "stale", description: "Show stale issues" },
+				{ value: "defer ", label: "defer", description: "Defer issues" },
+				{ value: "undefer ", label: "undefer", description: "Undefer issues" },
+				{ value: "pin ", label: "pin", description: "Pin issues" },
+				{ value: "unpin ", label: "unpin", description: "Unpin issues" },
 				{ value: "init", label: "init", description: "Initialize repository" },
 				{ value: "onboard", label: "onboard", description: "Onboarding instructions" },
 				{ value: "sync", label: "sync", description: "Sync issues with git" },
 				{ value: "prime", label: "prime", description: "Prime local cache" },
+				{ value: "status", label: "status", description: "Show database statistics" },
 				{ value: "help", label: "help", description: "Show help" },
 			];
 
