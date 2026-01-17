@@ -1,13 +1,14 @@
-# sandbox (pi extension)
+# sandbox (tau pi extension)
 
-OS-level sandboxing + approval gating for model tool calls (work-in-progress).
+Sandboxing + approvals for model tool calls (work-in-progress).
 
-This package is installed globally by symlinking/copying into:
-
-- `~/.pi/agent/extensions/sandbox`
-
-Use:
+Install globally by symlinking this directory into pi’s global extensions folder:
 
 ```bash
-./scripts/pi/install-extensions.sh
+mkdir -p ~/.pi/agent/extensions
+ln -s "$(pwd)/extensions/sandbox" ~/.pi/agent/extensions/sandbox
 ```
+
+Then enable it in your pi settings if needed (depends on your pi setup).
+
+This repo MUST NOT contain a repo-local `.pi/extensions` directory.

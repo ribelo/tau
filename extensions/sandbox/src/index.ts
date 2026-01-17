@@ -18,20 +18,13 @@ function loadSessionOverride(ctx: any): SandboxConfig | undefined {
 }
 
 export default function sandbox(pi: ExtensionAPI) {
-	// Ensure user config exists (first-run defaults). Safe: only fills missing keys.
+	// First-run: ensure sandbox defaults are written into ~/.pi/agent/settings.json (only fills missing keys).
 	ensureUserDefaults();
 
 	pi.on("session_start", async (_event, ctx) => {
-		// Placeholder: just compute effective config so we know the merge works.
-		// Commands + tool overrides will be added later.
+		// Validate config load + session override merge.
 		const sessionOverride = loadSessionOverride(ctx);
-		const effective = computeEffectiveConfig({ workspaceRoot: ctx.cwd, sessionOverride });
-		if (ctx.hasUI) {
-			ctx.ui.notify(
-				`Sandbox defaults loaded: fs=${effective.filesystemMode}, net=${effective.networkMode}, approval=${effective.approvalPolicy}`,
-				"info",
-			);
-		}
+		computeEffectiveConfig({ workspaceRoot: ctx.cwd, sessionOverride });
 	});
 }
 
