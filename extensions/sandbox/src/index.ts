@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 import type { SandboxConfig } from "./config.js";
 import { computeEffectiveConfig, ensureUserDefaults } from "./config.js";
+import { discoverWorkspaceRoot } from "./workspace-root.js";
 
 const STATE_TYPE = "sandbox_state";
 
@@ -24,8 +25,10 @@ export default function sandbox(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		// Validate config load + session override merge.
 		const sessionOverride = loadSessionOverride(ctx);
-		computeEffectiveConfig({ workspaceRoot: ctx.cwd, sessionOverride });
+		const workspaceRoot = discoverWorkspaceRoot(ctx.cwd);
+		computeEffectiveConfig({ workspaceRoot, sessionOverride });
 	});
 }
 
 export * from "./config.js";
+export * from "./workspace-root.js";
