@@ -3,6 +3,17 @@
 This project uses **bd (beads)** for issue tracking.
 Run `bd prime` for workflow context, or install hooks (`bd hooks install`) for auto-injection.
 
+## pi extension packaging (crucial)
+
+- **tau is a bag of pi extensions**. Keep extension source code under `./extensions/<name>/` (package with `package.json` + `pi.extensions`).
+- **Global pi config lives under `~/.pi`** and global extensions are discovered from **`~/.pi/agent/extensions/`**.
+- To install/update tau extensions globally, symlink (or copy) `./extensions/*` into `~/.pi/agent/extensions/`.
+- **Never create or use `./.pi/extensions/` inside this repo.** Project-local pi extension folders are not part of tau’s design.
+- Use the helper installer:
+  ```bash
+  ./scripts/pi/install-extensions.sh
+  ```
+
 ## Naming Conventions
 
 - All tool names, tool labels, and command names that are visible to the user should be **lowercase** to match pi's built-in tools (`read`, `bash`, `edit`, `write`, etc.).

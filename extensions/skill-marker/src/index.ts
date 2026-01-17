@@ -20,7 +20,9 @@ import { readFile } from "node:fs/promises";
  * Codex-inspired behavior:
  * - `$skillname` stays in the user prompt (marker)
  * - Extension injects a separate `<skill>...</skill>` message before the model is called
- * - Editor autocomplete inserts `$skillname` only (no expansion)
+ * - Autocomplete:
+ *   - typing `$` (after whitespace / at start) auto-opens the suggestion list
+ *   - Tab also forces completion
  */
 
 // ============================================================================
@@ -235,6 +237,15 @@ function collectMentionedSkills(prompt: string): string[] {
 	return out;
 }
 
+function escapeXml(str: string): string {
+	return str
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/\"/g, "&quot;")
+		.replace(/'/g, "&apos;");
+}
+
 // ============================================================================
 // Extension
 // ============================================================================
@@ -264,7 +275,6 @@ export default function skillMarker(pi: ExtensionAPI) {
 		}
 
 		// Install editor with $skill autocomplete.
-		// In non-interactive modes, ui is a no-op.
 		ctx.ui.setEditorComponent((tui, theme, keybindings) => new SkillMarkerEditor(tui, theme, keybindings, registry));
 	});
 
@@ -286,8 +296,7 @@ export default function skillMarker(pi: ExtensionAPI) {
 		const failed: Array<{ name: string; error: string }> = [];
 
 		for (const name of mentioned) {
-			const info = registry.get(name);
-			if (!info) {
+			if (!registry.get(name)) {
 				missing.push(name);
 				continue;
 			}
@@ -341,13 +350,4 @@ export default function skillMarker(pi: ExtensionAPI) {
 			},
 		};
 	});
-}
-
-function escapeXml(str: string): string {
-	return str
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;")
-		.replace(/\"/g, "&quot;")
-		.replace(/'/g, "&apos;");
 }
