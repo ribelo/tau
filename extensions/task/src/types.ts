@@ -1,6 +1,6 @@
 import type { ThinkingLevel } from "@mariozechner/pi-ai";
 
-export type Difficulty = "small" | "medium" | "large";
+export type Complexity = "low" | "medium" | "high";
 
 export interface TaskType {
 	name: string;
@@ -14,12 +14,12 @@ export interface TaskType {
 	 * Default model to use.
 	 * - undefined or "inherit": use parent model
 	 */
-	defaultModel?: string;
+	model?: string;
 	defaultThinking?: ThinkingLevel;
-	difficulty?: {
-		small?: { model?: string; thinking?: ThinkingLevel };
+	complexity?: {
+		low?: { model?: string; thinking?: ThinkingLevel };
 		medium?: { model?: string; thinking?: ThinkingLevel };
-		large?: { model?: string; thinking?: ThinkingLevel };
+		high?: { model?: string; thinking?: ThinkingLevel };
 	};
 	/** Default skills to inject */
 	skills?: string[];
@@ -27,7 +27,7 @@ export interface TaskType {
 
 export interface ResolvedPolicy {
 	taskType: string;
-	difficulty: Difficulty;
+	complexity: Complexity;
 	model?: string;
 	thinking?: ThinkingLevel;
 	tools?: string[];

@@ -13,7 +13,7 @@ import { TaskRegistry } from "./registry.js";
 import { loadSkills } from "./skills.js";
 import { SessionManager } from "./sessions.js";
 import { TaskRunner } from "./runner.js";
-import type { Difficulty } from "./types.js";
+import type { Complexity } from "./types.js";
 import { renderTaskCall, renderTaskResult, type TaskBatchItemDetails, type TaskToolDetails } from "./render.js";
 
 const Ajv = (AjvModule as any).default || AjvModule;
@@ -96,10 +96,10 @@ function buildToolDescription(registry: TaskRegistry): string {
 	lines.push("- Provide tasks[] array; each entry runs as its own worker");
 	lines.push("- Use a single-item array to run one task");
 	lines.push("");
-	lines.push("## Size");
-	lines.push("- small: trivial");
+	lines.push("## Complexity");
+	lines.push("- low: straightforward");
 	lines.push("- medium: standard (default)");
-	lines.push("- large: complex\n");
+	lines.push("- high: complex\n");
 	lines.push("## Session continuation");
 	lines.push("- Provide session_id on each task entry to resume the same worker context");
 	lines.push("- Do not reuse the same session_id within a single batch\n");
@@ -121,9 +121,9 @@ const TaskItem = Type.Object({
 	prompt: Type.String({
 		description: "The full prompt for the worker",
 	}),
-	size: Type.Optional(
-		StringEnum(["small", "medium", "large"] as const, {
-			description: "Task size. small=trivial, medium=standard (default), large=complex",
+	complexity: Type.Optional(
+		StringEnum(["low", "medium", "high"] as const, {
+			description: "Task complexity. low=straightforward, medium=standard (default), high=complex",
 			default: "medium",
 		}),
 	),
@@ -203,7 +203,7 @@ export default function task(pi: ExtensionAPI) {
 			const results: TaskBatchItemDetails[] = tasks.map((task, index) => ({
 				index,
 				type: typeof task.type === "string" ? task.type.trim() : "",
-				size: typeof task.size === "string" ? task.size : "medium",
+				complexity: typeof task.complexity === "string" ? task.complexity : "medium",
 				description: typeof task.description === "string" ? task.description.trim() : undefined,
 				sessionId: typeof task.session_id === "string" ? task.session_id : undefined,
 				status: "running",
@@ -249,12 +249,12 @@ export default function task(pi: ExtensionAPI) {
 				const taskType = (task.type || "").trim();
 				const description = (task.description || "").trim();
 				const prompt = task.prompt || "";
-				const size = (task.size || "medium") as Difficulty;
+				const complexity = (task.complexity || "medium") as Complexity;
 				const outputSchema = task.result_schema as unknown;
 				const outputSchemaKey = outputSchema ? JSON.stringify(outputSchema) : undefined;
 				const taskSessionId = typeof task.session_id === "string" ? task.session_id : undefined;
 
-				updateItem(index, { type: taskType, size, description, sessionId: taskSessionId });
+				updateItem(index, { type: taskType, complexity, description, sessionId: taskSessionId });
 
 				if (taskSessionId && (sessionIdCounts.get(taskSessionId) || 0) > 1) {
 					updateItem(index, {
@@ -303,7 +303,7 @@ export default function task(pi: ExtensionAPI) {
 					}
 				}
 
-				let policy = registry.resolve(taskType, size);
+				let policy = registry.resolve(taskType, complexity);
 				if (taskType === "custom" && Array.isArray(task.skills)) {
 					policy.skills.push(...task.skills);
 					// de-dupe
@@ -339,7 +339,7 @@ export default function task(pi: ExtensionAPI) {
 
 				let session: ReturnType<SessionManager["createSession"]>;
 				try {
-					session = sessions.createSession(taskType, size, taskSessionId, outputSchemaKey);
+					session = sessions.createSession(taskType, complexity, taskSessionId, outputSchemaKey);
 				} catch (err) {
 					updateItem(index, {
 						status: "failed",
@@ -355,7 +355,7 @@ export default function task(pi: ExtensionAPI) {
 					const d = partial.details as any;
 					updateItem(index, {
 						type: taskType,
-						size,
+						complexity,
 						description,
 						sessionId: d.sessionId ?? session.sessionId,
 						status: d.status,
@@ -463,7 +463,7 @@ export default function task(pi: ExtensionAPI) {
 			const summary = summarizeBatch(results);
 			const payload = results.map((item) => ({
 				type: item.type,
-				size: item.size,
+				complexity: item.complexity,
 				session_id: item.sessionId ?? null,
 				status: item.status,
 				output_type: item.status,

@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ThinkingLevel } from "@mariozechner/pi-ai";
-import type { Difficulty, ResolvedPolicy, TaskType } from "./types.js";
+import type { Complexity, ResolvedPolicy, TaskType } from "./types.js";
 
 type AnyRecord = Record<string, unknown>;
 
@@ -52,10 +52,10 @@ function normalizeThinkingLevel(level: unknown): ThinkingLevel | undefined {
 	return undefined;
 }
 
-function normalizeDifficultyConfig(v: unknown): TaskType["difficulty"] | undefined {
+function normalizeComplexityConfig(v: unknown): TaskType["complexity"] | undefined {
 	if (!isRecord(v)) return undefined;
-	const out: TaskType["difficulty"] = {};
-	for (const key of ["small", "medium", "large"] as const) {
+	const out: TaskType["complexity"] = {};
+	for (const key of ["low", "medium", "high"] as const) {
 		const item = (v as any)[key];
 		if (!isRecord(item)) continue;
 		const model = typeof item.model === "string" ? item.model : undefined;
@@ -70,34 +70,56 @@ function normalizeTaskType(name: string, raw: unknown): TaskType | null {
 
 	const description = typeof raw.description === "string" ? raw.description : "";
 	const tools = Array.isArray(raw.tools) ? raw.tools.filter((t) => typeof t === "string") : undefined;
-	const defaultModel = typeof raw.defaultModel === "string" ? raw.defaultModel : (typeof (raw as any).model === "string" ? (raw as any).model : undefined);
+	const model = typeof (raw as any).model === "string" ? (raw as any).model : undefined;
 	const defaultThinking = normalizeThinkingLevel((raw as any).defaultThinking ?? (raw as any).thinking);
 	const skills = Array.isArray(raw.skills) ? raw.skills.filter((s) => typeof s === "string") : undefined;
-	const difficulty = normalizeDifficultyConfig((raw as any).difficulty);
+	const complexity = normalizeComplexityConfig((raw as any).complexity);
 
 	return {
 		name,
 		description,
 		tools: tools && tools.length > 0 ? tools : undefined,
-		defaultModel,
+		model: complexity ? undefined : model,
 		defaultThinking,
-		difficulty,
+		complexity,
 		skills: skills && skills.length > 0 ? skills : undefined,
 	};
 }
 
 function mergeTaskType(base: TaskType, override: TaskType): TaskType {
+	const mergedComplexity = {
+		...(base.complexity ?? {}),
+		...(override.complexity ?? {}),
+	};
+	const hasComplexity = Object.keys(mergedComplexity).length > 0;
+
 	return {
 		...base,
 		...override,
 		// arrays replace, but normalize to undefined if empty
 		tools: override.tools !== undefined ? (override.tools.length > 0 ? override.tools : undefined) : base.tools,
 		skills: override.skills !== undefined ? (override.skills.length > 0 ? override.skills : undefined) : base.skills,
-		difficulty: {
-			...(base.difficulty ?? {}),
-			...(override.difficulty ?? {}),
-		},
+		complexity: hasComplexity ? mergedComplexity : undefined,
+		model: hasComplexity ? undefined : override.model ?? base.model,
 	};
+}
+
+function resolveComplexityConfig(complexityConfig: TaskType["complexity"], complexity: Complexity) {
+	const order: Complexity[] = ["low", "medium", "high"];
+	const start = order.indexOf(complexity);
+	if (start === -1) return undefined;
+
+	for (let i = start; i < order.length; i++) {
+		const candidate = complexityConfig?.[order[i]];
+		if (candidate) return candidate;
+	}
+
+	for (let i = start - 1; i >= 0; i--) {
+		const candidate = complexityConfig?.[order[i]];
+		if (candidate) return candidate;
+	}
+
+	return undefined;
 }
 
 export class TaskRegistry {
@@ -115,35 +137,35 @@ export class TaskRegistry {
 				name: "code",
 				description: "General implementation work",
 				tools: undefined, // all
-				defaultModel: "inherit",
+				model: "inherit",
 				skills: [],
 			},
 			{
 				name: "search",
 				description: "Find code, definitions, references (read-only)",
 				tools: ["read", "ls", "find", "grep"],
-				defaultModel: "inherit",
+				model: "inherit",
 				skills: ["search"],
 			},
 			{
 				name: "review",
 				description: "Code review (read-only + bash)",
 				tools: ["read", "ls", "find", "grep", "bash"],
-				defaultModel: "inherit",
+				model: "inherit",
 				skills: ["review"],
 			},
 			{
 				name: "planning",
 				description: "Architecture and design decisions (read-only)",
 				tools: ["read", "ls", "find", "grep"],
-				defaultModel: "inherit",
+				model: "inherit",
 				skills: ["planning"],
 			},
 			{
 				name: "custom",
 				description: "Custom task with user-specified skills",
 				tools: undefined, // all
-				defaultModel: "inherit",
+				model: "inherit",
 				skills: [],
 			},
 		];
@@ -186,18 +208,21 @@ export class TaskRegistry {
 		return Array.from(this.types.values()).sort((a, b) => a.name.localeCompare(b.name));
 	}
 
-	resolve(taskType: string, difficulty: Difficulty): ResolvedPolicy {
+	resolve(taskType: string, complexity: Complexity): ResolvedPolicy {
 		const t = this.get(taskType);
 		if (!t) throw new Error(`Unknown task type: ${taskType}`);
 
-		const diff = t.difficulty?.[difficulty];
-		const modelCandidate = diff?.model ?? t.defaultModel;
-		const model = typeof modelCandidate === "string" && modelCandidate.trim().length > 0 && modelCandidate !== "inherit" ? modelCandidate : undefined;
-		const thinking = diff?.thinking ?? t.defaultThinking;
+		const complexityConfig = t.complexity ? resolveComplexityConfig(t.complexity, complexity) : undefined;
+		const modelCandidate = complexityConfig?.model ?? t.model;
+		const model =
+			typeof modelCandidate === "string" && modelCandidate.trim().length > 0 && modelCandidate !== "inherit"
+				? modelCandidate
+				: undefined;
+		const thinking = complexityConfig?.thinking ?? t.defaultThinking;
 
 		return {
 			taskType: t.name,
-			difficulty,
+			complexity,
 			model,
 			thinking,
 			tools: t.tools,

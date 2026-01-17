@@ -10,7 +10,7 @@ import {
 	type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import type { Difficulty, ResolvedPolicy } from "./types.js";
+import type { Complexity, ResolvedPolicy } from "./types.js";
 import type { LoadedSkill } from "./skills.js";
 
 export interface UsageStats {
@@ -43,7 +43,7 @@ export interface TaskResult {
 
 export type TaskRunnerUpdateDetails = {
 	taskType: string;
-	difficulty: Difficulty;
+	complexity: Complexity;
 	description: string;
 	sessionId: string;
 	durationMs: number;
@@ -539,7 +539,7 @@ export class TaskRunner {
 				content: [{ type: "text", text: latest || "(running...)" }],
 				details: {
 					taskType: options.policy.taskType,
-					difficulty: options.policy.difficulty,
+					complexity: options.policy.complexity,
 					description: options.description,
 					sessionId: options.sessionId,
 					durationMs: Math.max(0, Date.now() - startedAt),

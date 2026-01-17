@@ -20,7 +20,7 @@ Delegate work to isolated worker processes that run in parallel. Workers have th
 
 **Rule of thumb**: If you'll discard 80% of the output after processing, delegate it.
 
-**Batch sizing**: You wait for the slowest task. Keep tasks in a batch similar in size—one slow task blocks the entire batch.
+**Batch complexity**: You wait for the slowest task. Keep tasks in a batch similar in complexity—one slow task blocks the entire batch.
 
 ## Integration with Beads
 
@@ -60,7 +60,7 @@ task({
     type: string,        // Worker type (user-configured, determines available tools)
     description: string, // Short label for logs/UI
     prompt: string,      // Full instructions - be explicit, workers don't see your conversation
-    size?: "small" | "medium" | "large",  // Affects model selection per user config
+    complexity?: "low" | "medium" | "high",  // Affects model selection per user config
     session_id?: string, // Continue existing session (must match original type)
     skills?: string[],   // Inject skills (availability depends on type config)
     result_schema?: object // JSON Schema - forces worker to call submit_result
@@ -72,7 +72,7 @@ task({
 ```typescript
 [{
   type: string,
-  size: string,
+  complexity: string,
   session_id: string | null,
   status: "completed" | "failed" | "interrupted",
   output_type: "completed" | "failed" | "interrupted",

@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
-import type { Difficulty } from "./types.js";
+import type { Complexity } from "./types.js";
 
 export interface TaskSession {
 	sessionId: string;
 	taskType: string;
-	difficulty: Difficulty;
+	complexity: Complexity;
 	createdAt: number;
 	/** In-process worker session (when using in-process backend). */
 	workerSession?: AgentSession;
@@ -33,7 +33,7 @@ export class SessionManager {
 	 *
 	 * If sessionId is provided and exists, validates it matches taskType.
 	 */
-	createSession(taskType: string, difficulty: Difficulty, sessionId?: string, outputSchemaKey?: string): TaskSession {
+	createSession(taskType: string, complexity: Complexity, sessionId?: string, outputSchemaKey?: string): TaskSession {
 		if (sessionId) {
 			const existing = this.sessions.get(sessionId);
 			if (existing) {
@@ -55,7 +55,7 @@ export class SessionManager {
 
 		const id = sessionId ?? randomUUID();
 		const createdAt = Date.now();
-		const session: TaskSession = { sessionId: id, taskType, difficulty, createdAt, outputSchemaKey };
+		const session: TaskSession = { sessionId: id, taskType, complexity, createdAt, outputSchemaKey };
 		this.sessions.set(id, session);
 		return session;
 	}

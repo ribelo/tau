@@ -7,7 +7,7 @@ import type { TaskActivity, TaskRunnerUpdateDetails, UsageStats } from "./runner
 
 type NestedTaskInfo = {
 	taskType: string;
-	difficulty: string;
+	complexity: string;
 	description?: string;
 	sessionId?: string;
 	outputPreview?: string;
@@ -16,7 +16,7 @@ type NestedTaskInfo = {
 export type TaskBatchItemDetails = {
 	index: number;
 	type: string;
-	size: string;
+	complexity: string;
 	description?: string;
 	sessionId?: string;
 	status: TaskRunnerUpdateDetails["status"];
@@ -83,17 +83,17 @@ function parseNestedTaskInfo(args: Record<string, unknown>, resultText: string |
 	const firstTask = tasks && tasks.length > 0 ? tasks[0] : undefined;
 
 	let taskType = "?";
-	let difficulty = "medium";
+	let complexity = "medium";
 	let description: string | undefined;
 
 	if (tasks && tasks.length > 0) {
 		if (tasks.length === 1) {
 			taskType = typeof firstTask?.type === "string" ? firstTask.type : "?";
-			difficulty = typeof firstTask?.size === "string" ? firstTask.size : "medium";
+			complexity = typeof firstTask?.complexity === "string" ? firstTask.complexity : "medium";
 			description = typeof firstTask?.description === "string" ? firstTask.description : undefined;
 		} else {
 			taskType = "batch";
-			difficulty = `${tasks.length}`;
+			complexity = `${tasks.length}`;
 			description = `${tasks.length} tasks`;
 		}
 	}
@@ -150,7 +150,7 @@ function parseNestedTaskInfo(args: Record<string, unknown>, resultText: string |
 		}
 	}
 
-	return { taskType, difficulty, description, sessionId, outputPreview };
+	return { taskType, complexity, description, sessionId, outputPreview };
 }
 
 function formatToolCall(toolName: string, args: Record<string, unknown>, theme: any): string {
@@ -290,7 +290,7 @@ export function renderTaskResult(
 		for (const a of shown) {
 			if (a.name === "task") {
 				const info = parseNestedTaskInfo(a.args, a.resultText);
-				let nested = `${activityMark(a, theme)} ${theme.fg("muted", "task ")}${theme.fg("accent", `${info.taskType}:${info.difficulty}`)}`;
+				let nested = `${activityMark(a, theme)} ${theme.fg("muted", "task ")}${theme.fg("accent", `${info.taskType}:${info.complexity}`)}`;
 				if (info.sessionId) nested += theme.fg("dim", ` (session: ${info.sessionId})`);
 				lines.push(`  ${nested}`);
 				if (info.description) {
@@ -331,7 +331,7 @@ export function renderTaskResult(
 
 		for (const item of results) {
 			const missing = (item.missingSkills || []).filter(Boolean);
-			bodyParts.push(`## [${item.index}] ${item.type}:${item.size}`);
+			bodyParts.push(`## [${item.index}] ${item.type}:${item.complexity}`);
 			bodyParts.push(`status: ${item.status}`);
 			if (item.sessionId) bodyParts.push(`session: ${item.sessionId}`);
 			if (item.description) bodyParts.push(`description: ${item.description}`);
@@ -356,7 +356,7 @@ export function renderTaskResult(
 
 	for (const item of shown) {
 		const missing = (item.missingSkills || []).filter(Boolean);
-		let line = `${statusMark(item.status, theme)} ${theme.fg("accent", `${item.type}:${item.size}`)}`;
+		let line = `${statusMark(item.status, theme)} ${theme.fg("accent", `${item.type}:${item.complexity}`)}`;
 		if (item.sessionId) line += theme.fg("dim", ` (session: ${item.sessionId})`);
 		lines.push(`  ${line}`);
 
@@ -378,7 +378,7 @@ export function renderTaskResult(
 		for (const activity of shownActivities) {
 			if (activity.name === "task") {
 				const info = parseNestedTaskInfo(activity.args, activity.resultText);
-				let nested = `${activityMark(activity, theme)} ${theme.fg("muted", "task ")}${theme.fg("accent", `${info.taskType}:${info.difficulty}`)}`;
+				let nested = `${activityMark(activity, theme)} ${theme.fg("muted", "task ")}${theme.fg("accent", `${info.taskType}:${info.complexity}`)}`;
 				if (info.sessionId) nested += theme.fg("dim", ` (session: ${info.sessionId})`);
 				lines.push(`    ${nested}`);
 				if (info.description) {
