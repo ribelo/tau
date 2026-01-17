@@ -73,18 +73,13 @@ function statusMark(status: string | undefined): "done" | "todo" {
 
 function renderIssueInline(issue: BdIssue, theme: any): string {
 	const check = statusMark(issue.status) === "done" ? theme.fg("success", "✔") : theme.fg("dim", "□");
-	const id = issue.id ? theme.fg("accent", issue.id) : theme.fg("dim", "(no-id)");
-	const title = issue.title ? theme.fg("toolOutput", issue.title) : theme.fg("dim", "(no title)");
+	const id = (issue.id || "(no-id)").padEnd(12);
+	const prio = `[${issue.priority !== undefined ? `P${issue.priority}` : "P?"}]`.padEnd(6);
+	const type = `[${issue.issue_type || "?"}]`.padEnd(10);
+	const status = `(${issue.status || "???"})`.padEnd(12);
+	const title = issue.title || "(no title)";
 
-	const statusSuffix = issue.status ? ` ${theme.fg("dim", `(${issue.status})`)}` : "";
-	const prio = issue.priority !== undefined ? theme.fg("muted", `P${issue.priority}`) : theme.fg("dim", "P?");
-	const type = issue.issue_type ? theme.fg("muted", issue.issue_type) : theme.fg("dim", "?");
-
-	return `${check} ${id} ${prio} ${type}${statusSuffix} ${title}`;
-}
-
-function renderHeader(title: string, theme: any): string {
-	return theme.fg("toolTitle", `• ${theme.bold(title)}`);
+	return `${check}  ${theme.fg("accent", id)}  ${theme.fg("muted", prio)}  ${theme.fg("muted", type)}  ${theme.fg("dim", status)}  ${theme.fg("toolOutput", title)}`;
 }
 
 function normalizeIssues(json: unknown): BdIssue[] {
@@ -93,18 +88,18 @@ function normalizeIssues(json: unknown): BdIssue[] {
 	return [];
 }
 
-function renderIssuesBlock(title: string, issues: BdIssue[], options: { expanded: boolean }, theme: any): Text {
+function renderIssuesBlock(issues: BdIssue[], options: { expanded: boolean }, theme: any): Text {
 	const all = issues || [];
 	const shown = options.expanded ? all : all.slice(0, 10);
 
-	let out = renderHeader(title, theme);
+	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+	let out = theme.fg("dim", separator);
 	for (let i = 0; i < shown.length; i++) {
 		const issue = shown[i]!;
-		const prefix = i === 0 ? "  └ " : "    ";
-		out += `\n${prefix}${renderIssueInline(issue, theme)}`;
+		out += `\n${renderIssueInline(issue, theme)}`;
 	}
 	if (!options.expanded && all.length > shown.length) {
-		out += `\n    ${theme.fg("dim", `… ${all.length - shown.length} more (expand to view)`)}`;
+		out += `\n${theme.fg("dim", `… ${all.length - shown.length} more (expand to view)`)}`;
 	}
 	return new Text(out, 0, 0);
 }
@@ -113,21 +108,24 @@ function renderTreeBlock(nodes: BdTreeNode[], options: { expanded: boolean }, th
 	const all = nodes || [];
 	const shown = options.expanded ? all : all.slice(0, 50);
 
-	let out = renderHeader("Dependency tree", theme);
+	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+	let out = theme.fg("dim", separator);
 	for (const node of shown) {
 		const depth = typeof node.depth === "number" ? node.depth : 0;
-		const prefix = "  ".repeat(Math.max(0, depth) + 1) + "└ ";
-		out += `\n${prefix}${renderIssueInline(node, theme)}`;
+		const indent = "  ".repeat(Math.max(0, depth));
+		out += `\n${indent}${renderIssueInline(node, theme)}`;
 	}
 	if (!options.expanded && all.length > shown.length) {
-		out += `\n    ${theme.fg("dim", `… ${all.length - shown.length} more (expand to view)`)}`;
+		out += `\n${theme.fg("dim", `… ${all.length - shown.length} more (expand to view)`)}`;
 	}
 	return new Text(out, 0, 0);
 }
 
 function renderFallback(kind: string, text: string, theme: any): Text {
-	let out = renderHeader(`bd ${kind}`, theme);
-	out += `\n  └ ${theme.fg("warning", "No renderer for this command yet")}`;
+	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+	let out = theme.fg("dim", separator);
+	out += `\n${theme.fg("toolTitle", theme.bold(`bd ${kind}`))}`;
+	out += `\n${theme.fg("warning", "No renderer for this command yet")}`;
 	out += `\n\n${theme.fg("dim", text)}`;
 	return new Text(out, 0, 0);
 }
@@ -340,14 +338,15 @@ function renderBd(details: BdToolDetails, options: { expanded: boolean }, theme:
 	}
 
 	const json = details.json;
-	if (details.kind === "ready") return renderIssuesBlock("Ready", normalizeIssues(json), options, theme);
-	if (details.kind === "list") return renderIssuesBlock("List", normalizeIssues(json), options, theme);
-	if (details.kind === "blocked") return renderIssuesBlock("Blocked", normalizeIssues(json), options, theme);
-	if (details.kind === "show") return renderIssuesBlock("Show", normalizeIssues(json), { expanded: true }, theme);
-	if (details.kind === "dep_tree") return renderTreeBlock(normalizeIssues(json) as BdTreeNode[], options, theme);
-	if (details.kind === "create") return renderIssuesBlock("Created", normalizeIssues(json), { expanded: true }, theme);
-	if (details.kind === "update") return renderIssuesBlock("Updated", normalizeIssues(json), { expanded: true }, theme);
-	if (details.kind === "close") return renderIssuesBlock("Closed", normalizeIssues(json), { expanded: true }, theme);
+	const issues = normalizeIssues(json);
+	if (details.kind === "ready") return renderIssuesBlock(issues, options, theme);
+	if (details.kind === "list") return renderIssuesBlock(issues, options, theme);
+	if (details.kind === "blocked") return renderIssuesBlock(issues, options, theme);
+	if (details.kind === "show") return renderIssuesBlock(issues, { expanded: true }, theme);
+	if (details.kind === "dep_tree") return renderTreeBlock(issues as BdTreeNode[], options, theme);
+	if (details.kind === "create") return renderIssuesBlock(issues, { expanded: true }, theme);
+	if (details.kind === "update") return renderIssuesBlock(issues, { expanded: true }, theme);
+	if (details.kind === "close") return renderIssuesBlock(issues, { expanded: true }, theme);
 
 	return renderFallback("unknown", JSON.stringify(json, null, 2), theme);
 }
@@ -471,8 +470,47 @@ export default function beads(pi: ExtensionAPI) {
 
 		renderCall(args, theme) {
 			const cmd = typeof args?.command === "string" ? args.command.trim() : "";
-			const shown = cmd.startsWith("bd") ? cmd : `bd ${cmd}`;
-			return new Text(theme.fg("toolTitle", theme.bold("$ ")) + theme.fg("toolTitle", shown), 0, 0);
+			const tokens = shellSplit(stripLeadingPrompt(cmd));
+			const withoutBd = stripLeadingBd(tokens);
+
+			const positional: string[] = [];
+			const flags: Record<string, string | boolean> = {};
+
+			for (let i = 0; i < withoutBd.length; i++) {
+				const token = withoutBd[i]!;
+				if (token.startsWith("-")) {
+					const parts = token.split("=");
+					const key = parts[0]!.replace(/^-+/, "");
+					if (parts.length > 1) {
+						flags[key] = parts.slice(1).join("=");
+					} else {
+						const next = withoutBd[i + 1];
+						if (next && !next.startsWith("-")) {
+							flags[key] = next;
+							i++;
+						} else {
+							flags[key] = true;
+						}
+					}
+				} else {
+					positional.push(token);
+				}
+			}
+
+			let out = theme.fg("toolTitle", theme.bold(`bd ${positional.join(" ")}`));
+			for (const [key, value] of Object.entries(flags)) {
+				let k = key;
+				let v = value === true ? "true" : String(value);
+
+				if (k === "json") {
+					k = "output";
+					v = "json";
+				}
+
+				out += `\n${theme.fg("muted", `${k}: ${v}`)}`;
+			}
+
+			return new Text(out, 0, 0);
 		},
 
 		renderResult(result, options, theme) {
