@@ -21,23 +21,33 @@ const addFormats = (addFormatsModule as any).default || addFormatsModule;
 const ajv = new Ajv({ allErrors: true, strict: false });
 addFormats(ajv);
 
-const SKILL_NAME = "task-delegation";
-const SKILL_RELATIVE_PATH = "../skills/task-delegation/SKILL.md";
+const BUNDLED_SKILLS = [
+	{ name: "task-delegation", relativePath: "../skills/task-delegation/SKILL.md" },
+	{ name: "task-type-creation", relativePath: "../skills/task-type-creation/SKILL.md" },
+] as const;
 
-function ensureTaskDelegationSkill(): void {
+type BundledSkill = (typeof BUNDLED_SKILLS)[number];
+
+function ensureBundledSkill(skill: BundledSkill): void {
 	const baseSkillsDir = path.join(os.homedir(), ".pi", "agent", "skills");
-	const userSkillsDir = path.join(baseSkillsDir, SKILL_NAME);
+	const userSkillsDir = path.join(baseSkillsDir, skill.name);
 	const destFile = path.join(userSkillsDir, "SKILL.md");
-	const altFile = path.join(baseSkillsDir, `${SKILL_NAME}.md`);
+	const altFile = path.join(baseSkillsDir, `${skill.name}.md`);
 	if (fs.existsSync(destFile) || fs.existsSync(altFile)) return;
 
 	try {
-		const sourceFile = path.resolve(path.dirname(fileURLToPath(import.meta.url)), SKILL_RELATIVE_PATH);
+		const sourceFile = path.resolve(path.dirname(fileURLToPath(import.meta.url)), skill.relativePath);
 		if (!fs.existsSync(sourceFile)) return;
 		fs.mkdirSync(userSkillsDir, { recursive: true });
 		fs.copyFileSync(sourceFile, destFile);
 	} catch {
 		// Ignore install failures
+	}
+}
+
+function ensureBundledSkills(): void {
+	for (const skill of BUNDLED_SKILLS) {
+		ensureBundledSkill(skill);
 	}
 }
 
@@ -153,7 +163,7 @@ const TaskParams = Type.Object({
 
 export default function task(pi: ExtensionAPI) {
 
-	ensureTaskDelegationSkill();
+	ensureBundledSkills();
 
 	const sessions = new SessionManager();
 	const runner = new TaskRunner();

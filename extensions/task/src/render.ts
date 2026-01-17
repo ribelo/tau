@@ -250,7 +250,7 @@ export function renderTaskResult(
 	const maybeResults = (details as any).results;
 	if (!Array.isArray(maybeResults)) {
 		const legacy = details as any;
-		const header = `${statusMark(legacy.status, theme)} ${theme.bold("task")} ${theme.fg("accent", `${legacy.taskType}:${legacy.difficulty}`)} ${theme.fg("dim", `(session: ${legacy.sessionId})`)}`;
+		const header = `${statusMark(legacy.status, theme)} ${theme.bold("task")} ${theme.fg("accent", `${legacy.taskType}:${legacy.complexity}`)} ${theme.fg("dim", `(session: ${legacy.sessionId})`)}`;
 
 		const missing = (legacy.missingSkills || []).filter(Boolean);
 		const message = typeof legacy.message === "string" ? legacy.message : "";
@@ -258,7 +258,7 @@ export function renderTaskResult(
 		if (options.expanded) {
 			const mdTheme = getMarkdownTheme();
 			const bodyParts: string[] = [];
-			bodyParts.push(`# task ${legacy.taskType}:${legacy.difficulty}`);
+			bodyParts.push(`# task ${legacy.taskType}:${legacy.complexity}`);
 			bodyParts.push("");
 			bodyParts.push(`session: ${legacy.sessionId}`);
 			if (legacy.description) bodyParts.push(`description: ${legacy.description}`);

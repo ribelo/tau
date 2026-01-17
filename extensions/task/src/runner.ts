@@ -92,6 +92,7 @@ type WorkerSession = {
 	outputSchemaKey?: string;
 	structuredRef?: { value?: unknown };
 	submittedRef?: { value: boolean };
+	extensionsReady?: boolean;
 };
 
 function resolveModelPattern(pattern: string, models: Model<Api>[]): Model<Api> | undefined {
@@ -338,6 +339,67 @@ const inProcessRuntime = (() => {
 	return { authStorage, modelRegistry, sessions, depthBySessionId };
 })();
 
+async function initializeWorkerExtensions(session: AgentSession) {
+	const extensionRunner = session.extensionRunner;
+	if (!extensionRunner) return;
+
+	extensionRunner.initialize(
+		{
+			sendMessage: (message, options) => {
+				session.sendCustomMessage(message, options).catch(() => undefined);
+			},
+			sendUserMessage: (content, options) => {
+				session.sendUserMessage(content, options).catch(() => undefined);
+			},
+			appendEntry: (customType, data) => {
+				session.sessionManager.appendCustomEntry(customType, data);
+			},
+			setSessionName: (name) => {
+				session.sessionManager.appendSessionInfo(name);
+			},
+			getSessionName: () => session.sessionManager.getSessionName(),
+			getActiveTools: () => session.getActiveToolNames(),
+			getAllTools: () => session.getAllTools(),
+			setActiveTools: (toolNames: string[]) => session.setActiveToolsByName(toolNames),
+			setModel: async (model) => {
+				const key = await session.modelRegistry.getApiKey(model);
+				if (!key) return false;
+				await session.setModel(model);
+				return true;
+			},
+			getThinkingLevel: () => session.thinkingLevel,
+			setThinkingLevel: (level) => session.setThinkingLevel(level),
+		},
+		{
+			getModel: () => session.model,
+			isIdle: () => !session.isStreaming,
+			abort: () => session.abort(),
+			hasPendingMessages: () => session.pendingMessageCount > 0,
+			shutdown: () => {},
+		},
+		{
+			waitForIdle: () => session.agent.waitForIdle(),
+			newSession: async (options) => {
+				const success = await session.newSession({ parentSession: options?.parentSession });
+				if (success && options?.setup) {
+					await options.setup(session.sessionManager);
+				}
+				return { cancelled: !success };
+			},
+			fork: async (entryId) => {
+				const result = await session.fork(entryId);
+				return { cancelled: result.cancelled };
+			},
+			navigateTree: async (targetId, options) => {
+				const result = await session.navigateTree(targetId, { summarize: options?.summarize });
+				return { cancelled: result.cancelled };
+			},
+		},
+	);
+
+	await extensionRunner.emit({ type: "session_start" });
+}
+
 class InProcessWorkerBackend implements WorkerBackend {
 	async run(options: WorkerBackendOptions): Promise<WorkerBackendResult> {
 		const existing = inProcessRuntime.sessions.get(options.sessionId);
@@ -379,6 +441,8 @@ class InProcessWorkerBackend implements WorkerBackend {
 				model: resolvedModel,
 			});
 
+			await initializeWorkerExtensions(session);
+
 			abortAfterSubmit = () => {
 				session.abort().catch(() => undefined);
 			};
@@ -391,6 +455,7 @@ class InProcessWorkerBackend implements WorkerBackend {
 				outputSchemaKey,
 				structuredRef: options.outputSchema ? structuredRef : undefined,
 				submittedRef: options.outputSchema ? submittedRef : undefined,
+				extensionsReady: true,
 			});
 		} else {
 			if (outputSchemaKey && existing.outputSchemaKey && existing.outputSchemaKey !== outputSchemaKey) {
@@ -406,6 +471,10 @@ class InProcessWorkerBackend implements WorkerBackend {
 
 		const entry = inProcessRuntime.sessions.get(options.sessionId)!;
 		entry.promptRef.value = options.systemPrompt;
+		if (!entry.extensionsReady) {
+			await initializeWorkerExtensions(entry.session);
+			entry.extensionsReady = true;
+		}
 
 		const toolList = Array.from(new Set(options.tools.filter(Boolean)));
 		entry.session.setActiveToolsByName(toolList);
