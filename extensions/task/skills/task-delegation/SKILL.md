@@ -7,20 +7,34 @@ description: Guide for delegating work to parallel worker processes. This skill 
 
 Delegate work to isolated worker processes that run in parallel. Workers have their own context (don't pollute yours), see AGENTS.md + injected skills + their session history. Only shared state is the codebase.
 
+## Worker Selection Guide
+
+Built-in types (users can define more via settings):
+
+| Need | Worker |
+|------|--------|
+| "Edit files, implement features" | `code` |
+| "Find code matching concept" | `search` |
+| "Review changes for bugs" | `review` |
+| "Design solution, create plan" | `planning` |
+| "Senior engineer for hard problem" | `advisor` |
+| "Rename/transform across codebase" | `refactor` |
+| "Install deps, run scripts, build" | `bash` |
+| "Need specific skill combination" | `custom` + skills[] |
+
 ## When to Delegate vs Work Directly
 
 | Delegate | Work Directly |
 |----------|---------------|
 | Task would pollute context with large outputs | Quick lookup (< 1 tool call) |
-| Multiple independent searches/reviews | Need results for immediate follow-up question |
-| Specialized skill needed you don't have loaded | Simple file read or edit |
-| User explicitly asks for delegation | Task requires back-and-forth with user |
-| Parallel speedup (N tasks in time of 1) | Trivial work not worth coordination overhead |
-| Beads task exists and is ready | Ephemeral work (quick search, review, planning) |
+| Multiple independent searches/reviews | Need results for immediate follow-up |
+| Specialized skill needed | Simple file read or edit |
+| Parallel speedup (N tasks in time of 1) | Describing task > doing it |
+| Beads task exists and is ready | Task requires user back-and-forth |
 
 **Rule of thumb**: If you'll discard 80% of the output after processing, delegate it.
 
-**Batch complexity**: You wait for the slowest task. Keep tasks in a batch similar in complexity—one slow task blocks the entire batch.
+**Batch complexity**: You wait for the slowest task. Keep tasks similar in complexity.
 
 ## Integration with Beads
 

@@ -178,35 +178,56 @@ export class TaskRegistry {
 		return [
 			{
 				name: "code",
-				description: "General implementation work",
+				description: "Edit files, implement features, fix bugs. Use when you need to change code.",
 				tools: undefined, // all
 				model: "inherit",
 				skills: ["code"],
 			},
 			{
 				name: "search",
-				description: "Find code, definitions, references (read-only)",
-				tools: ["read", "ls", "find", "grep"],
+				description: "Find files, locate code patterns, map codebase. Use before you know what to change.",
+				tools: ["read", "bash"],
 				model: "inherit",
 				skills: ["search"],
 			},
 			{
 				name: "review",
-				description: "Code review (read-only + bash)",
-				tools: ["read", "ls", "find", "grep", "bash"],
+				description: "Review diffs for bugs/security. Returns structured JSON. Use for PR/commit review.",
+				tools: ["read", "bash"],
 				model: "inherit",
 				skills: ["review"],
 			},
 			{
 				name: "planning",
-				description: "Architecture and design decisions (read-only)",
-				tools: ["read", "ls", "find", "grep"],
+				description: "Design solutions, create implementation plans. Use before complex changes.",
+				tools: ["read", "bash"],
 				model: "inherit",
 				skills: ["planning"],
 			},
 			{
+				name: "advisor",
+				description: "Senior engineer advisor for hard problems. Use when you need expert guidance.",
+				tools: ["read", "bash"],
+				model: "inherit",
+				skills: ["advisor", "simplicity", "analysis"],
+			},
+			{
+				name: "refactor",
+				description: "Rename, transform code across files. Use ast-grep/fastmod for structural changes.",
+				tools: undefined, // all
+				model: "inherit",
+				skills: ["ast-grep", "fastmod"],
+			},
+			{
+				name: "bash",
+				description: "Run commands, install deps, build, scripts. Use for system operations not code changes.",
+				tools: ["bash", "read"],
+				model: "inherit",
+				skills: ["bash"],
+			},
+			{
 				name: "custom",
-				description: "Custom task with user-specified skills",
+				description: "Ad-hoc worker with skills you specify. Use when you need specific skill combination.",
 				tools: undefined, // all
 				model: "inherit",
 				skills: [],

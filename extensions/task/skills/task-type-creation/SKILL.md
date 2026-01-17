@@ -5,7 +5,7 @@ description: Guide for creating custom task types for worker delegation. This sk
 
 # Task Type Creation
 
-Custom task types configure how workers behave: which model they use, which tools they have access to, and which skills are injected by default.
+Custom task types configure how workers behave: model, tools, and default skills.
 
 ## Configuration Locations
 
@@ -14,7 +14,7 @@ Custom task types configure how workers behave: which model they use, which tool
 | `~/.pi/agent/settings.json` | Lower | Global (all projects) |
 | `.pi/settings.json` (in project) | Higher | Project-specific |
 
-Project settings override global settings. Settings merge with builtins.
+Project settings override global. Settings merge with builtins.
 
 ## Basic Structure
 
@@ -36,37 +36,37 @@ Project settings override global settings. Settings merge with builtins.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `description` | string | Short description shown to agents |
-| `model` | string | Model to use (`provider/model-id`) or `"inherit"` to use parent's model |
-| `tools` | string[] | Allowed tools. Omit for all tools. |
-| `skills` | string[] | Skills injected by default |
-| `defaultThinking` | string | Thinking level: `off`, `minimal`, `low`, `medium`, `high` |
-| `complexity` | object | Per-complexity model/thinking overrides (see below) |
+| `description` | string | Short description |
+| `model` | string | `provider/model-id` or `"inherit"` |
+| `tools` | string[] | Allowed tools. Omit for all. |
+| `skills` | string[] | Default skills to inject |
+| `defaultThinking` | string | `off`, `minimal`, `low`, `medium`, `high` |
+| `complexity` | object | Per-complexity model/thinking overrides |
 
 ## Model Configuration
 
 Two options (mutually exclusive):
 
-### Option 1: Single model for all complexity levels
+### Single model
 
 ```json
 {
   "tasks": {
     "rust": {
-      "description": "Rust implementation work",
+      "description": "Rust implementation",
       "model": "anthropic/claude-sonnet-4-20250514"
     }
   }
 }
 ```
 
-### Option 2: Different models per complexity
+### Per-complexity models
 
 ```json
 {
   "tasks": {
     "rust": {
-      "description": "Rust implementation work",
+      "description": "Rust implementation",
       "complexity": {
         "low": { "model": "anthropic/claude-haiku-3-5-20241022" },
         "medium": { "model": "anthropic/claude-sonnet-4-20250514" },
@@ -77,49 +77,11 @@ Two options (mutually exclusive):
 }
 ```
 
-**Fallback logic**: If requested complexity is not configured, falls back to nearest higher level first, then lower.
-
-Example: If only `high` is configured and `complexity: "low"` is requested → uses `high` config.
-
-## Tool Restrictions
-
-Restrict which tools workers can use:
-
-```json
-{
-  "tasks": {
-    "safe-search": {
-      "description": "Read-only search",
-      "tools": ["read", "ls", "find", "grep"]
-    }
-  }
-}
-```
-
-Omit `tools` to allow all tools.
-
-## Default Skills
-
-Inject skills automatically for a task type:
-
-```json
-{
-  "tasks": {
-    "rust-dev": {
-      "description": "Rust development with specialized knowledge",
-      "skills": ["rust-patterns", "cargo-workspace"]
-    }
-  }
-}
-```
-
-Workers can still receive additional skills via the `skills` parameter in task calls.
+**Fallback**: If requested complexity not configured, tries higher first, then lower.
 
 ## Examples
 
 ### Cheap search worker
-
-Route low-complexity searches to a fast, cheap model:
 
 ```json
 {
@@ -127,7 +89,6 @@ Route low-complexity searches to a fast, cheap model:
     "search": {
       "complexity": {
         "low": { "model": "anthropic/claude-haiku-3-5-20241022" },
-        "medium": { "model": "anthropic/claude-sonnet-4-20250514" },
         "high": { "model": "google/gemini-2.5-pro" }
       }
     }
@@ -135,16 +96,14 @@ Route low-complexity searches to a fast, cheap model:
 }
 ```
 
-### Thinking-enabled code worker
-
-Use extended thinking for high-complexity implementation:
+### Thinking-enabled advisor
 
 ```json
 {
   "tasks": {
-    "code": {
+    "advisor": {
       "complexity": {
-        "low": { "model": "anthropic/claude-sonnet-4-20250514" },
+        "medium": { "model": "anthropic/claude-sonnet-4-20250514" },
         "high": { "model": "anthropic/claude-opus-4-20250514", "thinking": "high" }
       }
     }
@@ -154,49 +113,35 @@ Use extended thinking for high-complexity implementation:
 
 ### Project-specific type
 
-In `.pi/settings.json` at project root:
-
 ```json
 {
   "tasks": {
     "frontend": {
       "description": "Frontend React work",
       "model": "anthropic/claude-sonnet-4-20250514",
-      "skills": ["react-patterns"],
-      "tools": ["read", "write", "edit", "bash", "ls", "find", "grep"]
+      "skills": ["react-patterns"]
     }
   }
 }
 ```
-
-### Override builtin
-
-Override the built-in `code` type to use a different model:
-
-```json
-{
-  "tasks": {
-    "code": {
-      "model": "openai/gpt-4.1"
-    }
-  }
-}
-```
-
-Overrides merge with the builtin definition.
 
 ## Built-in Task Types
 
-These exist by default and can be overridden:
+| Name | Description | Tools | Skills |
+|------|-------------|-------|--------|
+| `code` | Edit files, implement, fix bugs | All | code |
+| `search` | Find files, locate patterns | read, bash | search |
+| `review` | Review diffs, structured JSON | read, bash | review |
+| `planning` | Design solutions, create plans | read, bash | planning |
+| `advisor` | Expert guidance for hard problems | read, bash | advisor, simplicity, analysis |
+| `refactor` | Rename, transform across files | All | ast-grep, fastmod |
+| `bash` | Run commands, install, build | bash, read | bash |
+| `custom` | Ad-hoc worker with skills you specify | All | (you provide) |
 
-| Name | Description | Tools | Default Skills |
-|------|-------------|-------|----------------|
-| `code` | General implementation | All | None |
-| `search` | Find code/definitions | read, ls, find, grep | search |
-| `review` | Code review | read, ls, find, grep, bash | review |
-| `planning` | Architecture decisions | read, ls, find, grep | planning |
-| `custom` | User-specified skills | All | None |
+## Available Tools
+
+`read`, `write`, `edit`, `bash`, `bd`, `task`, `web_search_exa`, `crawling_exa`, `get_code_context_exa`, `git_commit_with_user_approval`
 
 ## Applying Changes
 
-After editing settings, restart pi to reload the task registry.
+Restart pi after editing settings.

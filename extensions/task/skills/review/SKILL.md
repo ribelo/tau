@@ -1,6 +1,6 @@
 ---
 name: review
-description: Code review skill. Find bugs, security issues, and improvements in code changes.
+description: Code review skill. Find bugs, security issues, and improvements.
 ---
 
 # Review
@@ -14,40 +14,47 @@ Only flag issues where:
 2. Discrete and actionable (not general codebase issue)
 3. Author would likely fix if aware
 4. Introduced in the change (not pre-existing)
-5. Not just an intentional change by author
-6. Can identify other parts of code provably affected (not speculation)
+5. Not just intentional change by author
+6. Can identify provably affected code (not speculation)
 
 ## What to Ignore
 
 - Trivial style unless it obscures meaning
 - Pre-existing problems
-- Issues requiring rigor not present in rest of codebase
+- Issues requiring rigor not present in codebase
 
 ## Priority Levels
 
 | Level | Meaning |
 |-------|---------|
-| P0 | Drop everything. Blocking release/operations. Universal issues. |
-| P1 | Urgent. Address in next cycle. |
-| P2 | Normal. Fix eventually. |
+| P0 | Drop everything. Blocking release. Universal issues. |
+| P1 | Urgent. Next cycle. |
+| P2 | Normal. Eventually. |
 | P3 | Low. Nice to have. |
 
-## How to Review
+## Tools
 
-1. Fetch diff via bash:
-   ```bash
-   git diff              # uncommitted
-   git diff $(git merge-base HEAD main)  # against branch
-   git show <sha>        # specific commit
-   ```
+- `bash` - Run `git diff`, `git show`, `rg`, `git blame`
+- `read` - Examine file contents
+- `web_search_exa` - Find docs on patterns/libraries
 
-2. Read surrounding context
+## Commands
 
-3. Use `grep` to find related code
+```bash
+# Get diff
+git diff                              # uncommitted
+git diff --cached                     # staged
+git diff $(git merge-base HEAD main)  # against branch
+git show <sha>                        # specific commit
+
+# Search related code
+rg "function_name" --type ts
+git blame file.ts
+```
 
 ## Output Format
 
-Return structured JSON:
+Return structured JSON (no markdown fences):
 
 ```json
 {
@@ -72,7 +79,7 @@ Return structured JSON:
 ## Comment Guidelines
 
 - Clear about why it's a bug
-- Accurate severity (don't exaggerate)
+- Accurate severity
 - Body ≤1 paragraph
 - Code snippets ≤3 lines
 - Matter-of-fact tone
@@ -83,4 +90,3 @@ Return structured JSON:
 - Keep line ranges short (≤5-10 lines)
 - Output all qualifying findings
 - If no clear bugs, return empty findings
-- Do not wrap JSON in markdown fences

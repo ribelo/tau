@@ -1,6 +1,6 @@
 ---
 name: search
-description: Fast code search skill. Locate logic based on conceptual descriptions across languages and layers.
+description: Fast code search skill. Locate logic based on conceptual descriptions.
 ---
 
 # Search
@@ -10,32 +10,33 @@ Find files and code locations. Return file paths with line ranges, not essays.
 ## Approach
 
 - Locate logic based on **conceptual descriptions** across languages/layers
-- Parallelize: run 8+ parallel searches with diverse strategies
+- Parallelize: run 8+ parallel bash commands with diverse strategies
 - Complete within 3-5 turns
 - Return results as soon as sufficient
 - Don't explore complete codebase; find what's needed and stop
 
-## Fast Context
-
-- Start broad, fan out to focused subqueries
-- Deduplicate paths; don't repeat queries
-- Early stop when you can name exact files/symbols
-
 ## Tools
 
-Use `grep`, `find`, `ls`, `read` in parallel.
+- `bash` - Run `rg`, `fd`, `git grep`, `git log`
+- `read` - Examine file contents
+- `web_search_exa` - Find external docs/examples
+- `get_code_context_exa` - Find code patterns
 
-```
-# Find files
-find("**/*.ts")
-find("**/auth/*.ts")
+## Commands
 
-# Search text
-grep("authenticate")
-grep("TODO|FIXME")
+```bash
+# Fast text search (ripgrep)
+rg "pattern" --type ts -l          # list files
+rg "pattern" -n                     # with line numbers
+rg "pattern" -C 3                   # with context
 
-# Examine matches
-read("/path/to/file.ts")
+# Fast file finding
+fd "*.ts" src/                      # by extension
+fd -t f "config"                    # by name
+
+# Git-aware
+git grep "pattern"                  # tracked files only
+git log -S "term" --oneline         # find commits adding/removing
 ```
 
 ## Output Format
@@ -53,17 +54,17 @@ Keep explanations minimal. File list is what matters.
 
 ```
 Query: "Where do we check auth headers?"
-→ Parallel:
-  grep("auth")
-  grep("header")  
-  grep("Authorization")
+→ Parallel bash:
+  rg "auth" --type ts -l
+  rg "header" --type ts -l
+  rg "Authorization" --type ts -l
 → Read relevant matches
 → Return: /src/middleware/auth.ts#L32-L45 - header validation
 ```
 
 ## Key Rules
 
+- Use `rg` not grep, `fd` not find (faster)
 - Run independent searches in parallel
 - Always use absolute paths in output
-- Stop when you have enough results
-- Only final message is returned - make it a clean file list
+- Only final message is returned - make it clean file list
