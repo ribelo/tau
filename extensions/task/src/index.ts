@@ -4,6 +4,10 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import AjvModule from "ajv";
 import addFormatsModule from "ajv-formats";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { TaskRegistry } from "./registry.js";
 import { loadSkills } from "./skills.js";
@@ -16,6 +20,26 @@ const Ajv = (AjvModule as any).default || AjvModule;
 const addFormats = (addFormatsModule as any).default || addFormatsModule;
 const ajv = new Ajv({ allErrors: true, strict: false });
 addFormats(ajv);
+
+const SKILL_NAME = "task-delegation";
+const SKILL_RELATIVE_PATH = "../skills/task-delegation/SKILL.md";
+
+function ensureTaskDelegationSkill(): void {
+	const baseSkillsDir = path.join(os.homedir(), ".pi", "agent", "skills");
+	const userSkillsDir = path.join(baseSkillsDir, SKILL_NAME);
+	const destFile = path.join(userSkillsDir, "SKILL.md");
+	const altFile = path.join(baseSkillsDir, `${SKILL_NAME}.md`);
+	if (fs.existsSync(destFile) || fs.existsSync(altFile)) return;
+
+	try {
+		const sourceFile = path.resolve(path.dirname(fileURLToPath(import.meta.url)), SKILL_RELATIVE_PATH);
+		if (!fs.existsSync(sourceFile)) return;
+		fs.mkdirSync(userSkillsDir, { recursive: true });
+		fs.copyFileSync(sourceFile, destFile);
+	} catch {
+		// Ignore install failures
+	}
+}
 
 function validateOutputSchema(schema: unknown): { ok: true } | { ok: false; error: string } {
 	if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
@@ -128,6 +152,8 @@ const TaskParams = Type.Object({
 });
 
 export default function task(pi: ExtensionAPI) {
+
+	ensureTaskDelegationSkill();
 
 	const sessions = new SessionManager();
 	const runner = new TaskRunner();
