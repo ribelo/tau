@@ -202,7 +202,26 @@ export default function task(pi: ExtensionAPI) {
 				};
 			}
 
-			const registry = TaskRegistry.load(ctx.cwd);
+			let registry: TaskRegistry;
+			try {
+				const knownTools = pi.getAllTools().map((tool) => tool.name);
+				registry = TaskRegistry.load(ctx.cwd, { knownTools, validateSkills: true });
+			} catch (err) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: (err as Error).message,
+						},
+					],
+					isError: true,
+					details: {
+						status: "failed",
+						results: [],
+						message: (err as Error).message,
+					} satisfies TaskToolDetails,
+				};
+			}
 			const availableTypes = registry.list().map((t) => t.name).join(", ");
 			const sessionIdCounts = new Map<string, number>();
 			for (const task of tasks) {

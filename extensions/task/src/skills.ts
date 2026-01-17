@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export interface LoadedSkill {
 	name: string;
@@ -31,6 +32,12 @@ function findNearestProjectPiDir(cwd: string): string | null {
 	}
 }
 
+const EXTENSION_SKILLS_DIR = path.resolve(
+	path.dirname(fileURLToPath(import.meta.url)),
+	"..",
+	"skills",
+);
+
 function tryReadUtf8(p: string): string | null {
 	try {
 		return fs.readFileSync(p, "utf-8");
@@ -51,6 +58,10 @@ export function loadSkill(name: string, cwd: string): LoadedSkill | null {
 	const userSkillsDir = path.join(os.homedir(), ".pi", "agent", "skills");
 	candidates.push(path.join(userSkillsDir, name, "SKILL.md"));
 	candidates.push(path.join(userSkillsDir, `${name}.md`));
+
+	// Extension-bundled fallback
+	candidates.push(path.join(EXTENSION_SKILLS_DIR, name, "SKILL.md"));
+	candidates.push(path.join(EXTENSION_SKILLS_DIR, `${name}.md`));
 
 	for (const filePath of candidates) {
 		if (!isFile(filePath)) continue;

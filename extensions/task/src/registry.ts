@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ThinkingLevel } from "@mariozechner/pi-ai";
 import type { Complexity, ResolvedPolicy, TaskType } from "./types.js";
+import { loadSkill } from "./skills.js";
 
 type AnyRecord = Record<string, unknown>;
 
@@ -75,6 +76,10 @@ function normalizeTaskType(name: string, raw: unknown): TaskType | null {
 	const skills = Array.isArray(raw.skills) ? raw.skills.filter((s) => typeof s === "string") : undefined;
 	const complexity = normalizeComplexityConfig((raw as any).complexity);
 
+	if (model && complexity) {
+		throw new Error(`Task type "${name}" cannot define both model and complexity`);
+	}
+
 	return {
 		name,
 		description,
@@ -122,6 +127,44 @@ function resolveComplexityConfig(complexityConfig: TaskType["complexity"], compl
 	return undefined;
 }
 
+type TaskRegistryLoadOptions = {
+	knownTools?: string[];
+	validateSkills?: boolean;
+};
+
+function validateTaskTypeConfigs(taskTypes: TaskType[], cwd: string, options: TaskRegistryLoadOptions): void {
+	const unknownTools: string[] = [];
+	const unknownSkills: string[] = [];
+	const toolSet = options.knownTools ? new Set(options.knownTools.map((t) => t.trim()).filter(Boolean)) : undefined;
+
+	for (const task of taskTypes) {
+		if (toolSet && task.tools) {
+			const missing = task.tools.filter((tool) => !toolSet.has(tool));
+			if (missing.length > 0) {
+				unknownTools.push(`${task.name}: ${missing.join(", ")}`);
+			}
+		}
+
+		if (options.validateSkills && task.skills) {
+			const missingSkills = task.skills.filter((skill) => !loadSkill(skill, cwd));
+			if (missingSkills.length > 0) {
+				unknownSkills.push(`${task.name}: ${missingSkills.join(", ")}`);
+			}
+		}
+	}
+
+	const errors: string[] = [];
+	if (unknownTools.length > 0) {
+		errors.push(`Unknown tools in task config: ${unknownTools.join("; ")}`);
+	}
+	if (unknownSkills.length > 0) {
+		errors.push(`Unknown skills in task config: ${unknownSkills.join("; ")}`);
+	}
+	if (errors.length > 0) {
+		throw new Error(errors.join("\n"));
+	}
+}
+
 export class TaskRegistry {
 	private readonly types = new Map<string, TaskType>();
 
@@ -138,7 +181,7 @@ export class TaskRegistry {
 				description: "General implementation work",
 				tools: undefined, // all
 				model: "inherit",
-				skills: [],
+				skills: ["code"],
 			},
 			{
 				name: "search",
@@ -171,7 +214,7 @@ export class TaskRegistry {
 		];
 	}
 
-	static load(cwd: string): TaskRegistry {
+	static load(cwd: string, options: TaskRegistryLoadOptions = {}): TaskRegistry {
 		const merged = new Map<string, TaskType>();
 		for (const t of TaskRegistry.builtins()) merged.set(t.name, t);
 
@@ -197,7 +240,12 @@ export class TaskRegistry {
 		const projectSettings = findNearestProjectSettings(cwd);
 		if (projectSettings && fs.existsSync(projectSettings)) applySettings(projectSettings);
 
-		return new TaskRegistry(Array.from(merged.values()));
+		const taskTypes = Array.from(merged.values());
+		if (options.knownTools || options.validateSkills) {
+			validateTaskTypeConfigs(taskTypes, cwd, options);
+		}
+
+		return new TaskRegistry(taskTypes);
 	}
 
 	get(taskType: string): TaskType | undefined {
