@@ -1,0 +1,276 @@
+/**
+ * Approval flow for sandbox operations.
+ *
+ * Policies (matching Codex behavior):
+ * - "never": Never prompt, run sandboxed, errors go to model
+ * - "on-failure": Run sandboxed, prompt on sandbox failure to retry unsandboxed
+ * - "on-request": Run sandboxed by default. Model can request escalation via `escalate` param
+ * - "unless-trusted": Auto-approve safe commands, prompt for unsafe ones
+ */
+
+import type { ExtensionContext } from "@anthropic-ai/pi-extension";
+import type { ApprovalPolicy } from "./config.js";
+import { spawn } from "node:child_process";
+import { isSafeCommand } from "./safe-commands.js";
+
+/** Default approval timeout in milliseconds */
+export const DEFAULT_APPROVAL_TIMEOUT_MS = 60_000;
+
+/** Result of an approval check */
+export type ApprovalResult =
+	| { approved: true; runUnsandboxed?: boolean }
+	| { approved: false; reason: string };
+
+/** Options for approval check */
+export interface ApprovalOptions {
+	/** Timeout in seconds (default: 60) */
+	timeoutSeconds?: number;
+}
+
+/** Strip ANSI escape codes to prevent TUI rendering crashes */
+function stripAnsi(str: string): string {
+	// eslint-disable-next-line no-control-regex
+	return str.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, "");
+}
+
+/**
+ * Send a desktop notification safely using spawn.
+ * Fire-and-forget; uses detached spawn to avoid blocking the event loop.
+ * Safe against command injection (arguments are not shell-expanded).
+ */
+function sendDesktopNotification(title: string, body: string): void {
+	try {
+		const child = spawn("notify-send", ["-u", "critical", title, body], {
+			detached: true,
+			stdio: "ignore",
+		});
+		child.on("error", () => {}); // Prevent crash if notify-send is missing
+		child.unref();
+	} catch {
+		// ignore
+	}
+}
+
+/**
+ * Prompt user for approval with timeout.
+ * Returns true if approved, false otherwise.
+ */
+async function promptForApproval(
+	ctx: ExtensionContext,
+	title: string,
+	message: string,
+	timeoutMs: number,
+): Promise<boolean> {
+	// Headless mode can't prompt
+	if (!ctx.hasUI) {
+		return false;
+	}
+
+	// Send desktop notification
+	sendDesktopNotification("Sandbox Approval", title);
+
+	try {
+		return await ctx.ui.confirm(title, message, { timeout: timeoutMs });
+	} catch (err) {
+		// Log error instead of swallowing silently
+		console.error("[Sandbox] Approval prompt failed:", err);
+		return false;
+	}
+}
+
+/**
+ * Check if a bash command should be approved based on policy.
+ * 
+ * @returns ApprovalResult with:
+ *   - approved: true, runUnsandboxed: false → run in sandbox
+ *   - approved: true, runUnsandboxed: true → run without sandbox (user approved escalation)
+ *   - approved: false → block the command
+ */
+export async function checkBashApproval(
+	ctx: ExtensionContext,
+	policy: ApprovalPolicy,
+	command: string,
+	escalate: boolean,
+	options?: ApprovalOptions,
+): Promise<ApprovalResult> {
+	const timeoutMs = (options?.timeoutSeconds ?? 60) * 1000;
+
+	// "never" - always run sandboxed, no prompts
+	if (policy === "never") {
+		return { approved: true, runUnsandboxed: false };
+	}
+
+	// "on-failure" - run sandboxed, handle failure separately
+	if (policy === "on-failure") {
+		return { approved: true, runUnsandboxed: false };
+	}
+
+	// Strip ANSI codes for display
+	const cleanCmd = stripAnsi(command);
+	const cmdPreview = cleanCmd.length > 60 ? cleanCmd.slice(0, 60) + "..." : cleanCmd;
+
+	// "on-request" - run sandboxed unless model requests escalation
+	if (policy === "on-request") {
+		if (!escalate) {
+			// No escalation requested, run sandboxed
+			return { approved: true, runUnsandboxed: false };
+		}
+
+		// Model requested escalation - prompt user
+		if (!ctx.hasUI) {
+			return { approved: false, reason: "Cannot prompt for escalation in headless mode" };
+		}
+
+		const approved = await promptForApproval(
+			ctx,
+			"Escalation requested",
+			`Model requests to run without sandbox:\n\n${cmdPreview}\n\nAllow?`,
+			timeoutMs,
+		);
+
+		if (approved) {
+			return { approved: true, runUnsandboxed: true };
+		}
+		return { approved: false, reason: "User denied escalation" };
+	}
+
+	// "unless-trusted" - auto-approve safe commands, prompt for unsafe
+	if (policy === "unless-trusted") {
+		// If model explicitly requests escalation, prompt
+		if (escalate) {
+			if (!ctx.hasUI) {
+				return { approved: false, reason: "Cannot prompt for escalation in headless mode" };
+			}
+
+			const approved = await promptForApproval(
+				ctx,
+				"Escalation requested",
+				`Model requests to run without sandbox:\n\n${cmdPreview}\n\nAllow?`,
+				timeoutMs,
+			);
+
+			if (approved) {
+				return { approved: true, runUnsandboxed: true };
+			}
+			return { approved: false, reason: "User denied escalation" };
+		}
+
+		// Check if command is safe
+		if (isSafeCommand(command)) {
+			// Safe command - run sandboxed without prompt
+			return { approved: true, runUnsandboxed: false };
+		}
+
+		// Unsafe command - prompt user
+		if (!ctx.hasUI) {
+			return { approved: false, reason: "Unsafe command in headless mode" };
+		}
+
+		const approved = await promptForApproval(
+			ctx,
+			"Command requires approval",
+			`This command is not in the safe list:\n\n${cmdPreview}\n\nAllow?`,
+			timeoutMs,
+		);
+
+		if (approved) {
+			return { approved: true, runUnsandboxed: false };
+		}
+		return { approved: false, reason: "User denied command" };
+	}
+
+	// Unknown policy - deny
+	return { approved: false, reason: `Unknown approval policy: ${policy}` };
+}
+
+/**
+ * Check if a filesystem operation should be approved.
+ * Used for edit/write tools when path is outside allowed area.
+ */
+export async function checkFilesystemApproval(
+	ctx: ExtensionContext,
+	policy: ApprovalPolicy,
+	targetPath: string,
+	tool: string,
+	options?: ApprovalOptions,
+): Promise<ApprovalResult> {
+	const timeoutMs = (options?.timeoutSeconds ?? 60) * 1000;
+
+	// "never" - deny without prompt
+	if (policy === "never") {
+		return { approved: false, reason: "Policy 'never' denies filesystem operations outside allowed paths" };
+	}
+
+	// "on-failure" - for edit/write, we pre-check so this acts like prompt
+	// "on-request" / "unless-trusted" - prompt for filesystem operations
+	if (!ctx.hasUI) {
+		return { approved: false, reason: "Cannot prompt for approval in headless mode" };
+	}
+
+	const approved = await promptForApproval(
+		ctx,
+		`${tool}: path outside workspace`,
+		`Tool: ${tool}\nPath: ${targetPath}\n\nAllow this operation?`,
+		timeoutMs,
+	);
+
+	if (approved) {
+		return { approved: true };
+	}
+	return { approved: false, reason: "User denied" };
+}
+
+/**
+ * Check if a failure looks like a sandbox policy violation.
+ * Used for "on-failure" policy to decide whether to prompt.
+ */
+export function looksLikePolicyViolation(error: string): boolean {
+	const patterns = [
+		/read-only file system/i,
+		/permission denied/i,
+		/operation not permitted/i,
+		/cannot write/i,
+		/could not resolve host/i,
+		/network is unreachable/i,
+		/connection refused/i,
+		/no route to host/i,
+	];
+
+	return patterns.some((pattern) => pattern.test(error));
+}
+
+/**
+ * Request approval after a sandbox failure (for "on-failure" policy).
+ * Returns whether user approves retry without sandbox.
+ */
+export async function requestApprovalAfterFailure(
+	ctx: ExtensionContext,
+	command: string,
+	error: string,
+	options?: ApprovalOptions,
+): Promise<ApprovalResult> {
+	const timeoutMs = (options?.timeoutSeconds ?? 60) * 1000;
+
+	if (!ctx.hasUI) {
+		return { approved: false, reason: "Cannot prompt in headless mode" };
+	}
+
+	// Strip ANSI codes to prevent TUI crashes
+	const cleanCmd = stripAnsi(command);
+	const cleanErr = stripAnsi(error);
+
+	const cmdPreview = cleanCmd.length > 60 ? cleanCmd.slice(0, 60) + "..." : cleanCmd;
+	const errPreview = cleanErr.length > 200 ? cleanErr.slice(-200) : cleanErr;
+
+	const approved = await promptForApproval(
+		ctx,
+		"Command blocked by sandbox",
+		`Command: ${cmdPreview}\n\nError: ${errPreview}\n\nRetry without sandbox?`,
+		timeoutMs,
+	);
+
+	if (approved) {
+		return { approved: true, runUnsandboxed: true };
+	}
+	return { approved: false, reason: "User denied retry" };
+}

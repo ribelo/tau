@@ -4,7 +4,7 @@ import * as path from "node:path";
 
 export type FilesystemMode = "read-only" | "workspace-write" | "danger-full-access";
 export type NetworkMode = "deny" | "allowlist" | "allow-all";
-export type ApprovalPolicy = "never" | "ask" | "on-failure";
+export type ApprovalPolicy = "never" | "on-failure" | "on-request" | "unless-trusted";
 
 export type SandboxConfig = {
 	filesystemMode?: FilesystemMode;
@@ -18,16 +18,24 @@ export const DEFAULT_SANDBOX_CONFIG: Required<SandboxConfig> = {
 	filesystemMode: "workspace-write",
 	networkMode: "deny",
 	networkAllowlist: [],
-	approvalPolicy: "ask",
+	approvalPolicy: "on-failure",
 	approvalTimeoutSeconds: 60,
 };
+
+/** Migrate deprecated policy values to current ones */
+function migrateApprovalPolicy(policy: string | undefined): ApprovalPolicy | undefined {
+	if (!policy) return undefined;
+	// "ask" was removed - closest equivalent is "unless-trusted" (prompts for unsafe commands)
+	if (policy === "ask") return "unless-trusted";
+	return policy as ApprovalPolicy;
+}
 
 export function applyDefaults(cfg: SandboxConfig | undefined): Required<SandboxConfig> {
 	return {
 		filesystemMode: cfg?.filesystemMode ?? DEFAULT_SANDBOX_CONFIG.filesystemMode,
 		networkMode: cfg?.networkMode ?? DEFAULT_SANDBOX_CONFIG.networkMode,
 		networkAllowlist: cfg?.networkAllowlist ?? DEFAULT_SANDBOX_CONFIG.networkAllowlist,
-		approvalPolicy: cfg?.approvalPolicy ?? DEFAULT_SANDBOX_CONFIG.approvalPolicy,
+		approvalPolicy: migrateApprovalPolicy(cfg?.approvalPolicy as string) ?? DEFAULT_SANDBOX_CONFIG.approvalPolicy,
 		approvalTimeoutSeconds: cfg?.approvalTimeoutSeconds ?? DEFAULT_SANDBOX_CONFIG.approvalTimeoutSeconds,
 	};
 }

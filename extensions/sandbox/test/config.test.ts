@@ -35,7 +35,7 @@ describe("sandbox config", () => {
 			filesystemMode: "workspace-write",
 			networkMode: "deny",
 			networkAllowlist: [],
-			approvalPolicy: "ask",
+			approvalPolicy: "on-failure",
 			approvalTimeoutSeconds: 60,
 		});
 	});
