@@ -7,6 +7,10 @@ export type TauPersistedState = {
 	workedFor?: { enabled?: boolean; toolsEnabled?: boolean };
 	status?: { fetchedAt: number; values: Record<string, { percentLeft: number }> };
 	sandbox?: Record<string, unknown>;
+	agentAwareness?: {
+		instructionsInjected?: boolean;
+		lastAgentCount?: number;
+	};
 };
 
 export type TauState = {

@@ -44,6 +44,8 @@ import { discoverWorkspaceRoot } from "./workspace-root.js";
 import type { TauState } from "../shared/state.js";
 import { updatePersistedState } from "../shared/state.js";
 
+import initAgentAwareness from "./agent-awareness/index.js";
+
 export function createSandboxedBashOperations(
   state: TauState,
   ctx: ExtensionContext,
@@ -152,6 +154,8 @@ function buildSourceHint(
 }
 
 export default function initSandbox(pi: ExtensionAPI, state: TauState) {
+  initAgentAwareness(pi, state);
+
   // Register CLI flags for testing sandbox modes
   pi.registerFlag("sandbox-fs", {
     description: "Filesystem sandbox mode (read-only, workspace-write, danger)",
