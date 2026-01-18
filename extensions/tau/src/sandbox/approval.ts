@@ -13,6 +13,7 @@ import type { ApprovalPolicy } from "./config.js";
 import { spawn } from "node:child_process";
 import { classifySandboxFailure } from "./sandbox-diagnostics.js";
 import { isSafeCommand } from "./safe-commands.js";
+import type { ApprovalBroker } from "../task/approval-broker.js";
 
 /** Default approval timeout in milliseconds */
 export const DEFAULT_APPROVAL_TIMEOUT_MS = 60_000;
@@ -58,20 +59,26 @@ function sendDesktopNotification(title: string, body: string): void {
  */
 async function promptForApproval(
 	ctx: ExtensionContext,
+	broker: ApprovalBroker | undefined,
 	title: string,
 	message: string,
 	timeoutMs: number,
 ): Promise<boolean> {
-	// Headless mode can't prompt
-	if (!ctx.hasUI) {
+	const canPromptLocally = Boolean(ctx.hasUI);
+	if (!canPromptLocally && !broker) {
 		return false;
 	}
 
-	// Send desktop notification
-	sendDesktopNotification("Sandbox Approval", title);
+	if (canPromptLocally) {
+		// Send desktop notification
+		sendDesktopNotification("Sandbox Approval", title);
+	}
 
 	try {
-		return await ctx.ui.confirm(title, message, { timeout: timeoutMs });
+		if (canPromptLocally) {
+			return await ctx.ui.confirm(title, message, { timeout: timeoutMs });
+		}
+		return await broker!.confirm(title, message, { timeoutMs: timeoutMs });
 	} catch (err) {
 		// Log error instead of swallowing silently
 		console.error("[Sandbox] Approval prompt failed:", err);
@@ -93,6 +100,7 @@ export async function checkBashApproval(
 	command: string,
 	escalate: boolean,
 	options?: ApprovalOptions,
+	broker?: ApprovalBroker,
 ): Promise<ApprovalResult> {
 	const timeoutMs = (options?.timeoutSeconds ?? 60) * 1000;
 
@@ -118,12 +126,13 @@ export async function checkBashApproval(
 		}
 
 		// Model requested escalation - prompt user
-		if (!ctx.hasUI) {
+		if (!ctx.hasUI && !broker) {
 			return { approved: false, reason: "Cannot prompt for escalation in headless mode" };
 		}
 
 		const approved = await promptForApproval(
 			ctx,
+			broker,
 			"Escalation requested",
 			`Model requests to run without sandbox:\n\n${cmdPreview}\n\nAllow?`,
 			timeoutMs,
@@ -139,12 +148,13 @@ export async function checkBashApproval(
 	if (policy === "unless-trusted") {
 		// If model explicitly requests escalation, prompt
 		if (escalate) {
-			if (!ctx.hasUI) {
+			if (!ctx.hasUI && !broker) {
 				return { approved: false, reason: "Cannot prompt for escalation in headless mode" };
 			}
 
 			const approved = await promptForApproval(
 				ctx,
+				broker,
 				"Escalation requested",
 				`Model requests to run without sandbox:\n\n${cmdPreview}\n\nAllow?`,
 				timeoutMs,
@@ -163,12 +173,13 @@ export async function checkBashApproval(
 		}
 
 		// Unsafe command - prompt user
-		if (!ctx.hasUI) {
+		if (!ctx.hasUI && !broker) {
 			return { approved: false, reason: "Unsafe command in headless mode" };
 		}
 
 		const approved = await promptForApproval(
 			ctx,
+			broker,
 			"Command requires approval",
 			`This command is not in the safe list:\n\n${cmdPreview}\n\nAllow?`,
 			timeoutMs,
@@ -194,6 +205,7 @@ export async function checkFilesystemApproval(
 	targetPath: string,
 	tool: string,
 	options?: ApprovalOptions,
+	broker?: ApprovalBroker,
 ): Promise<ApprovalResult> {
 	const timeoutMs = (options?.timeoutSeconds ?? 60) * 1000;
 
@@ -204,12 +216,13 @@ export async function checkFilesystemApproval(
 
 	// "on-failure" - for edit/write, we pre-check so this acts like prompt
 	// "on-request" / "unless-trusted" - prompt for filesystem operations
-	if (!ctx.hasUI) {
+	if (!ctx.hasUI && !broker) {
 		return { approved: false, reason: "Cannot prompt for approval in headless mode" };
 	}
 
 	const approved = await promptForApproval(
 		ctx,
+		broker,
 		`${tool}: path outside workspace`,
 		`Tool: ${tool}\nPath: ${targetPath}\n\nAllow this operation?`,
 		timeoutMs,
@@ -239,10 +252,11 @@ export async function requestApprovalAfterFailure(
 	command: string,
 	error: string,
 	options?: ApprovalOptions,
+	broker?: ApprovalBroker,
 ): Promise<ApprovalResult> {
 	const timeoutMs = (options?.timeoutSeconds ?? 60) * 1000;
 
-	if (!ctx.hasUI) {
+	if (!ctx.hasUI && !broker) {
 		return { approved: false, reason: "Cannot prompt in headless mode" };
 	}
 
@@ -255,6 +269,7 @@ export async function requestApprovalAfterFailure(
 
 	const approved = await promptForApproval(
 		ctx,
+		broker,
 		"Command blocked by sandbox",
 		`Command: ${cmdPreview}\n\nError: ${errPreview}\n\nRetry without sandbox?`,
 		timeoutMs,

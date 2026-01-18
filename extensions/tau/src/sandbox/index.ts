@@ -42,7 +42,8 @@ import { detectMissingSandboxDeps, formatMissingDepsMessage } from "./sandbox-pr
 import { discoverWorkspaceRoot } from "./workspace-root.js";
 
 import type { TauState } from "../shared/state.js";
-import { updatePersistedState } from "../shared/state.js";
+import { loadPersistedState, updatePersistedState } from "../shared/state.js";
+import { getWorkerApprovalBroker } from "../task/approval-broker.js";
 
 import initAgentAwareness from "./agent-awareness/index.js";
 
@@ -191,6 +192,9 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 
   function refreshConfig(ctx: ExtensionContext) {
     workspaceRoot = discoverWorkspaceRoot(ctx.cwd);
+    // Keep state.persisted in sync with the latest tau:state entry, even if another
+    // component (e.g. task runner) appends tau:state directly.
+    state.persisted = loadPersistedState(ctx as any) as any;
     sessionState = loadSessionState(state) ?? {};
     sessionOverride = sessionState.override;
 
@@ -205,6 +209,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
       ...(state.sandbox ?? {}),
       workspaceRoot,
       effectiveConfig,
+      approvalBroker: getWorkerApprovalBroker((ctx as any).sessionManager?.getSessionId?.() ?? ""),
     };
   }
 
@@ -531,18 +536,23 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
     if (sessionState.sandboxUnavailableDecision === "allow") return true;
     if (sessionState.sandboxUnavailableDecision === "deny") return false;
 
-    if (!ctx.hasUI) {
+    const broker = (state.sandbox as any)?.approvalBroker;
+    if (!ctx.hasUI && !broker) {
       // Headless: default deny.
       sessionState.sandboxUnavailableDecision = "deny";
       persistState();
       return false;
     }
 
-    const approved = await ctx.ui.confirm(
-      "Sandbox unavailable",
-      `Sandboxed bash is unavailable.\n\nReason: ${reason}\n\nRun bash without sandbox for this session? (edit/write restrictions still apply)`,
-      { timeout: timeoutSeconds * 1000 },
-    );
+    const title = "Sandbox unavailable";
+    const message =
+      `Sandboxed bash is unavailable.\n\nReason: ${reason}\n\n` +
+      "Run bash without sandbox for this session? (edit/write restrictions still apply)";
+    const timeoutMs = timeoutSeconds * 1000;
+
+    const approved = ctx.hasUI
+      ? await ctx.ui.confirm(title, message, { timeout: timeoutMs })
+      : await broker!.confirm(title, message, { timeoutMs });
 
     sessionState.sandboxUnavailableDecision = approved ? "allow" : "deny";
     persistState();
@@ -566,6 +576,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
         const currentConfig = effectiveConfig;
         const currentWorkspace = workspaceRoot;
         const approvalTimeout = currentConfig.approvalTimeoutSeconds;
+        const broker = (state.sandbox as any)?.approvalBroker;
 
         // Check approval based on policy (using captured ctx)
         const approval = await checkBashApproval(
@@ -574,6 +585,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
           command,
           escalate,
           { timeoutSeconds: approvalTimeout },
+          broker,
         );
 
         if (!approval.approved) {
@@ -714,11 +726,13 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
           looksLikePolicyViolation(result.output)
         ) {
           try {
+            const broker = (state.sandbox as any)?.approvalBroker;
             const retryApproval = await requestApprovalAfterFailure(
               ctx,
               command,
               result.output,
               { timeoutSeconds: approvalTimeout },
+              broker,
             );
 
             if (retryApproval.approved && retryApproval.runUnsandboxed) {
@@ -943,12 +957,14 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
           filesystemMode: effectiveConfig.filesystemMode,
         });
         if (!check.allowed) {
+          const broker = (state.sandbox as any)?.approvalBroker;
           const approval = await checkFilesystemApproval(
             ctx,
             effectiveConfig.approvalPolicy,
             targetPath,
             "edit",
             { timeoutSeconds: effectiveConfig.approvalTimeoutSeconds },
+            broker,
           );
 
          if (!approval.approved) {
@@ -979,12 +995,14 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
           filesystemMode: effectiveConfig.filesystemMode,
         });
         if (!check.allowed) {
+          const broker = (state.sandbox as any)?.approvalBroker;
           const approval = await checkFilesystemApproval(
             ctx,
             effectiveConfig.approvalPolicy,
             targetPath,
             "write",
             { timeoutSeconds: effectiveConfig.approvalTimeoutSeconds },
+            broker,
           );
 
          if (!approval.approved) {

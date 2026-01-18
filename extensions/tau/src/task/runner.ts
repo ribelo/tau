@@ -12,6 +12,12 @@ import {
 import { Type } from "@sinclair/typebox";
 import type { Complexity, ResolvedPolicy } from "./types.js";
 import type { LoadedSkill } from "./skills.js";
+import type { SandboxConfig } from "../sandbox/config.js";
+import { computeClampedWorkerSandboxConfig } from "./sandbox-policy.js";
+import { TAU_PERSISTED_STATE_TYPE, loadPersistedState } from "../shared/state.js";
+import type { ApprovalBroker } from "./approval-broker.js";
+import { setWorkerApprovalBroker } from "./approval-broker.js";
+import { withWorkerSandboxOverride } from "./worker-sandbox.js";
 
 export interface UsageStats {
 	input: number;
@@ -75,6 +81,8 @@ type WorkerBackendOptions = {
 	thinking?: string;
 	maxDepth: number;
 	outputSchema?: Record<string, unknown>;
+	sandboxConfig: Required<SandboxConfig>;
+	approvalBroker?: ApprovalBroker;
 	onEvent: (event: WorkerEvent) => void;
 	signal?: AbortSignal;
 };
@@ -476,6 +484,14 @@ class InProcessWorkerBackend implements WorkerBackend {
 			entry.extensionsReady = true;
 		}
 
+		// Re-snapshot per call: update the worker's tau sandbox override and approval broker on every invocation.
+		{
+			const persisted = loadPersistedState({ sessionManager: entry.session.sessionManager } as any);
+			const next = withWorkerSandboxOverride(persisted, options.sandboxConfig);
+			(entry.session.sessionManager as any).appendCustomEntry(TAU_PERSISTED_STATE_TYPE, next);
+			setWorkerApprovalBroker(entry.session.sessionId, options.approvalBroker);
+		}
+
 		const toolList = Array.from(new Set(options.tools.filter(Boolean)));
 		entry.session.setActiveToolsByName(toolList);
 
@@ -565,6 +581,8 @@ export class TaskRunner {
 	async run(options: {
 		parentCwd: string;
 		parentSessionId: string;
+		parentSandboxConfig: Required<SandboxConfig>;
+		approvalBroker?: ApprovalBroker;
 		parentModelId?: string;
 		parentThinking: string;
 		parentTools: string[];
@@ -645,6 +663,11 @@ export class TaskRunner {
 
 		let backendResult: WorkerBackendResult;
 		try {
+			const sandboxConfig = computeClampedWorkerSandboxConfig({
+				parent: options.parentSandboxConfig,
+				requested: options.policy.sandbox,
+			});
+
 			backendResult = await this.backend.run({
 				cwd: options.parentCwd,
 				parentSessionId: options.parentSessionId,
@@ -656,6 +679,8 @@ export class TaskRunner {
 				thinking: resolvedThinking,
 				maxDepth: MAX_TASK_NESTING,
 				outputSchema: options.outputSchema,
+				sandboxConfig,
+				approvalBroker: options.approvalBroker,
 				onEvent: handleEvent,
 				signal: options.signal,
 			});

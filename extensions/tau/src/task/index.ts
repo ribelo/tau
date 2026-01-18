@@ -17,6 +17,11 @@ import type { Complexity } from "./types.js";
 import { renderTaskCall, renderTaskResult, type TaskBatchItemDetails, type TaskToolDetails } from "./render.js";
 
 import type { TauState } from "../shared/state.js";
+import type { SandboxConfig } from "../sandbox/config.js";
+import { computeEffectiveConfig } from "../sandbox/config.js";
+import { discoverWorkspaceRoot } from "../sandbox/workspace-root.js";
+import { loadPersistedState } from "../shared/state.js";
+import { createUiApprovalBroker, type ApprovalBroker } from "./approval-broker.js";
 
 const Ajv = (AjvModule as any).default || AjvModule;
 const addFormats = (addFormatsModule as any).default || addFormatsModule;
@@ -163,7 +168,7 @@ const TaskParams = Type.Object({
 	}),
 });
 
-export default function initTask(pi: ExtensionAPI, _state: TauState) {
+export default function initTask(pi: ExtensionAPI, state: TauState) {
 
 	ensureBundledSkills();
 
@@ -194,6 +199,9 @@ export default function initTask(pi: ExtensionAPI, _state: TauState) {
 		parameters: TaskParams,
 
 		async execute(_toolCallId, params, onUpdate, ctx, signal) {
+			const approvalBroker: ApprovalBroker | undefined =
+				(ctx as any).hasUI && (ctx as any).ui?.confirm ? createUiApprovalBroker((ctx as any).ui) : undefined;
+
 			const tasks = Array.isArray((params as any).tasks) ? (params as any).tasks : [];
 			if (tasks.length === 0) {
 				const details: TaskToolDetails = { status: "failed", results: [], message: "No tasks provided" };
@@ -401,9 +409,18 @@ export default function initTask(pi: ExtensionAPI, _state: TauState) {
 
 				let res;
 				try {
+					const parentSandboxConfig =
+						((state.sandbox as any)?.effectiveConfig as Required<SandboxConfig> | undefined) ??
+						computeEffectiveConfig({
+							workspaceRoot: discoverWorkspaceRoot(ctx.cwd),
+							sessionOverride: ((loadPersistedState(ctx).sandbox as any)?.override ?? undefined) as SandboxConfig | undefined,
+						});
+
 					res = await runner.run({
 						parentCwd: ctx.cwd,
 						parentSessionId: ctx.sessionManager.getSessionId(),
+						parentSandboxConfig,
+						approvalBroker,
 						parentModelId: ctx.model?.id,
 						parentThinking: pi.getThinkingLevel(),
 						parentTools: pi.getActiveTools(),

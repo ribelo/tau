@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ThinkingLevel } from "@mariozechner/pi-ai";
+import type { ApprovalPolicy, FilesystemMode, NetworkMode, SandboxConfig } from "../sandbox/config.js";
 import type { Complexity, ResolvedPolicy, TaskType } from "./types.js";
 import { loadSkill } from "./skills.js";
 
@@ -66,6 +67,78 @@ function normalizeComplexityConfig(v: unknown): TaskType["complexity"] | undefin
 	return Object.keys(out).length > 0 ? out : undefined;
 }
 
+const FILESYSTEM_MODES: readonly FilesystemMode[] = ["read-only", "workspace-write", "danger-full-access"] as const;
+const NETWORK_MODES: readonly NetworkMode[] = ["deny", "allowlist", "allow-all"] as const;
+const APPROVAL_POLICIES: readonly ApprovalPolicy[] = ["never", "on-failure", "on-request", "unless-trusted"] as const;
+
+function migrateApprovalPolicy(v: string): ApprovalPolicy | undefined {
+	const trimmed = v.trim();
+	if (!trimmed) return undefined;
+	if (trimmed === "ask") return "unless-trusted";
+	return APPROVAL_POLICIES.includes(trimmed as ApprovalPolicy) ? (trimmed as ApprovalPolicy) : undefined;
+}
+
+function normalizeSandboxConfig(taskType: string, raw: unknown): SandboxConfig | undefined {
+	if (raw === undefined || raw === null) return undefined;
+	if (!isRecord(raw)) {
+		throw new Error(`Task type "${taskType}": sandbox must be an object`);
+	}
+
+	const out: SandboxConfig = {};
+
+	if ((raw as any).filesystemMode !== undefined) {
+		const v = (raw as any).filesystemMode;
+		if (typeof v !== "string") throw new Error(`Task type "${taskType}": sandbox.filesystemMode must be a string`);
+		if (!FILESYSTEM_MODES.includes(v as FilesystemMode)) {
+			throw new Error(
+				`Task type "${taskType}": invalid sandbox.filesystemMode "${v}" (expected ${FILESYSTEM_MODES.join(", ")})`,
+			);
+		}
+		out.filesystemMode = v as FilesystemMode;
+	}
+
+	if ((raw as any).networkMode !== undefined) {
+		const v = (raw as any).networkMode;
+		if (typeof v !== "string") throw new Error(`Task type "${taskType}": sandbox.networkMode must be a string`);
+		if (!NETWORK_MODES.includes(v as NetworkMode)) {
+			throw new Error(
+				`Task type "${taskType}": invalid sandbox.networkMode "${v}" (expected ${NETWORK_MODES.join(", ")})`,
+			);
+		}
+		out.networkMode = v as NetworkMode;
+	}
+
+	if ((raw as any).networkAllowlist !== undefined) {
+		const v = (raw as any).networkAllowlist;
+		if (!Array.isArray(v) || v.some((x) => typeof x !== "string")) {
+			throw new Error(`Task type "${taskType}": sandbox.networkAllowlist must be an array of strings`);
+		}
+		out.networkAllowlist = v.map((x: string) => x.trim()).filter(Boolean);
+	}
+
+	if ((raw as any).approvalPolicy !== undefined) {
+		const v = (raw as any).approvalPolicy;
+		if (typeof v !== "string") throw new Error(`Task type "${taskType}": sandbox.approvalPolicy must be a string`);
+		const migrated = migrateApprovalPolicy(v);
+		if (!migrated) {
+			throw new Error(
+				`Task type "${taskType}": invalid sandbox.approvalPolicy "${v}" (expected ${APPROVAL_POLICIES.join(", ")})`,
+			);
+		}
+		out.approvalPolicy = migrated;
+	}
+
+	if ((raw as any).approvalTimeoutSeconds !== undefined) {
+		const v = (raw as any).approvalTimeoutSeconds;
+		if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) {
+			throw new Error(`Task type "${taskType}": sandbox.approvalTimeoutSeconds must be a positive number`);
+		}
+		out.approvalTimeoutSeconds = Math.floor(v);
+	}
+
+	return Object.keys(out).length > 0 ? out : undefined;
+}
+
 function normalizeTaskType(name: string, raw: unknown): TaskType | null {
 	if (!isRecord(raw)) return null;
 
@@ -75,6 +148,7 @@ function normalizeTaskType(name: string, raw: unknown): TaskType | null {
 	const defaultThinking = normalizeThinkingLevel((raw as any).defaultThinking ?? (raw as any).thinking);
 	const skills = Array.isArray(raw.skills) ? raw.skills.filter((s) => typeof s === "string") : undefined;
 	const complexity = normalizeComplexityConfig((raw as any).complexity);
+	const sandbox = normalizeSandboxConfig(name, (raw as any).sandbox);
 
 	if (model && complexity) {
 		throw new Error(`Task type "${name}" cannot define both model and complexity`);
@@ -88,6 +162,7 @@ function normalizeTaskType(name: string, raw: unknown): TaskType | null {
 		defaultThinking,
 		complexity,
 		skills: skills && skills.length > 0 ? skills : undefined,
+		sandbox,
 	};
 }
 
@@ -106,6 +181,7 @@ function mergeTaskType(base: TaskType, override: TaskType): TaskType {
 		skills: override.skills !== undefined ? (override.skills.length > 0 ? override.skills : undefined) : base.skills,
 		complexity: hasComplexity ? mergedComplexity : undefined,
 		model: hasComplexity ? undefined : override.model ?? base.model,
+		sandbox: override.sandbox !== undefined ? { ...(base.sandbox ?? {}), ...(override.sandbox ?? {}) } : base.sandbox,
 	};
 }
 
@@ -296,6 +372,12 @@ export class TaskRegistry {
 			thinking,
 			tools: t.tools,
 			skills: (t.skills ?? []).slice(),
+			sandbox: t.sandbox
+				? {
+						...t.sandbox,
+						networkAllowlist: t.sandbox.networkAllowlist ? t.sandbox.networkAllowlist.slice() : undefined,
+					}
+				: undefined,
 		};
 	}
 }

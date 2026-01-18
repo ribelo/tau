@@ -1,4 +1,5 @@
 import type { ThinkingLevel } from "@mariozechner/pi-ai";
+import type { SandboxConfig } from "../sandbox/config.js";
 
 export type Complexity = "low" | "medium" | "high";
 
@@ -23,6 +24,8 @@ export interface TaskType {
 	};
 	/** Default skills to inject */
 	skills?: string[];
+	/** Optional sandbox/approval overrides for workers spawned under this task type. */
+	sandbox?: SandboxConfig;
 }
 
 export interface ResolvedPolicy {
@@ -32,4 +35,5 @@ export interface ResolvedPolicy {
 	thinking?: ThinkingLevel;
 	tools?: string[];
 	skills: string[];
+	sandbox?: SandboxConfig;
 }

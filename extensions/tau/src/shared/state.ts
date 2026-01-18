@@ -47,6 +47,13 @@ function deepMerge(base: any, patch: any): any {
 	return out;
 }
 
+export function mergePersistedState(
+	base: TauPersistedState,
+	patch: Partial<TauPersistedState>,
+): TauPersistedState {
+	return deepMerge(base, patch) as TauPersistedState;
+}
+
 export function loadPersistedState(ctx: { sessionManager: { getEntries: () => any[] } }): TauPersistedState {
 	const entries = ctx.sessionManager.getEntries();
 	const last = entries
@@ -60,6 +67,6 @@ export function updatePersistedState(
 	state: TauState,
 	patch: Partial<TauPersistedState>,
 ): void {
-	state.persisted = deepMerge(state.persisted, patch) as TauPersistedState;
+	state.persisted = mergePersistedState(state.persisted, patch);
 	pi.appendEntry(TAU_PERSISTED_STATE_TYPE, state.persisted);
 }
