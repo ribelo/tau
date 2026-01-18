@@ -79,7 +79,7 @@ function shortenPath(p: string): string {
 }
 
 function parseNestedTaskInfo(args: Record<string, unknown>, resultText: string | undefined): NestedTaskInfo {
-	const tasks = Array.isArray((args as any).tasks) ? (args as any).tasks : undefined;
+	const tasks = Array.isArray(args["tasks"]) ? (args["tasks"] as Array<{ type?: string; complexity?: string; description?: string }>) : undefined;
 	const firstTask = tasks && tasks.length > 0 ? tasks[0] : undefined;
 
 	let taskType = "?";
@@ -87,10 +87,10 @@ function parseNestedTaskInfo(args: Record<string, unknown>, resultText: string |
 	let description: string | undefined;
 
 	if (tasks && tasks.length > 0) {
-		if (tasks.length === 1) {
-			taskType = typeof firstTask?.type === "string" ? firstTask.type : "?";
-			complexity = typeof firstTask?.complexity === "string" ? firstTask.complexity : "medium";
-			description = typeof firstTask?.description === "string" ? firstTask.description : undefined;
+		if (tasks.length === 1 && firstTask) {
+			taskType = typeof firstTask.type === "string" ? firstTask.type : "?";
+			complexity = typeof firstTask.complexity === "string" ? firstTask.complexity : "medium";
+			description = typeof firstTask.description === "string" ? firstTask.description : undefined;
 		} else {
 			taskType = "batch";
 			complexity = `${tasks.length}`;
@@ -105,10 +105,10 @@ function parseNestedTaskInfo(args: Record<string, unknown>, resultText: string |
 
 		if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
 			try {
-				const parsed = JSON.parse(trimmed) as any;
+				const parsed = JSON.parse(trimmed) as unknown;
 				if (Array.isArray(parsed)) {
 					const counts = { completed: 0, failed: 0, interrupted: 0, running: 0 };
-					for (const entry of parsed) {
+					for (const entry of parsed as Array<{ status?: string }>) {
 						const status = typeof entry?.status === "string" ? entry.status : "";
 						if (status === "completed") counts.completed++;
 						else if (status === "failed") counts.failed++;
@@ -116,8 +116,8 @@ function parseNestedTaskInfo(args: Record<string, unknown>, resultText: string |
 						else if (status === "running") counts.running++;
 					}
 
-					const sessionEntry = parsed.find(
-						(entry: any) => entry && typeof entry.session_id === "string" && entry.session_id.length > 0,
+					const sessionEntry = (parsed as Array<{ session_id?: string }>).find(
+						(entry) => entry && typeof entry.session_id === "string" && entry.session_id.length > 0,
 					);
 					if (sessionEntry) sessionId = sessionEntry.session_id;
 
@@ -128,11 +128,11 @@ function parseNestedTaskInfo(args: Record<string, unknown>, resultText: string |
 					if (counts.running) parts.push(`${counts.running} running`);
 					if (parts.length > 0) outputPreview = `results: ${parts.join(", ")}`;
 				} else if (parsed && typeof parsed === "object") {
-					const parsedSessionId = (parsed as any).session_id;
+					const parsedSessionId = (parsed as Record<string, unknown>).session_id;
 					if (typeof parsedSessionId === "string" && parsedSessionId.length > 0) {
 						sessionId = parsedSessionId;
 					}
-					const parsedMessage = (parsed as any).message;
+					const parsedMessage = (parsed as Record<string, unknown>).message;
 					if (typeof parsedMessage === "string" && parsedMessage.trim().length > 0) {
 						outputPreview = oneLine(parsedMessage.trim());
 					}
@@ -153,31 +153,31 @@ function parseNestedTaskInfo(args: Record<string, unknown>, resultText: string |
 	return { taskType, complexity, description, sessionId, outputPreview };
 }
 
-function formatToolCall(toolName: string, args: Record<string, unknown>, theme: any): string {
+function formatToolCall(toolName: string, args: Record<string, unknown>, theme: { fg: (key: string, s: string) => string; accent: (s: string) => string; dim: (s: string) => string }): string {
 	switch (toolName) {
 		case "bash": {
-			const command = typeof (args as any).command === "string" ? (args as any).command : "...";
+			const command = typeof args["command"] === "string" ? args["command"] : "...";
 			return theme.fg("muted", "$ ") + theme.fg("toolOutput", truncate(oneLine(command), 120));
 		}
 		case "read": {
-			const rawPath = (args as any).path || (args as any).file_path || "...";
+			const rawPath = args["path"] || args["file_path"] || "...";
 			return theme.fg("muted", "read ") + theme.fg("accent", shortenPath(String(rawPath)));
 		}
 		case "write": {
-			const rawPath = (args as any).path || (args as any).file_path || "...";
+			const rawPath = args["path"] || args["file_path"] || "...";
 			return theme.fg("muted", "write ") + theme.fg("accent", shortenPath(String(rawPath)));
 		}
 		case "edit": {
-			const rawPath = (args as any).path || (args as any).file_path || "...";
+			const rawPath = args["path"] || args["file_path"] || "...";
 			return theme.fg("muted", "edit ") + theme.fg("accent", shortenPath(String(rawPath)));
 		}
 		case "ls": {
-			const rawPath = (args as any).path || ".";
+			const rawPath = args["path"] || ".";
 			return theme.fg("muted", "ls ") + theme.fg("accent", shortenPath(String(rawPath)));
 		}
 		case "find": {
-			const pat = (args as any).pattern || "*";
-			const rawPath = (args as any).path || ".";
+			const pat = args["pattern"] || "*";
+			const rawPath = args["path"] || ".";
 			return (
 				theme.fg("muted", "find ") +
 				theme.fg("accent", String(pat)) +
@@ -185,8 +185,8 @@ function formatToolCall(toolName: string, args: Record<string, unknown>, theme: 
 			);
 		}
 		case "grep": {
-			const pat = (args as any).pattern || "";
-			const rawPath = (args as any).path || ".";
+			const pat = args["pattern"] || "";
+			const rawPath = args["path"] || ".";
 			return (
 				theme.fg("muted", "grep ") +
 				theme.fg("accent", `/${String(pat)}/`) +
@@ -231,14 +231,14 @@ function summarizeBatchResults(results: TaskBatchItemDetails[]): string {
 /**
  * Hide tool call rendering so task appears as a single cell (like subagent).
  */
-export function renderTaskCall(_args: any, _theme: any): Text {
+export function renderTaskCall(_args: unknown, _theme: unknown): Text {
 	return new Text("", 0, 0);
 }
 
 export function renderTaskResult(
 	result: AgentToolResult<TaskToolDetails>,
 	options: ToolRenderResultOptions,
-	theme: any,
+	theme: { fg: (key: string, s: string) => string; bold: (s: string) => string; accent: (s: string) => string; dim: (s: string) => string; warning: (s: string) => string; error: (s: string) => string; success: (s: string) => string },
 ) {
 	const details = result.details as TaskToolDetails | undefined;
 	if (!details) {
@@ -247,9 +247,9 @@ export function renderTaskResult(
 		return new Text(text, 0, 0);
 	}
 
-	const maybeResults = (details as any).results;
+	const maybeResults = details.results;
 	if (!Array.isArray(maybeResults)) {
-		const legacy = details as any;
+		const legacy = details as unknown as TaskBatchItemDetails & { taskType: string; sessionId: string };
 		const header = `${statusMark(legacy.status, theme)} ${theme.bold("task")} ${theme.fg("accent", `${legacy.taskType}:${legacy.complexity}`)} ${theme.fg("dim", `(session: ${legacy.sessionId})`)}`;
 
 		const missing = (legacy.missingSkills || []).filter(Boolean);

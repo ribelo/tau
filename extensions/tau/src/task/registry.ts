@@ -2,25 +2,20 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ThinkingLevel } from "@mariozechner/pi-ai";
-import type { ApprovalPolicy, FilesystemMode, NetworkMode, SandboxConfig } from "../sandbox/config.js";
+import { readJsonFile } from "../shared/fs.js";
+import { isRecord, type AnyRecord } from "../shared/json.js";
+import {
+	type ApprovalPolicy,
+	type FilesystemMode,
+	type NetworkMode,
+	APPROVAL_POLICIES,
+	FILESYSTEM_MODES,
+	NETWORK_MODES,
+	migrateApprovalPolicy,
+} from "../shared/policy.js";
+import type { SandboxConfig } from "../sandbox/config.js";
 import type { Complexity, ResolvedPolicy, TaskType } from "./types.js";
 import { loadSkill } from "./skills.js";
-
-type AnyRecord = Record<string, unknown>;
-
-function isRecord(v: unknown): v is AnyRecord {
-	return Boolean(v) && typeof v === "object" && !Array.isArray(v);
-}
-
-function readJsonFile(filePath: string): AnyRecord | null {
-	try {
-		const text = fs.readFileSync(filePath, "utf-8");
-		const json = JSON.parse(text) as unknown;
-		return isRecord(json) ? json : null;
-	} catch {
-		return null;
-	}
-}
 
 function isDirectory(p: string): boolean {
 	try {
@@ -58,24 +53,13 @@ function normalizeComplexityConfig(v: unknown): TaskType["complexity"] | undefin
 	if (!isRecord(v)) return undefined;
 	const out: TaskType["complexity"] = {};
 	for (const key of ["low", "medium", "high"] as const) {
-		const item = (v as any)[key];
+		const item = v[key];
 		if (!isRecord(item)) continue;
 		const model = typeof item.model === "string" ? item.model : undefined;
 		const thinking = normalizeThinkingLevel(item.thinking);
 		if (model || thinking) out[key] = { model, thinking };
 	}
 	return Object.keys(out).length > 0 ? out : undefined;
-}
-
-const FILESYSTEM_MODES: readonly FilesystemMode[] = ["read-only", "workspace-write", "danger-full-access"] as const;
-const NETWORK_MODES: readonly NetworkMode[] = ["deny", "allowlist", "allow-all"] as const;
-const APPROVAL_POLICIES: readonly ApprovalPolicy[] = ["never", "on-failure", "on-request", "unless-trusted"] as const;
-
-function migrateApprovalPolicy(v: string): ApprovalPolicy | undefined {
-	const trimmed = v.trim();
-	if (!trimmed) return undefined;
-	if (trimmed === "ask") return "unless-trusted";
-	return APPROVAL_POLICIES.includes(trimmed as ApprovalPolicy) ? (trimmed as ApprovalPolicy) : undefined;
 }
 
 function normalizeSandboxConfig(taskType: string, raw: unknown): SandboxConfig | undefined {
@@ -86,8 +70,8 @@ function normalizeSandboxConfig(taskType: string, raw: unknown): SandboxConfig |
 
 	const out: SandboxConfig = {};
 
-	if ((raw as any).filesystemMode !== undefined) {
-		const v = (raw as any).filesystemMode;
+	if (raw.filesystemMode !== undefined) {
+		const v = raw.filesystemMode;
 		if (typeof v !== "string") throw new Error(`Task type "${taskType}": sandbox.filesystemMode must be a string`);
 		if (!FILESYSTEM_MODES.includes(v as FilesystemMode)) {
 			throw new Error(
@@ -97,8 +81,8 @@ function normalizeSandboxConfig(taskType: string, raw: unknown): SandboxConfig |
 		out.filesystemMode = v as FilesystemMode;
 	}
 
-	if ((raw as any).networkMode !== undefined) {
-		const v = (raw as any).networkMode;
+	if (raw.networkMode !== undefined) {
+		const v = raw.networkMode;
 		if (typeof v !== "string") throw new Error(`Task type "${taskType}": sandbox.networkMode must be a string`);
 		if (!NETWORK_MODES.includes(v as NetworkMode)) {
 			throw new Error(
@@ -108,16 +92,16 @@ function normalizeSandboxConfig(taskType: string, raw: unknown): SandboxConfig |
 		out.networkMode = v as NetworkMode;
 	}
 
-	if ((raw as any).networkAllowlist !== undefined) {
-		const v = (raw as any).networkAllowlist;
+	if (raw.networkAllowlist !== undefined) {
+		const v = raw.networkAllowlist;
 		if (!Array.isArray(v) || v.some((x) => typeof x !== "string")) {
 			throw new Error(`Task type "${taskType}": sandbox.networkAllowlist must be an array of strings`);
 		}
-		out.networkAllowlist = v.map((x: string) => x.trim()).filter(Boolean);
+		out.networkAllowlist = (v as string[]).map((x: string) => x.trim()).filter(Boolean);
 	}
 
-	if ((raw as any).approvalPolicy !== undefined) {
-		const v = (raw as any).approvalPolicy;
+	if (raw.approvalPolicy !== undefined) {
+		const v = raw.approvalPolicy;
 		if (typeof v !== "string") throw new Error(`Task type "${taskType}": sandbox.approvalPolicy must be a string`);
 		const migrated = migrateApprovalPolicy(v);
 		if (!migrated) {
@@ -128,8 +112,8 @@ function normalizeSandboxConfig(taskType: string, raw: unknown): SandboxConfig |
 		out.approvalPolicy = migrated;
 	}
 
-	if ((raw as any).approvalTimeoutSeconds !== undefined) {
-		const v = (raw as any).approvalTimeoutSeconds;
+	if (raw.approvalTimeoutSeconds !== undefined) {
+		const v = raw.approvalTimeoutSeconds;
 		if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) {
 			throw new Error(`Task type "${taskType}": sandbox.approvalTimeoutSeconds must be a positive number`);
 		}
@@ -144,11 +128,11 @@ function normalizeTaskType(name: string, raw: unknown): TaskType | null {
 
 	const description = typeof raw.description === "string" ? raw.description : "";
 	const tools = Array.isArray(raw.tools) ? raw.tools.filter((t) => typeof t === "string") : undefined;
-	const model = typeof (raw as any).model === "string" ? (raw as any).model : undefined;
-	const defaultThinking = normalizeThinkingLevel((raw as any).defaultThinking ?? (raw as any).thinking);
+	const model = typeof raw.model === "string" ? raw.model : undefined;
+	const defaultThinking = normalizeThinkingLevel(raw.defaultThinking ?? raw.thinking);
 	const skills = Array.isArray(raw.skills) ? raw.skills.filter((s) => typeof s === "string") : undefined;
-	const complexity = normalizeComplexityConfig((raw as any).complexity);
-	const sandbox = normalizeSandboxConfig(name, (raw as any).sandbox);
+	const complexity = normalizeComplexityConfig(raw.complexity);
+	const sandbox = normalizeSandboxConfig(name, raw.sandbox);
 
 	if (model && complexity) {
 		throw new Error(`Task type "${name}" cannot define both model and complexity`);
@@ -318,7 +302,7 @@ export class TaskRegistry {
 		const applySettings = (settingsPath: string) => {
 			const json = readJsonFile(settingsPath);
 			if (!json) return;
-			const tasks = (json as any).tasks;
+			const tasks = json.tasks;
 			if (!isRecord(tasks)) return;
 
 			for (const [name, rawTask] of Object.entries(tasks)) {

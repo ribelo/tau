@@ -10,7 +10,7 @@ type JsonRecord = Record<string, unknown>;
 type ToolRenderOptions = { expanded: boolean; isPartial: boolean };
 
 type ToolResultLike = {
-	content?: Array<{ type: "text"; text: string } | { type: "json"; json: any }>;
+	content?: Array<{ type: "text"; text: string } | { type: "json"; json: unknown }>;
 	details?: unknown;
 };
 
@@ -44,11 +44,11 @@ function fmtValue(v: unknown): string {
 	return String(v);
 }
 
-function renderHeader(title: string, theme: any): string {
+function renderHeader(title: string, theme: { fg: (key: string, s: string) => string; bold: (s: string) => string }): string {
 	return theme.fg("toolTitle", `• ${theme.bold(title)}`);
 }
 
-function getJsonBlock(result: ToolResultLike): any | undefined {
+function getJsonBlock(result: ToolResultLike): unknown | undefined {
 	const blocks = result.content || [];
 	for (const b of blocks) {
 		if (b.type === "json") return b.json;
@@ -244,6 +244,26 @@ function formatContentsResultsAsText(results: ReturnType<typeof compactContentsR
 		.join("\n\n");
 }
 
+type WebSearchArgs = {
+	query: string;
+	type?: string;
+	additionalQueries?: string[];
+	category?: string;
+	userLocation?: string;
+	numResults?: number;
+	text?: boolean;
+	context?: boolean;
+	includeDomains?: string[];
+	excludeDomains?: string[];
+	startCrawlDate?: string;
+	endCrawlDate?: string;
+	startPublishedDate?: string;
+	endPublishedDate?: string;
+	includeText?: string[];
+	excludeText?: string[];
+	moderation?: boolean;
+};
+
 export default function initExa(pi: ExtensionAPI, _state: TauState) {
 	pi.registerTool({
 		name: "web_search_exa",
@@ -354,26 +374,27 @@ export default function initExa(pi: ExtensionAPI, _state: TauState) {
 		}),
 
 		renderCall(args, theme) {
-			const query = typeof (args as any)?.query === "string" ? (args as any).query : "";
+			const typedArgs = args as WebSearchArgs;
+			const query = typedArgs.query || "";
 			let out = theme.fg("toolTitle", theme.bold("exa.web_search"));
 			if (query) out += ` ${theme.fg("toolOutput", truncate(oneLine(query), 140))}`;
 
 			const extras: Array<[string, unknown]> = [
-				["type", (args as any).type],
-				["category", (args as any).category],
-				["userLocation", (args as any).userLocation],
-				["numResults", (args as any).numResults],
-				["text", (args as any).text],
-				["context", (args as any).context],
-				["includeDomains", (args as any).includeDomains],
-				["excludeDomains", (args as any).excludeDomains],
-				["startCrawlDate", (args as any).startCrawlDate],
-				["endCrawlDate", (args as any).endCrawlDate],
-				["startPublishedDate", (args as any).startPublishedDate],
-				["endPublishedDate", (args as any).endPublishedDate],
-				["includeText", (args as any).includeText],
-				["excludeText", (args as any).excludeText],
-				["moderation", (args as any).moderation],
+				["type", typedArgs.type],
+				["category", typedArgs.category],
+				["userLocation", typedArgs.userLocation],
+				["numResults", typedArgs.numResults],
+				["text", typedArgs.text],
+				["context", typedArgs.context],
+				["includeDomains", typedArgs.includeDomains],
+				["excludeDomains", typedArgs.excludeDomains],
+				["startCrawlDate", typedArgs.startCrawlDate],
+				["endCrawlDate", typedArgs.endCrawlDate],
+				["startPublishedDate", typedArgs.startPublishedDate],
+				["endPublishedDate", typedArgs.endPublishedDate],
+				["includeText", typedArgs.includeText],
+				["excludeText", typedArgs.excludeText],
+				["moderation", typedArgs.moderation],
 			];
 
 			for (const [k, v] of extras) {
@@ -389,7 +410,7 @@ export default function initExa(pi: ExtensionAPI, _state: TauState) {
 				return new Text(theme.fg("warning", "Searching Exa…"), 0, 0);
 			}
 
-			const json = getJsonBlock(result as any);
+			const json = getJsonBlock(result as ToolResultLike) as ExaSearchResponse | undefined;
 			const results: ExaSearchResult[] = Array.isArray(json?.results) ? json.results : [];
 			const shown = options.expanded ? results : results.slice(0, 3);
 
@@ -426,30 +447,31 @@ export default function initExa(pi: ExtensionAPI, _state: TauState) {
 			return new Text(out, 0, 0);
 		},
 
-		async execute(_toolCallId, params: any, onUpdate, _ctx, signal) {
+		async execute(_toolCallId, params, onUpdate, _ctx, signal) {
 			onUpdate?.({ content: [{ type: "text", text: "Searching Exa…" }] });
 
-			const body: JsonRecord = { query: params.query };
+			const typedParams = params as WebSearchArgs;
+			const body: JsonRecord = { query: typedParams.query };
 
-			const type = params.type;
+			const type = typedParams.type;
 			if (typeof type === "string" && type.trim().length > 0) body.type = type;
-			if (Array.isArray(params.additionalQueries) && params.additionalQueries.length > 0) body.additionalQueries = params.additionalQueries;
-			if (typeof params.category === "string" && params.category.trim().length > 0) body.category = params.category;
-			if (typeof params.userLocation === "string" && params.userLocation.trim().length > 0) body.userLocation = params.userLocation;
+			if (Array.isArray(typedParams.additionalQueries) && typedParams.additionalQueries.length > 0) body.additionalQueries = typedParams.additionalQueries;
+			if (typeof typedParams.category === "string" && typedParams.category.trim().length > 0) body.category = typedParams.category;
+			if (typeof typedParams.userLocation === "string" && typedParams.userLocation.trim().length > 0) body.userLocation = typedParams.userLocation;
 
-			if (typeof params.text === "boolean") body.text = params.text;
-			if (typeof params.numResults === "number") body.numResults = params.numResults;
-			if (typeof params.context === "boolean") body.context = params.context;
+			if (typeof typedParams.text === "boolean") body.text = typedParams.text;
+			if (typeof typedParams.numResults === "number") body.numResults = typedParams.numResults;
+			if (typeof typedParams.context === "boolean") body.context = typedParams.context;
 
-			if (params.includeDomains?.length) body.includeDomains = params.includeDomains;
-			if (params.excludeDomains?.length) body.excludeDomains = params.excludeDomains;
-			if (typeof params.startCrawlDate === "string" && params.startCrawlDate.trim().length > 0) body.startCrawlDate = params.startCrawlDate;
-			if (typeof params.endCrawlDate === "string" && params.endCrawlDate.trim().length > 0) body.endCrawlDate = params.endCrawlDate;
-			if (params.startPublishedDate) body.startPublishedDate = params.startPublishedDate;
-			if (params.endPublishedDate) body.endPublishedDate = params.endPublishedDate;
-			if (Array.isArray(params.includeText) && params.includeText.length > 0) body.includeText = params.includeText;
-			if (Array.isArray(params.excludeText) && params.excludeText.length > 0) body.excludeText = params.excludeText;
-			if (typeof params.moderation === "boolean") body.moderation = params.moderation;
+			if (typedParams.includeDomains?.length) body.includeDomains = typedParams.includeDomains;
+			if (typedParams.excludeDomains?.length) body.excludeDomains = typedParams.excludeDomains;
+			if (typeof typedParams.startCrawlDate === "string" && typedParams.startCrawlDate.trim().length > 0) body.startCrawlDate = typedParams.startCrawlDate;
+			if (typeof typedParams.endCrawlDate === "string" && typedParams.endCrawlDate.trim().length > 0) body.endCrawlDate = typedParams.endCrawlDate;
+			if (typedParams.startPublishedDate) body.startPublishedDate = typedParams.startPublishedDate;
+			if (typedParams.endPublishedDate) body.endPublishedDate = typedParams.endPublishedDate;
+			if (Array.isArray(typedParams.includeText) && typedParams.includeText.length > 0) body.includeText = typedParams.includeText;
+			if (Array.isArray(typedParams.excludeText) && typedParams.excludeText.length > 0) body.excludeText = typedParams.excludeText;
+			if (typeof typedParams.moderation === "boolean") body.moderation = typedParams.moderation;
 
 			const response = await exaPost<ExaSearchResponse>("/search", body, signal);
 			const results = compactSearchResults(response.results);
@@ -464,9 +486,9 @@ export default function initExa(pi: ExtensionAPI, _state: TauState) {
 						type: "json",
 						json: {
 							requestId: response.requestId,
-							resolvedSearchType: (response as any).resolvedSearchType,
+							resolvedSearchType: response.resolvedSearchType,
 							results,
-							context: (response as any).context,
+							context: response.context,
 						},
 					},
 				],
@@ -474,6 +496,18 @@ export default function initExa(pi: ExtensionAPI, _state: TauState) {
 			};
 		},
 	});
+
+type CrawlingArgs = {
+	urls: string[];
+	text?: boolean;
+	highlights?: boolean;
+	summary?: boolean;
+	context?: boolean;
+	livecrawl?: string;
+	livecrawlTimeout?: number;
+	subpages?: number;
+	subpageTarget?: string[];
+};
 
 	pi.registerTool({
 		name: "crawling_exa",
@@ -530,19 +564,20 @@ export default function initExa(pi: ExtensionAPI, _state: TauState) {
 		}),
 
 		renderCall(args, theme) {
+			const typedArgs = args as CrawlingArgs;
 			let out = theme.fg("toolTitle", theme.bold("exa.crawl"));
-			const urls = Array.isArray((args as any)?.urls) ? ((args as any).urls as string[]) : [];
+			const urls = typedArgs.urls || [];
 			if (urls.length > 0) out += ` ${theme.fg("dim", fmtValue(urls))}`;
 
 			const extras: Array<[string, unknown]> = [
-				["text", (args as any).text],
-				["highlights", (args as any).highlights],
-				["summary", (args as any).summary],
-				["context", (args as any).context],
-				["livecrawl", (args as any).livecrawl],
-				["livecrawlTimeout", (args as any).livecrawlTimeout],
-				["subpages", (args as any).subpages],
-				["subpageTarget", (args as any).subpageTarget],
+				["text", typedArgs.text],
+				["highlights", typedArgs.highlights],
+				["summary", typedArgs.summary],
+				["context", typedArgs.context],
+				["livecrawl", typedArgs.livecrawl],
+				["livecrawlTimeout", typedArgs.livecrawlTimeout],
+				["subpages", typedArgs.subpages],
+				["subpageTarget", typedArgs.subpageTarget],
 			];
 
 			for (const [k, v] of extras) {
@@ -557,7 +592,7 @@ export default function initExa(pi: ExtensionAPI, _state: TauState) {
 				return new Text(theme.fg("warning", "Fetching contents from Exa…"), 0, 0);
 			}
 
-			const json = getJsonBlock(result as any);
+			const json = getJsonBlock(result as ToolResultLike) as ExaContentsResponse | undefined;
 			const results: ExaContentsResult[] = Array.isArray(json?.results) ? json.results : [];
 			const shown = options.expanded ? results : results.slice(0, 2);
 
@@ -597,23 +632,24 @@ export default function initExa(pi: ExtensionAPI, _state: TauState) {
 			return new Text(out, 0, 0);
 		},
 
-		async execute(_toolCallId, params: any, onUpdate, _ctx, signal) {
+		async execute(_toolCallId, params, onUpdate, _ctx, signal) {
 			onUpdate?.({ content: [{ type: "text", text: "Fetching contents from Exa…" }] });
 
-			const urls = (params.urls || []).filter(Boolean);
+			const typedParams = params as CrawlingArgs;
+			const urls = (typedParams.urls || []).filter(Boolean);
 			if (urls.length === 0) throw new Error("crawling_exa requires at least one url");
 
 			const body: JsonRecord = {
-				text: params.text ?? true,
+				text: typedParams.text ?? true,
 				urls,
 			};
-			if (typeof params.context === "boolean") body.context = params.context;
-			if (typeof params.highlights === "boolean") body.highlights = params.highlights;
-			if (typeof params.summary === "boolean") body.summary = params.summary;
-			if (params.livecrawl) body.livecrawl = params.livecrawl;
-			if (typeof params.livecrawlTimeout === "number") body.livecrawlTimeout = params.livecrawlTimeout;
-			if (typeof params.subpages === "number") body.subpages = params.subpages;
-			if (params.subpageTarget?.length) body.subpageTarget = params.subpageTarget;
+			if (typeof typedParams.context === "boolean") body.context = typedParams.context;
+			if (typeof typedParams.highlights === "boolean") body.highlights = typedParams.highlights;
+			if (typeof typedParams.summary === "boolean") body.summary = typedParams.summary;
+			if (typedParams.livecrawl) body.livecrawl = typedParams.livecrawl;
+			if (typeof typedParams.livecrawlTimeout === "number") body.livecrawlTimeout = typedParams.livecrawlTimeout;
+			if (typeof typedParams.subpages === "number") body.subpages = typedParams.subpages;
+			if (typedParams.subpageTarget?.length) body.subpageTarget = typedParams.subpageTarget;
 
 			const response = await exaPost<ExaContentsResponse>("/contents", body, signal);
 			const results = compactContentsResults(response.results);
@@ -640,6 +676,11 @@ export default function initExa(pi: ExtensionAPI, _state: TauState) {
 		},
 	});
 
+type CodeContextArgs = {
+	query: string;
+	tokensNum?: string;
+};
+
 	pi.registerTool({
 		name: "get_code_context_exa",
 		label: "exa.code_context",
@@ -660,11 +701,12 @@ export default function initExa(pi: ExtensionAPI, _state: TauState) {
 		}),
 
 		renderCall(args, theme) {
+			const typedArgs = args as CodeContextArgs;
 			let out = theme.fg("toolTitle", theme.bold("exa.code_context"));
-			const query = typeof (args as any)?.query === "string" ? (args as any).query : "";
+			const query = typedArgs.query || "";
 			if (query) out += ` ${theme.fg("toolOutput", truncate(oneLine(query), 140))}`;
 
-			const tokensNum = (args as any).tokensNum;
+			const tokensNum = typedArgs.tokensNum;
 			if (typeof tokensNum === "string" && tokensNum.trim().length > 0) {
 				out += `\n${theme.fg("muted", "tokensNum:")} ${theme.fg("dim", fmtValue(tokensNum.trim()))}`;
 			}
@@ -677,7 +719,7 @@ export default function initExa(pi: ExtensionAPI, _state: TauState) {
 				return new Text(theme.fg("warning", "Getting code context from Exa…"), 0, 0);
 			}
 
-			const json = getJsonBlock(result as any);
+			const json = getJsonBlock(result as ToolResultLike) as ExaContextResponse | undefined;
 			const responseText = typeof json?.response === "string" ? json.response : "";
 			if (!responseText) return new Text(theme.fg("dim", "(no response)"), 0, 0);
 
@@ -696,12 +738,13 @@ export default function initExa(pi: ExtensionAPI, _state: TauState) {
 			return new Text(out.trim(), 0, 0);
 		},
 
-		async execute(_toolCallId, params: any, onUpdate, _ctx, signal) {
+		async execute(_toolCallId, params, onUpdate, _ctx, signal) {
 			onUpdate?.({ content: [{ type: "text", text: "Getting code context from Exa…" }] });
 
-			const body: JsonRecord = { query: params.query };
+			const typedParams = params as CodeContextArgs;
+			const body: JsonRecord = { query: typedParams.query };
 
-			const rawTokensNum = typeof params.tokensNum === "string" ? params.tokensNum.trim() : "";
+			const rawTokensNum = typeof typedParams.tokensNum === "string" ? typedParams.tokensNum.trim() : "";
 			if (rawTokensNum.length === 0) {
 				body.tokensNum = "dynamic";
 			} else if (/^\d+$/.test(rawTokensNum)) {

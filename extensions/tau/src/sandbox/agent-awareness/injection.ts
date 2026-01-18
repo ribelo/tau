@@ -1,4 +1,4 @@
-import type { ImageContent, TextContent } from "@mariozechner/pi-ai";
+import type { ImageContent, Message, TextContent } from "@mariozechner/pi-ai";
 
 type AgentContextOpts = {
 	count: number;
@@ -19,13 +19,14 @@ export function buildAgentContextNotice(opts: AgentContextOpts): string {
 }
 
 function asContentArray(
-	content: string | (TextContent | ImageContent)[],
+	content: string | (TextContent | ImageContent)[] | undefined,
 ): (TextContent | ImageContent)[] {
+	if (content === undefined) return [];
 	if (typeof content === "string") return [{ type: "text", text: content }];
 	return content;
 }
 
-export function injectAgentContextIntoMessages<T extends { role: string; content?: any }>(
+export function injectAgentContextIntoMessages<T extends Message>(
 	messages: T[],
 	noticeText: string,
 ): T[] {
@@ -34,13 +35,13 @@ export function injectAgentContextIntoMessages<T extends { role: string; content
 	for (let i = out.length - 1; i >= 0; i--) {
 		const msg = out[i];
 		if (msg && msg.role === "user") {
-			const contentArr = asContentArray(msg.content ?? "");
+			const contentArr = asContentArray(msg.content);
 			const firstText =
 				contentArr[0] && contentArr[0].type === "text" ? (contentArr[0] as TextContent).text : "";
 			if (firstText.trimStart().startsWith("AGENT_CONTEXT:")) return out;
 
 			const injected: TextContent = { type: "text", text: `${noticeText}\n\n` };
-			(out[i] as any) = { ...msg, content: [injected, ...contentArr] };
+			out[i] = { ...msg, content: [injected, ...contentArr] };
 			return out;
 		}
 	}

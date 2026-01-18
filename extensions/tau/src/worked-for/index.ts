@@ -236,7 +236,7 @@ export default function initWorkedFor(pi: ExtensionAPI, state: TauState) {
 
 		if (ctx.hasUI) ctx.ui.setWidget("worked-for-separator", undefined);
 		renderWorkedForWidget(ctx);
-		if (enabled && ctx.hasUI) startTick(ctx);
+		if (isEnabled() && ctx.hasUI) startTick(ctx);
 	});
 
 	pi.on("agent_end", async (_event, ctx) => {
@@ -258,7 +258,7 @@ export default function initWorkedFor(pi: ExtensionAPI, state: TauState) {
 	});
 
 	pi.on("turn_end", async (event, ctx) => {
-		if (!enabled) return;
+		if (!isEnabled()) return;
 		if (!agentRunning) return;
 
 		// Only update the widget after assistant output.

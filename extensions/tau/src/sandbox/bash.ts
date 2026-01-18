@@ -5,18 +5,26 @@ import * as path from "node:path";
 import type { FilesystemMode, NetworkMode } from "./config.js";
 
 // Lazy-loaded ASRT module
-let SandboxManager: any = null;
+type SandboxManagerType = {
+	wrapWithSandbox: (command: string, shell: string, config: any) => Promise<string>;
+	initialize: (config: any) => Promise<void>;
+	updateConfig: (config: any) => void;
+	getConfig: () => any;
+	reset: () => Promise<void>;
+};
+
+let SandboxManager: SandboxManagerType | null = null;
 let asrtLoadError: Error | null = null;
 let asrtLoadAttempted = false;
-
 
 /**
  * Attempt to load the ASRT SandboxManager.
  * Throws on failure.
  */
-async function loadAsrt(): Promise<any> {
+async function loadAsrt(): Promise<SandboxManagerType> {
 	if (asrtLoadAttempted) {
 		if (asrtLoadError) throw asrtLoadError;
+		if (!SandboxManager) throw new Error("SandboxManager failed to load");
 		return SandboxManager;
 	}
 
@@ -25,6 +33,7 @@ async function loadAsrt(): Promise<any> {
 	try {
 		const mod = await import("@anthropic-ai/sandbox-runtime");
 		SandboxManager = mod.SandboxManager;
+		if (!SandboxManager) throw new Error("SandboxManager not found in @anthropic-ai/sandbox-runtime");
 		return SandboxManager;
 	} catch (err) {
 		asrtLoadError = err instanceof Error ? err : new Error(String(err));
@@ -172,7 +181,7 @@ export async function wrapCommandWithSandbox(opts: {
 }): Promise<WrapCommandResult> {
 	const { command, workspaceRoot, filesystemMode, networkMode, networkAllowlist } = opts;
 
-	let mgr: any;
+	let mgr: SandboxManagerType;
 	try {
 		mgr = await loadAsrt();
 	} catch (err) {

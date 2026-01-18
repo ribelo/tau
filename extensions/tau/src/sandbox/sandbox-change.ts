@@ -1,4 +1,4 @@
-import type { ImageContent, TextContent } from "@mariozechner/pi-ai";
+import type { ImageContent, Message, TextContent } from "@mariozechner/pi-ai";
 
 import type { SandboxConfig } from "./config.js";
 
@@ -46,8 +46,9 @@ export function buildSandboxChangeNoticeText(cfg: Required<SandboxConfig>): stri
 }
 
 function asContentArray(
-	content: string | (TextContent | ImageContent)[],
+	content: string | (TextContent | ImageContent)[] | undefined,
 ): (TextContent | ImageContent)[] {
+	if (content === undefined) return [];
 	if (typeof content === "string") return [{ type: "text", text: content }];
 	return content;
 }
@@ -56,7 +57,7 @@ function asContentArray(
  * Prepend injected notice text as content[0] on the last user message.
  * Returns a new messages array (does not mutate input).
  */
-export function injectSandboxNoticeIntoMessages<T extends { role: string; content?: any }>(
+export function injectSandboxNoticeIntoMessages<T extends Message>(
 	messages: T[],
 	noticeText: string,
 ): T[] {
@@ -65,7 +66,7 @@ export function injectSandboxNoticeIntoMessages<T extends { role: string; conten
 	for (let i = out.length - 1; i >= 0; i--) {
 		const msg = out[i];
 		if (msg && msg.role === "user") {
-			const contentArr = asContentArray(msg.content ?? "");
+			const contentArr = asContentArray(msg.content);
 			const firstText =
 				contentArr[0] && contentArr[0].type === "text" ? (contentArr[0] as TextContent).text : "";
 			if (
@@ -76,7 +77,7 @@ export function injectSandboxNoticeIntoMessages<T extends { role: string; conten
 			}
 
 			const injected: TextContent = { type: "text", text: `${noticeText}\n\n` };
-			(out[i] as any) = {
+			out[i] = {
 				...msg,
 				content: [injected, ...contentArr],
 			};

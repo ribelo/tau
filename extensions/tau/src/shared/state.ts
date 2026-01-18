@@ -1,4 +1,5 @@
 import type { TauConfig } from "./config.js";
+import { deepMerge, isRecord } from "./json.js";
 
 export const TAU_PERSISTED_STATE_TYPE = "tau:state";
 
@@ -34,39 +35,30 @@ export function createState(config: TauConfig = {}): TauState {
 	};
 }
 
-function deepMerge(base: any, patch: any): any {
-	if (patch === undefined) return base;
-	if (base === undefined) return patch;
-	if (typeof base !== "object" || base === null || Array.isArray(base)) return patch;
-	if (typeof patch !== "object" || patch === null || Array.isArray(patch)) return patch;
-	const out: any = { ...base };
-	for (const [k, v] of Object.entries(patch)) {
-		if (v === undefined) continue;
-		out[k] = deepMerge((base as any)[k], v);
-	}
-	return out;
-}
-
 export function mergePersistedState(
 	base: TauPersistedState,
 	patch: Partial<TauPersistedState>,
 ): TauPersistedState {
-	return deepMerge(base, patch) as TauPersistedState;
+	return deepMerge(base, patch);
 }
 
-export function loadPersistedState(ctx: { sessionManager: { getEntries: () => any[] } }): TauPersistedState {
+export function loadPersistedState(ctx: { sessionManager: { getEntries: () => unknown[] } }): TauPersistedState {
 	const entries = ctx.sessionManager.getEntries();
 	const last = entries
-		.filter((e: { type: string; customType?: string }) => e.type === "custom" && e.customType === TAU_PERSISTED_STATE_TYPE)
-		.pop() as { data?: TauPersistedState } | undefined;
-	return (last?.data && typeof last.data === "object" ? last.data : {}) as TauPersistedState;
+		.filter(
+			(e): e is { type: "custom"; customType: string; data: unknown } =>
+				isRecord(e) && e["type"] === "custom" && e["customType"] === TAU_PERSISTED_STATE_TYPE,
+		)
+		.pop();
+
+	return isRecord(last?.data) ? (last.data as unknown as TauPersistedState) : {};
 }
 
 export function updatePersistedState(
-	pi: { appendEntry: (customType: string, data: any) => void },
+	pi: { appendEntry: (customType: string, data: unknown) => void },
 	state: TauState,
 	patch: Partial<TauPersistedState>,
 ): void {
-	state.persisted = mergePersistedState(state.persisted ?? {}, patch);
+	state.persisted = mergePersistedState(state.persisted, patch);
 	pi.appendEntry(TAU_PERSISTED_STATE_TYPE, state.persisted);
 }

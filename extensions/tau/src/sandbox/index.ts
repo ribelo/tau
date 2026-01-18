@@ -43,19 +43,24 @@ import { discoverWorkspaceRoot } from "./workspace-root.js";
 
 import type { TauState } from "../shared/state.js";
 import { loadPersistedState, updatePersistedState } from "../shared/state.js";
-import { getWorkerApprovalBroker } from "../task/approval-broker.js";
+import { type ApprovalBroker, getWorkerApprovalBroker } from "../task/approval-broker.js";
 
 import initAgentAwareness from "./agent-awareness/index.js";
+
+type SandboxStateInternal = {
+  createSandboxedBashOperations?: (ctx: ExtensionContext, escalate: boolean) => BashOperations;
+  workspaceRoot?: string;
+  effectiveConfig?: Required<SandboxConfig>;
+  approvalBroker?: ApprovalBroker;
+};
 
 export function createSandboxedBashOperations(
   state: TauState,
   ctx: ExtensionContext,
   escalate: boolean,
 ): BashOperations {
-  const sandboxState = state.sandbox as any;
-  const factory = sandboxState?.createSandboxedBashOperations as
-    | ((ctx: ExtensionContext, escalate: boolean) => BashOperations)
-    | undefined;
+  const sandboxState = state.sandbox as SandboxStateInternal | undefined;
+  const factory = sandboxState?.createSandboxedBashOperations;
   if (!factory) {
     throw new Error("sandbox not initialized (initSandbox must run before createSandboxedBashOperations)");
   }
@@ -194,7 +199,8 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
     workspaceRoot = discoverWorkspaceRoot(ctx.cwd);
     // Keep state.persisted in sync with the latest tau:state entry, even if another
     // component (e.g. task runner) appends tau:state directly.
-    state.persisted = loadPersistedState(ctx as any) as any;
+    const ctxWithSession = ctx as unknown as { sessionManager: { getEntries: () => unknown[] } };
+    state.persisted = loadPersistedState(ctxWithSession);
     sessionState = loadSessionState(state) ?? {};
     sessionOverride = sessionState.override;
 
@@ -205,18 +211,20 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
       sessionOverride: mergedOverride,
     });
 
+    const sessionId = (ctx as unknown as { sessionManager?: { getSessionId?: () => string } }).sessionManager?.getSessionId?.() ?? "";
+
     state.sandbox = {
       ...(state.sandbox ?? {}),
       workspaceRoot,
       effectiveConfig,
-      approvalBroker: getWorkerApprovalBroker((ctx as any).sessionManager?.getSessionId?.() ?? ""),
-    };
+      approvalBroker: getWorkerApprovalBroker(sessionId),
+    } as SandboxStateInternal;
   }
 
   function persistState() {
     // Keep sessionState.override in sync with the current override.
     sessionState.override = sessionOverride;
-    updatePersistedState(pi, state, { sandbox: sessionState as any });
+    updatePersistedState(pi, state, { sandbox: sessionState as unknown as Record<string, unknown> });
   }
 
   function sendSandboxChangeHistoryEntry(text: string): void {
@@ -536,7 +544,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
     if (sessionState.sandboxUnavailableDecision === "allow") return true;
     if (sessionState.sandboxUnavailableDecision === "deny") return false;
 
-    const broker = (state.sandbox as any)?.approvalBroker;
+    const broker = (state.sandbox as SandboxStateInternal | undefined)?.approvalBroker;
     if (!ctx.hasUI && !broker) {
       // Headless: default deny.
       sessionState.sandboxUnavailableDecision = "deny";
@@ -576,7 +584,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
         const currentConfig = effectiveConfig;
         const currentWorkspace = workspaceRoot;
         const approvalTimeout = currentConfig.approvalTimeoutSeconds;
-        const broker = (state.sandbox as any)?.approvalBroker;
+        const broker = (state.sandbox as SandboxStateInternal | undefined)?.approvalBroker;
 
         // Check approval based on policy (using captured ctx)
         const approval = await checkBashApproval(
@@ -726,7 +734,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
           looksLikePolicyViolation(result.output)
         ) {
           try {
-            const broker = (state.sandbox as any)?.approvalBroker;
+            const broker = (state.sandbox as SandboxStateInternal | undefined)?.approvalBroker;
             const retryApproval = await requestApprovalAfterFailure(
               ctx,
               command,
@@ -957,7 +965,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
           filesystemMode: effectiveConfig.filesystemMode,
         });
         if (!check.allowed) {
-          const broker = (state.sandbox as any)?.approvalBroker;
+          const broker = (state.sandbox as SandboxStateInternal | undefined)?.approvalBroker;
           const approval = await checkFilesystemApproval(
             ctx,
             effectiveConfig.approvalPolicy,
@@ -995,7 +1003,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
           filesystemMode: effectiveConfig.filesystemMode,
         });
         if (!check.allowed) {
-          const broker = (state.sandbox as any)?.approvalBroker;
+          const broker = (state.sandbox as SandboxStateInternal | undefined)?.approvalBroker;
           const approval = await checkFilesystemApproval(
             ctx,
             effectiveConfig.approvalPolicy,
@@ -1171,7 +1179,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
   pi.on("context", async (event, ctx) => {
     refreshConfig(ctx);
 
-    const filtered = (event.messages as any[]).filter(
+    const filtered = event.messages.filter(
       (m) => !(m?.role === "custom" && m?.customType === SANDBOX_CHANGE_MESSAGE_TYPE),
     );
 
@@ -1180,31 +1188,31 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
     // Initial state: even on the first message, inject SANDBOX_STATE as content[0].
     if (!sessionState.lastCommunicatedHash) {
       const nextMessages = injectSandboxNoticeIntoMessages(
-        filtered as any[],
+        filtered,
         buildSandboxStateNoticeText(effectiveConfig),
       );
       sessionState.lastCommunicatedHash = currentHash;
       sessionState.pendingSandboxNotice = undefined;
       persistState();
-      return { messages: nextMessages as any };
+      return { messages: nextMessages };
     }
 
     const pending = sessionState.pendingSandboxNotice;
     if (!pending) {
-      if (filtered.length !== (event.messages as any[]).length) {
-        return { messages: filtered as any };
+      if (filtered.length !== event.messages.length) {
+        return { messages: filtered };
       }
       return;
     }
 
-    const nextMessages = injectSandboxNoticeIntoMessages(filtered as any[], pending.text);
+    const nextMessages = injectSandboxNoticeIntoMessages(filtered, pending.text);
 
     // Mark as communicated and clear pending.
     sessionState.lastCommunicatedHash = pending.hash;
     sessionState.pendingSandboxNotice = undefined;
     persistState();
 
-    return { messages: nextMessages as any };
+    return { messages: nextMessages };
   });
 
  pi.registerCommand("sandbox", {
