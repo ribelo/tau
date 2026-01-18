@@ -1,8 +1,0 @@
-{
-	"name": "exa",
-	"private": true,
-	"type": "module",
-	"pi": {
-		"extensions": ["./src/index.ts"]
-	}
-}

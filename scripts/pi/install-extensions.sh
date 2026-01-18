@@ -34,7 +34,13 @@ mkdir -p "$TARGET"
 
 echo "Installing pi extensions to: $TARGET ($MODE)"
 
-EXTS=(beads exa task tau editor-hub sandbox skill-marker)
+EXTS=(tau)
+LEGACY_EXTS=(beads exa task editor-hub sandbox skill-marker)
+
+# Clean up legacy extension installs/symlinks from pre-consolidation days.
+for ext in "${LEGACY_EXTS[@]}"; do
+  rm -rf "$TARGET/$ext"
+done
 
 for ext in "${EXTS[@]}"; do
   src="$ROOT/extensions/$ext"

@@ -5,9 +5,9 @@ Run `bd prime` for workflow context, or install hooks (`bd hooks install`) for a
 
 ## pi extension packaging (crucial)
 
-- **tau is a bag of pi extensions**. Keep extension source code under `./extensions/<name>/` (package with `package.json` + `pi.extensions`).
+- **tau is a single pi extension with many features**. Keep extension source code under `./extensions/tau/` (`package.json` + `pi.extensions`).
 - **Global pi config lives under `~/.pi`** and global extensions are discovered from **`~/.pi/agent/extensions/`**.
-- To install/update tau extensions globally, symlink (or copy) `./extensions/*` into `~/.pi/agent/extensions/`.
+- To install/update tau globally, symlink (or copy) `./extensions/tau` into `~/.pi/agent/extensions/`.
 - **Never create or use `./.pi/extensions/` inside this repo.** Project-local pi extension folders are not part of tau’s design.
 - Use the helper installer:
   ```bash
@@ -72,4 +72,3 @@ bd prime                                      # Full workflow details
 - NEVER stop before pushing - that leaves work stranded locally
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
-

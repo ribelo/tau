@@ -13,3 +13,6 @@ yarn-error.log*
 
 # bwrap/ASRT artifacts
 .claude
+
+# codex cli artifacts
+.codex/

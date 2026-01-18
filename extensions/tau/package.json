@@ -3,11 +3,17 @@
 	"private": true,
 	"type": "module",
 	"pi": {
-		"extensions": [
-			"./src/terminal-prompt.ts",
-			"./src/worked-for.ts",
-			"./src/commit.ts",
-			"./src/status.ts"
-		]
+		"extensions": ["./src/index.ts"]
+	},
+	"dependencies": {
+		"@anthropic-ai/sandbox-runtime": "^0.0.28",
+		"ajv": "^8.17.1",
+		"ajv-formats": "^3.0.1"
+	},
+	"devDependencies": {
+		"vitest": "^3.2.4"
+	},
+	"scripts": {
+		"test": "vitest --run --passWithNoTests"
 	}
 }
