@@ -812,6 +812,8 @@ export default function sandbox(pi: ExtensionAPI) {
           block: "deny",
           allow: "allow-all",
           "allow-all": "allow-all",
+          allowlist: "allowlist",
+          "allow-list": "allowlist",
         };
         const mapped = netMap[sandboxNet.toLowerCase()];
         if (mapped) {
@@ -819,7 +821,7 @@ export default function sandbox(pi: ExtensionAPI) {
           ctx.ui.notify(`Sandbox network mode: ${mapped}`, "info");
         } else {
           ctx.ui.notify(
-            `Invalid --sandbox-net value: ${sandboxNet}. Use: deny, allow`,
+            `Invalid --sandbox-net value: ${sandboxNet}. Use: deny, allow-all, allowlist`,
             "warning",
           );
         }
