@@ -26,15 +26,23 @@ export function computeSandboxConfigHash(cfg: Required<SandboxConfig>): string {
 	].join(";");
 }
 
-export function buildSandboxChangeNoticeText(cfg: Required<SandboxConfig>): string {
+function buildSandboxNotice(prefix: "SANDBOX_STATE:" | "SANDBOX_CHANGE:", cfg: Required<SandboxConfig>): string {
 	const allowlist = formatNetworkAllowlistForNotice(cfg);
 	return [
-		"SANDBOX_CHANGE:",
+		prefix,
 		`fs=${cfg.filesystemMode}`,
 		`net=${cfg.networkMode}`,
 		`allowlist=${allowlist}`,
 		`approval=${cfg.approvalPolicy}`,
 	].join(" ");
+}
+
+export function buildSandboxStateNoticeText(cfg: Required<SandboxConfig>): string {
+	return buildSandboxNotice("SANDBOX_STATE:", cfg);
+}
+
+export function buildSandboxChangeNoticeText(cfg: Required<SandboxConfig>): string {
+	return buildSandboxNotice("SANDBOX_CHANGE:", cfg);
 }
 
 function asContentArray(
@@ -60,7 +68,10 @@ export function injectSandboxNoticeIntoMessages<T extends { role: string; conten
 			const contentArr = asContentArray(msg.content ?? "");
 			const firstText =
 				contentArr[0] && contentArr[0].type === "text" ? (contentArr[0] as TextContent).text : "";
-			if (firstText.trimStart().startsWith("SANDBOX_CHANGE:")) {
+			if (
+				firstText.trimStart().startsWith("SANDBOX_CHANGE:") ||
+				firstText.trimStart().startsWith("SANDBOX_STATE:")
+			) {
 				return out;
 			}
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
 	buildSandboxChangeNoticeText,
+	buildSandboxStateNoticeText,
 	computeSandboxConfigHash,
 	injectSandboxNoticeIntoMessages,
 } from "../src/sandbox-change.js";
@@ -32,6 +33,18 @@ describe("sandbox-change", () => {
 		expect(buildSandboxChangeNoticeText(cfg)).toContain("net=deny");
 	});
 
+	it("formats SANDBOX_STATE notice", () => {
+		const cfg: any = {
+			filesystemMode: "workspace-write",
+			networkMode: "allow-all",
+			networkAllowlist: [],
+			approvalPolicy: "on-failure",
+			approvalTimeoutSeconds: 60,
+		};
+		expect(buildSandboxStateNoticeText(cfg)).toContain("SANDBOX_STATE:");
+		expect(buildSandboxStateNoticeText(cfg)).toContain("fs=workspace-write");
+	});
+
 	it("injects notice as user content[0]", () => {
 		const messages: any[] = [
 			{ role: "assistant", content: [{ type: "text", text: "hi" }] },
@@ -58,5 +71,19 @@ describe("sandbox-change", () => {
 		];
 		const out = injectSandboxNoticeIntoMessages(messages, "SANDBOX_CHANGE: fs=workspace-write");
 		expect(out[0].content[0].text).toContain("fs=read-only");
+	});
+
+	it("does not double-inject if content[0] already has SANDBOX_STATE", () => {
+		const messages: any[] = [
+			{
+				role: "user",
+				content: [
+					{ type: "text", text: "SANDBOX_STATE: fs=read-only\n\n" },
+					{ type: "text", text: "do thing" },
+				],
+			},
+		];
+		const out = injectSandboxNoticeIntoMessages(messages, "SANDBOX_CHANGE: fs=workspace-write");
+		expect(out[0].content[0].text).toContain("SANDBOX_STATE:");
 	});
 });

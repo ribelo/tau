@@ -30,6 +30,7 @@ import {
 import { classifySandboxFailure } from "./sandbox-diagnostics.js";
 import {
   buildSandboxChangeNoticeText,
+  buildSandboxStateNoticeText,
   computeSandboxConfigHash,
   injectSandboxNoticeIntoMessages,
 } from "./sandbox-change.js";
@@ -80,7 +81,7 @@ type SessionState = {
   sandboxUnavailableDecision?: "allow" | "deny";
 
   /**
-   * True once we have injected initial sandbox state into the system prompt
+   * True once we have injected sandbox *semantics* into the system prompt
    * on the first model turn.
    */
   systemPromptInjected?: boolean;
@@ -1092,25 +1093,28 @@ export default function sandbox(pi: ExtensionAPI) {
       "<permissions instructions>\n" +
       "Assume all tool calls execute under sandbox restrictions. Do not attempt to bypass restrictions by using other tools.\n" +
       "\n" +
-      `Filesystem: ${effectiveConfig.filesystemMode}\n` +
+      "Filesystem modes:\n" +
       "  - read-only: writes only to temp dirs (e.g. /tmp, $TMPDIR)\n" +
-      `  - workspace-write: writes to workspace (${workspaceRoot}) + temp dirs; .git/hooks blocked\n` +
+      "  - workspace-write: writes to workspace + temp dirs; .git/hooks blocked\n" +
       "  - danger-full-access: unrestricted\n" +
       "  Reads always allowed everywhere.\n" +
       "\n" +
-      `Network: ${effectiveConfig.networkMode}\n` +
+      "Network modes:\n" +
       "  - deny: outbound blocked (often surfaces as DNS errors like \"Could not resolve host\")\n" +
-      `  - allowlist: only these domains reachable: ${allowlistText}\n` +
+      "  - allowlist: only allowlisted domains reachable\n" +
       "  - allow-all: unrestricted\n" +
       "\n" +
-      `Approval: ${effectiveConfig.approvalPolicy}\n` +
+      "Approval modes:\n" +
       "  - on-failure: runs sandboxed; prompts on likely sandbox-related failure to retry unsandboxed\n" +
       "  - on-request: runs sandboxed unless tool call requests escalation (e.g. escalate=true)\n" +
       "  - unless-trusted: auto-approves safe read-only commands; prompts for unsafe\n" +
       "  - never: no prompts; sandbox errors returned to you\n" +
       "\n" +
+      "Authoritative current sandbox state is injected into the start of the user message as content[0]:\n" +
+      "  - SANDBOX_STATE: ... (initial)\n" +
+      "  - SANDBOX_CHANGE: ... (when settings change mid-session)\n" +
+      "\n" +
       "On sandbox failures, output may include: SANDBOX_DIAGNOSTIC=<json> (machine-readable).\n" +
-      "Mid-session changes notified via: SANDBOX_CHANGE: fs=... net=... allowlist=... approval=...\n" +
       "</permissions instructions>";
 
     return {
@@ -1118,7 +1122,7 @@ export default function sandbox(pi: ExtensionAPI) {
     };
   });
 
-  // Inject pending sandbox change notice into the last user message as content[0].
+  // Inject sandbox state/change notice into the last user message as content[0].
   // Also filter out UI-only sandbox change messages so they never reach the model.
   pi.on("context", async (event, ctx) => {
     refreshConfig(ctx);
@@ -1126,6 +1130,20 @@ export default function sandbox(pi: ExtensionAPI) {
     const filtered = (event.messages as any[]).filter(
       (m) => !(m?.role === "custom" && m?.customType === SANDBOX_CHANGE_MESSAGE_TYPE),
     );
+
+    const currentHash = computeSandboxConfigHash(effectiveConfig);
+
+    // Initial state: even on the first message, inject SANDBOX_STATE as content[0].
+    if (!sessionState.lastCommunicatedHash) {
+      const nextMessages = injectSandboxNoticeIntoMessages(
+        filtered as any[],
+        buildSandboxStateNoticeText(effectiveConfig),
+      );
+      sessionState.lastCommunicatedHash = currentHash;
+      sessionState.pendingSandboxNotice = undefined;
+      persistState();
+      return { messages: nextMessages as any };
+    }
 
     const pending = sessionState.pendingSandboxNotice;
     if (!pending) {
