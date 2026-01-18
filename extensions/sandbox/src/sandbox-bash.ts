@@ -61,16 +61,24 @@ function getUserHomeDir(): string {
 	}
 }
 
-function getSandboxHome(realHome: string): string {
+/**
+ * Check if ~/.claude is a symlink. If so, ASRT's default mounts won't work
+ * because bwrap can't mkdir through symlinks in the mount namespace.
+ */
+function needsTempHome(realHome: string): boolean {
 	const claudePath = path.join(realHome, ".claude");
 	try {
-		if (fs.existsSync(claudePath) && fs.lstatSync(claudePath).isSymbolicLink()) {
-			return path.join(os.tmpdir(), `tau-asrt-home-${process.getuid?.() ?? "user"}`);
-		}
+		return fs.existsSync(claudePath) && fs.lstatSync(claudePath).isSymbolicLink();
 	} catch {
-		// ignore
+		return false;
 	}
-	return realHome;
+}
+
+/**
+ * Get a temp HOME directory for ASRT to use when real HOME has symlinked dotfiles.
+ */
+function getTempAsrtHome(): string {
+	return path.join(os.tmpdir(), `tau-asrt-home-${process.getuid?.() ?? "user"}`);
 }
 
 /**
@@ -103,23 +111,32 @@ function mkdirp(p: string): void {
 }
 
 /**
- * ASRT adds default writable mounts including:
- * - ~/.claude/debug
- * - ~/.npm/_logs
- * - /tmp/claude
- *
- * If ~/.claude is a symlink into dotfiles, bwrap may fail unless these
- * directories already exist at the resolved target.
+ * Ensure ASRT default directories exist.
+ * When using temp HOME, create the dirs there.
+ * When using real HOME, ensure the dirs exist (possibly through symlinks).
  */
-function ensureAsrtDefaultDirsExist(home: string): void {
-	const defaults = [
-		path.join(home, ".claude", "debug"),
-		path.join(home, ".npm", "_logs"),
-		"/tmp/claude",
-	];
+function ensureAsrtDirs(home: string): void {
+	mkdirp(path.join(home, ".claude", "debug"));
+	mkdirp(path.join(home, ".npm", "_logs"));
+	mkdirp("/tmp/claude");
+}
 
-	for (const p of defaults) {
-		mkdirp(safeRealpath(p));
+/**
+ * ASRT may try to create .claude/commands in the workspace root.
+ * If .claude exists as a file (leftover bwrap artifact), this fails.
+ * Clean up empty file artifacts.
+ */
+function ensureWorkspaceClaudeDir(workspaceRoot: string): void {
+	const claudePath = path.join(workspaceRoot, ".claude");
+	try {
+		const stat = fs.lstatSync(claudePath);
+		if (stat.isFile() && stat.size === 0) {
+			// Empty file artifact from bwrap - remove it
+			fs.unlinkSync(claudePath);
+		}
+		// If it's a non-empty file, directory, or symlink, leave it alone
+	} catch {
+		// Doesn't exist - that's fine
 	}
 }
 
@@ -134,10 +151,17 @@ export type WrapCommandResult =
 /**
  * Wrap a bash command with ASRT sandbox restrictions.
  *
- * Strategy for symlinked dotfiles:
- * - Keep HOME stable for the executed command (real user home)
- * - Pre-create ASRT default writable dirs at their resolved targets
- * - Add resolved targets of the ASRT default dirs to allowWrite
+ * Strategy for symlinked dotfiles (~/.claude -> ~/.dotfiles/...):
+ *
+ * Problem: bwrap can't mkdir mount points through symlinks. When ASRT tries
+ * to mount ~/.claude/debug and ~/.claude is a symlink, bwrap fails with
+ * "Can't mkdir: No such file or directory".
+ *
+ * Solution: Use a temp HOME for ASRT's internal mount generation, but return
+ * the real HOME for the child process. This way:
+ * - ASRT generates mounts to temp paths (which work)
+ * - The child process uses real HOME (so dotfiles/config are accessible via ro-bind)
+ * - The filesystem is readable via --ro-bind / /
  */
 export async function wrapCommandWithSandbox(opts: {
 	command: string;
@@ -158,22 +182,22 @@ export async function wrapCommandWithSandbox(opts: {
 		};
 	}
 
-	const home = getUserHomeDir();
-	const sandboxHome = getSandboxHome(home);
-	ensureAsrtDefaultDirsExist(sandboxHome);
+	const realHome = getUserHomeDir();
+
+	// Determine which HOME to use for ASRT mount generation
+	const useTempHome = needsTempHome(realHome);
+	const asrtHome = useTempHome ? getTempAsrtHome() : realHome;
+
+	// Ensure ASRT default dirs exist in the chosen home
+	ensureAsrtDirs(asrtHome);
+
+	// Clean up any bwrap artifacts in workspace
+	ensureWorkspaceClaudeDir(workspaceRoot);
 
 	const resolvedWorkspace = safeRealpath(workspaceRoot);
 
-	// Include the resolved targets of ASRT defaults so writes through symlinks work.
-	const asrtDefaultWritableTargets = uniq([
-		safeRealpath(path.join(home, ".claude", "debug")),
-		safeRealpath(path.join(home, ".npm", "_logs")),
-		// /tmp is always writable anyway, but keep the explicit resolved path for completeness.
-		safeRealpath("/tmp/claude"),
-	]);
-
 	// Build filesystem config
-	const allowWrite: string[] = ["/tmp", ...asrtDefaultWritableTargets];
+	const allowWrite: string[] = ["/tmp"];
 	const denyWrite: string[] = [];
 
 	switch (filesystemMode) {
@@ -187,7 +211,7 @@ export async function wrapCommandWithSandbox(opts: {
 			denyWrite.push(path.join(resolvedWorkspace, ".git", "hooks"));
 			break;
 		case "read-only":
-			// Only /tmp + ASRT defaults are allowed.
+			// Only /tmp is allowed (plus ASRT defaults).
 			break;
 	}
 
@@ -267,8 +291,9 @@ export async function wrapCommandWithSandbox(opts: {
 			break;
 	}
 
+	// Temporarily set HOME for ASRT's mount path generation
 	const envHomeBackup = process.env.HOME;
-	process.env.HOME = sandboxHome;
+	process.env.HOME = asrtHome;
 
 	try {
 		const wrapped = await mgr.wrapWithSandbox(command, "bash", {
@@ -285,7 +310,9 @@ export async function wrapCommandWithSandbox(opts: {
 		return {
 			success: true,
 			wrappedCommand: wrapped,
-			home,
+			// Return REAL home for the child process - this preserves dotfiles/config
+			// The filesystem is readable via --ro-bind / /, writes go to temp paths
+			home: realHome,
 		};
 	} catch (err) {
 		return {
@@ -293,6 +320,7 @@ export async function wrapCommandWithSandbox(opts: {
 			error: `ASRT wrap failed: ${err instanceof Error ? err.message : String(err)}`,
 		};
 	} finally {
+		// Restore HOME
 		if (envHomeBackup === undefined) {
 			delete process.env.HOME;
 		} else {

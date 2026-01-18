@@ -10,3 +10,6 @@ yarn-error.log*
 
 # os
 .DS_Store
+
+# bwrap/ASRT artifacts
+.claude
