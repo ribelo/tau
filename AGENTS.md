@@ -35,6 +35,17 @@ Multiple agents may work in the same checkout concurrently.
 - Do not print startup banners or "extension loaded" messages (e.g. via `console.log`) from extensions.
 - Rely on pi's own reporting/rendering system (tool renderers, custom messages, UI status) instead.
 
+## typescript hardening (crucial)
+
+Goal: make `extensions/tau` as safe as rust.
+
+- `any` is forbidden (including `as any`, `Record<string, any>`, and `unknown as any`).
+  - Use `unknown` at boundaries (JSON, tool inputs) and narrow with type guards/validation.
+  - Prefer explicit types over widening casts.
+- Unused locals/params are allowed as warnings only (do not fail builds on unused).
+  - Prefer `_name` for intentionally-unused values; lint will warn, not error.
+- Keep strict options on in `extensions/tau/tsconfig.json` (no implicit any, exact optional types, no unchecked indexed access).
+
 ## Quick Reference
 
 ```bash
