@@ -36,6 +36,9 @@ type RenderKind =
 	| "blocked"
 	| "show"
 	| "dep_tree"
+	| "dep_add"
+	| "dep_remove"
+	| "dep_cycles"
 	| "create"
 	| "update"
 	| "close"
@@ -47,6 +50,8 @@ type RenderKind =
 	| "pin"
 	| "unpin"
 	| "status"
+	| "comment"
+	| "comments"
 	| "init"
 	| "onboard"
 	| "sync"
@@ -272,6 +277,48 @@ function renderFallback(kind: string, text: string, theme: any): Text {
 	return new Text(out, 0, 0);
 }
 
+type BdComment = {
+	id?: number | string;
+	issue_id?: string;
+	author?: string;
+	text?: string;
+	created_at?: string;
+};
+
+function renderCommentsBlock(json: unknown, theme: any): Text {
+	const comments = (Array.isArray(json) ? json : [json]) as BdComment[];
+	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+	let out = theme.fg("dim", separator);
+
+	for (const comment of comments) {
+		const date = comment.created_at ? comment.created_at.split("T")[0] : "unknown date";
+		const author = comment.author || "unknown";
+		out += `\n💬 ${theme.fg("toolOutput", "Comment")} by ${theme.fg("accent", author)} on ${theme.fg("dim", date!)}`;
+		out += `\n   ${comment.text || "(empty)"}\n`;
+	}
+
+	return new Text(out.trim(), 0, 0);
+}
+
+function renderDepBlock(json: any, theme: any): Text {
+	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+	let out = theme.fg("dim", separator);
+
+	if (Array.isArray(json) && json.length === 0) {
+		out += `\n${theme.fg("success", "✔ No cycles detected")}`;
+		return new Text(out, 0, 0);
+	}
+
+	const deps = Array.isArray(json) ? json : [json];
+	for (const dep of deps) {
+		const status = dep.status === "added" ? theme.fg("success", "✔ Added") : theme.fg("warning", "✘ Removed");
+		const type = dep.type ? ` (${dep.type})` : "";
+		out += `\n${status} dependency: ${theme.fg("accent", dep.issue_id)} ➔ ${theme.fg("accent", dep.depends_on_id)}${type}`;
+	}
+
+	return new Text(out, 0, 0);
+}
+
 function stripLeadingPrompt(s: string): string {
 	const t = s.trim();
 	if (t.startsWith("$ ")) return t.slice(2).trim();
@@ -366,7 +413,14 @@ function commandKind(args: string[]): RenderKind {
 	if (first === "pin") return "pin";
 	if (first === "unpin") return "unpin";
 	if (first === "status") return "status";
-	if (first === "dep" && nonFlags[1] === "tree") return "dep_tree";
+	if (first === "comment") return "comment";
+	if (first === "comments") return "comments";
+	if (first === "dep") {
+		if (nonFlags[1] === "tree") return "dep_tree";
+		if (nonFlags[1] === "add") return "dep_add";
+		if (nonFlags[1] === "remove") return "dep_remove";
+		if (nonFlags[1] === "cycles") return "dep_cycles";
+	}
 	if (first === "init") return "init";
 	if (first === "onboard") return "onboard";
 	if (first === "sync") return "sync";
@@ -398,6 +452,9 @@ function ensureJsonFlag(args: string[], kind: RenderKind): string[] {
 		"blocked",
 		"show",
 		"dep_tree",
+		"dep_add",
+		"dep_remove",
+		"dep_cycles",
 		"create",
 		"update",
 		"close",
@@ -409,6 +466,8 @@ function ensureJsonFlag(args: string[], kind: RenderKind): string[] {
 		"pin",
 		"unpin",
 		"status",
+		"comment",
+		"comments",
 	];
 
 	if (jsonCapable.includes(kind)) {
@@ -430,6 +489,9 @@ function withQuietFlag(args: string[], kind: RenderKind): string[] {
 		"blocked",
 		"show",
 		"dep_tree",
+		"dep_add",
+		"dep_remove",
+		"dep_cycles",
 		"create",
 		"update",
 		"close",
@@ -441,6 +503,8 @@ function withQuietFlag(args: string[], kind: RenderKind): string[] {
 		"pin",
 		"unpin",
 		"status",
+		"comment",
+		"comments",
 	];
 
 	if (quietCapable.includes(kind)) {
@@ -535,6 +599,8 @@ function renderBd(details: BdToolDetails, options: { expanded: boolean }, theme:
 
 	const json = details.json;
 	if (details.kind === "status") return renderStatusBlock(json, theme);
+	if (details.kind === "comment" || details.kind === "comments") return renderCommentsBlock(json, theme);
+	if (details.kind === "dep_add" || details.kind === "dep_remove" || details.kind === "dep_cycles") return renderDepBlock(json, theme);
 
 	const issues = normalizeIssues(json);
 	if (details.kind === "ready") return renderIssuesBlock(issues, options, theme);
