@@ -912,7 +912,7 @@ export default function initStatus(pi: ExtensionAPI, state: TauState) {
 				const fetchedAt = Date.now();
 
 				const prevState = (() => {
-					const data = state.persisted.status;
+					const data = state.persisted?.status;
 					if (!data || typeof data !== "object") return undefined;
 					const candidate = data as { fetchedAt?: unknown; values?: unknown };
 					if (typeof candidate.fetchedAt !== "number") return undefined;

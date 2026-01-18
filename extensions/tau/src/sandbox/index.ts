@@ -114,7 +114,7 @@ type SessionState = {
 };
 
 function loadSessionState(state: TauState): SessionState | undefined {
-  const last = state.persisted.sandbox as unknown as SessionState | undefined;
+  const last = state.persisted?.sandbox as unknown as SessionState | undefined;
 
   if (!last) return undefined;
 

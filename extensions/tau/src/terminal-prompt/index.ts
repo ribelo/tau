@@ -81,7 +81,7 @@ function renderTerminalPrompt(width: number, next: (w: number) => string[]): str
 }
 
 export function wrapEditorRender(state: TauState, width: number, next: (w: number) => string[]): string[] {
-	const enabled = state.persisted.terminalPrompt?.enabled ?? true;
+	const enabled = state.persisted?.terminalPrompt?.enabled ?? true;
 	return enabled ? renderTerminalPrompt(width, next) : next(width);
 }
 
@@ -90,7 +90,7 @@ export default function initTerminalPrompt(pi: ExtensionAPI, state: TauState) {
 	pi.registerCommand("tau", {
 		description: "Tau settings: /tau prompt on|off|toggle",
 		handler: async (args, ctx) => {
-			let enabled = state.persisted.terminalPrompt?.enabled ?? true;
+			let enabled = state.persisted?.terminalPrompt?.enabled ?? true;
 			const trimmed = (args || "").trim();
 			const parts = trimmed.split(/\s+/).filter(Boolean);
 

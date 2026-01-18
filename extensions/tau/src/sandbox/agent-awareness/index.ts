@@ -23,7 +23,7 @@ function buildConcurrentAgentInstructions(): string {
 
 export default function initAgentAwareness(pi: ExtensionAPI, state: TauState) {
 	pi.on("before_agent_start", async (event) => {
-		const already = state.persisted.agentAwareness?.instructionsInjected;
+		const already = state.persisted?.agentAwareness?.instructionsInjected;
 		if (already) return;
 
 		updatePersistedState(pi, state, { agentAwareness: { instructionsInjected: true } });
@@ -36,7 +36,7 @@ export default function initAgentAwareness(pi: ExtensionAPI, state: TauState) {
 		const ourGitRoot = discoverWorkspaceRoot(ctx.cwd);
 		const { count, pids } = countOverlappingAgents(ctx.cwd, ourGitRoot);
 
-		const previous = state.persisted.agentAwareness?.lastAgentCount;
+		const previous = state.persisted?.agentAwareness?.lastAgentCount;
 		const droppedToZero = typeof previous === "number" && previous > 0 && count === 0;
 
 		// Persist only on changes (avoid bloating session history).
@@ -51,4 +51,3 @@ export default function initAgentAwareness(pi: ExtensionAPI, state: TauState) {
 		return { messages: nextMessages };
 	});
 }
-

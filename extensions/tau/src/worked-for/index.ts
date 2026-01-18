@@ -90,11 +90,11 @@ function parseToggleArg(mode: string, current: boolean): boolean | undefined {
 
 export default function initWorkedFor(pi: ExtensionAPI, state: TauState) {
 	function isEnabled(): boolean {
-		return state.persisted.workedFor?.enabled ?? true;
+		return state.persisted?.workedFor?.enabled ?? true;
 	}
 
 	function areToolsEnabled(): boolean {
-		return state.persisted.workedFor?.toolsEnabled ?? true;
+		return state.persisted?.workedFor?.toolsEnabled ?? true;
 	}
 
 	// Start time for the current user prompt (one agent run).

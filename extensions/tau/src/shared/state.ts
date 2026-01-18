@@ -67,6 +67,6 @@ export function updatePersistedState(
 	state: TauState,
 	patch: Partial<TauPersistedState>,
 ): void {
-	state.persisted = mergePersistedState(state.persisted, patch);
+	state.persisted = mergePersistedState(state.persisted ?? {}, patch);
 	pi.appendEntry(TAU_PERSISTED_STATE_TYPE, state.persisted);
 }
