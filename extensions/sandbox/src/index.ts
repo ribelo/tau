@@ -1090,12 +1090,27 @@ export default function sandbox(pi: ExtensionAPI) {
 
     const injected =
       "<permissions instructions>\n" +
-      `Tool calls are sandboxed (tau sandbox extension).\n` +
-      `filesystemMode=${effectiveConfig.filesystemMode}\n` +
-      `networkMode=${effectiveConfig.networkMode}\n` +
-      `networkAllowlist=${allowlistText}\n` +
-      `approvalPolicy=${effectiveConfig.approvalPolicy}\n` +
-      "\nSandbox setting changes will be injected at the start of the user message as a line beginning with 'SANDBOX_CHANGE:'.\n" +
+      "Assume all tool calls execute under sandbox restrictions. Do not attempt to bypass restrictions by using other tools.\n" +
+      "\n" +
+      `Filesystem: ${effectiveConfig.filesystemMode}\n` +
+      "  - read-only: writes only to temp dirs (e.g. /tmp, $TMPDIR)\n" +
+      `  - workspace-write: writes to workspace (${workspaceRoot}) + temp dirs; .git/hooks blocked\n` +
+      "  - danger-full-access: unrestricted\n" +
+      "  Reads always allowed everywhere.\n" +
+      "\n" +
+      `Network: ${effectiveConfig.networkMode}\n` +
+      "  - deny: outbound blocked (often surfaces as DNS errors like \"Could not resolve host\")\n" +
+      `  - allowlist: only these domains reachable: ${allowlistText}\n` +
+      "  - allow-all: unrestricted\n" +
+      "\n" +
+      `Approval: ${effectiveConfig.approvalPolicy}\n` +
+      "  - on-failure: runs sandboxed; prompts on likely sandbox-related failure to retry unsandboxed\n" +
+      "  - on-request: runs sandboxed unless tool call requests escalation (e.g. escalate=true)\n" +
+      "  - unless-trusted: auto-approves safe read-only commands; prompts for unsafe\n" +
+      "  - never: no prompts; sandbox errors returned to you\n" +
+      "\n" +
+      "On sandbox failures, output may include: SANDBOX_DIAGNOSTIC=<json> (machine-readable).\n" +
+      "Mid-session changes notified via: SANDBOX_CHANGE: fs=... net=... allowlist=... approval=...\n" +
       "</permissions instructions>";
 
     return {
