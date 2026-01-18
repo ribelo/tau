@@ -58,6 +58,7 @@ function killProcessTree(pid: number): void {
 }
 
 const STATE_TYPE = "sandbox_state";
+const SANDBOX_CHANGE_MESSAGE_TYPE = "sandbox:change";
 const INHERIT = "inherit";
 
 const FILESYSTEM_VALUES = [
@@ -191,6 +192,19 @@ export default function sandbox(pi: ExtensionAPI) {
     pi.appendEntry<SessionState>(STATE_TYPE, sessionState);
   }
 
+  function sendSandboxChangeHistoryEntry(text: string): void {
+    // UI-only history entry. Must not trigger a new turn.
+    pi.sendMessage(
+      {
+        customType: SANDBOX_CHANGE_MESSAGE_TYPE,
+        content: text,
+        display: true,
+        details: undefined,
+      },
+      { triggerTurn: false },
+    );
+  }
+
   function queueSandboxChangeNotice(prevHash: string, nextHash: string) {
     // If the effective config didn't change, don't emit anything.
     if (prevHash === nextHash) return;
@@ -307,6 +321,8 @@ export default function sandbox(pi: ExtensionAPI) {
   }
 
  async function showSandboxSettings(ctx: ExtensionContext) {
+   const baselineHash = computeSandboxConfigHash(effectiveConfig);
+
    if (!ctx.hasUI) {
      console.log(buildSandboxSummary());
      return;
@@ -468,6 +484,12 @@ export default function sandbox(pi: ExtensionAPI) {
         },
      };
    });
+
+   const finalHash = computeSandboxConfigHash(effectiveConfig);
+   if (finalHash !== baselineHash) {
+     // Visible to the user in session history (but filtered out of LLM context).
+     sendSandboxChangeHistoryEntry(buildSandboxChangeNoticeText(effectiveConfig));
+   }
  }
 
   const baseBashTool = createBashTool(process.cwd());
@@ -1082,13 +1104,23 @@ export default function sandbox(pi: ExtensionAPI) {
   });
 
   // Inject pending sandbox change notice into the last user message as content[0].
+  // Also filter out UI-only sandbox change messages so they never reach the model.
   pi.on("context", async (event, ctx) => {
     refreshConfig(ctx);
 
-    const pending = sessionState.pendingSandboxNotice;
-    if (!pending) return;
+    const filtered = (event.messages as any[]).filter(
+      (m) => !(m?.role === "custom" && m?.customType === SANDBOX_CHANGE_MESSAGE_TYPE),
+    );
 
-    const nextMessages = injectSandboxNoticeIntoMessages(event.messages as any[], pending.text);
+    const pending = sessionState.pendingSandboxNotice;
+    if (!pending) {
+      if (filtered.length !== (event.messages as any[]).length) {
+        return { messages: filtered as any };
+      }
+      return;
+    }
+
+    const nextMessages = injectSandboxNoticeIntoMessages(filtered as any[], pending.text);
 
     // Mark as communicated and clear pending.
     sessionState.lastCommunicatedHash = pending.hash;
