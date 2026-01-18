@@ -28,6 +28,11 @@ import {
   requestApprovalAfterFailure,
 } from "./approval.js";
 import { classifySandboxFailure } from "./sandbox-diagnostics.js";
+import {
+  buildSandboxChangeNoticeText,
+  computeSandboxConfigHash,
+  injectSandboxNoticeIntoMessages,
+} from "./sandbox-change.js";
 import type { ApprovalPolicy, FilesystemMode, NetworkMode, SandboxConfig } from "./config.js";
 import { computeEffectiveConfig, ensureUserDefaults } from "./config.js";
 import { checkWriteAllowed } from "./fs-policy.js";
@@ -72,6 +77,18 @@ type SessionState = {
    * This caches the user's choice.
    */
   sandboxUnavailableDecision?: "allow" | "deny";
+
+  /**
+   * True once we have injected initial sandbox state into the system prompt
+   * on the first model turn.
+   */
+  systemPromptInjected?: boolean;
+
+  /** Hash of the sandbox config last communicated to the model. */
+  lastCommunicatedHash?: string;
+
+  /** Pending SANDBOX_CHANGE notice to inject into the next user message as content[0]. */
+  pendingSandboxNotice?: { hash: string; text: string };
 };
 
 function loadSessionState(ctx: ExtensionContext): SessionState | undefined {
@@ -89,6 +106,9 @@ function loadSessionState(ctx: ExtensionContext): SessionState | undefined {
   return {
     ...last,
     override: last.override ? { ...last.override } : undefined,
+    pendingSandboxNotice: last.pendingSandboxNotice
+      ? { ...last.pendingSandboxNotice }
+      : undefined,
   };
 }
 
@@ -171,10 +191,38 @@ export default function sandbox(pi: ExtensionAPI) {
     pi.appendEntry<SessionState>(STATE_TYPE, sessionState);
   }
 
+  function queueSandboxChangeNotice(prevHash: string, nextHash: string) {
+    // If the effective config didn't change, don't emit anything.
+    if (prevHash === nextHash) return;
+
+    // We only emit SANDBOX_CHANGE after we've established initial sandbox state
+    // via a first-turn system prompt injection.
+    if (!sessionState.systemPromptInjected) return;
+
+    // If we don't know what we last communicated, treat current as baseline.
+    if (!sessionState.lastCommunicatedHash) {
+      sessionState.lastCommunicatedHash = prevHash;
+    }
+
+    // Full circle: back to baseline -> clear pending notice.
+    if (nextHash === sessionState.lastCommunicatedHash) {
+      sessionState.pendingSandboxNotice = undefined;
+      return;
+    }
+
+    // Overwrite any previous pending notice: we only want the latest.
+    sessionState.pendingSandboxNotice = {
+      hash: nextHash,
+      text: buildSandboxChangeNoticeText(effectiveConfig),
+    };
+  }
+
   function setOverrideValue<K extends keyof SandboxConfig>(
     key: K,
     value: SandboxConfig[K] | undefined,
   ) {
+    const prevHash = computeSandboxConfigHash(effectiveConfig);
+
     const next: SandboxConfig = { ...(sessionOverride ?? {}) };
     if (value === undefined) {
       delete next[key];
@@ -187,6 +235,10 @@ export default function sandbox(pi: ExtensionAPI) {
       workspaceRoot,
       sessionOverride,
     });
+
+    const nextHash = computeSandboxConfigHash(effectiveConfig);
+    queueSandboxChangeNotice(prevHash, nextHash);
+
     persistState();
   }
 
@@ -992,6 +1044,58 @@ export default function sandbox(pi: ExtensionAPI) {
 
   pi.on("session_fork", async (_event, ctx) => {
     refreshConfig(ctx);
+  });
+
+  // First turn only: inject initial sandbox state into the system prompt.
+  // Subsequent sandbox changes are injected into the user message as content[0]
+  // (see context handler below) to preserve provider prompt caching.
+  pi.on("before_agent_start", async (event, ctx) => {
+    refreshConfig(ctx);
+
+    if (sessionState.systemPromptInjected) return;
+
+    sessionState.systemPromptInjected = true;
+    sessionState.lastCommunicatedHash = computeSandboxConfigHash(effectiveConfig);
+    sessionState.pendingSandboxNotice = undefined;
+    persistState();
+
+    const allowlistText =
+      effectiveConfig.networkMode === "allowlist"
+        ? effectiveConfig.networkAllowlist.length > 0
+          ? effectiveConfig.networkAllowlist.join(", ")
+          : "(none)"
+        : "n/a";
+
+    const injected =
+      "<permissions instructions>\n" +
+      `Tool calls are sandboxed (tau sandbox extension).\n` +
+      `filesystemMode=${effectiveConfig.filesystemMode}\n` +
+      `networkMode=${effectiveConfig.networkMode}\n` +
+      `networkAllowlist=${allowlistText}\n` +
+      `approvalPolicy=${effectiveConfig.approvalPolicy}\n` +
+      "\nSandbox setting changes will be injected at the start of the user message as a line beginning with 'SANDBOX_CHANGE:'.\n" +
+      "</permissions instructions>";
+
+    return {
+      systemPrompt: `${event.systemPrompt}\n\n${injected}`,
+    };
+  });
+
+  // Inject pending sandbox change notice into the last user message as content[0].
+  pi.on("context", async (event, ctx) => {
+    refreshConfig(ctx);
+
+    const pending = sessionState.pendingSandboxNotice;
+    if (!pending) return;
+
+    const nextMessages = injectSandboxNoticeIntoMessages(event.messages as any[], pending.text);
+
+    // Mark as communicated and clear pending.
+    sessionState.lastCommunicatedHash = pending.hash;
+    sessionState.pendingSandboxNotice = undefined;
+    persistState();
+
+    return { messages: nextMessages as any };
   });
 
  pi.registerCommand("sandbox", {

@@ -1,0 +1,77 @@
+import type { ImageContent, TextContent } from "@mariozechner/pi-ai";
+
+import type { SandboxConfig } from "./config.js";
+
+export type PendingSandboxNotice = {
+	hash: string;
+	text: string;
+};
+
+export function formatNetworkAllowlistForNotice(cfg: Required<SandboxConfig>): string {
+	if (cfg.networkMode !== "allowlist") return "n/a";
+	const list = [...cfg.networkAllowlist].filter(Boolean);
+	if (list.length === 0) return "(none)";
+	if (list.length <= 5) return list.join(", ");
+	return `${list.length} domains`;
+}
+
+export function computeSandboxConfigHash(cfg: Required<SandboxConfig>): string {
+	const allowlist = [...cfg.networkAllowlist].filter(Boolean).sort().join(",");
+	return [
+		`fs=${cfg.filesystemMode}`,
+		`net=${cfg.networkMode}`,
+		`allow=${allowlist}`,
+		`approval=${cfg.approvalPolicy}`,
+		`timeout=${cfg.approvalTimeoutSeconds}`,
+	].join(";");
+}
+
+export function buildSandboxChangeNoticeText(cfg: Required<SandboxConfig>): string {
+	const allowlist = formatNetworkAllowlistForNotice(cfg);
+	return [
+		"SANDBOX_CHANGE:",
+		`fs=${cfg.filesystemMode}`,
+		`net=${cfg.networkMode}`,
+		`allowlist=${allowlist}`,
+		`approval=${cfg.approvalPolicy}`,
+	].join(" ");
+}
+
+function asContentArray(
+	content: string | (TextContent | ImageContent)[],
+): (TextContent | ImageContent)[] {
+	if (typeof content === "string") return [{ type: "text", text: content }];
+	return content;
+}
+
+/**
+ * Prepend injected notice text as content[0] on the last user message.
+ * Returns a new messages array (does not mutate input).
+ */
+export function injectSandboxNoticeIntoMessages<T extends { role: string; content?: any }>(
+	messages: T[],
+	noticeText: string,
+): T[] {
+	const out = [...messages];
+
+	for (let i = out.length - 1; i >= 0; i--) {
+		const msg = out[i];
+		if (msg && msg.role === "user") {
+			const contentArr = asContentArray(msg.content ?? "");
+			const firstText =
+				contentArr[0] && contentArr[0].type === "text" ? (contentArr[0] as TextContent).text : "";
+			if (firstText.trimStart().startsWith("SANDBOX_CHANGE:")) {
+				return out;
+			}
+
+			const injected: TextContent = { type: "text", text: `${noticeText}\n\n` };
+			(out[i] as any) = {
+				...msg,
+				content: [injected, ...contentArr],
+			};
+			return out;
+		}
+	}
+
+	return out;
+}
