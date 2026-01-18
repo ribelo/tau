@@ -53,7 +53,8 @@ async function main() {
 		// initialize() always starts proxy infrastructure (even if we deny all network),
 		// which keeps background handles alive and can make smoke tests appear to hang.
 		wrapped = await SandboxManager.wrapWithSandbox(cmd, "bash", {
-			network: { allowedDomains: [], deniedDomains: [] },
+			// IMPORTANT: omit `network` entirely to allow all network.
+			// Providing network.allowedDomains (even []) enables network restriction.
 			filesystem: {
 				denyRead: [],
 				// Avoid allowing "." here. If the wrapping process cwd is inside a git repo,
