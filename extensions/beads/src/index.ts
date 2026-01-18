@@ -77,13 +77,54 @@ const bdParams = Type.Object({
 	})),
 });
 
-function statusMark(status: string | undefined): "done" | "todo" {
-	if (status === "closed" || status === "done") return "done";
-	return "todo";
+function statusKind(issue: BdIssue): "done" | "closed" | "in_progress" | "deferred" | "open" | "unknown" {
+	const status = (issue.status || "").trim();
+	if (!status) return "unknown";
+	if (status === "in_progress") return "in_progress";
+	if (status === "deferred") return "deferred";
+	if (status === "open") return "open";
+	if (status === "done" || status === "completed") return "done";
+	if (status === "closed") return "closed";
+	return "unknown";
+}
+
+function statusGlyph(issue: BdIssue): string {
+	switch (statusKind(issue)) {
+		case "done":
+			return "✔";
+		case "closed":
+			return "■";
+		case "in_progress":
+			return "◐";
+		case "deferred":
+			return "◇";
+		case "open":
+			return "□";
+		default:
+			return "·";
+	}
+}
+
+function statusGlyphThemed(issue: BdIssue, theme: any): string {
+	const glyph = statusGlyph(issue);
+	switch (statusKind(issue)) {
+		case "done":
+			return theme.fg("success", glyph);
+		case "closed":
+			return theme.fg("muted", glyph);
+		case "in_progress":
+			return theme.fg("accent", glyph);
+		case "deferred":
+			return theme.fg("muted", glyph);
+		case "open":
+			return theme.fg("dim", glyph);
+		default:
+			return theme.fg("dim", glyph);
+	}
 }
 
 function renderIssueInline(issue: BdIssue, theme: any): string {
-	const check = statusMark(issue.status) === "done" ? theme.fg("success", "✔") : theme.fg("dim", "□");
+	const mark = statusGlyphThemed(issue, theme);
 	const id = (issue.id || "(no-id)").padEnd(12);
 	const prioNum = issue.priority;
 	const prioStr = prioNum !== undefined && prioNum !== null ? `P${prioNum}` : "P?";
@@ -92,7 +133,93 @@ function renderIssueInline(issue: BdIssue, theme: any): string {
 	const status = `(${issue.status || "???"})`.padEnd(12);
 	const title = issue.title || "(no title)";
 
-	return `${check}  ${theme.fg("accent", id)}  ${theme.fg("muted", prio)}  ${theme.fg("muted", type)}  ${theme.fg("dim", status)}  ${theme.fg("toolOutput", title)}`;
+	return `${mark}  ${theme.fg("accent", id)}  ${theme.fg("muted", prio)}  ${theme.fg("muted", type)}  ${theme.fg("dim", status)}  ${theme.fg("toolOutput", title)}`;
+}
+
+function renderIssueInlinePlain(issue: BdIssue): string {
+	const mark = statusGlyph(issue);
+	const id = (issue.id || "(no-id)").padEnd(12);
+	const prioNum = issue.priority;
+	const prioStr = prioNum !== undefined && prioNum !== null ? `P${prioNum}` : "P?";
+	const prio = `[${prioStr}]`.padEnd(6);
+	const type = `[${issue.issue_type || "?"}]`.padEnd(10);
+	const status = `(${issue.status || "???"})`.padEnd(12);
+	const title = issue.title || "(no title)";
+
+	return `${mark}  ${id}  ${prio}  ${type}  ${status}  ${title}`;
+}
+
+function truncateText(s: string, maxChars: number): string {
+	if (s.length <= maxChars) return s;
+	return s.slice(0, Math.max(0, maxChars - 20)).trimEnd() + "\n… (truncated)";
+}
+
+function renderIssueDetailsPlain(issue: BdIssue): string {
+	let out = `${issue.id || "(no-id)"}: ${issue.title || "(no title)"}`;
+	const meta: string[] = [];
+	if (issue.status) meta.push(`status=${issue.status}`);
+	if (issue.priority !== undefined && issue.priority !== null) meta.push(`priority=${issue.priority}`);
+	if (issue.issue_type) meta.push(`type=${issue.issue_type}`);
+	if (meta.length > 0) out += `\n${meta.join("  ")}`;
+
+	const desc = typeof issue.description === "string" ? issue.description.trim() : "";
+	if (desc) out += `\n\n${desc}`;
+
+	return out.trim();
+}
+
+function formatBdDetailsAsText(details: BdToolDetails): string {
+	if (!details.isJson) return details.outputText || "(no output)";
+
+	// Prefer a short, human-friendly text block even when JSON is present.
+	const json = details.json;
+
+	if (details.kind === "status" && json && typeof json === "object") {
+		const summary: any = (json as any).summary || {};
+		const rows: Array<[string, any]> = [
+			["total", summary.total_issues],
+			["open", summary.open_issues],
+			["in_progress", summary.in_progress_issues],
+			["closed", summary.closed_issues],
+			["blocked", summary.blocked_issues],
+			["ready", summary.ready_issues],
+			["deferred", summary.deferred_issues],
+			["pinned", summary.pinned_issues],
+		];
+		return rows
+			.filter(([, v]) => v !== undefined)
+			.map(([k, v]) => `${k}: ${String(v)}`)
+			.join("\n")
+			.trim();
+	}
+
+	const issues = normalizeIssues(json);
+	const wantsDetails =
+		issues.length === 1 &&
+		["show", "create", "update", "close", "reopen", "defer", "undefer", "pin", "unpin"].includes(details.kind);
+	if (wantsDetails) return renderIssueDetailsPlain(issues[0]!);
+
+	if (details.kind === "dep_tree") {
+		const nodes = issues as BdTreeNode[];
+		const shown = nodes.slice(0, 50);
+		const lines = shown.map((n) => {
+			const depth = typeof n.depth === "number" ? n.depth : 0;
+			const indent = "  ".repeat(Math.max(0, depth));
+			return indent + renderIssueInlinePlain(n);
+		});
+		let out = lines.join("\n");
+		if (nodes.length > shown.length) out += `\n… ${nodes.length - shown.length} more`;
+		return out.trim() || "(no results)";
+	}
+
+	const limit = ["show", "create", "update", "close", "reopen"].includes(details.kind) ? 50 : 10;
+	const shown = issues.slice(0, limit);
+	let out = shown.map(renderIssueInlinePlain).join("\n");
+	if (issues.length > shown.length) out += `\n… ${issues.length - shown.length} more`;
+	if (!out.trim()) {
+		out = truncateText(JSON.stringify(details.json, null, 2), 8_000);
+	}
+	return out.trim();
 }
 
 function normalizeIssues(json: unknown): BdIssue[] {
@@ -546,7 +673,14 @@ export default function beads(pi: ExtensionAPI) {
 			}
 
 			if (details.isJson) {
-				return { content: [{ type: "json", json: details.json }], details };
+				const text = formatBdDetailsAsText(details);
+				return {
+					content: [
+						{ type: "text", text },
+						{ type: "json", json: details.json },
+					],
+					details,
+				};
 			}
 
 			return { content: [{ type: "text", text: details.outputText || "(no output)" }], details };
