@@ -9,34 +9,6 @@ let SandboxManager: any = null;
 let asrtLoadError: Error | null = null;
 let asrtLoadAttempted = false;
 
-/**
- * Simple async mutex.
- *
- * ASRT keeps process-global state (config + proxy bridge), so we must avoid
- * racing initialize/reset/updateConfig across concurrent tool calls.
- */
-class Mutex {
-	private locking: Promise<void> = Promise.resolve();
-
-	async runExclusive<T>(cb: () => Promise<T>): Promise<T> {
-		let unlock: () => void = () => {};
-		const next = new Promise<void>((resolve) => {
-			unlock = resolve;
-		});
-
-		const previous = this.locking;
-		this.locking = this.locking.then(() => next);
-
-		await previous;
-		try {
-			return await cb();
-		} finally {
-			unlock();
-		}
-	}
-}
-
-const asrtConfigMutex = new Mutex();
 
 /**
  * Attempt to load the ASRT SandboxManager.
@@ -87,6 +59,18 @@ function getUserHomeDir(): string {
 	} catch {
 		return os.homedir();
 	}
+}
+
+function getSandboxHome(realHome: string): string {
+	const claudePath = path.join(realHome, ".claude");
+	try {
+		if (fs.existsSync(claudePath) && fs.lstatSync(claudePath).isSymbolicLink()) {
+			return path.join(os.tmpdir(), `tau-asrt-home-${process.getuid?.() ?? "user"}`);
+		}
+	} catch {
+		// ignore
+	}
+	return realHome;
 }
 
 /**
@@ -175,7 +159,8 @@ export async function wrapCommandWithSandbox(opts: {
 	}
 
 	const home = getUserHomeDir();
-	ensureAsrtDefaultDirsExist(home);
+	const sandboxHome = getSandboxHome(home);
+	ensureAsrtDefaultDirsExist(sandboxHome);
 
 	const resolvedWorkspace = safeRealpath(workspaceRoot);
 
@@ -213,87 +198,77 @@ export async function wrapCommandWithSandbox(opts: {
 	//   and will unshare the network namespace.
 	// - An empty allowedDomains means "block all network".
 	// - To truly allow all network, you must OMIT the network config entirely.
-	const networkResult = await asrtConfigMutex.runExclusive(async () => {
-		let network:
-			| {
-					allowedDomains: string[];
-					deniedDomains: string[];
-				}
-			| undefined;
-
-		// If ASRT was previously initialized (for allowlist), it will keep a global config.
-		// That global config would force network restriction even when we omit `network`.
-		// Therefore, when switching to allow-all or deny, we reset ASRT to clear config.
-		if (networkMode === "allow-all" || networkMode === "deny") {
-			try {
-				if (typeof mgr.getConfig === "function" && mgr.getConfig()) {
-					await mgr.reset();
-				}
-			} catch {
-				// ignore reset failures; we'll still try to wrap
+	let network:
+		| {
+				allowedDomains: string[];
+				deniedDomains: string[];
 			}
-		}
+		| undefined;
 
-		switch (networkMode) {
-			case "allow-all":
-				// Omit `network` entirely
-				network = undefined;
-				break;
-			case "allowlist": {
-				// Ensure ASRT is initialized so the network bridge + proxy exist.
-				// NOTE: the proxy's filter reads from ASRT's global config, so we must
-				// keep it updated with the current allowlist.
-				const runtimeConfig = {
-					network: {
-						allowedDomains: [...networkAllowlist],
-						deniedDomains: [],
-					},
-					filesystem: {
-						denyRead: [],
-						allowWrite: [],
-						denyWrite: [],
-						allowGitConfig: true,
-					},
-					mandatoryDenySearchDepth: 2,
-				};
-
-				try {
-					if (typeof mgr.getConfig === "function" && mgr.getConfig()) {
-						// updateConfig is sync in ASRT
-						mgr.updateConfig(runtimeConfig);
-					} else {
-						await mgr.initialize(runtimeConfig);
-					}
-				} catch (err) {
-					return {
-						ok: false as const,
-						error: `ASRT network initialization failed: ${err instanceof Error ? err.message : String(err)}`,
-					};
-				}
-
-				network = {
-					allowedDomains: [...networkAllowlist],
-					deniedDomains: [],
-				};
-				break;
+	// If ASRT was previously initialized (for allowlist), it will keep a global config.
+	// That global config would force network restriction even when we omit `network`.
+	// Therefore, when switching to allow-all or deny, we reset ASRT to clear config.
+	if (networkMode === "allow-all" || networkMode === "deny") {
+		try {
+			if (typeof mgr.getConfig === "function" && mgr.getConfig()) {
+				await mgr.reset();
 			}
-			case "deny":
-				// Provide an explicit network config with empty allowedDomains = block all.
-				network = { allowedDomains: [], deniedDomains: [] };
-				break;
+		} catch {
+			// ignore reset failures; we'll still try to wrap
 		}
-
-		return { ok: true as const, network };
-	});
-
-	if (!networkResult.ok) {
-		return {
-			success: false,
-			error: networkResult.error,
-		};
 	}
 
-	const network = networkResult.network;
+	switch (networkMode) {
+		case "allow-all":
+			// Omit `network` entirely
+			network = undefined;
+			break;
+		case "allowlist": {
+			// Ensure ASRT is initialized so the network bridge + proxy exist.
+			// NOTE: the proxy's filter reads from ASRT's global config, so we must
+			// keep it updated with the current allowlist.
+			const runtimeConfig = {
+				network: {
+					allowedDomains: [...networkAllowlist],
+					deniedDomains: [],
+				},
+				filesystem: {
+					denyRead: [],
+					allowWrite: [],
+					denyWrite: [],
+					allowGitConfig: true,
+				},
+				mandatoryDenySearchDepth: 2,
+			};
+
+			try {
+				if (typeof mgr.getConfig === "function" && mgr.getConfig()) {
+					// updateConfig is sync in ASRT
+					mgr.updateConfig(runtimeConfig);
+				} else {
+					await mgr.initialize(runtimeConfig);
+				}
+			} catch (err) {
+				return {
+					success: false,
+					error: `ASRT network initialization failed: ${err instanceof Error ? err.message : String(err)}`,
+				};
+			}
+
+			network = {
+				allowedDomains: [...networkAllowlist],
+				deniedDomains: [],
+			};
+			break;
+		}
+		case "deny":
+			// Provide an explicit network config with empty allowedDomains = block all.
+			network = { allowedDomains: [], deniedDomains: [] };
+			break;
+	}
+
+	const envHomeBackup = process.env.HOME;
+	process.env.HOME = sandboxHome;
 
 	try {
 		const wrapped = await mgr.wrapWithSandbox(command, "bash", {
@@ -317,5 +292,11 @@ export async function wrapCommandWithSandbox(opts: {
 			success: false,
 			error: `ASRT wrap failed: ${err instanceof Error ? err.message : String(err)}`,
 		};
+	} finally {
+		if (envHomeBackup === undefined) {
+			delete process.env.HOME;
+		} else {
+			process.env.HOME = envHomeBackup;
+		}
 	}
 }
