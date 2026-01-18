@@ -117,6 +117,13 @@ export default function sandbox(pi: ExtensionAPI) {
     description: "Approval policy (never, on-failure, on-request, unless-trusted)",
     type: "string",
   });
+  pi.registerFlag("no-sandbox", {
+    description: "Completely disable ASRT sandbox wrapper (escape hatch)",
+    type: "boolean",
+  });
+
+  // Track if sandbox is completely disabled via --no-sandbox flag
+  let sandboxDisabled = false;
 
   // First-run: ensure sandbox defaults are written into ~/.pi/agent/settings.json (only fills missing keys).
   ensureUserDefaults();
@@ -399,6 +406,16 @@ export default function sandbox(pi: ExtensionAPI) {
   function createSandboxedBashOperations(ctx: ExtensionContext, escalate: boolean): BashOperations {
     return {
       async exec(command, cwd, { onData, signal, timeout }) {
+        // If sandbox is completely disabled, run commands directly
+        if (sandboxDisabled) {
+          return runCommandDirect(
+            command,
+            cwd,
+            process.env as Record<string, string>,
+            { onData, signal, timeout },
+          );
+        }
+
         const currentConfig = effectiveConfig;
         const currentWorkspace = workspaceRoot;
         const approvalTimeout = currentConfig.approvalTimeoutSeconds;
@@ -752,6 +769,14 @@ export default function sandbox(pi: ExtensionAPI) {
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    // Check for --no-sandbox escape hatch first
+    const noSandbox = pi.getFlag("no-sandbox") as boolean | undefined;
+    if (noSandbox) {
+      sandboxDisabled = true;
+      ctx.ui.notify("Sandbox DISABLED via --no-sandbox flag", "warning");
+      return;
+    }
+
     // Apply CLI flags
     const sandboxFs = pi.getFlag("sandbox-fs") as string | undefined;
     const sandboxNet = pi.getFlag("sandbox-net") as string | undefined;
