@@ -11,6 +11,7 @@
 import type { ExtensionContext } from "@anthropic-ai/pi-extension";
 import type { ApprovalPolicy } from "./config.js";
 import { spawn } from "node:child_process";
+import { classifySandboxFailure } from "./sandbox-diagnostics.js";
 import { isSafeCommand } from "./safe-commands.js";
 
 /** Default approval timeout in milliseconds */
@@ -225,18 +226,8 @@ export async function checkFilesystemApproval(
  * Used for "on-failure" policy to decide whether to prompt.
  */
 export function looksLikePolicyViolation(error: string): boolean {
-	const patterns = [
-		/read-only file system/i,
-		/permission denied/i,
-		/operation not permitted/i,
-		/cannot write/i,
-		/could not resolve host/i,
-		/network is unreachable/i,
-		/connection refused/i,
-		/no route to host/i,
-	];
-
-	return patterns.some((pattern) => pattern.test(error));
+	const classification = classifySandboxFailure(error);
+	return classification.kind !== "unknown";
 }
 
 /**

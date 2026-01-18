@@ -215,6 +215,31 @@ describe.skipIf(SKIP_INTEGRATION || !IS_LINUX)("ASRT integration tests", () => {
 			expect(run.stdout).toMatch(/HTTP/);
 		});
 
+		it("allow-all after allowlist: still allows network access", async () => {
+			// Initialize allowlist mode first (ASRT keeps global config).
+			await wrapCommandWithSandbox({
+				command: "true",
+				workspaceRoot: tempDir,
+				filesystemMode: "read-only",
+				networkMode: "allowlist",
+				networkAllowlist: ["example.com"],
+			});
+
+			const result = await wrapCommandWithSandbox({
+				command: "curl -sI --connect-timeout 5 https://example.com | head -1",
+				workspaceRoot: tempDir,
+				filesystemMode: "read-only",
+				networkMode: "allow-all",
+				networkAllowlist: [],
+			});
+
+			expect(result.success).toBe(true);
+			if (!result.success) return;
+
+			const run = runCommand(result.wrappedCommand);
+			expect(run.stdout).toMatch(/HTTP/);
+		});
+
 		it("allowlist: allows listed domains", { timeout: 15000 }, async () => {
 			const result = await wrapCommandWithSandbox({
 				command: "curl -sI --connect-timeout 10 https://example.com | head -1",

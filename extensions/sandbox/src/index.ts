@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import * as os from "node:os";
 
 import type {
   BashOperations,
@@ -26,10 +27,12 @@ import {
   looksLikePolicyViolation,
   requestApprovalAfterFailure,
 } from "./approval.js";
+import { classifySandboxFailure } from "./sandbox-diagnostics.js";
 import type { ApprovalPolicy, FilesystemMode, NetworkMode, SandboxConfig } from "./config.js";
 import { computeEffectiveConfig, ensureUserDefaults } from "./config.js";
 import { checkWriteAllowed } from "./fs-policy.js";
-import { wrapCommandWithSandbox, isAsrtAvailable } from "./sandbox-bash.js";
+import { wrapCommandWithSandbox, isAsrtAvailable, getAsrtLoadError } from "./sandbox-bash.js";
+import { detectMissingSandboxDeps, formatMissingDepsMessage } from "./sandbox-prereqs.js";
 import { discoverWorkspaceRoot } from "./workspace-root.js";
 
 /**
@@ -64,9 +67,14 @@ const TIMEOUT_VALUES = [INHERIT, "15", "30", "60", "120", "300"] as const;
 
 type SessionState = {
   override?: SandboxConfig;
+  /**
+   * When ASRT is unavailable due to missing deps, we prompt once per session.
+   * This caches the user's choice.
+   */
+  sandboxUnavailableDecision?: "allow" | "deny";
 };
 
-function loadSessionOverride(ctx: ExtensionContext): SandboxConfig | undefined {
+function loadSessionState(ctx: ExtensionContext): SessionState | undefined {
   const entries = ctx.sessionManager.getBranch();
   let last: SessionState | undefined;
   for (const entry of entries) {
@@ -74,7 +82,14 @@ function loadSessionOverride(ctx: ExtensionContext): SandboxConfig | undefined {
       last = entry.data as SessionState | undefined;
     }
   }
-  return last?.override ? { ...last.override } : undefined;
+
+  if (!last) return undefined;
+
+  // Defensive copy.
+  return {
+    ...last,
+    override: last.override ? { ...last.override } : undefined,
+  };
 }
 
 function parseAllowlist(input: string): string[] {
@@ -129,7 +144,8 @@ export default function sandbox(pi: ExtensionAPI) {
   ensureUserDefaults();
 
   let workspaceRoot = process.cwd();
-  let sessionOverride: SandboxConfig | undefined;
+  let sessionState: SessionState = {};
+  let sessionOverride: SandboxConfig | undefined = sessionState.override;
   let effectiveConfig = computeEffectiveConfig({
     workspaceRoot,
     sessionOverride,
@@ -138,7 +154,9 @@ export default function sandbox(pi: ExtensionAPI) {
 
   function refreshConfig(ctx: ExtensionContext) {
     workspaceRoot = discoverWorkspaceRoot(ctx.cwd);
-    sessionOverride = loadSessionOverride(ctx);
+    sessionState = loadSessionState(ctx) ?? {};
+    sessionOverride = sessionState.override;
+
     // Merge CLI override with session override (CLI takes precedence)
     const mergedOverride = { ...sessionOverride, ...cliOverride };
     effectiveConfig = computeEffectiveConfig({
@@ -148,7 +166,9 @@ export default function sandbox(pi: ExtensionAPI) {
   }
 
   function persistState() {
-    pi.appendEntry<SessionState>(STATE_TYPE, { override: sessionOverride });
+    // Keep sessionState.override in sync with the current override.
+    sessionState.override = sessionOverride;
+    pi.appendEntry<SessionState>(STATE_TYPE, sessionState);
   }
 
   function setOverrideValue<K extends keyof SandboxConfig>(
@@ -402,6 +422,37 @@ export default function sandbox(pi: ExtensionAPI) {
   const baseEditTool = createEditTool(process.cwd());
   const baseWriteTool = createWriteTool(process.cwd());
 
+  function singleLine(str: string): string {
+    return (str ?? "").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+  }
+
+  async function ensureUnsandboxedAllowedOnSandboxUnavailable(
+    ctx: ExtensionContext,
+    reason: string,
+    timeoutSeconds: number,
+  ): Promise<boolean> {
+    // Cached per-session decision
+    if (sessionState.sandboxUnavailableDecision === "allow") return true;
+    if (sessionState.sandboxUnavailableDecision === "deny") return false;
+
+    if (!ctx.hasUI) {
+      // Headless: default deny.
+      sessionState.sandboxUnavailableDecision = "deny";
+      persistState();
+      return false;
+    }
+
+    const approved = await ctx.ui.confirm(
+      "Sandbox unavailable",
+      `Sandboxed bash is unavailable.\n\nReason: ${reason}\n\nRun bash without sandbox for this session? (edit/write restrictions still apply)`,
+      { timeout: timeoutSeconds * 1000 },
+    );
+
+    sessionState.sandboxUnavailableDecision = approved ? "allow" : "deny";
+    persistState();
+    return approved;
+  }
+
   // Factory to create sandboxed bash operations with captured context (avoids global state race conditions)
   function createSandboxedBashOperations(ctx: ExtensionContext, escalate: boolean): BashOperations {
     return {
@@ -446,6 +497,35 @@ export default function sandbox(pi: ExtensionAPI) {
           );
         }
 
+        // Ensure sandbox prerequisites exist. If we can't enforce the sandbox,
+        // prompt once per session before falling back to unsandboxed execution.
+        const prereqs = detectMissingSandboxDeps({ platform: os.platform() });
+        const asrtAvailable = await isAsrtAvailable();
+
+        if (!asrtAvailable || prereqs.missingRequired.length > 0) {
+          const parts: string[] = [];
+          if (!asrtAvailable) {
+            parts.push(getAsrtLoadError() ?? "ASRT module failed to load");
+          }
+          const depsMsg = formatMissingDepsMessage(prereqs);
+          if (depsMsg) parts.push(depsMsg);
+          const reason = parts.join("; ");
+
+          const allowUnsandboxed = await ensureUnsandboxedAllowedOnSandboxUnavailable(ctx, reason, approvalTimeout);
+          if (!allowUnsandboxed) {
+            onData(Buffer.from(`[sandbox] Sandboxed bash unavailable (${reason}). Refusing to run without sandbox.\n`));
+            return { exitCode: 1 };
+          }
+
+          onData(Buffer.from(`[sandbox] Sandboxed bash unavailable (${reason}). Running without sandbox for this session.\n`));
+          return runCommandDirect(
+            command,
+            cwd,
+            process.env as Record<string, string>,
+            { onData, signal, timeout },
+          );
+        }
+
         // Try to wrap with ASRT
         const wrapResult = await wrapCommandWithSandbox({
           command,
@@ -455,27 +535,80 @@ export default function sandbox(pi: ExtensionAPI) {
           networkAllowlist: currentConfig.networkAllowlist,
         });
 
-        let finalCommand: string;
-        let env = { ...process.env };
-        let usingSandbox = false;
+        if (!wrapResult.success) {
+          const reason = singleLine(wrapResult.error);
+          const allowUnsandboxed = await ensureUnsandboxedAllowedOnSandboxUnavailable(ctx, reason, approvalTimeout);
 
-        if (wrapResult.success) {
-          finalCommand = wrapResult.wrappedCommand;
-          env.HOME = wrapResult.home;
-          usingSandbox = true;
-        } else {
-          // ASRT not available - fall back to unsandboxed with warning
-          console.error(`[sandbox] ASRT unavailable: ${wrapResult.error}`);
-          finalCommand = command;
+          if (!allowUnsandboxed) {
+            onData(Buffer.from(`[sandbox] Failed to start sandbox (${reason}). Refusing to run without sandbox.\n`));
+            return { exitCode: 1 };
+          }
+
+          onData(Buffer.from(`[sandbox] Failed to start sandbox (${reason}). Running without sandbox for this session.\n`));
+          return runCommandDirect(
+            command,
+            cwd,
+            process.env as Record<string, string>,
+            { onData, signal, timeout },
+          );
         }
 
-        // Run the command (sandboxed if possible)
+        const finalCommand = wrapResult.wrappedCommand;
+        const env = { ...process.env, HOME: wrapResult.home };
+        const usingSandbox = true;
+
+        // Run the command (sandboxed)
         const result = await runCommandCapture(
           finalCommand,
           cwd,
           env as Record<string, string>,
           { onData, signal, timeout },
         );
+
+        // Emit a best-effort diagnostic when a sandboxed command fails. This helps the model
+        // distinguish between genuine command failures and sandbox restrictions.
+        if (usingSandbox && result.exitCode !== 0) {
+          const classification = classifySandboxFailure(result.output);
+
+          const gatedByConfig =
+            classification.kind !== "unknown" &&
+            (classification.kind !== "network" || currentConfig.networkMode !== "allow-all") &&
+            (classification.kind !== "filesystem" || currentConfig.filesystemMode !== "danger-full-access");
+
+          if (gatedByConfig) {
+            const type =
+              classification.kind === "network"
+                ? `network/${classification.subtype}`
+                : classification.kind === "filesystem"
+                  ? `filesystem/${classification.subtype}`
+                  : "unknown";
+
+            const evidence = singleLine(classification.evidence);
+
+            const hint =
+              classification.kind === "network"
+                ? "Network sandboxing can surface as DNS/connectivity failures. If network is required, use /sandbox to switch to allowlist/allow-all, or re-run with escalate=true."
+                : classification.kind === "filesystem"
+                  ? "Filesystem sandboxing can surface as permission errors. If a write is required, use /sandbox to switch to workspace-write/danger-full-access, or re-run with escalate=true."
+                  : "";
+
+            onData(
+              Buffer.from(
+                `[sandbox] Command failed likely due to sandbox restrictions (${type}). (fs=${currentConfig.filesystemMode}, net=${currentConfig.networkMode}). Evidence: "${evidence}". ${hint}\n`,
+              ),
+            );
+
+            const diagnostic = {
+              usingSandbox: true,
+              filesystemMode: currentConfig.filesystemMode,
+              networkMode: currentConfig.networkMode,
+              networkAllowlist: currentConfig.networkMode === "allowlist" ? currentConfig.networkAllowlist : null,
+              classification,
+            };
+
+            onData(Buffer.from(`SANDBOX_DIAGNOSTIC=${JSON.stringify(diagnostic)}\n`));
+          }
+        }
 
         // Check if we should offer retry on failure (for "on-failure" policy)
         if (
