@@ -11,7 +11,7 @@ let asrtLoadAttempted = false;
 
 /**
  * Attempt to load the ASRT SandboxManager.
- * Returns null if not available.
+ * Throws on failure.
  */
 async function loadAsrt(): Promise<any> {
 	if (asrtLoadAttempted) {
@@ -50,44 +50,68 @@ export function getAsrtLoadError(): string | null {
 	return asrtLoadError?.message ?? null;
 }
 
+function getUserHomeDir(): string {
+	// Prefer passwd-derived home (not process.env.HOME), so we don't accidentally
+	// inherit a previously-mutated HOME.
+	try {
+		return os.userInfo().homedir;
+	} catch {
+		return os.homedir();
+	}
+}
+
 /**
- * Ensure directories that ASRT needs exist.
- * ASRT adds default write paths including ~/.claude/debug and ~/.npm/_logs.
+ * Resolve symlinks, while still working for paths that don't exist yet.
+ *
+ * - If targetPath exists: returns fs.realpathSync(targetPath)
+ * - If missing: resolves the parent and appends the basename
  */
-function ensureAsrtDirs(home: string): void {
-	const dirs = [
+function safeRealpath(targetPath: string): string {
+	try {
+		return fs.realpathSync(targetPath);
+	} catch {
+		try {
+			const parent = path.dirname(targetPath);
+			const base = path.basename(targetPath);
+			const resolvedParent = fs.realpathSync(parent);
+			return path.join(resolvedParent, base);
+		} catch {
+			return targetPath;
+		}
+	}
+}
+
+function mkdirp(p: string): void {
+	try {
+		fs.mkdirSync(p, { recursive: true });
+	} catch {
+		// ignore
+	}
+}
+
+/**
+ * ASRT adds default writable mounts including:
+ * - ~/.claude/debug
+ * - ~/.npm/_logs
+ * - /tmp/claude
+ *
+ * If ~/.claude is a symlink into dotfiles, bwrap may fail unless these
+ * directories already exist at the resolved target.
+ */
+function ensureAsrtDefaultDirsExist(home: string): void {
+	const defaults = [
 		path.join(home, ".claude", "debug"),
 		path.join(home, ".npm", "_logs"),
 		"/tmp/claude",
 	];
 
-	for (const dir of dirs) {
-		try {
-			fs.mkdirSync(dir, { recursive: true });
-		} catch {
-			// ignore
-		}
+	for (const p of defaults) {
+		mkdirp(safeRealpath(p));
 	}
 }
 
-/**
- * Get HOME directory for sandbox.
- * If ~/.claude is a symlink, use a temp HOME to avoid bwrap issues.
- */
-function getSandboxHome(): string {
-	const originalHome = os.homedir();
-	const claudePath = path.join(originalHome, ".claude");
-
-	try {
-		if (fs.existsSync(claudePath) && fs.lstatSync(claudePath).isSymbolicLink()) {
-			const tempHome = path.join(os.tmpdir(), `tau-asrt-home-${process.getuid?.() ?? "user"}`);
-			return tempHome;
-		}
-	} catch {
-		// ignore
-	}
-
-	return originalHome;
+function uniq(values: string[]): string[] {
+	return [...new Set(values)];
 }
 
 export type WrapCommandResult =
@@ -96,6 +120,11 @@ export type WrapCommandResult =
 
 /**
  * Wrap a bash command with ASRT sandbox restrictions.
+ *
+ * Strategy for symlinked dotfiles:
+ * - Keep HOME stable for the executed command (real user home)
+ * - Pre-create ASRT default writable dirs at their resolved targets
+ * - Add resolved targets of the ASRT default dirs to allowWrite
  */
 export async function wrapCommandWithSandbox(opts: {
 	command: string;
@@ -116,29 +145,35 @@ export async function wrapCommandWithSandbox(opts: {
 		};
 	}
 
-	const sandboxHome = getSandboxHome();
-	ensureAsrtDirs(sandboxHome);
+	const home = getUserHomeDir();
+	ensureAsrtDefaultDirsExist(home);
 
-	// ASRT reads process.env.HOME at wrap time to compute default paths
-	const originalHome = process.env.HOME;
-	process.env.HOME = sandboxHome;
+	const resolvedWorkspace = safeRealpath(workspaceRoot);
+
+	// Include the resolved targets of ASRT defaults so writes through symlinks work.
+	const asrtDefaultWritableTargets = uniq([
+		safeRealpath(path.join(home, ".claude", "debug")),
+		safeRealpath(path.join(home, ".npm", "_logs")),
+		// /tmp is always writable anyway, but keep the explicit resolved path for completeness.
+		safeRealpath("/tmp/claude"),
+	]);
 
 	// Build filesystem config
-	const allowWrite: string[] = ["/tmp"];
+	const allowWrite: string[] = ["/tmp", ...asrtDefaultWritableTargets];
 	const denyWrite: string[] = [];
 
 	switch (filesystemMode) {
 		case "danger-full-access":
-			// Allow everything - but we still go through ASRT for network control
+			// Allow everything - but still go through ASRT for network control.
 			allowWrite.push("/");
 			break;
 		case "workspace-write":
-			allowWrite.push(workspaceRoot);
+			allowWrite.push(resolvedWorkspace);
 			// Deny .git/hooks even in workspace-write mode
-			denyWrite.push(path.join(workspaceRoot, ".git", "hooks"));
+			denyWrite.push(path.join(resolvedWorkspace, ".git", "hooks"));
 			break;
 		case "read-only":
-			// Only /tmp is allowed (already added above)
+			// Only /tmp + ASRT defaults are allowed.
 			break;
 	}
 
@@ -154,7 +189,6 @@ export async function wrapCommandWithSandbox(opts: {
 			allowedDomains = [...networkAllowlist];
 			break;
 		case "deny":
-			// Block everything - use a catch-all deny
 			deniedDomains = ["*"];
 			break;
 	}
@@ -168,26 +202,15 @@ export async function wrapCommandWithSandbox(opts: {
 				denyWrite,
 				allowGitConfig: true,
 			},
-			// Limit search depth to avoid slowdowns
 			mandatoryDenySearchDepth: 2,
 		});
-
-		// Restore original HOME
-		if (originalHome !== undefined) {
-			process.env.HOME = originalHome;
-		}
 
 		return {
 			success: true,
 			wrappedCommand: wrapped,
-			home: sandboxHome,
+			home,
 		};
 	} catch (err) {
-		// Restore original HOME on error too
-		if (originalHome !== undefined) {
-			process.env.HOME = originalHome;
-		}
-
 		return {
 			success: false,
 			error: `ASRT wrap failed: ${err instanceof Error ? err.message : String(err)}`,
