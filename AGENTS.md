@@ -13,6 +13,7 @@ Run `bd prime` for workflow context, or install hooks (`bd hooks install`) for a
   ```bash
   ./scripts/pi/install-extensions.sh
   ```
+- **pi loads extension entrypoints via jiti** (https://github.com/unjs/jiti). This means TypeScript/ESM files are executed at runtime (no separate build step). Keep extension entrypoints compatible with jiti/Node ESM resolution (e.g. `type: "module"`, explicit `.js` import specifiers in TS where required).
 
 ## parallel agent safety (crucial)
 
