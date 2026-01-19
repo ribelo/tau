@@ -6,10 +6,10 @@ import type { FilesystemMode, NetworkMode } from "./config.js";
 
 // Lazy-loaded ASRT module
 type SandboxManagerType = {
-	wrapWithSandbox: (command: string, shell: string, config: any) => Promise<string>;
-	initialize: (config: any) => Promise<void>;
-	updateConfig: (config: any) => void;
-	getConfig: () => any;
+	wrapWithSandbox: (command: string, shell: string, config: unknown) => Promise<string>;
+	initialize: (config: unknown) => Promise<void>;
+	updateConfig: (config: unknown) => void;
+	getConfig: () => unknown;
 	reset: () => Promise<void>;
 };
 
@@ -147,10 +147,6 @@ function ensureWorkspaceClaudeDir(workspaceRoot: string): void {
 	} catch {
 		// Doesn't exist - that's fine
 	}
-}
-
-function uniq(values: string[]): string[] {
-	return [...new Set(values)];
 }
 
 export type WrapCommandResult =

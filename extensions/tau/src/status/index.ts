@@ -7,15 +7,20 @@ import { updatePersistedState } from "../shared/state.js";
 
 const STATUS_MESSAGE_TYPE = "tau:status";
 
+type Theme = {
+	fg: (key: string, s: string) => string;
+	bold: (s: string) => string;
+};
+
 type StatusState = {
 	fetchedAt: number;
 	values: Record<string, { percentLeft: number }>;
 };
 
 type BurnInfo = {
-	burnRatePerHour?: number;
-	exhaustsAt?: number;
-	exhaustsBeforeReset?: boolean;
+	burnRatePerHour?: number | undefined;
+	exhaustsAt?: number | undefined;
+	exhaustsBeforeReset?: boolean | undefined;
 };
 
 type OpenAiUsagePayload = {
@@ -106,20 +111,20 @@ type StatusMessageDetails = {
 
 type RateLimitRow = {
 	label: string;
-	percentLeft?: number;
-	resetsAt?: number;
+	percentLeft?: number | undefined;
+	resetsAt?: number | undefined;
 } & BurnInfo;
 
 type GeminiRow = {
 	label: string;
-	percentLeft?: number;
-	resetsAt?: number;
+	percentLeft?: number | undefined;
+	resetsAt?: number | undefined;
 } & BurnInfo;
 
 type AntigravityRow = {
 	label: string;
-	percentLeft?: number;
-	resetsAt?: number;
+	percentLeft?: number | undefined;
+	resetsAt?: number | undefined;
 } & BurnInfo;
 
 function envVarNameOrMissing(value: string | undefined, envVarName: string): string | undefined {
@@ -141,26 +146,6 @@ function parseIsoTimeSeconds(iso: string | undefined): number | undefined {
 	const t = Date.parse(iso);
 	if (Number.isNaN(t)) return undefined;
 	return Math.floor(t / 1000);
-}
-
-function parseOpenAiUsageWindow(window: RateLimitWindowSnapshot | null | undefined): RateLimitRow | undefined {
-	if (!window) return undefined;
-
-	const seconds = typeof window.limit_window_seconds === "number" ? window.limit_window_seconds : undefined;
-	const minutes = seconds && seconds > 0 ? Math.ceil(seconds / 60) : undefined;
-	const label = (() => {
-		if (minutes === 300) return "5h limit";
-		if (minutes === 10080) return "Weekly limit";
-		if (minutes === 43200) return "Monthly limit";
-		if (minutes) return `${minutes}m limit`;
-		return "Limit";
-	})();
-
-	return {
-		label,
-		percentLeft: percentLeftFromUsedPercent(window.used_percent),
-		resetsAt: typeof window.reset_at === "number" ? window.reset_at : undefined,
-	};
 }
 
 function openAiRowFromWindow(window: RateLimitWindowSnapshot | null | undefined, fetchedAtMs: number): RateLimitRow | undefined {
@@ -313,14 +298,14 @@ function wrapRow(
 function buildLimitRow(
 	row: {
 		label: string;
-		percentLeft?: number;
-		resetsAt?: number;
-		burnRatePerHour?: number;
-		exhaustsAt?: number;
-		exhaustsBeforeReset?: boolean;
+		percentLeft?: number | undefined;
+		resetsAt?: number | undefined;
+		burnRatePerHour?: number | undefined;
+		exhaustsAt?: number | undefined;
+		exhaustsBeforeReset?: boolean | undefined;
 	},
 	fetchedAtMs: number,
-): { value: string; extraLines?: string[] } {
+): { value: string; extraLines?: string[] | undefined } {
 	const bar = renderProgressBar(row.percentLeft, 20);
 	const pct = typeof row.percentLeft === "number" ? Math.round(row.percentLeft) : undefined;
 	const percent = typeof pct === "number" ? `${pct}% left` : "? left";
@@ -415,7 +400,7 @@ function getPlatformProcessInfo(): { processName: string; exec: ExecSpec } {
 
 	if (platform === "win32") {
 		const processName = "language_server_windows_x64.exe";
-		const ps = `Get-CimInstance Win32_Process -Filter \"name='${processName}'\" | Select-Object ProcessId,CommandLine | ConvertTo-Json`;
+		const ps = `Get-CimInstance Win32_Process -Filter "name='${processName}'" | Select-Object ProcessId,CommandLine | ConvertTo-Json`;
 		return { processName, exec: { command: "powershell", args: ["-NoProfile", "-Command", ps] } };
 	}
 
@@ -435,7 +420,7 @@ function getPlatformProcessInfo(): { processName: string; exec: ExecSpec } {
 }
 
 function extractCsrfToken(cmdLine: string): string | null {
-	const m = cmdLine.match(/--csrf_token[=\s]+([a-zA-Z0-9\-]+)/);
+	const m = cmdLine.match(/--csrf_token[=\s]+([a-zA-Z0-9-]+)/);
 	return m?.[1] ?? null;
 }
 
@@ -534,7 +519,7 @@ function getPortListCommand(pid: number): ExecSpec {
 			command: "sh",
 			args: [
 				"-c",
-				`ss -tlnp 2>/dev/null | grep \"pid=${pid}\" || lsof -iTCP -sTCP:LISTEN -n -P -p ${pid} 2>/dev/null`,
+				`ss -tlnp 2>/dev/null | grep "pid=${pid}" || lsof -iTCP -sTCP:LISTEN -n -P -p ${pid} 2>/dev/null`,
 			],
 		};
 	}
@@ -847,7 +832,7 @@ class StatusCard implements Component {
 
 	constructor(
 		private details: StatusMessageDetails,
-		private theme: any,
+		private theme: Theme,
 	) {}
 
 	render(width: number): string[] {
@@ -891,7 +876,7 @@ export default function initStatus(pi: ExtensionAPI, state: TauState) {
 
 	pi.on("context", async (event) => {
 		const filtered = event.messages.filter(
-			(m: any) => !(m?.role === "custom" && m?.customType === STATUS_MESSAGE_TYPE),
+			(m) => !(m?.role === "custom" && m?.customType === STATUS_MESSAGE_TYPE),
 		);
 		return { messages: filtered };
 	});
@@ -1059,7 +1044,7 @@ export default function initStatus(pi: ExtensionAPI, state: TauState) {
 					}),
 				]);
 
-				const applyBurn = (key: string, row: any) => {
+				const applyBurn = (key: string, row: BurnInfo & { percentLeft?: number | undefined; resetsAt?: number | undefined }) => {
 					if (!row) return;
 					if (typeof row.percentLeft === "number" && Number.isFinite(row.percentLeft)) {
 						nextState.values[key] = { percentLeft: row.percentLeft };

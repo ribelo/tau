@@ -3,9 +3,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ThinkingLevel } from "@mariozechner/pi-ai";
 import { readJsonFile } from "../shared/fs.js";
-import { isRecord, type AnyRecord } from "../shared/json.js";
+import { isRecord } from "../shared/json.js";
 import {
-	type ApprovalPolicy,
 	type FilesystemMode,
 	type NetworkMode,
 	APPROVAL_POLICIES,
@@ -16,14 +15,6 @@ import {
 import type { SandboxConfig } from "../sandbox/config.js";
 import type { Complexity, ResolvedPolicy, TaskType } from "./types.js";
 import { loadSkill } from "./skills.js";
-
-function isDirectory(p: string): boolean {
-	try {
-		return fs.statSync(p).isDirectory();
-	} catch {
-		return false;
-	}
-}
 
 function findNearestProjectSettings(cwd: string): string | null {
 	let current = cwd;

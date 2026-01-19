@@ -14,7 +14,7 @@ export function getWorkerApprovalBroker(sessionId: string): ApprovalBroker | und
 	return brokerBySessionId.get(sessionId);
 }
 
-export function createUiApprovalBroker(ui: { confirm: (title: string, message: string, options: any) => Promise<boolean> }): ApprovalBroker {
+export function createUiApprovalBroker(ui: { confirm: (title: string, message: string, options: { timeout?: number }) => Promise<boolean> }): ApprovalBroker {
 	// Serialize prompts so we never show overlapping dialogs.
 	let queue = Promise.resolve();
 

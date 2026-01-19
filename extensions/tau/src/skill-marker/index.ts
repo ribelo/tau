@@ -96,7 +96,7 @@ function ensureSkillMarkerState(state: TauState): SkillMarkerState {
 	const existing = state.skillMarker as SkillMarkerState | undefined;
 	if (existing?.registry) return existing;
 	const next: SkillMarkerState = { registry: new SkillRegistry() };
-	state.skillMarker = next as any;
+	state.skillMarker = next as unknown as Record<string, unknown>;
 	return next;
 }
 
@@ -118,7 +118,7 @@ function escapeXml(str: string): string {
 		.replace(/&/g, "&amp;")
 		.replace(/</g, "&lt;")
 		.replace(/>/g, "&gt;")
-		.replace(/\"/g, "&quot;")
+		.replace(/"/g, "&quot;")
 		.replace(/'/g, "&apos;");
 }
 
@@ -132,7 +132,7 @@ async function reloadSkills(state: SkillMarkerState, cwd: string) {
 export function wrapAutocompleteProvider(
 	state: TauState,
 	provider: AutocompleteProvider,
-	_editor: any,
+	_editor: unknown,
 ): AutocompleteProvider {
 	const s = ensureSkillMarkerState(state);
 	if (!s.wrapper) {
@@ -143,10 +143,14 @@ export function wrapAutocompleteProvider(
 	return s.wrapper;
 }
 
-export function afterInput(state: TauState, data: string, editor: any): void {
+export function afterInput(state: TauState, data: string, editor: {
+	isShowingAutocomplete: () => boolean;
+	getCursor: () => { line: number; col: number };
+	getLines: () => string[];
+	tryTriggerAutocomplete?: (explicitTab?: boolean) => void;
+}): void {
 	if (!shouldAutoTriggerSkillAutocomplete(editor, data)) return;
-	const self = editor as unknown as { tryTriggerAutocomplete?: (explicitTab?: boolean) => void };
-	self.tryTriggerAutocomplete?.(false);
+	editor.tryTriggerAutocomplete?.(false);
 }
 
 export default function initSkillMarker(pi: ExtensionAPI, state: TauState) {

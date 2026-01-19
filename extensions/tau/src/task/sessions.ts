@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import type { AgentSession } from "@mariozechner/pi-coding-agent";
 import type { Complexity } from "./types.js";
 
 export interface TaskSession {
@@ -7,10 +6,6 @@ export interface TaskSession {
 	taskType: string;
 	complexity: Complexity;
 	createdAt: number;
-	/** In-process worker session (when using in-process backend). */
-	workerSession?: AgentSession;
-	/** Recorded nesting depth for this task session. */
-	nestingDepth?: number;
 	/** Canonical JSON string for result_schema, if any. */
 	outputSchemaKey?: string;
 }
@@ -58,12 +53,5 @@ export class SessionManager {
 		const session: TaskSession = { sessionId: id, taskType, complexity, createdAt, outputSchemaKey };
 		this.sessions.set(id, session);
 		return session;
-	}
-
-	setWorkerSession(sessionId: string, workerSession: AgentSession | undefined, nestingDepth?: number) {
-		const s = this.sessions.get(sessionId);
-		if (!s) return;
-		s.workerSession = workerSession;
-		if (nestingDepth !== undefined) s.nestingDepth = nestingDepth;
 	}
 }

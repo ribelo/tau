@@ -138,6 +138,35 @@ Two options (mutually exclusive):
 | `bash` | Run commands, install, build | bash, read | bash |
 | `custom` | Ad-hoc worker with skills you specify | All | (you provide) |
 
+## Sandbox Configuration
+
+Each task type can have its own sandbox configuration. **Worker sandbox settings are clamped to the parent's effective configuration.** You cannot use a worker sandbox to escape parent restrictions.
+
+```json
+{
+  "tasks": {
+    "safe-worker": {
+      "description": "A worker that never prompts for approval",
+      "sandbox": {
+        "filesystemMode": "read-only",
+        "networkMode": "deny",
+        "approvalPolicy": "never"
+      }
+    }
+  }
+}
+```
+
+### Sandbox Fields
+
+| Field | Type | Options |
+|-------|------|---------|
+| `filesystemMode` | string | `read-only`, `workspace-write`, `danger-full-access` |
+| `networkMode` | string | `deny`, `allowlist`, `allow-all` |
+| `networkAllowlist` | string[] | Domains allowed (if mode is `allowlist`) |
+| `approvalPolicy` | string | `never`, `on-failure`, `on-request`, `unless-trusted` |
+| `approvalTimeoutSeconds` | number | Seconds to wait for approval before timeout |
+
 ## Available Tools
 
 `read`, `write`, `edit`, `bash`, `bd`, `task`, `web_search_exa`, `crawling_exa`, `get_code_context_exa`, `git_commit_with_user_approval`

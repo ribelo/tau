@@ -12,19 +12,17 @@ import { fileURLToPath } from "node:url";
 import { TaskRegistry } from "./registry.js";
 import { loadSkills } from "./skills.js";
 import { SessionManager } from "./sessions.js";
-import { TaskRunner } from "./runner.js";
+import { TaskRunner, type TaskRunnerUpdateDetails } from "./runner.js";
 import type { Complexity } from "./types.js";
 import { renderTaskCall, renderTaskResult, type TaskBatchItemDetails, type TaskToolDetails } from "./render.js";
 
 import type { TauState } from "../shared/state.js";
-import type { SandboxConfig } from "../sandbox/config.js";
-import { computeEffectiveConfig } from "../sandbox/config.js";
-import { discoverWorkspaceRoot } from "../sandbox/workspace-root.js";
-import { loadPersistedState } from "../shared/state.js";
+import { getEffectiveSandboxConfig } from "../sandbox/index.js";
 import { createUiApprovalBroker, type ApprovalBroker } from "./approval-broker.js";
 
-const Ajv = (AjvModule as any).default || AjvModule;
-const addFormats = (addFormatsModule as any).default || addFormatsModule;
+type AjvConstructor = new (options?: unknown) => unknown;
+const Ajv = (AjvModule as unknown as { default?: AjvConstructor }).default || (AjvModule as unknown as AjvConstructor);
+const addFormats = (addFormatsModule as unknown as { default?: (ajv: unknown) => void }).default || (addFormatsModule as unknown as (ajv: unknown) => void);
 const ajv = new Ajv({ allErrors: true, strict: false });
 addFormats(ajv);
 
@@ -63,7 +61,7 @@ function validateOutputSchema(schema: unknown): { ok: true } | { ok: false; erro
 		return { ok: false, error: "result_schema must be a JSON schema object" };
 	}
 	try {
-		ajv.compile(schema as any);
+		ajv.compile(schema);
 		return { ok: true };
 	} catch (err) {
 		return { ok: false, error: (err as Error).message };
@@ -186,7 +184,8 @@ export default function initTask(pi: ExtensionAPI, state: TauState) {
 
 	pi.on("tool_call", async (event) => {
 		if (event.toolName === "task") {
-			const tasks = Array.isArray((event.input as any).tasks) ? (event.input as any).tasks : undefined;
+			const input = event.input as { tasks?: Array<unknown> };
+			const tasks = Array.isArray(input.tasks) ? input.tasks : undefined;
 			const count = Array.isArray(tasks) && tasks.length > 0 ? tasks.length : 1;
 			plannedTaskCalls += count;
 		}
@@ -200,9 +199,10 @@ export default function initTask(pi: ExtensionAPI, state: TauState) {
 
 		async execute(_toolCallId, params, onUpdate, ctx, signal) {
 			const approvalBroker: ApprovalBroker | undefined =
-				(ctx as any).hasUI && (ctx as any).ui?.confirm ? createUiApprovalBroker((ctx as any).ui) : undefined;
+				ctx.hasUI && ctx.ui?.confirm ? createUiApprovalBroker(ctx.ui) : undefined;
 
-			const tasks = Array.isArray((params as any).tasks) ? (params as any).tasks : [];
+			const typedParams = params as { tasks?: Array<unknown> };
+			const tasks = Array.isArray(typedParams.tasks) ? typedParams.tasks : [];
 			if (tasks.length === 0) {
 				const details: TaskToolDetails = { status: "failed", results: [], message: "No tasks provided" };
 				return {
@@ -234,28 +234,29 @@ export default function initTask(pi: ExtensionAPI, state: TauState) {
 			}
 			const availableTypes = registry.list().map((t) => t.name).join(", ");
 			const sessionIdCounts = new Map<string, number>();
-			for (const task of tasks) {
+			for (const task of tasks as Array<{ session_id?: string }>) {
 				const sessionId = typeof task.session_id === "string" ? task.session_id : undefined;
 				if (sessionId) sessionIdCounts.set(sessionId, (sessionIdCounts.get(sessionId) || 0) + 1);
 			}
 
-			const results: TaskBatchItemDetails[] = tasks.map((task, index) => ({
-				index,
-				type: typeof task.type === "string" ? task.type.trim() : "",
-				complexity: typeof task.complexity === "string" ? task.complexity : "medium",
-				description: typeof task.description === "string" ? task.description.trim() : undefined,
-				sessionId: typeof task.session_id === "string" ? task.session_id : undefined,
-				status: "running",
-				model: undefined,
-				usage: { ...EMPTY_USAGE },
-				activities: [],
-				message: undefined,
-				missingSkills: undefined,
-				loadedSkills: undefined,
-				outputType: undefined,
-				structuredOutput: undefined,
-				durationMs: undefined,
-			}));
+			const results: TaskBatchItemDetails[] = (tasks as Array<{
+				type?: string;
+				complexity?: string;
+				description?: string;
+				session_id?: string;
+			}>).map((task, index) => {
+				const item: TaskBatchItemDetails = {
+					index,
+					type: typeof task.type === "string" ? task.type.trim() : "",
+					complexity: typeof task.complexity === "string" ? task.complexity : "medium",
+					status: "running",
+					usage: { ...EMPTY_USAGE },
+					activities: [],
+				};
+				if (typeof task.description === "string") item.description = task.description.trim();
+				if (typeof task.session_id === "string") item.sessionId = task.session_id;
+				return item;
+			});
 
 			const emitBatchUpdate = () => {
 				if (!onUpdate) return;
@@ -284,7 +285,18 @@ export default function initTask(pi: ExtensionAPI, state: TauState) {
 			const parallelCount = Math.max(1, plannedTaskCalls || tasks.length, activeTaskCalls + tasks.length);
 			activeTaskCalls += tasks.length;
 
-			const runTask = async (task: any, index: number) => {
+			const runTask = async (
+				task: {
+					type?: string;
+					description?: string;
+					prompt?: string;
+					complexity?: string;
+					result_schema?: unknown;
+					session_id?: string;
+					skills?: string[];
+				},
+				index: number,
+			) => {
 				const taskType = (task.type || "").trim();
 				const description = (task.description || "").trim();
 				const prompt = task.prompt || "";
@@ -293,7 +305,9 @@ export default function initTask(pi: ExtensionAPI, state: TauState) {
 				const outputSchemaKey = outputSchema ? JSON.stringify(outputSchema) : undefined;
 				const taskSessionId = typeof task.session_id === "string" ? task.session_id : undefined;
 
-				updateItem(index, { type: taskType, complexity, description, sessionId: taskSessionId });
+				const patch: Partial<TaskBatchItemDetails> = { type: taskType, complexity, description };
+				if (taskSessionId) patch.sessionId = taskSessionId;
+				updateItem(index, patch);
 
 				if (taskSessionId && (sessionIdCounts.get(taskSessionId) || 0) > 1) {
 					updateItem(index, {
@@ -390,31 +404,30 @@ export default function initTask(pi: ExtensionAPI, state: TauState) {
 					return;
 				}
 
-				const wrapUpdate = (partial: AgentToolResult<any>) => {
-					const d = partial.details as any;
-					updateItem(index, {
+				const wrapUpdate = (partial: AgentToolResult<TaskRunnerUpdateDetails>) => {
+					const d = partial.details;
+					if (!d) return;
+
+					const patch: Partial<TaskBatchItemDetails> = {
 						type: taskType,
 						complexity,
 						description,
 						sessionId: d.sessionId ?? session.sessionId,
 						status: d.status,
-						model: d.model,
 						usage: d.usage,
 						activities: d.activities,
-						message: d.message,
 						missingSkills: missing,
 						loadedSkills: loadedSkillsMeta,
-					});
+					};
+					if (d.model) patch.model = d.model;
+					if (d.message) patch.message = d.message;
+
+					updateItem(index, patch);
 				};
 
 				let res;
 				try {
-					const parentSandboxConfig =
-						((state.sandbox as any)?.effectiveConfig as Required<SandboxConfig> | undefined) ??
-						computeEffectiveConfig({
-							workspaceRoot: discoverWorkspaceRoot(ctx.cwd),
-							sessionOverride: ((loadPersistedState(ctx).sandbox as any)?.override ?? undefined) as SandboxConfig | undefined,
-						});
+					const parentSandboxConfig = getEffectiveSandboxConfig(state, ctx);
 
 					res = await runner.run({
 						parentCwd: ctx.cwd,
@@ -467,7 +480,7 @@ export default function initTask(pi: ExtensionAPI, state: TauState) {
 							? "(interrupted; resumable)"
 							: "");
 
-				updateItem(index, {
+				const patch: Partial<TaskBatchItemDetails> = {
 					sessionId: res.sessionId,
 					durationMs: res.durationMs,
 					status:
@@ -479,20 +492,30 @@ export default function initTask(pi: ExtensionAPI, state: TauState) {
 							: outputType === "interrupted"
 								? "interrupted"
 								: "failed",
-					model: res.model,
 					usage: res.usage,
 					activities: res.activities,
 					message: finalMessage,
 					missingSkills: missing,
 					loadedSkills: loadedSkillsMeta,
 					outputType,
-					structuredOutput,
-				});
+				};
+				if (res.model) patch.model = res.model;
+				if (structuredOutput !== undefined) patch.structuredOutput = structuredOutput;
+
+				updateItem(index, patch);
 			};
 
 			try {
 				await Promise.all(
-					tasks.map((task, index) =>
+					(tasks as Array<{
+						type?: string;
+						description?: string;
+						prompt?: string;
+						complexity?: string;
+						result_schema?: unknown;
+						session_id?: string;
+						skills?: string[];
+					}>).map((task, index) =>
 						runTask(task, index).catch((err) => {
 							updateItem(index, {
 								status: "failed",
@@ -541,7 +564,7 @@ export default function initTask(pi: ExtensionAPI, state: TauState) {
 			return renderTaskCall(args, theme);
 		},
 		renderResult(result, options, theme) {
-			return renderTaskResult(result as any, options, theme);
+			return renderTaskResult(result, options, theme);
 		},
 	});
 }

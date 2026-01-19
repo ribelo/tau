@@ -1,5 +1,6 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { visibleWidth, type Component } from "@mariozechner/pi-tui";
+import type { Message } from "@mariozechner/pi-ai";
 
 import type { TauState } from "../shared/state.js";
 import { updatePersistedState } from "../shared/state.js";
@@ -13,6 +14,11 @@ type WorkedForDetails = {
 type WorkedForState = {
 	enabled?: boolean;
 	toolsEnabled?: boolean;
+};
+
+type Theme = {
+	fg: (key: string, s: string) => string;
+	bold: (s: string) => string;
 };
 
 function formatDuration(ms: number): string {
@@ -32,7 +38,7 @@ class WorkedForSeparator implements Component {
 
 	constructor(
 		private durationText: string,
-		private theme: any,
+		private theme: Theme,
 	) {}
 
 	render(width: number): string[] {
@@ -66,7 +72,7 @@ class WorkedForWidget implements Component {
 
 	constructor(
 		durationText: string,
-		theme: any,
+		theme: Theme,
 	) {
 		this.separator = new WorkedForSeparator(durationText, theme);
 	}
@@ -104,7 +110,7 @@ export default function initWorkedFor(pi: ExtensionAPI, state: TauState) {
 	let lastRenderedDurationText: string | undefined;
 
 	let tickInterval: ReturnType<typeof setInterval> | undefined;
-	let tickCtx: any;
+	let tickCtx: ExtensionContext | undefined;
 
 	function stopTick(): void {
 		if (tickInterval) clearInterval(tickInterval);
@@ -112,8 +118,8 @@ export default function initWorkedFor(pi: ExtensionAPI, state: TauState) {
 		tickCtx = undefined;
 	}
 
-	function renderWorkedForWidget(ctx: any): void {
-		if (!ctx?.hasUI) return;
+	function renderWorkedForWidget(ctx: ExtensionContext): void {
+		if (!ctx.hasUI) return;
 		if (!isEnabled()) return;
 		if (promptStartTimestamp === undefined) return;
 		const elapsedMs = Math.max(0, Date.now() - promptStartTimestamp);
@@ -122,21 +128,21 @@ export default function initWorkedFor(pi: ExtensionAPI, state: TauState) {
 		lastRenderedDurationText = durationText;
 
 		// Widgets do not participate in LLM context and won't enqueue follow-ups.
-		ctx.ui.setWidget("worked-for-separator", (_tui: any, theme: any) => new WorkedForWidget(durationText, theme));
+		ctx.ui.setWidget("worked-for-separator", (_tui: unknown, theme: Theme) => new WorkedForWidget(durationText, theme));
 	}
 
-	function startTick(ctx: any): void {
+	function startTick(ctx: ExtensionContext): void {
 		stopTick();
 		tickCtx = ctx;
 		// Update like the "Working..." indicator: periodically re-render while the agent is running.
 		// formatDuration() only changes once per second, so this is cheap.
 		tickInterval = setInterval(() => {
-			if (!agentRunning) return;
+			if (!agentRunning || !tickCtx) return;
 			renderWorkedForWidget(tickCtx);
 		}, 250);
 	}
 
-	function sendWorkedForSeparator(ctx: any): void {
+	function sendWorkedForSeparator(ctx: ExtensionContext): void {
 		if (!isEnabled()) return;
 		if (promptStartTimestamp === undefined) return;
 		const elapsedMs = Math.max(0, Date.now() - promptStartTimestamp);
@@ -152,17 +158,17 @@ export default function initWorkedFor(pi: ExtensionAPI, state: TauState) {
 			{ triggerTurn: false },
 		);
 
-		if (ctx?.hasUI) ctx.ui.setWidget("worked-for-separator", undefined);
+		if (ctx.hasUI) ctx.ui.setWidget("worked-for-separator", undefined);
 	}
 
 	pi.registerMessageRenderer<WorkedForDetails>(WORKED_FOR_MESSAGE_TYPE, (message, _options, theme) => {
 		const elapsedMs = typeof message.details?.elapsedMs === "number" ? message.details.elapsedMs : 0;
-		return new WorkedForSeparator(formatDuration(elapsedMs), theme);
+		return new WorkedForSeparator(formatDuration(elapsedMs), theme as Theme);
 	});
 
 	pi.on("context", async (event) => {
 		// Never send UI-only worked-for separators to the model (old sessions may contain them).
-		const filtered = event.messages.filter((m: any) => m?.customType !== WORKED_FOR_MESSAGE_TYPE);
+		const filtered = event.messages.filter((m) => m?.customType !== WORKED_FOR_MESSAGE_TYPE);
 		return { messages: filtered };
 	});
 
@@ -262,7 +268,7 @@ export default function initWorkedFor(pi: ExtensionAPI, state: TauState) {
 		if (!agentRunning) return;
 
 		// Only update the widget after assistant output.
-		const role = (event.message as any)?.role;
+		const role = (event.message as Message)?.role;
 		if (role !== "assistant") return;
 
 		renderWorkedForWidget(ctx);

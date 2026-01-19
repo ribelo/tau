@@ -44,10 +44,6 @@ function fmtValue(v: unknown): string {
 	return String(v);
 }
 
-function renderHeader(title: string, theme: { fg: (key: string, s: string) => string; bold: (s: string) => string }): string {
-	return theme.fg("toolTitle", `• ${theme.bold(title)}`);
-}
-
 function getJsonBlock(result: ToolResultLike): unknown | undefined {
 	const blocks = result.content || [];
 	for (const b of blocks) {

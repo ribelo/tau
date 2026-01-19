@@ -1,9 +1,14 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 import { Markdown, Text, type AutocompleteItem } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 
 import type { TauState } from "../shared/state.js";
+
+type Theme = {
+	fg: (key: string, s: string) => string;
+	bold: (s: string) => string;
+};
 
 type BdIssue = {
 	id?: string;
@@ -112,7 +117,7 @@ function statusGlyph(issue: BdIssue): string {
 	}
 }
 
-function statusGlyphThemed(issue: BdIssue, theme: any): string {
+function statusGlyphThemed(issue: BdIssue, theme: Theme): string {
 	const glyph = statusGlyph(issue);
 	switch (statusKind(issue)) {
 		case "done":
@@ -130,7 +135,7 @@ function statusGlyphThemed(issue: BdIssue, theme: any): string {
 	}
 }
 
-function renderIssueInline(issue: BdIssue, theme: any): string {
+function renderIssueInline(issue: BdIssue, theme: Theme): string {
 	const mark = statusGlyphThemed(issue, theme);
 	const id = (issue.id || "(no-id)").padEnd(12);
 	const prioNum = issue.priority;
@@ -182,16 +187,16 @@ function formatBdDetailsAsText(details: BdToolDetails): string {
 	const json = details.json;
 
 	if (details.kind === "status" && json && typeof json === "object") {
-		const summary: any = (json as any).summary || {};
-		const rows: Array<[string, any]> = [
-			["total", summary.total_issues],
-			["open", summary.open_issues],
-			["in_progress", summary.in_progress_issues],
-			["closed", summary.closed_issues],
-			["blocked", summary.blocked_issues],
-			["ready", summary.ready_issues],
-			["deferred", summary.deferred_issues],
-			["pinned", summary.pinned_issues],
+		const summary = (json as { summary?: Record<string, unknown> }).summary || {};
+		const rows: Array<[string, unknown]> = [
+			["total", summary["total_issues"]],
+			["open", summary["open_issues"]],
+			["in_progress", summary["in_progress_issues"]],
+			["closed", summary["closed_issues"]],
+			["blocked", summary["blocked_issues"]],
+			["ready", summary["ready_issues"]],
+			["deferred", summary["deferred_issues"]],
+			["pinned", summary["pinned_issues"]],
 		];
 		return rows
 			.filter(([, v]) => v !== undefined)
@@ -235,7 +240,7 @@ function normalizeIssues(json: unknown): BdIssue[] {
 	return [];
 }
 
-function renderIssuesBlock(issues: BdIssue[], options: { expanded: boolean }, theme: any): Text {
+function renderIssuesBlock(issues: BdIssue[], options: { expanded: boolean }, theme: Theme): Text {
 	const all = issues || [];
 	const shown = options.expanded ? all : all.slice(0, 10);
 
@@ -251,7 +256,7 @@ function renderIssuesBlock(issues: BdIssue[], options: { expanded: boolean }, th
 	return new Text(out, 0, 0);
 }
 
-function renderTreeBlock(nodes: BdTreeNode[], options: { expanded: boolean }, theme: any): Text {
+function renderTreeBlock(nodes: BdTreeNode[], options: { expanded: boolean }, theme: Theme): Text {
 	const all = nodes || [];
 	const shown = options.expanded ? all : all.slice(0, 50);
 
@@ -268,7 +273,7 @@ function renderTreeBlock(nodes: BdTreeNode[], options: { expanded: boolean }, th
 	return new Text(out, 0, 0);
 }
 
-function renderFallback(kind: string, text: string, theme: any): Text {
+function renderFallback(kind: string, text: string, theme: Theme): Text {
 	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
 	let out = theme.fg("dim", separator);
 	out += `\n${theme.fg("toolTitle", theme.bold(`bd ${kind}`))}`;
@@ -285,7 +290,7 @@ type BdComment = {
 	created_at?: string;
 };
 
-function renderCommentsBlock(json: unknown, theme: any): Text {
+function renderCommentsBlock(json: unknown, theme: Theme): Text {
 	const comments = (Array.isArray(json) ? json : [json]) as BdComment[];
 	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
 	let out = theme.fg("dim", separator);
@@ -300,7 +305,7 @@ function renderCommentsBlock(json: unknown, theme: any): Text {
 	return new Text(out.trim(), 0, 0);
 }
 
-function renderDepBlock(json: any, theme: any): Text {
+function renderDepBlock(json: unknown, theme: Theme): Text {
 	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
 	let out = theme.fg("dim", separator);
 
@@ -309,7 +314,7 @@ function renderDepBlock(json: any, theme: any): Text {
 		return new Text(out, 0, 0);
 	}
 
-	const deps = Array.isArray(json) ? json : [json];
+	const deps = (Array.isArray(json) ? json : [json]) as Array<{ status: string; type?: string; issue_id: string; depends_on_id: string }>;
 	for (const dep of deps) {
 		const status = dep.status === "added" ? theme.fg("success", "✔ Added") : theme.fg("warning", "✘ Removed");
 		const type = dep.type ? ` (${dep.type})` : "";
@@ -560,32 +565,32 @@ async function runBd(pi: ExtensionAPI, command: string, signal?: AbortSignal, cw
 	};
 }
 
-function renderStatusBlock(json: any, theme: any): Text {
-	const summary = json.summary || {};
+function renderStatusBlock(json: unknown, theme: Theme): Text {
+	const summary = (json as { summary?: Record<string, unknown> }).summary || {};
 	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
 	let out = theme.fg("dim", separator);
 	out += `\n${theme.fg("toolTitle", theme.bold("Beads Status"))}`;
 
-	const row = (label: string, value: any) => `\n  ${label.padEnd(20)}: ${theme.fg("toolOutput", String(value))}`;
+	const row = (label: string, value: unknown) => `\n  ${label.padEnd(20)}: ${theme.fg("toolOutput", String(value))}`;
 
-	out += row("Total Issues", summary.total_issues);
-	out += row("Open", summary.open_issues);
-	out += row("In Progress", summary.in_progress_issues);
-	out += row("Closed", summary.closed_issues);
-	out += row("Blocked", summary.blocked_issues);
-	out += row("Ready", summary.ready_issues);
-	out += row("Deferred", summary.deferred_issues);
-	out += row("Pinned", summary.pinned_issues);
+	out += row("Total Issues", summary["total_issues"]);
+	out += row("Open", summary["open_issues"]);
+	out += row("In Progress", summary["in_progress_issues"]);
+	out += row("Closed", summary["closed_issues"]);
+	out += row("Blocked", summary["blocked_issues"]);
+	out += row("Ready", summary["ready_issues"]);
+	out += row("Deferred", summary["deferred_issues"]);
+	out += row("Pinned", summary["pinned_issues"]);
 
-	if (summary.average_lead_time_hours) {
-		const hours = Number(summary.average_lead_time_hours).toFixed(1);
+	if (summary["average_lead_time_hours"]) {
+		const hours = Number(summary["average_lead_time_hours"]).toFixed(1);
 		out += row("Avg Lead Time", `${hours}h`);
 	}
 
 	return new Text(out, 0, 0);
 }
 
-function renderBd(details: BdToolDetails, options: { expanded: boolean }, theme: any) {
+function renderBd(details: BdToolDetails, options: { expanded: boolean }, theme: Theme) {
 	if (!details.isJson) {
 		const text = details.outputText || "(no output)";
 
@@ -625,7 +630,7 @@ function renderBd(details: BdToolDetails, options: { expanded: boolean }, theme:
 export default function initBeads(pi: ExtensionAPI, _state: TauState) {
 	// Keep /bd command outputs out of LLM context.
 	pi.on("context", async (event) => {
-		const filtered = event.messages.filter((m: any) => !(m?.role === "custom" && m?.customType === BD_MESSAGE_TYPE));
+		const filtered = event.messages.filter((m) => !(m?.role === "custom" && m?.customType === BD_MESSAGE_TYPE));
 		return { messages: filtered };
 	});
 
@@ -635,7 +640,7 @@ export default function initBeads(pi: ExtensionAPI, _state: TauState) {
 		return { systemPrompt: `${hint}\n\n${event.systemPrompt}` };
 	});
 
-	const bdInitFlow = async (ctx: any): Promise<void> => {
+	const bdInitFlow = async (ctx: ExtensionContext): Promise<void> => {
 		if (!ctx.hasUI) {
 			ctx.ui.notify("/bd init requires interactive mode", "error");
 			return;
@@ -722,7 +727,7 @@ export default function initBeads(pi: ExtensionAPI, _state: TauState) {
 	pi.registerMessageRenderer<BdMessageDetails>(BD_MESSAGE_TYPE, (message, options, theme) => {
 		const details = message.details;
 		if (!details) return new Text(theme.fg("dim", "(no bd details)"), 0, 0);
-		return renderBd(details, options, theme);
+		return renderBd(details, options, theme as Theme);
 	});
 
 	pi.registerTool({
@@ -805,7 +810,7 @@ export default function initBeads(pi: ExtensionAPI, _state: TauState) {
 		renderResult(result, options, theme) {
 			const details = result.details as BdToolDetails | undefined;
 			if (!details) return new Text(theme.fg("dim", "(no bd details)"), 0, 0);
-			return renderBd(details, options, theme);
+			return renderBd(details, options, theme as Theme);
 		},
 	});
 }

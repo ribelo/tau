@@ -1,4 +1,4 @@
-import { stream, streamSimple, type Api, type Message, type Model, type SimpleStreamOptions } from "@mariozechner/pi-ai";
+import { stream, streamSimple, type Api, type Message, type Model, type SimpleStreamOptions, type ThinkingLevel } from "@mariozechner/pi-ai";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import {
 	SessionManager as SdkSessionManager,
@@ -146,7 +146,7 @@ function createSubmitTool(
 		name: "submit_result",
 		label: "submit_result",
 		description: "Submit structured result for the task",
-		parameters: Type.Unsafe(schema as any),
+		parameters: Type.Unsafe(schema),
 		async execute(_toolCallId, params, _onUpdate, _ctx, signal) {
 			if (signal?.aborted) {
 				throw new Error("submit_result aborted");
@@ -168,32 +168,32 @@ function createSubmitTool(
 	};
 }
 
-function toolOnlyStreamFn(model: Model<Api>, context: any, options?: SimpleStreamOptions) {
+function toolOnlyStreamFn(model: Model<Api>, context: Message[], options?: SimpleStreamOptions) {
 	const base = {
 		temperature: options?.temperature,
 		maxTokens: options?.maxTokens || Math.min(model.maxTokens, 32000),
 		signal: options?.signal,
-		apiKey: (options as any)?.apiKey,
+		apiKey: options?.apiKey,
 		sessionId: options?.sessionId,
 	};
 
 	switch (model.api) {
 		case "anthropic-messages":
-			return stream(model as any, context, { ...base, thinkingEnabled: false, toolChoice: "any" } as any);
+			return stream(model as Model<"anthropic-messages">, context, { ...base, thinkingEnabled: false, toolChoice: "any" });
 		case "openai-completions":
-			return stream(model as any, context, { ...base, toolChoice: "required" } as any);
+			return stream(model as Model<"openai-completions">, context, { ...base, toolChoice: "required" });
 		case "google-generative-ai":
-			return stream(model as any, context, { ...base, toolChoice: "any", thinking: { enabled: false } } as any);
+			return stream(model as Model<"google-generative-ai">, context, { ...base, toolChoice: "any", thinking: { enabled: false } });
 		case "google-vertex":
-			return stream(model as any, context, { ...base, toolChoice: "any", thinking: { enabled: false } } as any);
+			return stream(model as Model<"google-vertex">, context, { ...base, toolChoice: "any", thinking: { enabled: false } });
 		case "google-gemini-cli":
-			return stream(model as any, context, { ...base, toolChoice: "any", thinking: { enabled: false } } as any);
+			return stream(model as Model<"google-gemini-cli">, context, { ...base, toolChoice: "any", thinking: { enabled: false } });
 		case "bedrock-converse-stream":
-			return stream(model as any, context, { ...base, toolChoice: "any" } as any);
+			return stream(model as Model<"bedrock-converse-stream">, context, { ...base, toolChoice: "any" });
 		case "amazon-bedrock":
-			return stream(model as any, context, { ...base, toolChoice: "any" } as any);
+			return stream(model as Model<"amazon-bedrock">, context, { ...base, toolChoice: "any" });
 		default:
-			return streamSimple(model as any, context, options);
+			return streamSimple(model, context, options);
 	}
 }
 
@@ -209,7 +209,7 @@ function getLatestText(messages: Message[]): LatestText {
 		if (msg.role === "assistant") {
 			const parts = msg.content
 				.filter((p) => p.type === "text")
-				.map((p: any) => String(p.text ?? "").trim())
+				.map((p) => String(p.text ?? "").trim())
 				.filter(Boolean);
 			if (parts.length > 0) return { source: "assistant", text: parts.join("\n") };
 		}
@@ -217,7 +217,7 @@ function getLatestText(messages: Message[]): LatestText {
 		if (msg.role === "toolResult") {
 			const parts = msg.content
 				.filter((p) => p.type === "text")
-				.map((p: any) => String(p.text ?? "").trimEnd())
+				.map((p) => String(p.text ?? "").trimEnd())
 				.filter(Boolean);
 			if (parts.length > 0) return { source: "toolResult", text: parts.join("\n") };
 		}
@@ -249,7 +249,7 @@ function extractActivities(messages: Message[]): TaskActivity[] {
 		if (msg.role === "assistant") {
 			for (const part of msg.content) {
 				if (part.type !== "toolCall") continue;
-				const id = String((part as any).id ?? "");
+				const id = String(part.id ?? "");
 				if (!id) continue;
 				const activity: TaskActivity = {
 					toolCallId: id,
@@ -264,14 +264,14 @@ function extractActivities(messages: Message[]): TaskActivity[] {
 		}
 
 		if (msg.role === "toolResult") {
-			const id = String((msg as any).toolCallId ?? "");
-			const toolName = String((msg as any).toolName ?? "");
-			const isError = Boolean((msg as any).isError);
+			const id = String(msg.toolCallId ?? "");
+			const toolName = String(msg.toolName ?? "");
+			const isError = Boolean(msg.isError);
 
 			const text = Array.isArray(msg.content)
 				? msg.content
-						.filter((p: any) => p?.type === "text")
-						.map((p: any) => String(p.text ?? ""))
+						.filter((p) => p?.type === "text")
+						.map((p) => String(p.text ?? ""))
 						.join("\n")
 						.trim()
 				: "";
@@ -329,7 +329,7 @@ export function buildWorkerSystemPrompt(options: {
 		lines.push("");
 		lines.push("---");
 		for (const s of options.skills) {
-			lines.push(`<skill name=\"${s.name}\" path=\"${s.path}\">`);
+			lines.push(`<skill name="${s.name}" path="${s.path}">`);
 			lines.push(s.contents.trim());
 			lines.push("</skill>");
 			lines.push("");
@@ -486,9 +486,9 @@ class InProcessWorkerBackend implements WorkerBackend {
 
 		// Re-snapshot per call: update the worker's tau sandbox override and approval broker on every invocation.
 		{
-			const persisted = loadPersistedState({ sessionManager: entry.session.sessionManager } as any);
+			const persisted = loadPersistedState({ sessionManager: entry.session.sessionManager });
 			const next = withWorkerSandboxOverride(persisted, options.sandboxConfig);
-			(entry.session.sessionManager as any).appendCustomEntry(TAU_PERSISTED_STATE_TYPE, next);
+			entry.session.sessionManager.appendCustomEntry(TAU_PERSISTED_STATE_TYPE, next);
 			setWorkerApprovalBroker(entry.session.sessionId, options.approvalBroker);
 		}
 
@@ -523,11 +523,11 @@ class InProcessWorkerBackend implements WorkerBackend {
 			entry.structuredRef.value = undefined;
 			entry.submittedRef.value = false;
 		} else {
-			entry.session.agent.streamFn = streamSimple as any;
+			entry.session.agent.streamFn = streamSimple;
 		}
 
 		if (options.thinking) {
-			entry.session.setThinkingLevel(options.thinking as any);
+			entry.session.setThinkingLevel(options.thinking as ThinkingLevel);
 		}
 
 		let aborted = false;
@@ -601,7 +601,7 @@ export class TaskRunner {
 		const messages: Message[] = [];
 
 		const resolvedModel = options.policy.model ?? options.parentModelId;
-		const resolvedThinking = options.policy.thinking ?? (options.parentThinking as any);
+		const resolvedThinking = options.policy.thinking ?? (options.parentThinking as ThinkingLevel);
 
 		// tools: explicit for all task types so "all tools" really means "current tools".
 		const baseTools = Array.from(new Set((options.policy.tools ?? options.parentTools).filter(Boolean)));

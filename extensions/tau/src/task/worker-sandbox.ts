@@ -6,6 +6,6 @@ export function withWorkerSandboxOverride(
 	base: TauPersistedState,
 	override: Required<SandboxConfig>,
 ): TauPersistedState {
-	return mergePersistedState(base, { sandbox: { override } as any });
+	return mergePersistedState(base, { sandbox: { override } as unknown as Record<string, unknown> });
 }
 

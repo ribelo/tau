@@ -27,14 +27,6 @@ export const DEFAULT_SANDBOX_CONFIG: Required<SandboxConfig> = {
 	approvalTimeoutSeconds: 60,
 };
 
-/** Migrate deprecated policy values to current ones */
-function migrateApprovalPolicy(policy: string | undefined): ApprovalPolicy | undefined {
-	if (!policy) return undefined;
-	// "ask" was removed - closest equivalent is "unless-trusted" (prompts for unsafe commands)
-	if (policy === "ask") return "unless-trusted";
-	return policy as ApprovalPolicy;
-}
-
 export function applyDefaults(cfg: SandboxConfig | undefined): Required<SandboxConfig> {
 	return {
 		filesystemMode: cfg?.filesystemMode ?? DEFAULT_SANDBOX_CONFIG.filesystemMode,

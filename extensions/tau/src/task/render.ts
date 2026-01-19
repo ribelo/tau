@@ -143,7 +143,7 @@ function parseNestedTaskInfo(args: Record<string, unknown>, resultText: string |
 		}
 
 		if (!outputPreview) {
-			const m = trimmed.match(/\bsession_id:\s*([a-f0-9\-]{8,})/i);
+			const m = trimmed.match(/\bsession_id:\s*([a-f0-9-]{8,})/i);
 			if (m?.[1]) sessionId = m[1];
 			outputPreview = oneLine(trimmed.replace(/\n\s*session_id:.*$/is, "").trim());
 			if (!outputPreview) outputPreview = oneLine(trimmed);
@@ -198,7 +198,7 @@ function formatToolCall(toolName: string, args: Record<string, unknown>, theme: 
 	}
 }
 
-function statusMark(status: TaskToolDetails["status"], theme: any): string {
+function statusMark(status: TaskToolDetails["status"], theme: { fg: (key: string, s: string) => string; dim: (s: string) => string }): string {
 	if (status === "completed") return theme.fg("success", "✔");
 	if (status === "failed") return theme.fg("error", "✗");
 	if (status === "interrupted") return theme.fg("warning", "!");
@@ -208,7 +208,7 @@ function statusMark(status: TaskToolDetails["status"], theme: any): string {
 	return blinkOn ? theme.fg("muted", "•") : theme.fg("dim", "◦");
 }
 
-function activityMark(a: TaskActivity, theme: any): string {
+function activityMark(a: TaskActivity, theme: { fg: (key: string, s: string) => string }): string {
 	if (a.status === "success") return theme.fg("success", "✓");
 	if (a.status === "error") return theme.fg("error", "✗");
 	return theme.fg("dim", "•");

@@ -12,6 +12,7 @@ const BG = "\x1b[48;5;236m";
 
 function stripAnsi(text: string): string {
 	// Good-enough ANSI SGR strip for our border detection.
+	// eslint-disable-next-line no-control-regex
 	return text.replace(/\x1b\[[0-9;]*m/g, "");
 }
 

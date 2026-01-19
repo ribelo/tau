@@ -68,15 +68,22 @@ export class SkillMarkerAutocompleteProvider implements AutocompleteProvider {
 	}
 }
 
-export function shouldAutoTriggerSkillAutocomplete(editor: any, typedChar: string): boolean {
+export function shouldAutoTriggerSkillAutocomplete(
+	editor: {
+		isShowingAutocomplete: () => boolean;
+		getCursor: () => { line: number; col: number };
+		getLines: () => string[];
+	},
+	typedChar: string,
+): boolean {
 	// Only for single-character inserts (typing).
 	if (typedChar.length !== 1) return false;
 	// Trigger when typing '$' or continuing a $token.
 	if (typedChar !== "$" && !/[a-z0-9-]/.test(typedChar)) return false;
-	if (typeof editor.isShowingAutocomplete === "function" && editor.isShowingAutocomplete()) return false;
+	if (editor.isShowingAutocomplete()) return false;
 
-	const cursor = typeof editor.getCursor === "function" ? editor.getCursor() : undefined;
-	const lines = typeof editor.getLines === "function" ? editor.getLines() : undefined;
+	const cursor = editor.getCursor();
+	const lines = editor.getLines();
 	if (!cursor || !lines) return false;
 
 	const currentLine = lines[cursor.line] ?? "";

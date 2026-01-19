@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 import initEditor from "./editor/index.js";
-import { TAU_PERSISTED_STATE_TYPE, createState, loadPersistedState, updatePersistedState } from "./shared/index.js";
+import { TAU_PERSISTED_STATE_TYPE, createState, loadPersistedState, updatePersistedState, type TauPersistedState } from "./shared/index.js";
 import initCommit from "./commit/index.js";
 import initStatus from "./status/index.js";
 import initTerminalPrompt from "./terminal-prompt/index.js";
@@ -41,7 +41,7 @@ export default function tau(pi: ExtensionAPI) {
 			.filter((e: { type: string; customType?: string }) => e.type === "custom" && e.customType === "sandbox_state")
 			.pop() as { data?: Record<string, unknown> } | undefined;
 
-		const patch: any = {};
+		const patch: Partial<TauPersistedState> = {};
 		if (typeof legacyTau?.data?.terminalPrompt === "boolean") {
 			patch.terminalPrompt = { enabled: legacyTau.data.terminalPrompt };
 		}

@@ -43,6 +43,7 @@ import { discoverWorkspaceRoot } from "./workspace-root.js";
 
 import type { TauState } from "../shared/state.js";
 import { loadPersistedState, updatePersistedState } from "../shared/state.js";
+import { parseAllowlist, formatAllowlist } from "../shared/allowlist.js";
 import { type ApprovalBroker, getWorkerApprovalBroker } from "../task/approval-broker.js";
 
 import initAgentAwareness from "./agent-awareness/index.js";
@@ -65,6 +66,18 @@ export function createSandboxedBashOperations(
     throw new Error("sandbox not initialized (initSandbox must run before createSandboxedBashOperations)");
   }
   return factory(ctx, escalate);
+}
+
+export function getEffectiveSandboxConfig(state: TauState, ctx: ExtensionContext): Required<SandboxConfig> {
+  const sandboxState = state.sandbox as SandboxStateInternal | undefined;
+  if (sandboxState?.effectiveConfig) return sandboxState.effectiveConfig;
+
+  const sessionState = state.persisted?.sandbox as { override?: SandboxConfig } | undefined;
+
+  return computeEffectiveConfig({
+    workspaceRoot: discoverWorkspaceRoot(ctx.cwd),
+    sessionOverride: sessionState?.override,
+  });
 }
 
 /**
@@ -131,23 +144,6 @@ function loadSessionState(state: TauState): SessionState | undefined {
       ? { ...last.pendingSandboxNotice }
       : undefined,
   };
-}
-
-function parseAllowlist(input: string): string[] {
-  return Array.from(
-    new Set(
-      input
-        .split(/[,\s]+/)
-        .map((value) => value.trim())
-        .filter(Boolean),
-    ),
-  ).sort();
-}
-
-function formatAllowlist(list: string[]): string {
-  if (list.length === 0) return "(none)";
-  if (list.length <= 3) return list.join(", ");
-  return `${list.length} domains`;
 }
 
 function buildSourceHint(
@@ -359,7 +355,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
    const baselineHash = computeSandboxConfigHash(effectiveConfig);
 
    if (!ctx.hasUI) {
-     console.log(buildSandboxSummary());
+     pi.sendMessage({ content: buildSandboxSummary(), display: true }, { triggerTurn: false });
      return;
    }
 
@@ -1133,13 +1129,6 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
     sessionState.lastCommunicatedHash = computeSandboxConfigHash(effectiveConfig);
     sessionState.pendingSandboxNotice = undefined;
     persistState();
-
-    const allowlistText =
-      effectiveConfig.networkMode === "allowlist"
-        ? effectiveConfig.networkAllowlist.length > 0
-          ? effectiveConfig.networkAllowlist.join(", ")
-          : "(none)"
-        : "n/a";
 
     const injected =
       "<permissions instructions>\n" +
