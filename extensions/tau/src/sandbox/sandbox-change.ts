@@ -16,9 +16,11 @@ export function computeSandboxConfigHash(cfg: Required<SandboxConfig>): string {
 	].join(";");
 }
 
+// This is the clean version of the notice builder. No allowlist here!
 function buildSandboxNotice(prefix: "SANDBOX_STATE:" | "SANDBOX_CHANGE:", cfg: Required<SandboxConfig>): string {
 	return [
 		prefix,
+		`v3`,
 		`fs=${cfg.filesystemMode}`,
 		`net=${cfg.networkMode}`,
 		`approval=${cfg.approvalPolicy}`,

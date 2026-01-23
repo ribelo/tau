@@ -105,6 +105,15 @@ export async function wrapCommandWithSandbox(opts: {
 }): Promise<WrapCommandResult> {
 	const { command, workspaceRoot, filesystemMode, networkMode } = opts;
 
+	// Optimization: If full access is requested, skip sandbox entirely
+	if (filesystemMode === "danger-full-access" && networkMode === "allow-all") {
+		return {
+			success: true,
+			wrappedCommand: command,
+			home: os.homedir(), // Use real HOME in danger mode
+		};
+	}
+
 	if (!(await isAsrtAvailable())) {
 		return { success: false, error: getAsrtLoadError()! };
 	}
@@ -114,19 +123,17 @@ export async function wrapCommandWithSandbox(opts: {
 	const resolvedWorkspace = safeRealpath(workspaceRoot);
 	const args: string[] = ["bwrap", "--die-with-parent"];
 
-	// Base bindings
+	// Base bindings - use dev-bind to host devices to avoid mknod failures in restricted environments
 	args.push(
-		"--dev", "/dev",
+		"--dev-bind", "/dev", "/dev",
 		"--proc", "/proc",
 		"--tmpfs", "/tmp",
 		"--tmpfs", "/run",
-		"--ro-bind", "/usr", "/usr",
-		"--ro-bind", "/lib", "/lib",
 	);
 
-	// Optional system paths
-	const optionalPaths = ["/lib64", "/bin", "/sbin", "/etc", "/nix/store", "/run/current-system"];
-	for (const p of optionalPaths) {
+	// NixOS and other systems
+	const bindPaths = ["/nix", "/bin", "/sbin", "/etc", "/run/current-system", "/lib64", "/usr", "/lib"];
+	for (const p of bindPaths) {
 		if (exists(p)) {
 			args.push("--ro-bind", p, p);
 		}
@@ -149,8 +156,9 @@ export async function wrapCommandWithSandbox(opts: {
 	// Set HOME to workspace root to avoid leaking real HOME artifacts
 	args.push("--setenv", "HOME", resolvedWorkspace);
 	
-	// Final command assembly
-	const wrapped = `${args.join(" ")} -- bash -lc ${JSON.stringify(command)}`;
+	// Final command assembly. Use single quotes to prevent host expansion of $vars.
+	const escapedCommand = command.replace(/'/g, "'\\''");
+	const wrapped = `${args.join(" ")} -- bash -c '${escapedCommand}'`;
 
 	return {
 		success: true,
