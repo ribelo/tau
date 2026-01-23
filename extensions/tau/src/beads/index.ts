@@ -183,73 +183,7 @@ function renderIssueDetailsPlain(issue: BdIssue): string {
 
 function formatBdDetailsAsText(details: BdToolDetails): string {
 	if (!details.isJson) return details.outputText || "(no output)";
-
-	// Prefer a short, human-friendly text block even when JSON is present.
-	const json = details.json;
-
-	if (details.kind === "status" && json && typeof json === "object") {
-		const summary = (json as { summary?: Record<string, unknown> }).summary || {};
-		const rows: Array<[string, unknown]> = [
-			["total", summary["total_issues"]],
-			["open", summary["open_issues"]],
-			["in_progress", summary["in_progress_issues"]],
-			["closed", summary["closed_issues"]],
-			["blocked", summary["blocked_issues"]],
-			["ready", summary["ready_issues"]],
-			["deferred", summary["deferred_issues"]],
-			["pinned", summary["pinned_issues"]],
-		];
-		return rows
-			.filter(([, v]) => v !== undefined)
-			.map(([k, v]) => `${k}: ${String(v)}`)
-			.join("\n")
-			.trim();
-	}
-
-	if (details.kind === "dep_add" || details.kind === "dep_remove") {
-		const dep = json as { status: string; type?: string; issue_id: string; depends_on_id: string };
-		const status = dep.status === "added" ? "✔ Added" : "✘ Removed";
-		const type = dep.type ? ` (${dep.type})` : "";
-		return `${status} dependency: ${dep.issue_id} ➔ ${dep.depends_on_id}${type}`;
-	}
-
-	if (details.kind === "comment" || details.kind === "comments") {
-		const comments = (Array.isArray(json) ? json : [json]) as BdComment[];
-		return comments
-			.map((c) => {
-				const author = c.author || "unknown";
-				return `Comment by ${author}:\n${c.text || "(empty)"}`;
-			})
-			.join("\n\n");
-	}
-
-	const issues = normalizeIssues(json);
-	const wantsDetails =
-		issues.length === 1 &&
-		["show", "create", "update", "close", "reopen", "defer", "undefer", "pin", "unpin"].includes(details.kind);
-	if (wantsDetails) return renderIssueDetailsPlain(issues[0]!);
-
-	if (details.kind === "dep_tree") {
-		const nodes = issues as BdTreeNode[];
-		const shown = nodes.slice(0, 50);
-		const lines = shown.map((n) => {
-			const depth = typeof n.depth === "number" ? n.depth : 0;
-			const indent = "  ".repeat(Math.max(0, depth));
-			return indent + renderIssueInlinePlain(n);
-		});
-		let out = lines.join("\n");
-		if (nodes.length > shown.length) out += `\n… ${nodes.length - shown.length} more`;
-		return out.trim() || "(no results)";
-	}
-
-	const limit = ["show", "create", "update", "close", "reopen"].includes(details.kind) ? 50 : 10;
-	const shown = issues.slice(0, limit);
-	let out = shown.map(renderIssueInlinePlain).join("\n");
-	if (issues.length > shown.length) out += `\n… ${issues.length - shown.length} more`;
-	if (!out.trim()) {
-		out = truncateText(JSON.stringify(details.json, null, 2), 8_000);
-	}
-	return out.trim();
+	return JSON.stringify(details.json, null, 2);
 }
 
 function normalizeIssues(json: unknown): BdIssue[] {

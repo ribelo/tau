@@ -131,22 +131,46 @@ function ensureAsrtDirs(home: string): void {
 }
 
 /**
+ * ASRT/bwrap may leave 0-byte artifacts in the workspace if interrupted.
+ * Clean up these known artifacts.
+ */
+function cleanupWorkspaceArtifacts(workspaceRoot: string): void {
+	const artifacts = [
+		".bash_profile",
+		".bashrc",
+		".claude",
+		".gitconfig",
+		".gitmodules",
+		".idea",
+		".mcp.json",
+		".profile",
+		".ripgreprc",
+		".vscode",
+		".zprofile",
+		".zshrc",
+	];
+
+	for (const artifact of artifacts) {
+		const p = path.join(workspaceRoot, artifact);
+		try {
+			const stat = fs.lstatSync(p);
+			// Only delete if it's a regular file and exactly 0 bytes (classic bwrap artifact)
+			if (stat.isFile() && stat.size === 0) {
+				fs.unlinkSync(p);
+			}
+		} catch {
+			// Doesn't exist or no permission - skip
+		}
+	}
+}
+
+/**
  * ASRT may try to create .claude/commands in the workspace root.
  * If .claude exists as a file (leftover bwrap artifact), this fails.
  * Clean up empty file artifacts.
  */
 function ensureWorkspaceClaudeDir(workspaceRoot: string): void {
-	const claudePath = path.join(workspaceRoot, ".claude");
-	try {
-		const stat = fs.lstatSync(claudePath);
-		if (stat.isFile() && stat.size === 0) {
-			// Empty file artifact from bwrap - remove it
-			fs.unlinkSync(claudePath);
-		}
-		// If it's a non-empty file, directory, or symlink, leave it alone
-	} catch {
-		// Doesn't exist - that's fine
-	}
+	cleanupWorkspaceArtifacts(workspaceRoot);
 }
 
 export type WrapCommandResult =
