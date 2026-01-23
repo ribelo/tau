@@ -30,6 +30,10 @@ Multiple agents may work in the same checkout concurrently.
 - All tool names, tool labels, and command names that are visible to the user should be **lowercase** to match pi's built-in tools (`read`, `bash`, `edit`, `write`, etc.).
 - If you need namespaces, use lowercase separators like `.` or `_` (e.g. `exa.web_search`, `exa.code_context`, `bd`).
 
+## Writing Conventions
+
+- Avoid contrastive phrasing that defines decisions by exclusion; state what the system does and the precise behavior/guarantee instead.
+
 ## Extension logging
 
 - Do not print startup banners or "extension loaded" messages (e.g. via `console.log`) from extensions.
@@ -43,7 +47,7 @@ Goal: make `extensions/tau` as safe as rust.
   - Use `unknown` at boundaries (JSON, tool inputs) and narrow with type guards/validation.
   - Prefer explicit types over widening casts.
 - Unused locals/params are allowed as warnings only (do not fail builds on unused).
-  - Prefer `_name` for intentionally-unused values; lint will warn, not error.
+  - Prefer `_name` for intentionally-unused values; lint reports warnings only.
 - Keep strict options on in `extensions/tau/tsconfig.json` (no implicit any, exact optional types, no unchecked indexed access).
 
 ## Quick Reference

@@ -215,6 +215,8 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
       effectiveConfig,
       approvalBroker: getWorkerApprovalBroker(sessionId),
     } as SandboxStateInternal;
+
+    pi.events.emit("tau:sandbox:changed", effectiveConfig);
   }
 
   function persistState() {
@@ -285,6 +287,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
     queueSandboxChangeNotice(prevHash, nextHash);
 
     persistState();
+    pi.events.emit("tau:sandbox:changed", effectiveConfig);
   }
 
   /** Get the display value for UI - shows "inherit" if no override, otherwise the actual value */

@@ -12,6 +12,8 @@ import initBeads from "./beads/index.js";
 import initSandbox from "./sandbox/index.js";
 import initTask from "./task/index.js";
 
+import initFooter from "./footer/index.js";
+
 export default function tau(pi: ExtensionAPI) {
 	const state = createState();
 
@@ -74,4 +76,5 @@ export default function tau(pi: ExtensionAPI) {
 	initCommit(pi, state);
 	initExa(pi, state);
 	initBeads(pi, state);
+	initFooter(pi, state);
 }

@@ -48,6 +48,7 @@ type RenderKind =
 	| "update"
 	| "close"
 	| "reopen"
+	| "delete"
 	| "search"
 	| "stale"
 	| "defer"
@@ -205,6 +206,23 @@ function formatBdDetailsAsText(details: BdToolDetails): string {
 			.trim();
 	}
 
+	if (details.kind === "dep_add" || details.kind === "dep_remove") {
+		const dep = json as { status: string; type?: string; issue_id: string; depends_on_id: string };
+		const status = dep.status === "added" ? "✔ Added" : "✘ Removed";
+		const type = dep.type ? ` (${dep.type})` : "";
+		return `${status} dependency: ${dep.issue_id} ➔ ${dep.depends_on_id}${type}`;
+	}
+
+	if (details.kind === "comment" || details.kind === "comments") {
+		const comments = (Array.isArray(json) ? json : [json]) as BdComment[];
+		return comments
+			.map((c) => {
+				const author = c.author || "unknown";
+				return `Comment by ${author}:\n${c.text || "(empty)"}`;
+			})
+			.join("\n\n");
+	}
+
 	const issues = normalizeIssues(json);
 	const wantsDetails =
 		issues.length === 1 &&
@@ -276,7 +294,8 @@ function renderTreeBlock(nodes: BdTreeNode[], options: { expanded: boolean }, th
 function renderFallback(kind: string, text: string, theme: Theme): Text {
 	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
 	let out = theme.fg("dim", separator);
-	out += `\n${theme.fg("toolTitle", theme.bold(`bd ${kind}`))}`;
+	const title = kind.replace("_", " ");
+	out += `\n${theme.fg("toolTitle", theme.bold(`bd ${title}`))}`;
 	out += `\n${theme.fg("warning", "No renderer for this command yet")}`;
 	out += `\n\n${theme.fg("dim", text)}`;
 	return new Text(out, 0, 0);
@@ -291,10 +310,15 @@ type BdComment = {
 };
 
 function renderCommentsBlock(json: unknown, theme: Theme): Text {
-	const comments = (Array.isArray(json) ? json : [json]) as BdComment[];
 	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
 	let out = theme.fg("dim", separator);
 
+	if (!json || (Array.isArray(json) && json.length === 0)) {
+		out += `\n${theme.fg("muted", "No comments found")}`;
+		return new Text(out, 0, 0);
+	}
+
+	const comments = (Array.isArray(json) ? json : [json]) as BdComment[];
 	for (const comment of comments) {
 		const date = comment.created_at ? comment.created_at.split("T")[0] : "unknown date";
 		const author = comment.author || "unknown";
@@ -303,6 +327,32 @@ function renderCommentsBlock(json: unknown, theme: Theme): Text {
 	}
 
 	return new Text(out.trim(), 0, 0);
+}
+
+function renderDeleteBlock(json: unknown, theme: Theme): Text {
+	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+	let out = theme.fg("dim", separator);
+
+	if (!json) {
+		out += `\n${theme.fg("warning", "No deletion info returned")}`;
+		return new Text(out, 0, 0);
+	}
+
+	const items = (Array.isArray(json) ? json : [json]) as Array<{
+		deleted?: string;
+		dependencies_removed?: number;
+		references_updated?: number;
+	}>;
+
+	for (const item of items) {
+		if (item.deleted) {
+			out += `\n${theme.fg("success", "✔ Deleted issue:")} ${theme.fg("accent", item.deleted)}`;
+			if (item.dependencies_removed) out += `\n  - Removed ${item.dependencies_removed} dependencies`;
+			if (item.references_updated) out += `\n  - Updated ${item.references_updated} references`;
+		}
+	}
+
+	return new Text(out, 0, 0);
 }
 
 function renderDepBlock(json: unknown, theme: Theme): Text {
@@ -411,6 +461,7 @@ function commandKind(args: string[]): RenderKind {
 	if (first === "update") return "update";
 	if (first === "close") return "close";
 	if (first === "reopen") return "reopen";
+	if (first === "delete") return "delete";
 	if (first === "search") return "search";
 	if (first === "stale") return "stale";
 	if (first === "defer") return "defer";
@@ -464,6 +515,7 @@ function ensureJsonFlag(args: string[], kind: RenderKind): string[] {
 		"update",
 		"close",
 		"reopen",
+		"delete",
 		"search",
 		"stale",
 		"defer",
@@ -501,6 +553,7 @@ function withQuietFlag(args: string[], kind: RenderKind): string[] {
 		"update",
 		"close",
 		"reopen",
+		"delete",
 		"search",
 		"stale",
 		"defer",
@@ -534,7 +587,11 @@ function buildArgs(command: string): { args: string[]; kind: RenderKind } {
 
 async function runBd(pi: ExtensionAPI, command: string, signal?: AbortSignal, cwd?: string): Promise<BdToolDetails> {
 	const { args, kind } = buildArgs(command);
-	const res = await pi.exec("bd", args, { signal, timeout: 60_000, cwd });
+	const res = await pi.exec("bd", args, {
+		...(signal ? { signal } : {}),
+		timeout: 60_000,
+		...(cwd ? { cwd } : {}),
+	});
 
 	const stdout = res.stdout || "";
 	const stderr = res.stderr || "";
@@ -543,13 +600,38 @@ async function runBd(pi: ExtensionAPI, command: string, signal?: AbortSignal, cw
 	// Only consider stdout JSON, and only if stdout is non-empty.
 	let isJson = false;
 	let parsedJson: unknown | undefined;
-	if (stdout.trim().length > 0) {
+
+	const tryParse = (s: string) => {
 		try {
-			parsedJson = JSON.parse(stdout);
+			parsedJson = JSON.parse(s);
 			isJson = true;
+			return true;
 		} catch {
-			parsedJson = undefined;
-			isJson = false;
+			return false;
+		}
+	};
+
+	if (stdout.trim().length > 0) {
+		if (!tryParse(stdout.trim())) {
+			// Try to find a JSON block in the output
+			const startBrace = stdout.indexOf("{");
+			const startBracket = stdout.indexOf("[");
+			const start =
+				startBrace !== -1 && startBracket !== -1
+					? Math.min(startBrace, startBracket)
+					: startBrace !== -1
+						? startBrace
+						: startBracket;
+
+			if (start !== -1) {
+				const endBrace = stdout.lastIndexOf("}");
+				const endBracket = stdout.lastIndexOf("]");
+				const end = Math.max(endBrace, endBracket);
+
+				if (end !== -1 && end > start) {
+					tryParse(stdout.slice(start, end + 1));
+				}
+			}
 		}
 	}
 
@@ -594,7 +676,19 @@ function renderBd(details: BdToolDetails, options: { expanded: boolean }, theme:
 	if (!details.isJson) {
 		const text = details.outputText || "(no output)";
 
-		if (details.kind === "help" || details.kind === "init" || details.kind === "onboard" || details.kind === "sync" || details.kind === "prime") {
+		if (
+			details.kind === "help" ||
+			details.kind === "init" ||
+			details.kind === "onboard" ||
+			details.kind === "sync" ||
+			details.kind === "prime" ||
+			details.kind === "dep_add" ||
+			details.kind === "dep_remove" ||
+			details.kind === "dep_cycles" ||
+			details.kind === "delete" ||
+			details.kind === "comment" ||
+			details.kind === "comments"
+		) {
 			const mdTheme = getMarkdownTheme();
 			return new Markdown(text, 0, 0, mdTheme);
 		}
@@ -606,6 +700,7 @@ function renderBd(details: BdToolDetails, options: { expanded: boolean }, theme:
 	if (details.kind === "status") return renderStatusBlock(json, theme);
 	if (details.kind === "comment" || details.kind === "comments") return renderCommentsBlock(json, theme);
 	if (details.kind === "dep_add" || details.kind === "dep_remove" || details.kind === "dep_cycles") return renderDepBlock(json, theme);
+	if (details.kind === "delete") return renderDeleteBlock(json, theme);
 
 	const issues = normalizeIssues(json);
 	if (details.kind === "ready") return renderIssuesBlock(issues, options, theme);
@@ -748,10 +843,7 @@ export default function initBeads(pi: ExtensionAPI, _state: TauState) {
 			if (details.isJson) {
 				const text = formatBdDetailsAsText(details);
 				return {
-					content: [
-						{ type: "text", text },
-						{ type: "json", json: details.json },
-					],
+					content: [{ type: "text", text }],
 					details,
 				};
 			}

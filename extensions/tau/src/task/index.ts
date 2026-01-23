@@ -480,7 +480,7 @@ export default function initTask(pi: ExtensionAPI, state: TauState) {
 							? "(interrupted; resumable)"
 							: "");
 
-				const patch: Partial<TaskBatchItemDetails> = {
+				const finalPatch: Partial<TaskBatchItemDetails> = {
 					sessionId: res.sessionId,
 					durationMs: res.durationMs,
 					status:
@@ -499,10 +499,10 @@ export default function initTask(pi: ExtensionAPI, state: TauState) {
 					loadedSkills: loadedSkillsMeta,
 					outputType,
 				};
-				if (res.model) patch.model = res.model;
-				if (structuredOutput !== undefined) patch.structuredOutput = structuredOutput;
+				if (res.model) finalPatch.model = res.model;
+				if (structuredOutput !== undefined) finalPatch.structuredOutput = structuredOutput;
 
-				updateItem(index, patch);
+				updateItem(index, finalPatch);
 			};
 
 			try {
