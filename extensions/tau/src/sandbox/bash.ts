@@ -102,7 +102,6 @@ export async function wrapCommandWithSandbox(opts: {
 	workspaceRoot: string;
 	filesystemMode: FilesystemMode;
 	networkMode: NetworkMode;
-	networkAllowlist: string[];
 }): Promise<WrapCommandResult> {
 	const { command, workspaceRoot, filesystemMode, networkMode } = opts;
 
@@ -143,8 +142,7 @@ export async function wrapCommandWithSandbox(opts: {
 	}
 
 	// Network permissions
-	if (networkMode === "deny" || networkMode === "allowlist") {
-		// allowlist is treated as deny for now, as we don't have a simple proxy
+	if (networkMode === "deny") {
 		args.push("--unshare-net");
 	}
 

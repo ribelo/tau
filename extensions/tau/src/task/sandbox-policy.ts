@@ -1,5 +1,4 @@
 import type { ApprovalPolicy, FilesystemMode, NetworkMode, SandboxConfig } from "../sandbox/config.js";
-import { normalizeAllowlist, intersectAllowlist } from "../shared/allowlist.js";
 
 const FILESYSTEM_RANK: Record<FilesystemMode, number> = {
 	"read-only": 0,
@@ -9,8 +8,7 @@ const FILESYSTEM_RANK: Record<FilesystemMode, number> = {
 
 const NETWORK_RANK: Record<NetworkMode, number> = {
 	deny: 0,
-	allowlist: 1,
-	"allow-all": 2,
+	"allow-all": 1,
 };
 
 // Ordering requested by tau-iqa (match codex-rs semantics).
@@ -37,10 +35,6 @@ export function computeClampedWorkerSandboxConfig(options: {
 	const requested: Required<SandboxConfig> = {
 		filesystemMode: options.requested?.filesystemMode ?? options.parent.filesystemMode,
 		networkMode: options.requested?.networkMode ?? options.parent.networkMode,
-		networkAllowlist:
-			options.requested?.networkAllowlist !== undefined
-				? normalizeAllowlist(options.requested.networkAllowlist)
-				: normalizeAllowlist(options.parent.networkAllowlist),
 		approvalPolicy: options.requested?.approvalPolicy ?? options.parent.approvalPolicy,
 		approvalTimeoutSeconds: options.requested?.approvalTimeoutSeconds ?? options.parent.approvalTimeoutSeconds,
 	};
@@ -50,22 +44,9 @@ export function computeClampedWorkerSandboxConfig(options: {
 	const approvalPolicy = minByRank(requested.approvalPolicy, options.parent.approvalPolicy, APPROVAL_RANK);
 	const approvalTimeoutSeconds = Math.min(requested.approvalTimeoutSeconds, options.parent.approvalTimeoutSeconds);
 
-	let networkAllowlist = normalizeAllowlist(requested.networkAllowlist);
-
-	if (networkMode !== "allowlist") {
-		networkAllowlist = [];
-	} else {
-		if (options.parent.networkMode === "deny") {
-			networkAllowlist = [];
-		} else if (options.parent.networkMode === "allowlist") {
-			networkAllowlist = intersectAllowlist(normalizeAllowlist(options.parent.networkAllowlist), networkAllowlist);
-		}
-	}
-
 	return {
 		filesystemMode,
 		networkMode,
-		networkAllowlist,
 		approvalPolicy,
 		approvalTimeoutSeconds,
 	};

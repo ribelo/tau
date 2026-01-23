@@ -43,7 +43,6 @@ import { discoverWorkspaceRoot } from "./workspace-root.js";
 
 import type { TauState } from "../shared/state.js";
 import { loadPersistedState, updatePersistedState } from "../shared/state.js";
-import { parseAllowlist, formatAllowlist } from "../shared/allowlist.js";
 import { type ApprovalBroker, getWorkerApprovalBroker } from "../task/approval-broker.js";
 
 import initAgentAwareness from "./agent-awareness/index.js";
@@ -106,7 +105,7 @@ const FILESYSTEM_VALUES = [
   "workspace-write",
   "danger-full-access",
 ] as const;
-const NETWORK_VALUES = [INHERIT, "deny", "allowlist", "allow-all"] as const;
+const NETWORK_VALUES = [INHERIT, "deny", "allow-all"] as const;
 const APPROVAL_VALUES = [INHERIT, "never", "on-failure", "on-request", "unless-trusted"] as const;
 const TIMEOUT_VALUES = [INHERIT, "15", "30", "60", "120", "300"] as const;
 
@@ -299,9 +298,6 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
     if (override === undefined) {
       return INHERIT;
     }
-    if (Array.isArray(override)) {
-      return formatAllowlist(override as string[]);
-    }
     return override as string;
   }
 
@@ -314,19 +310,6 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
       return;
     }
     setOverrideValue(key, value as SandboxConfig[K]);
-  }
-
-  function updateAllowlistFromInput(rawValue: string) {
-    const trimmed = rawValue.trim();
-    if (!trimmed) {
-      setOverrideValue("networkAllowlist", []);
-      return;
-    }
-    if (trimmed.toLowerCase() === INHERIT) {
-      setOverrideValue("networkAllowlist", undefined);
-      return;
-    }
-    setOverrideValue("networkAllowlist", parseAllowlist(trimmed));
   }
 
   function updateTimeoutFromSelect(rawValue: string, ctx: ExtensionContext) {
@@ -347,7 +330,6 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
       "Sandbox configuration:",
       `Filesystem: ${effectiveConfig.filesystemMode}`,
       `Network: ${effectiveConfig.networkMode}`,
-      `Allowlist: ${formatAllowlist(effectiveConfig.networkAllowlist)}`,
       `Approval: ${effectiveConfig.approvalPolicy}`,
       `Timeout: ${effectiveConfig.approvalTimeoutSeconds}s`,
     ];
@@ -377,48 +359,6 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
          currentValue: getDisplayValue("networkMode"),
          values: [...NETWORK_VALUES],
          description: buildSourceHint(sessionOverride, "networkMode"),
-       },
-       {
-         id: "networkAllowlist",
-         label: "Network allowlist",
-         currentValue: getDisplayValue("networkAllowlist"),
-         description: `Used when network mode is allowlist (${buildSourceHint(
-           sessionOverride,
-           "networkAllowlist",
-         )})`,
-         submenu: (_currentValue, doneSubmenu) => {
-           const input = new Input();
-           input.setValue(effectiveConfig.networkAllowlist.join(", "));
-           input.onSubmit = (value) => doneSubmenu(value);
-           input.onEscape = () => doneSubmenu(undefined);
-
-           return {
-             render(width: number) {
-               const lines: string[] = [];
-               lines.push(
-                 theme.fg("accent", theme.bold("Edit network allowlist")),
-               );
-               lines.push(
-                 theme.fg(
-                   "muted",
-                   "Comma-separated domains. Type 'inherit' to reset.",
-                 ),
-               );
-               lines.push("");
-               lines.push(...input.render(width));
-               lines.push("");
-               lines.push(theme.fg("dim", "Enter to save · Esc to cancel"));
-               return lines;
-             },
-             handleInput(data: string) {
-               input.handleInput(data);
-               tui.requestRender();
-             },
-             invalidate() {
-               input.invalidate?.();
-             },
-           };
-         },
        },
         {
           id: "approvalPolicy",
@@ -455,9 +395,6 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
           if (id === "networkMode") {
             updateSettingFromSelect("networkMode", newValue);
           }
-          if (id === "networkAllowlist") {
-            updateAllowlistFromInput(newValue);
-          }
           if (id === "approvalPolicy") {
             updateSettingFromSelect("approvalPolicy", newValue);
           }
@@ -469,11 +406,6 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
             buildSourceHint(sessionOverride, "filesystemMode");
           items.find((item) => item.id === "networkMode")!.description =
             buildSourceHint(sessionOverride, "networkMode");
-          items.find((item) => item.id === "networkAllowlist")!.description =
-            `Used when network mode is allowlist (${buildSourceHint(
-              sessionOverride,
-              "networkAllowlist",
-            )})`;
           items.find((item) => item.id === "approvalPolicy")!.description =
             buildSourceHint(sessionOverride, "approvalPolicy");
           items.find(
@@ -488,10 +420,6 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
             getDisplayValue("filesystemMode"),
           );
           settingsList.updateValue("networkMode", getDisplayValue("networkMode"));
-          settingsList.updateValue(
-            "networkAllowlist",
-            getDisplayValue("networkAllowlist"),
-          );
           settingsList.updateValue(
             "approvalPolicy",
             getDisplayValue("approvalPolicy"),
@@ -554,7 +482,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
     const title = "Sandbox unavailable";
     const message =
       `Sandboxed bash is unavailable.\n\nReason: ${reason}\n\n` +
-      "Run bash without sandbox for this session? (edit/write restrictions still apply)";
+      "Run bash without sandbox for this session?";
     const timeoutMs = timeoutSeconds * 1000;
 
     const approved = ctx.hasUI
@@ -641,13 +569,12 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
           );
         }
 
-        // Try to wrap with ASRT
+        // Try to wrap with bwrap
         const wrapResult = await wrapCommandWithSandbox({
           command,
           workspaceRoot: currentWorkspace,
           filesystemMode: currentConfig.filesystemMode,
           networkMode: currentConfig.networkMode,
-          networkAllowlist: currentConfig.networkAllowlist,
         });
 
         if (!wrapResult.success) {
@@ -702,7 +629,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 
             const hint =
               classification.kind === "network"
-                ? "Network sandboxing can surface as DNS/connectivity failures. If network is required, use /sandbox to switch to allowlist/allow-all, or re-run with escalate=true."
+                ? "Network sandboxing can surface as DNS/connectivity failures. If network is required, use /sandbox to switch to allow-all, or re-run with escalate=true."
                 : classification.kind === "filesystem"
                   ? "Filesystem sandboxing can surface as permission errors. If a write is required, use /sandbox to switch to workspace-write/danger-full-access, or re-run with escalate=true."
                   : "";
@@ -717,7 +644,6 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
               usingSandbox: true,
               filesystemMode: currentConfig.filesystemMode,
               networkMode: currentConfig.networkMode,
-              networkAllowlist: currentConfig.networkMode === "allowlist" ? currentConfig.networkAllowlist : null,
               classification,
             };
 
@@ -1071,8 +997,6 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
           block: "deny",
           allow: "allow-all",
           "allow-all": "allow-all",
-          allowlist: "allowlist",
-          "allow-list": "allowlist",
         };
         const mapped = netMap[sandboxNet.toLowerCase()];
         if (mapped) {
@@ -1080,7 +1004,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
           ctx.ui.notify(`Sandbox network mode: ${mapped}`, "info");
         } else {
           ctx.ui.notify(
-            `Invalid --sandbox-net value: ${sandboxNet}. Use: deny, allow-all, allowlist`,
+            `Invalid --sandbox-net value: ${sandboxNet}. Use: deny, allow-all`,
             "warning",
           );
         }
@@ -1145,7 +1069,6 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
       "\n" +
       "Network modes:\n" +
       "  - deny: outbound blocked (often surfaces as DNS errors like \"Could not resolve host\")\n" +
-      "  - allowlist: [deprecated] currently treated as deny (outbound blocked)\n" +
       "  - allow-all: unrestricted\n" +
       "\n" +
       "Approval modes:\n" +

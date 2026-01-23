@@ -75,20 +75,13 @@ function normalizeSandboxConfig(taskType: string, raw: unknown): SandboxConfig |
 	if (raw.networkMode !== undefined) {
 		const v = raw.networkMode;
 		if (typeof v !== "string") throw new Error(`Task type "${taskType}": sandbox.networkMode must be a string`);
-		if (!NETWORK_MODES.includes(v as NetworkMode)) {
+		const migrated = migrateNetworkMode(v);
+		if (!migrated) {
 			throw new Error(
 				`Task type "${taskType}": invalid sandbox.networkMode "${v}" (expected ${NETWORK_MODES.join(", ")})`,
 			);
 		}
-		out.networkMode = v as NetworkMode;
-	}
-
-	if (raw.networkAllowlist !== undefined) {
-		const v = raw.networkAllowlist;
-		if (!Array.isArray(v) || v.some((x) => typeof x !== "string")) {
-			throw new Error(`Task type "${taskType}": sandbox.networkAllowlist must be an array of strings`);
-		}
-		out.networkAllowlist = (v as string[]).map((x: string) => x.trim()).filter(Boolean);
+		out.networkMode = migrated;
 	}
 
 	if (raw.approvalPolicy !== undefined) {
@@ -350,7 +343,6 @@ export class TaskRegistry {
 			sandbox: t.sandbox
 				? {
 						...t.sandbox,
-						networkAllowlist: t.sandbox.networkAllowlist ? t.sandbox.networkAllowlist.slice() : undefined,
 					}
 				: undefined,
 		};

@@ -7,32 +7,20 @@ export type PendingSandboxNotice = {
 	text: string;
 };
 
-export function formatNetworkAllowlistForNotice(cfg: Required<SandboxConfig>): string {
-	if (cfg.networkMode !== "allowlist") return "n/a";
-	const list = [...cfg.networkAllowlist].filter(Boolean);
-	if (list.length === 0) return "(none)";
-	if (list.length <= 5) return list.join(", ");
-	return `${list.length} domains`;
-}
-
 export function computeSandboxConfigHash(cfg: Required<SandboxConfig>): string {
-	const allowlist = [...cfg.networkAllowlist].filter(Boolean).sort().join(",");
 	return [
 		`fs=${cfg.filesystemMode}`,
 		`net=${cfg.networkMode}`,
-		`allow=${allowlist}`,
 		`approval=${cfg.approvalPolicy}`,
 		`timeout=${cfg.approvalTimeoutSeconds}`,
 	].join(";");
 }
 
 function buildSandboxNotice(prefix: "SANDBOX_STATE:" | "SANDBOX_CHANGE:", cfg: Required<SandboxConfig>): string {
-	const allowlist = formatNetworkAllowlistForNotice(cfg);
 	return [
 		prefix,
 		`fs=${cfg.filesystemMode}`,
 		`net=${cfg.networkMode}`,
-		`allowlist=${allowlist}`,
 		`approval=${cfg.approvalPolicy}`,
 	].join(" ");
 }

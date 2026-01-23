@@ -7,6 +7,7 @@ import {
 	type FilesystemMode,
 	type NetworkMode,
 	migrateApprovalPolicy,
+	migrateNetworkMode,
 } from "../shared/policy.js";
 
 export type { ApprovalPolicy, FilesystemMode, NetworkMode };
@@ -14,7 +15,6 @@ export type { ApprovalPolicy, FilesystemMode, NetworkMode };
 export type SandboxConfig = {
 	filesystemMode?: FilesystemMode;
 	networkMode?: NetworkMode;
-	networkAllowlist?: string[];
 	approvalPolicy?: ApprovalPolicy;
 	approvalTimeoutSeconds?: number;
 };
@@ -22,7 +22,6 @@ export type SandboxConfig = {
 export const DEFAULT_SANDBOX_CONFIG: Required<SandboxConfig> = {
 	filesystemMode: "workspace-write",
 	networkMode: "deny",
-	networkAllowlist: [],
 	approvalPolicy: "on-failure",
 	approvalTimeoutSeconds: 60,
 };
@@ -30,8 +29,7 @@ export const DEFAULT_SANDBOX_CONFIG: Required<SandboxConfig> = {
 export function applyDefaults(cfg: SandboxConfig | undefined): Required<SandboxConfig> {
 	return {
 		filesystemMode: cfg?.filesystemMode ?? DEFAULT_SANDBOX_CONFIG.filesystemMode,
-		networkMode: cfg?.networkMode ?? DEFAULT_SANDBOX_CONFIG.networkMode,
-		networkAllowlist: cfg?.networkAllowlist ?? DEFAULT_SANDBOX_CONFIG.networkAllowlist,
+		networkMode: migrateNetworkMode(cfg?.networkMode) ?? DEFAULT_SANDBOX_CONFIG.networkMode,
 		approvalPolicy: migrateApprovalPolicy(cfg?.approvalPolicy) ?? DEFAULT_SANDBOX_CONFIG.approvalPolicy,
 		approvalTimeoutSeconds: cfg?.approvalTimeoutSeconds ?? DEFAULT_SANDBOX_CONFIG.approvalTimeoutSeconds,
 	};
@@ -76,7 +74,6 @@ export function ensureUserDefaults(): void {
 		current.tau?.sandbox === undefined ||
 		existing.filesystemMode === undefined ||
 		existing.networkMode === undefined ||
-		existing.networkAllowlist === undefined ||
 		existing.approvalPolicy === undefined ||
 		existing.approvalTimeoutSeconds === undefined;
 
