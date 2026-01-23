@@ -22,7 +22,6 @@ export const SkillMarkerLive = Layer.effect(
 
 		return SkillMarker.of({
 			setup: Effect.gen(function* () {
-				yield* Effect.logInfo("Setting up SkillMarker service");
 				yield* Effect.sync(() => {
 					initSkillMarkerLegacy(pi, makeLegacyStateBridge(persistence.state) as any);
 				});

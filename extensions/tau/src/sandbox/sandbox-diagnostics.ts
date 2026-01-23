@@ -56,19 +56,6 @@ function matchFirst(text: string, patterns: RegExp[]): { evidence: string } | un
 export function classifySandboxFailure(output: string): SandboxFailure {
 	const text = output ?? "";
 
-	// Network: explicit ASRT proxy message (high confidence)
-	{
-		const hit = matchFirst(text, [/connection blocked by network allowlist/i]);
-		if (hit) {
-			return {
-				kind: "network",
-				subtype: "blocked",
-				confidence: "high",
-				evidence: hit.evidence,
-			};
-		}
-	}
-
 	// Filesystem: typical write-denied signals (high confidence)
 	{
 		const hit = matchFirst(text, [

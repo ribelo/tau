@@ -22,7 +22,6 @@ export const TaskLive = Layer.effect(
 
 		return Task.of({
 			setup: Effect.gen(function* () {
-				yield* Effect.logInfo("Setting up Task service");
 				yield* Effect.sync(() => {
 					initTaskLegacy(pi, makeLegacyStateBridge(persistence.state) as any);
 				});

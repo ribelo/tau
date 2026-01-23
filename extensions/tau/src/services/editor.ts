@@ -22,7 +22,6 @@ export const EditorLive = Layer.effect(
 
 		return Editor.of({
 			setup: Effect.gen(function* () {
-				yield* Effect.logInfo("Setting up Editor service");
 				yield* Effect.sync(() => {
 					initEditorLegacy(pi, makeLegacyStateBridge(persistence.state) as any);
 				});

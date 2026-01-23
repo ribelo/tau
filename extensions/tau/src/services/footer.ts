@@ -30,8 +30,6 @@ export const FooterLive = Layer.effect(
 
 		return Footer.of({
 			setup: Effect.gen(function* () {
-				yield* Effect.logInfo("Setting up Footer service");
-
 				yield* Effect.sync(() => {
 					pi.on("session_start", (_event: unknown, ctx: ExtensionContext) => {
 						ctx.ui.setFooter((tui: TUI, theme: Theme, footerData: ReadonlyFooterDataProvider) => {

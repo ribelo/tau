@@ -19,7 +19,6 @@ export const CommitLive = Layer.effect(
 
 		return Commit.of({
 			setup: Effect.gen(function* () {
-				yield* Effect.logInfo("Setting up Commit service");
 				yield* Effect.sync(() => {
 					initCommitLegacy(pi, {} as any);
 				});

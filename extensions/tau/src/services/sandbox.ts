@@ -31,8 +31,6 @@ export const SandboxLive = Layer.effect(
 					...patch,
 				})),
 			setup: Effect.gen(function* () {
-				yield* Effect.logInfo("Setting up Sandbox service");
-
 				yield* Effect.sync(() => {
 					// For now, we wrap the legacy init function.
 					// We should gradually move logic here.

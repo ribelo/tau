@@ -21,7 +21,6 @@ export const WorkedForLive = Layer.effect(
 
 		return WorkedFor.of({
 			setup: Effect.gen(function* () {
-				yield* Effect.logInfo("Setting up WorkedFor service");
 				yield* Effect.sync(() => {
 					// Bridge persistence state to legacy state
 					const legacyState: any = {

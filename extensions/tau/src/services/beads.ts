@@ -19,7 +19,7 @@ export const BeadsLive = Layer.effect(
 
 		return Beads.of({
 			setup: Effect.gen(function* () {
-				yield* Effect.logInfo("Setting up Beads service");
+				// No logs here to avoid TUI pollution
 				yield* Effect.sync(() => {
 					// We use a mock state for now as Beads doesn't really use it
 					initBeadsLegacy(pi, {} as any);

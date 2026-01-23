@@ -22,7 +22,6 @@ export const StatusLive = Layer.effect(
 
 		return Status.of({
 			setup: Effect.gen(function* () {
-				yield* Effect.logInfo("Setting up Status service");
 				yield* Effect.sync(() => {
 					initStatusLegacy(pi, makeLegacyStateBridge(persistence.state) as any);
 				});

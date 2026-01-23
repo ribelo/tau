@@ -22,7 +22,6 @@ export const TerminalPromptLive = Layer.effect(
 
 		return TerminalPrompt.of({
 			setup: Effect.gen(function* () {
-				yield* Effect.logInfo("Setting up TerminalPrompt service");
 				yield* Effect.sync(() => {
 					initTerminalPromptLegacy(pi, makeLegacyStateBridge(persistence.state) as any);
 				});

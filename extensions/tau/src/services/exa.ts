@@ -19,7 +19,6 @@ export const ExaLive = Layer.effect(
 
 		return Exa.of({
 			setup: Effect.gen(function* () {
-				yield* Effect.logInfo("Setting up Exa service");
 				yield* Effect.sync(() => {
 					initExaLegacy(pi, {} as any);
 				});

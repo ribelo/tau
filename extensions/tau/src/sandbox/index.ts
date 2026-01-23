@@ -135,13 +135,18 @@ function loadSessionState(state: TauState): SessionState | undefined {
 
   if (!last) return undefined;
 
+  // Migration: clear pending notice if it contains legacy 'allowlist'
+  const pendingNotice = last.pendingSandboxNotice;
+  const cleanPending =
+    pendingNotice && pendingNotice.text.includes("allowlist")
+      ? undefined
+      : pendingNotice;
+
   // Defensive copy.
   return {
     ...last,
     override: last.override ? { ...last.override } : undefined,
-    pendingSandboxNotice: last.pendingSandboxNotice
-      ? { ...last.pendingSandboxNotice }
-      : undefined,
+    pendingSandboxNotice: cleanPending ? { ...cleanPending } : undefined,
   };
 }
 

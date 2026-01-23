@@ -69,8 +69,6 @@ export const runTau = (pi: ExtensionAPI) => {
 				concurrency: "unbounded",
 			},
 		);
-
-		yield* Effect.logInfo("Tau extension initialized with Effect-TS");
 	});
 
 	const layer = MainLayer.pipe(Layer.provide(PiAPILive(pi)));
