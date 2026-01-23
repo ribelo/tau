@@ -27,8 +27,6 @@ export function detectMissingSandboxDeps(opts: {
 
 	if (opts.platform === "linux") {
 		if (!commandExists("bwrap")) missingRequired.push("bwrap");
-		if (!commandExists("socat")) missingRequired.push("socat");
-		if (!commandExists("python3")) missingRequired.push("python3");
 	}
 
 	if (opts.platform === "darwin") {

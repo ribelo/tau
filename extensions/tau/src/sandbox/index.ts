@@ -172,7 +172,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
     type: "string",
   });
   pi.registerFlag("no-sandbox", {
-    description: "Completely disable ASRT sandbox wrapper (escape hatch)",
+    description: "Completely disable bubblewrap sandbox wrapper (escape hatch)",
     type: "boolean",
   });
 
@@ -1135,7 +1135,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 
     const injected =
       "<permissions instructions>\n" +
-      "Assume all tool calls execute under sandbox restrictions. Do not attempt to bypass restrictions by using other tools.\n" +
+      "Assume all tool calls execute under bubblewrap sandbox restrictions. Do not attempt to bypass restrictions by using other tools.\n" +
       "\n" +
       "Filesystem modes:\n" +
       "  - read-only: writes only to temp dirs (e.g. /tmp, $TMPDIR)\n" +
@@ -1145,7 +1145,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
       "\n" +
       "Network modes:\n" +
       "  - deny: outbound blocked (often surfaces as DNS errors like \"Could not resolve host\")\n" +
-      "  - allowlist: only allowlisted domains reachable\n" +
+      "  - allowlist: [deprecated] currently treated as deny (outbound blocked)\n" +
       "  - allow-all: unrestricted\n" +
       "\n" +
       "Approval modes:\n" +
