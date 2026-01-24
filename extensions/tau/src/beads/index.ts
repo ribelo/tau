@@ -41,6 +41,7 @@ type RenderKind =
 	| "blocked"
 	| "show"
 	| "dep_tree"
+	| "dep_list"
 	| "dep_add"
 	| "dep_remove"
 	| "dep_cycles"
@@ -145,8 +146,9 @@ function renderIssueInline(issue: BdIssue, theme: Theme): string {
 	const type = `[${issue.issue_type || "?"}]`.padEnd(10);
 	const status = `(${issue.status || "???"})`.padEnd(12);
 	const title = issue.title || "(no title)";
+	const depType = issue.dependency_type ? ` ${theme.fg("dim", `via ${issue.dependency_type}`)}` : "";
 
-	return `${mark}  ${theme.fg("accent", id)}  ${theme.fg("muted", prio)}  ${theme.fg("muted", type)}  ${theme.fg("dim", status)}  ${theme.fg("toolOutput", title)}`;
+	return `${mark}  ${theme.fg("accent", id)}  ${theme.fg("muted", prio)}  ${theme.fg("muted", type)}  ${theme.fg("dim", status)}  ${theme.fg("toolOutput", title)}${depType}`;
 }
 
 function renderIssueInlinePlain(issue: BdIssue): string {
@@ -158,8 +160,9 @@ function renderIssueInlinePlain(issue: BdIssue): string {
 	const type = `[${issue.issue_type || "?"}]`.padEnd(10);
 	const status = `(${issue.status || "???"})`.padEnd(12);
 	const title = issue.title || "(no title)";
+	const depType = issue.dependency_type ? ` via ${issue.dependency_type}` : "";
 
-	return `${mark}  ${id}  ${prio}  ${type}  ${status}  ${title}`;
+	return `${mark}  ${id}  ${prio}  ${type}  ${status}  ${title}${depType}`;
 }
 
 function truncateText(s: string, maxChars: number): string {
@@ -406,6 +409,7 @@ function commandKind(args: string[]): RenderKind {
 	if (first === "comment") return "comment";
 	if (first === "comments") return "comments";
 	if (first === "dep") {
+		if (nonFlags[1] === "list") return "dep_list";
 		if (nonFlags[1] === "tree") return "dep_tree";
 		if (nonFlags[1] === "add") return "dep_add";
 		if (nonFlags[1] === "remove") return "dep_remove";
@@ -442,6 +446,7 @@ function ensureJsonFlag(args: string[], kind: RenderKind): string[] {
 		"blocked",
 		"show",
 		"dep_tree",
+		"dep_list",
 		"dep_add",
 		"dep_remove",
 		"dep_cycles",
@@ -480,6 +485,7 @@ function withQuietFlag(args: string[], kind: RenderKind): string[] {
 		"blocked",
 		"show",
 		"dep_tree",
+		"dep_list",
 		"dep_add",
 		"dep_remove",
 		"dep_cycles",
@@ -639,6 +645,7 @@ function renderBd(details: BdToolDetails, options: { expanded: boolean }, theme:
 	const issues = normalizeIssues(json);
 	if (details.kind === "ready") return renderIssuesBlock(issues, options, theme);
 	if (details.kind === "list") return renderIssuesBlock(issues, options, theme);
+	if (details.kind === "dep_list") return renderIssuesBlock(issues, options, theme);
 	if (details.kind === "blocked") return renderIssuesBlock(issues, options, theme);
 	if (details.kind === "search") return renderIssuesBlock(issues, options, theme);
 	if (details.kind === "stale") return renderIssuesBlock(issues, options, theme);
@@ -701,6 +708,7 @@ export default function initBeads(pi: ExtensionAPI, _state: TauState) {
 				{ value: "list", label: "list", description: "List issues" },
 				{ value: "blocked", label: "blocked", description: "List blocked issues" },
 				{ value: "show ", label: "show", description: "Show issue" },
+				{ value: "dep list ", label: "dep list", description: "List dependencies" },
 				{ value: "dep tree ", label: "dep tree", description: "Dependency tree" },
 				{ value: "search ", label: "search", description: "Search issues" },
 				{ value: "reopen ", label: "reopen", description: "Reopen issues" },
