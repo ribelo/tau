@@ -1,11 +1,13 @@
 ---
 name: task-delegation
-description: Guide for delegating work to parallel worker processes. This skill should be used when orchestrating multiple workers, deciding whether to delegate or work directly, understanding coordination patterns, or when encountering task tool errors.
+description: Guide for delegating work to parallel worker processes. This skill should be used when orchestrating multiple workers, deciding whether to delegate or work directly, understanding coordination patterns, or when encountering agent tool errors.
 ---
 
-# Task Delegation
+# Agent Delegation
 
-Delegate work to isolated worker processes that run in parallel. Workers have their own context (don't pollute yours), see AGENTS.md + injected skills + their session history. Only shared state is the codebase.
+Delegate work to isolated agent processes that run in parallel. Agents have their own context (don't pollute yours), see AGENTS.md + injected skills + their session history. Only shared state is the codebase.
+
+The system is **non-blocking**: you spawn agents, do other work, and then wait for their results.
 
 ## Worker Selection Guide
 
@@ -34,11 +36,9 @@ Built-in types (users can define more via settings):
 
 **Rule of thumb**: If you'll discard 80% of the output after processing, delegate it.
 
-**Batch complexity**: You wait for the slowest task. Keep tasks similar in complexity.
-
 ## Integration with Beads
 
-Typical workflow: chat → plan → create beads tasks → delegate to workers
+Typical workflow: chat → plan → create beads tasks → delegate to agents
 
 **Rules of thumb**:
 - If a beads task exists and is ready, delegate it
@@ -69,143 +69,75 @@ For ephemeral work (search, review, planning), explicit DoD is not required—th
 ## API Reference
 
 ```typescript
-task({
-  tasks: [{
-    type: string,        // Worker type (user-configured, determines available tools)
-    description: string, // Short label for logs/UI
-    prompt: string,      // Full instructions - be explicit, workers don't see your conversation
-    complexity?: "low" | "medium" | "high",  // Affects model selection per user config
-    session_id?: string, // Continue existing session (must match original type)
-    skills?: string[],   // Inject skills (availability depends on type config)
-    result_schema?: object // JSON Schema - forces worker to call submit_result
-  }]
+agent({
+  action: "spawn" | "send" | "wait" | "close" | "list",
+  
+  // spawn
+  type: string,        // Worker type
+  message: string,      // Initial prompt
+  complexity?: "low" | "medium" | "high",
+  skills?: string[],   // Extra skills (only for type=custom)
+  result_schema?: object, // JSON Schema for structured output
+  
+  // send/close
+  id?: string,         // Agent ID
+  interrupt?: boolean, // (send) interrupt current turn
+  
+  // wait
+  ids?: string[],      // Agent IDs to wait for
+  timeout_ms?: number  // Timeout (default 30s, max 300s)
 })
 ```
 
-**Response format**:
-```typescript
-[{
-  type: string,
-  complexity: string,
-  session_id: string | null,
-  status: "completed" | "failed" | "interrupted",
-  output_type: "completed" | "failed" | "interrupted",
-  message: string,
-  structured_output?: object
-}]
-```
+### Action Responses
 
-## Writing Effective Prompts
-
-Workers don't see your conversation. Be explicit:
-
-```
-❌ Bad: "Review the auth changes"
-
-✓ Good: "Review packages/auth/src/ for security issues. Focus on:
-         - Input validation
-         - SQL injection  
-         - Auth token handling
-         The project uses TypeScript with Zod for validation."
-
-✓ Good: "Implement tau-xyz123. Run `bd show tau-xyz123` for full context.
-         DoD: tests pass, no type errors."
-```
-
-Include:
-- Specific file paths or directories
-- What to look for or accomplish
-- Beads task ID if applicable
-- Definition of Done for implementation work
+- **spawn**: `{ agent_id: string }`
+- **send**: `{ submission_id: string }`
+- **wait**: `{ status: Record<id, Status>, timedOut: boolean }`
+- **close**: `{ status: "closed" }`
+- **list**: `{ agents: AgentInfo[] }`
 
 ## Coordination Patterns
 
 ### Fan-out (Parallel Search/Review)
 
-Spawn multiple workers to gather information concurrently:
+Spawn multiple agents and wait for all of them:
 
 ```typescript
-task({ tasks: [
-  { type: "search", description: "Find auth files", prompt: "List all files in packages/auth/src/" },
-  { type: "search", description: "Find API routes", prompt: "Find all files matching **/routes/*.ts" },
-  { type: "search", description: "Find tests", prompt: "Find all *.test.ts files" }
-]})
-// All run in parallel, aggregate results yourself
+// Spawn agents
+const { agent_id: id1 } = agent({ action: 'spawn', type: 'search', message: 'Find auth files' })
+const { agent_id: id2 } = agent({ action: 'spawn', type: 'search', message: 'Find API routes' })
+
+// Wait for results (blocks until at least one finishes or timeout)
+const { status } = agent({ action: 'wait', ids: [id1, id2] })
 ```
 
-### Pipeline (Sequential Handoff)
+### Pipeline (Interactive Refinement)
 
-Use session continuation for multi-step work:
+Use `send` to continue work in an existing agent:
 
 ```typescript
-// Step 1: Search
-const [{ session_id, message }] = task({ tasks: [
-  { type: "search", prompt: "Find all TODO comments in src/" }
-]})
+// Step 1: Request draft
+const { agent_id } = agent({ action: 'spawn', type: 'code', message: 'Draft the function' })
 
-// Step 2: Continue with analysis (you process results, then continue)
-task({ tasks: [
-  { type: "planning", session_id, prompt: `Prioritize these TODOs: ${message}` }
-]})
+// Step 2: Wait for it
+agent({ action: 'wait', ids: [agent_id] })
+
+// Step 3: Refine
+agent({ action: 'send', id: agent_id, message: 'Add error handling' })
 ```
 
 ### Specialist (Skill Injection)
 
-Inject domain knowledge for specialized work:
-
 ```typescript
-task({ tasks: [
-  { type: "custom", skills: ["beads"], prompt: "Create tasks for the auth refactor epic" },
-  { type: "custom", skills: ["review"], prompt: "Review the PR against coding standards" }
-]})
+agent({ action: 'spawn', type: 'custom', skills: ['beads'], message: 'Create tasks for the epic' })
 ```
-
-### Delegating Beads Tasks
-
-When beads tasks exist, delegate them directly:
-
-```typescript
-task({ tasks: [
-  { type: "code", description: "tau-abc123", prompt: "Implement tau-abc123. Run `bd show tau-abc123` for context. DoD: tests pass, no type errors." },
-  { type: "code", description: "tau-def456", prompt: "Implement tau-def456. Run `bd show tau-def456` for context. DoD: tests pass, no type errors." }
-]})
-```
-
-## Session Continuation
-
-Sessions persist worker context across calls:
-
-```typescript
-// Start session
-const [{ session_id }] = task({ tasks: [
-  { type: "code", prompt: "Read config.ts and summarize the settings" }
-]})
-
-// Continue same session - worker remembers previous context
-task({ tasks: [
-  { type: "code", session_id, prompt: "Now update the timeout setting to 5000" }
-]})
-```
-
-**Constraints**:
-- `session_id` must match original type
-- Invalid `session_id` returns error (won't silently create new session)
-- Sessions are for same-day work, not long-term storage
-
-## Validation Errors
-
-| Error | Cause | Fix |
-|-------|-------|-----|
-| `Unknown session_id: X` | Session doesn't exist | Omit `session_id` to start fresh |
-| `Missing skills: X, Y` | Skill not found | Check available skills, fix typo |
-| `skills is only valid for type=custom` | Used skills with wrong type | Use appropriate type |
-| `session_id X belongs to type=Y, not Z` | Type mismatch on continuation | Use original type |
 
 ## Key Behaviors
 
-- **Parallel execution**: All tasks in array run concurrently
-- **Blocking**: You wait for all tasks to complete before continuing
-- **Independent failure**: Each task succeeds/fails independently in batch
-- **Context isolation**: Workers don't see your conversation or each other
-- **Nesting**: Allowed up to max depth 3; avoid unless required
-- **Codebase is shared state**: Workers read/write same files—coordinate to avoid conflicts
+- **Non-blocking**: `spawn` and `send` return immediately.
+- **Explicit wait**: Use `wait` to block until agents reach a final state.
+- **Inter-agent communication**: Use `send` to give further instructions to a running agent.
+- **Context isolation**: Agents don't see your conversation or each other.
+- **Nesting**: Allowed up to max depth 3.
+- **Shared state**: Agents read/write same files—coordinate to avoid conflicts.

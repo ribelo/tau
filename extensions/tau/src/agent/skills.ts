@@ -73,7 +73,10 @@ export function loadSkill(name: string, cwd: string): LoadedSkill | null {
 	return null;
 }
 
-export function loadSkills(names: string[], cwd: string): { loaded: LoadedSkill[]; missing: string[] } {
+export function loadSkills(
+	names: string[],
+	cwd: string,
+): { loaded: LoadedSkill[]; missing: string[] } {
 	const loaded: LoadedSkill[] = [];
 	const missing: string[] = [];
 

@@ -14,7 +14,7 @@ import { Status, StatusLive } from "./services/status.js";
 import { Commit, CommitLive } from "./services/commit.js";
 import { Editor, EditorLive } from "./services/editor.js";
 import { SkillMarker, SkillMarkerLive } from "./services/skill-marker.js";
-import { Task, TaskLive } from "./services/task.js";
+import { Agent, AgentLive } from "./services/agent.js";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 const MainLayer = Layer.mergeAll(
@@ -28,7 +28,7 @@ const MainLayer = Layer.mergeAll(
 	CommitLive,
 	EditorLive,
 	SkillMarkerLive,
-	TaskLive,
+	AgentLive,
 ).pipe(
 	Layer.provideMerge(SandboxStateLive),
 	Layer.provideMerge(PersistenceLive),
@@ -48,7 +48,7 @@ export const runTau = (pi: ExtensionAPI) => {
 		const commit = yield* Commit;
 		const editor = yield* Editor;
 		const skillMarker = yield* SkillMarker;
-		const task = yield* Task;
+		const agent = yield* Agent;
 
 		yield* Effect.all(
 			[
@@ -63,7 +63,7 @@ export const runTau = (pi: ExtensionAPI) => {
 				commit.setup,
 				editor.setup,
 				skillMarker.setup,
-				task.setup,
+				agent.setup,
 			],
 			{
 				concurrency: "unbounded",

@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { ThinkingLevel } from "@mariozechner/pi-ai";
+import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import { readJsonFile } from "../shared/fs.js";
 import { isRecord } from "../shared/json.js";
 import {
@@ -11,6 +11,7 @@ import {
 	FILESYSTEM_MODES,
 	NETWORK_MODES,
 	migrateApprovalPolicy,
+	migrateNetworkMode,
 } from "../shared/policy.js";
 import type { SandboxConfig } from "../sandbox/config.js";
 import type { Complexity, ResolvedPolicy, TaskType } from "./types.js";
@@ -36,24 +37,41 @@ function normalizeThinkingLevel(level: unknown): ThinkingLevel | undefined {
 	if (v === "min") return "minimal";
 	if (v === "med") return "medium";
 	if (v === "max") return "high";
-	if (v === "off" || v === "minimal" || v === "low" || v === "medium" || v === "high") return v;
+	if (
+		v === "off" ||
+		v === "minimal" ||
+		v === "low" ||
+		v === "medium" ||
+		v === "high"
+	)
+		return v as ThinkingLevel;
 	return undefined;
 }
 
-function normalizeComplexityConfig(v: unknown): TaskType["complexity"] | undefined {
+function normalizeComplexityConfig(
+	v: unknown,
+): TaskType["complexity"] | undefined {
 	if (!isRecord(v)) return undefined;
 	const out: TaskType["complexity"] = {};
 	for (const key of ["low", "medium", "high"] as const) {
 		const item = v[key];
 		if (!isRecord(item)) continue;
-		const model = typeof item.model === "string" ? item.model : undefined;
-		const thinking = normalizeThinkingLevel(item.thinking);
-		if (model || thinking) out[key] = { model, thinking };
+		const model = typeof item["model"] === "string" ? item["model"] : undefined;
+		const thinking = normalizeThinkingLevel(item["thinking"]);
+		if (model || thinking) {
+			const conf: { model?: string; thinking?: ThinkingLevel } = {};
+			if (model) conf.model = model;
+			if (thinking) conf.thinking = thinking;
+			out[key] = conf;
+		}
 	}
 	return Object.keys(out).length > 0 ? out : undefined;
 }
 
-function normalizeSandboxConfig(taskType: string, raw: unknown): SandboxConfig | undefined {
+function normalizeSandboxConfig(
+	taskType: string,
+	raw: unknown,
+): SandboxConfig | undefined {
 	if (raw === undefined || raw === null) return undefined;
 	if (!isRecord(raw)) {
 		throw new Error(`Task type "${taskType}": sandbox must be an object`);
@@ -61,9 +79,12 @@ function normalizeSandboxConfig(taskType: string, raw: unknown): SandboxConfig |
 
 	const out: SandboxConfig = {};
 
-	if (raw.filesystemMode !== undefined) {
-		const v = raw.filesystemMode;
-		if (typeof v !== "string") throw new Error(`Task type "${taskType}": sandbox.filesystemMode must be a string`);
+	if (raw["filesystemMode"] !== undefined) {
+		const v = raw["filesystemMode"];
+		if (typeof v !== "string")
+			throw new Error(
+				`Task type "${taskType}": sandbox.filesystemMode must be a string`,
+			);
 		if (!FILESYSTEM_MODES.includes(v as FilesystemMode)) {
 			throw new Error(
 				`Task type "${taskType}": invalid sandbox.filesystemMode "${v}" (expected ${FILESYSTEM_MODES.join(", ")})`,
@@ -72,9 +93,12 @@ function normalizeSandboxConfig(taskType: string, raw: unknown): SandboxConfig |
 		out.filesystemMode = v as FilesystemMode;
 	}
 
-	if (raw.networkMode !== undefined) {
-		const v = raw.networkMode;
-		if (typeof v !== "string") throw new Error(`Task type "${taskType}": sandbox.networkMode must be a string`);
+	if (raw["networkMode"] !== undefined) {
+		const v = raw["networkMode"];
+		if (typeof v !== "string")
+			throw new Error(
+				`Task type "${taskType}": sandbox.networkMode must be a string`,
+			);
 		const migrated = migrateNetworkMode(v);
 		if (!migrated) {
 			throw new Error(
@@ -84,9 +108,12 @@ function normalizeSandboxConfig(taskType: string, raw: unknown): SandboxConfig |
 		out.networkMode = migrated;
 	}
 
-	if (raw.approvalPolicy !== undefined) {
-		const v = raw.approvalPolicy;
-		if (typeof v !== "string") throw new Error(`Task type "${taskType}": sandbox.approvalPolicy must be a string`);
+	if (raw["approvalPolicy"] !== undefined) {
+		const v = raw["approvalPolicy"];
+		if (typeof v !== "string")
+			throw new Error(
+				`Task type "${taskType}": sandbox.approvalPolicy must be a string`,
+			);
 		const migrated = migrateApprovalPolicy(v);
 		if (!migrated) {
 			throw new Error(
@@ -96,10 +123,12 @@ function normalizeSandboxConfig(taskType: string, raw: unknown): SandboxConfig |
 		out.approvalPolicy = migrated;
 	}
 
-	if (raw.approvalTimeoutSeconds !== undefined) {
-		const v = raw.approvalTimeoutSeconds;
+	if (raw["approvalTimeoutSeconds"] !== undefined) {
+		const v = raw["approvalTimeoutSeconds"];
 		if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) {
-			throw new Error(`Task type "${taskType}": sandbox.approvalTimeoutSeconds must be a positive number`);
+			throw new Error(
+				`Task type "${taskType}": sandbox.approvalTimeoutSeconds must be a positive number`,
+			);
 		}
 		out.approvalTimeoutSeconds = Math.floor(v);
 	}
@@ -110,28 +139,34 @@ function normalizeSandboxConfig(taskType: string, raw: unknown): SandboxConfig |
 function normalizeTaskType(name: string, raw: unknown): TaskType | null {
 	if (!isRecord(raw)) return null;
 
-	const description = typeof raw.description === "string" ? raw.description : "";
-	const tools = Array.isArray(raw.tools) ? raw.tools.filter((t) => typeof t === "string") : undefined;
-	const model = typeof raw.model === "string" ? raw.model : undefined;
-	const defaultThinking = normalizeThinkingLevel(raw.defaultThinking ?? raw.thinking);
-	const skills = Array.isArray(raw.skills) ? raw.skills.filter((s) => typeof s === "string") : undefined;
-	const complexity = normalizeComplexityConfig(raw.complexity);
-	const sandbox = normalizeSandboxConfig(name, raw.sandbox);
+	const description = typeof raw["description"] === "string" ? raw["description"] : "";
+	const tools = Array.isArray(raw["tools"])
+		? (raw["tools"] as unknown[]).filter((t): t is string => typeof t === "string")
+		: undefined;
+	const model = typeof raw["model"] === "string" ? raw["model"] : undefined;
+	const defaultThinking = normalizeThinkingLevel(raw["defaultThinking"] ?? raw["thinking"]);
+	const skills = Array.isArray(raw["skills"])
+		? (raw["skills"] as unknown[]).filter((s): s is string => typeof s === "string")
+		: undefined;
+	const complexity = normalizeComplexityConfig(raw["complexity"]);
+	const sandbox = normalizeSandboxConfig(name, raw["sandbox"]);
 
 	if (model && complexity) {
 		throw new Error(`Task type "${name}" cannot define both model and complexity`);
 	}
 
-	return {
+	const task: TaskType = {
 		name,
 		description,
-		tools: tools && tools.length > 0 ? tools : undefined,
-		model: complexity ? undefined : model,
-		defaultThinking,
-		complexity,
-		skills: skills && skills.length > 0 ? skills : undefined,
-		sandbox,
 	};
+	if (tools && tools.length > 0) task.tools = tools;
+	if (!complexity && model) task.model = model;
+	if (defaultThinking) task.defaultThinking = defaultThinking;
+	if (complexity) task.complexity = complexity;
+	if (skills && skills.length > 0) task.skills = skills;
+	if (sandbox) task.sandbox = sandbox;
+
+	return task;
 }
 
 function mergeTaskType(base: TaskType, override: TaskType): TaskType {
@@ -141,19 +176,36 @@ function mergeTaskType(base: TaskType, override: TaskType): TaskType {
 	};
 	const hasComplexity = Object.keys(mergedComplexity).length > 0;
 
-	return {
+	const result: TaskType = {
 		...base,
 		...override,
-		// arrays replace, but normalize to undefined if empty
-		tools: override.tools !== undefined ? (override.tools.length > 0 ? override.tools : undefined) : base.tools,
-		skills: override.skills !== undefined ? (override.skills.length > 0 ? override.skills : undefined) : base.skills,
-		complexity: hasComplexity ? mergedComplexity : undefined,
-		model: hasComplexity ? undefined : override.model ?? base.model,
-		sandbox: override.sandbox !== undefined ? { ...(base.sandbox ?? {}), ...(override.sandbox ?? {}) } : base.sandbox,
 	};
+
+	// arrays replace, but normalize to undefined if empty
+	if (override.tools !== undefined) {
+		result.tools = override.tools.length > 0 ? override.tools : undefined;
+	}
+	if (override.skills !== undefined) {
+		result.skills = override.skills.length > 0 ? override.skills : undefined;
+	}
+	if (hasComplexity) {
+		result.complexity = mergedComplexity;
+		result.model = undefined;
+	} else {
+		result.complexity = undefined;
+		result.model = override.model ?? base.model;
+	}
+	if (override.sandbox !== undefined) {
+		result.sandbox = { ...(base.sandbox ?? {}), ...(override.sandbox ?? {}) };
+	}
+
+	return result;
 }
 
-function resolveComplexityConfig(complexityConfig: TaskType["complexity"], complexity: Complexity) {
+function resolveComplexityConfig(
+	complexityConfig: TaskType["complexity"],
+	complexity: Complexity,
+) {
 	const order: Complexity[] = ["low", "medium", "high"];
 	const start = order.indexOf(complexity);
 	if (start === -1) return undefined;
@@ -176,10 +228,16 @@ type TaskRegistryLoadOptions = {
 	validateSkills?: boolean;
 };
 
-function validateTaskTypeConfigs(taskTypes: TaskType[], cwd: string, options: TaskRegistryLoadOptions): void {
+function validateTaskTypeConfigs(
+	taskTypes: TaskType[],
+	cwd: string,
+	options: TaskRegistryLoadOptions,
+): void {
 	const unknownTools: string[] = [];
 	const unknownSkills: string[] = [];
-	const toolSet = options.knownTools ? new Set(options.knownTools.map((t) => t.trim()).filter(Boolean)) : undefined;
+	const toolSet = options.knownTools
+		? new Set(options.knownTools.map((t) => t.trim()).filter(Boolean))
+		: undefined;
 
 	for (const task of taskTypes) {
 		if (toolSet && task.tools) {
@@ -222,57 +280,62 @@ export class TaskRegistry {
 		return [
 			{
 				name: "code",
-				description: "Edit files, implement features, fix bugs. Use when you need to change code.",
-				tools: undefined, // all
+				description:
+					"Edit files, implement features, fix bugs. Use when you need to change code.",
 				model: "inherit",
 				skills: ["code"],
 			},
 			{
 				name: "search",
-				description: "Find files, locate code patterns, map codebase. Use before you know what to change.",
+				description:
+					"Find files, locate code patterns, map codebase. Use before you know what to change.",
 				tools: ["read", "bash"],
 				model: "inherit",
 				skills: ["search"],
 			},
 			{
 				name: "review",
-				description: "Review diffs for bugs/security. Returns structured JSON. Use for PR/commit review.",
+				description:
+					"Review diffs for bugs/security. Returns structured JSON. Use for PR/commit review.",
 				tools: ["read", "bash"],
 				model: "inherit",
 				skills: ["review"],
 			},
 			{
 				name: "planning",
-				description: "Design solutions, create implementation plans. Use before complex changes.",
+				description:
+					"Design solutions, create implementation plans. Use before complex changes.",
 				tools: ["read", "bash"],
 				model: "inherit",
 				skills: ["planning"],
 			},
 			{
 				name: "advisor",
-				description: "Senior engineer advisor for hard problems. Use when you need expert guidance.",
+				description:
+					"Senior engineer advisor for hard problems. Use when you need expert guidance.",
 				tools: ["read", "bash"],
 				model: "inherit",
 				skills: ["advisor", "simplicity", "analysis"],
 			},
 			{
 				name: "refactor",
-				description: "Rename, transform code across files. Use ast-grep/fastmod for structural changes.",
-				tools: undefined, // all
+				description:
+					"Rename, transform code across files. Use ast-grep/fastmod for structural changes.",
 				model: "inherit",
 				skills: ["ast-grep", "fastmod"],
 			},
 			{
 				name: "bash",
-				description: "Run commands, install deps, build, scripts. Use for system operations not code changes.",
+				description:
+					"Run commands, install deps, build, scripts. Use for system operations not code changes.",
 				tools: ["bash", "read"],
 				model: "inherit",
 				skills: ["bash"],
 			},
 			{
 				name: "custom",
-				description: "Ad-hoc worker with skills you specify. Use when you need specific skill combination.",
-				tools: undefined, // all
+				description:
+					"Ad-hoc worker with skills you specify. Use when you need specific skill combination.",
 				model: "inherit",
 				skills: [],
 			},
@@ -286,24 +349,32 @@ export class TaskRegistry {
 		const applySettings = (settingsPath: string) => {
 			const json = readJsonFile(settingsPath);
 			if (!json) return;
-			const tasks = json.tasks;
+			const tasks = json["tasks"];
 			if (!isRecord(tasks)) return;
 
 			for (const [name, rawTask] of Object.entries(tasks)) {
 				const normalized = normalizeTaskType(name, rawTask);
 				if (!normalized) continue;
 				const existing = merged.get(name);
-				merged.set(name, existing ? mergeTaskType(existing, normalized) : normalized);
+				merged.set(name, existing
+					? mergeTaskType(existing, normalized)
+					: normalized);
 			}
 		};
 
 		// Global settings first (lower priority)
-		const globalSettings = path.join(os.homedir(), ".pi", "agent", "settings.json");
+		const globalSettings = path.join(
+			os.homedir(),
+			".pi",
+			"agent",
+			"settings.json",
+		);
 		if (fs.existsSync(globalSettings)) applySettings(globalSettings);
 
 		// Project settings last (higher priority)
 		const projectSettings = findNearestProjectSettings(cwd);
-		if (projectSettings && fs.existsSync(projectSettings)) applySettings(projectSettings);
+		if (projectSettings && fs.existsSync(projectSettings))
+			applySettings(projectSettings);
 
 		const taskTypes = Array.from(merged.values());
 		if (options.knownTools || options.validateSkills) {
@@ -318,33 +389,37 @@ export class TaskRegistry {
 	}
 
 	list(): TaskType[] {
-		return Array.from(this.types.values()).sort((a, b) => a.name.localeCompare(b.name));
+		return Array.from(this.types.values()).sort((a, b) =>
+			a.name.localeCompare(b.name),
+		);
 	}
 
 	resolve(taskType: string, complexity: Complexity): ResolvedPolicy {
 		const t = this.get(taskType);
 		if (!t) throw new Error(`Unknown task type: ${taskType}`);
 
-		const complexityConfig = t.complexity ? resolveComplexityConfig(t.complexity, complexity) : undefined;
+		const complexityConfig = t.complexity
+			? resolveComplexityConfig(t.complexity, complexity)
+			: undefined;
 		const modelCandidate = complexityConfig?.model ?? t.model;
 		const model =
-			typeof modelCandidate === "string" && modelCandidate.trim().length > 0 && modelCandidate !== "inherit"
+			typeof modelCandidate === "string" &&
+			modelCandidate.trim().length > 0 &&
+			modelCandidate !== "inherit"
 				? modelCandidate
 				: undefined;
 		const thinking = complexityConfig?.thinking ?? t.defaultThinking;
 
-		return {
+		const result: ResolvedPolicy = {
 			taskType: t.name,
 			complexity,
-			model,
-			thinking,
-			tools: t.tools,
 			skills: (t.skills ?? []).slice(),
-			sandbox: t.sandbox
-				? {
-						...t.sandbox,
-					}
-				: undefined,
 		};
+		if (model) result.model = model;
+		if (thinking) result.thinking = thinking as any;
+		if (t.tools) result.tools = t.tools;
+		if (t.sandbox) result.sandbox = { ...t.sandbox };
+
+		return result;
 	}
 }
