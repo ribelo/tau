@@ -485,6 +485,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
         // If approval says run unsandboxed, do that
         if (approval.runUnsandboxed) {
           ctx.ui?.notify?.("Running without sandbox...", "info");
+          onData(Buffer.from("[sandbox] Running without sandbox restrictions (escalate approved).\n"));
           return runCommandDirect(
             command,
             cwd,
@@ -623,6 +624,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 
             if (retryApproval.approved && retryApproval.runUnsandboxed) {
               ctx.ui?.notify?.("Retrying without sandbox...", "info");
+              onData(Buffer.from("\n[sandbox] User approved retry without sandbox restrictions. Re-running command...\n\n"));
               const retryResult = await runCommandDirect(
                 command,
                 cwd,
