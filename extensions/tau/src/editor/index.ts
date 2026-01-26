@@ -3,8 +3,13 @@ import { CustomEditor } from "@mariozechner/pi-coding-agent";
 import type { AutocompleteProvider, EditorTheme, TUI } from "@mariozechner/pi-tui";
 
 import type { TauState } from "../shared/state.js";
-import { afterInput, wrapAutocompleteProvider } from "../skill-marker/index.js";
+import { shouldAutoTriggerSkillAutocomplete, wrapAutocompleteProvider } from "../skill-marker/index.js";
 import { wrapEditorRender } from "../terminal-prompt/index.js";
+
+// Runtime access to private Editor method
+type EditorWithPrivates = {
+	tryTriggerAutocomplete: (explicitTab?: boolean) => void;
+};
 
 export class TauEditor extends CustomEditor {
 	private baseAutocompleteProvider?: AutocompleteProvider;
@@ -27,7 +32,12 @@ export class TauEditor extends CustomEditor {
 
 	override handleInput(data: string): void {
 		super.handleInput(data);
-		afterInput(this.tauState, data, this);
+
+		// Auto-trigger autocomplete for $skill markers
+		// (pi's Editor only auto-triggers for / and @, not $)
+		if (shouldAutoTriggerSkillAutocomplete(this, data)) {
+			(this as unknown as EditorWithPrivates).tryTriggerAutocomplete();
+		}
 	}
 
 	override render(width: number): string[] {
