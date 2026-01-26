@@ -1,15 +1,15 @@
-import { Type } from "@sinclair/typebox";
+import { Type, type Static } from "@sinclair/typebox";
 import { Effect, Layer, Cause } from "effect";
 import { StringEnum } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import {
 	AgentControl,
 	AgentConfig,
-	AgentManager,
+	type ControlSpawnOptions,
 } from "./services.js";
 import { AgentControlLive } from "./control.js";
 import { AgentManagerLive } from "./manager.js";
-import { PiAPI, PiAPILive } from "../effect/pi.js";
+import { PiAPILive } from "../effect/pi.js";
 import { TaskRegistry } from "./registry.js";
 import type { AgentId } from "./types.js";
 import { renderAgentCall, renderAgentResult } from "./render.js";
@@ -103,7 +103,7 @@ export default function initAgent(pi: ExtensionAPI) {
 
 			const program = Effect.gen(function* () {
 				const control = yield* AgentControl;
-				const p = params as any;
+				const p = params as Static<typeof AgentParams>;
 
 				switch (p.action) {
 					case "spawn": {
@@ -121,7 +121,7 @@ export default function initAgent(pi: ExtensionAPI) {
 							approvalBroker,
 							parentSessionId: ctx.sessionManager.getSessionId(),
 							cwd: ctx.cwd,
-						} as any);
+						} satisfies ControlSpawnOptions as ControlSpawnOptions);
 						return { agent_id: id };
 					}
 					case "send": {
@@ -160,26 +160,29 @@ export default function initAgent(pi: ExtensionAPI) {
 				}
 			});
 
-			const result = await Effect.runPromise(
+			const resultOrCause = await Effect.runPromiseExit(
 				program.pipe(
 					Effect.catchAll((err) => {
 						const message = err instanceof Error ? err.message : String(err);
 						return Effect.fail(message);
 					}),
 					Effect.provide(MainLayer),
-				) as any,
-			).catch((cause) => {
+				),
+			);
+
+			if (resultOrCause._tag === "Failure") {
 				return {
 					isError: true,
-					content: [{ type: "text", text: Cause.pretty(cause) }],
+					content: [{ type: "text", text: Cause.pretty(resultOrCause.cause) }],
+					details: { error: resultOrCause.cause },
 				};
-			});
+			}
 
-			if ((result as any).isError) return result as any;
+			const result = resultOrCause.value;
 
 			return {
 				content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-				details: result,
+				details: result as object,
 			};
 		},
 
@@ -187,7 +190,7 @@ export default function initAgent(pi: ExtensionAPI) {
 			return renderAgentCall(args, theme);
 		},
 		renderResult(result, options, theme) {
-			return renderAgentResult(result, options, theme as any);
+			return renderAgentResult(result, options, theme);
 		},
 	});
 }

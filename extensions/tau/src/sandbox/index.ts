@@ -20,6 +20,7 @@ import {
   Text,
   type SettingItem,
 } from "@mariozechner/pi-tui";
+import { Type } from "@sinclair/typebox";
 
 import {
   checkBashApproval,
@@ -109,19 +110,19 @@ type SessionState = {
    * When ASRT is unavailable due to missing deps, we prompt once per session.
    * This caches the user's choice.
    */
-  sandboxUnavailableDecision?: "allow" | "deny";
+  sandboxUnavailableDecision?: "allow" | "deny" | undefined;
 
   /**
    * True once we have injected sandbox *semantics* into the system prompt
    * on the first model turn.
    */
-  systemPromptInjected?: boolean;
+  systemPromptInjected?: boolean | undefined;
 
   /** Hash of the sandbox config last communicated to the model. */
-  lastCommunicatedHash?: string;
+  lastCommunicatedHash?: string | undefined;
 
   /** Pending SANDBOX_CHANGE notice to inject into the next user message as content[0]. */
-  pendingSandboxNotice?: { hash: string; text: string };
+  pendingSandboxNotice?: { hash: string; text: string } | undefined;
 };
 
 function loadSessionState(state: TauState): SessionState | undefined {
@@ -136,11 +137,14 @@ function loadSessionState(state: TauState): SessionState | undefined {
       ? undefined
       : pendingNotice;
 
-  // Defensive copy.
-  return {
-    ...last,
-    pendingSandboxNotice: cleanPending ? { ...cleanPending } : undefined,
-  };
+  // Defensive copy - only include defined properties
+  const result: SessionState = { ...last };
+  if (cleanPending) {
+    result.pendingSandboxNotice = { ...cleanPending };
+  } else {
+    delete result.pendingSandboxNotice;
+  }
+  return result;
 }
 
 function buildSourceHint(): string {
@@ -307,7 +311,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
    const baselineHash = computeSandboxConfigHash(effectiveConfig);
 
    if (!ctx.hasUI) {
-     pi.sendMessage({ content: buildSandboxSummary(), display: true }, { triggerTurn: false });
+     pi.sendMessage({ customType: "sandbox:info", content: buildSandboxSummary(), display: true, details: undefined }, { triggerTurn: false });
      return;
    }
 
@@ -667,8 +671,8 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
     env: Record<string, string>,
     opts: {
       onData: (data: Buffer) => void;
-      signal?: AbortSignal;
-      timeout?: number;
+      signal?: AbortSignal | undefined;
+      timeout?: number | undefined;
     },
   ): Promise<{ exitCode: number | null; output: string }> {
     return new Promise((resolve, reject) => {
@@ -746,8 +750,8 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
     env: Record<string, string>,
     opts: {
       onData: (data: Buffer) => void;
-      signal?: AbortSignal;
-      timeout?: number;
+      signal?: AbortSignal | undefined;
+      timeout?: number | undefined;
     },
   ): Promise<{ exitCode: number | null }> {
     return new Promise((resolve, reject) => {
@@ -815,18 +819,13 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
     ...baseBashTool,
     label: "bash",
     // Extend schema to add escalate parameter
-    parameters: {
-      type: "object",
-      properties: {
-        command: { type: "string", description: "Bash command to execute" },
-        timeout: { type: "number", description: "Timeout in seconds (optional)" },
-        escalate: {
-          type: "boolean",
-          description: "Request to run without sandbox restrictions. Only use when sandbox is blocking necessary operations."
-        },
-      },
-      required: ["command"],
-    },
+    parameters: Type.Object({
+      command: Type.String({ description: "Bash command to execute" }),
+      timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional)" })),
+      escalate: Type.Optional(Type.Boolean({
+        description: "Request to run without sandbox restrictions. Only use when sandbox is blocking necessary operations."
+      })),
+    }),
     async execute(toolCallId, params, onUpdate, ctx, signal) {
       refreshConfig(ctx);
 
@@ -839,7 +838,8 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
       });
 
       // Pass params without escalate to inner tool
-      const innerParams = { command: typedParams.command, timeout: typedParams.timeout };
+      const innerParams: { command: string; timeout?: number } = { command: typedParams.command };
+      if (typedParams.timeout !== undefined) innerParams.timeout = typedParams.timeout;
       return await tool.execute(toolCallId, innerParams, signal, onUpdate);
     },
   });

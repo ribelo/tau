@@ -149,7 +149,7 @@ export function isSafeCommand(command: string): boolean {
 	
 	// Strip leading bash -c / bash -lc / sh -c wrapper
 	const shellMatch = cmdToCheck.match(/^(?:bash|sh|zsh)\s+(?:-[a-z]+\s+)*(?:-c\s+)?['"]?(.+?)['"]?$/i);
-	if (shellMatch) {
+	if (shellMatch && shellMatch[1]) {
 		cmdToCheck = shellMatch[1];
 	}
 	
@@ -157,7 +157,9 @@ export function isSafeCommand(command: string): boolean {
 	const words = cmdToCheck.split(/\s+/).filter(Boolean);
 	if (words.length === 0) return false;
 	
-	const cmd = words[0].toLowerCase();
+	const firstWord = words[0];
+	if (!firstWord) return false;
+	const cmd = firstWord.toLowerCase();
 	const args = words.slice(1);
 	
 	// Extract base command name (strip path)

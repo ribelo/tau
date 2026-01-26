@@ -1,4 +1,4 @@
-import { Context, Data, Effect } from "effect";
+import { Context, Data, Effect, Stream } from "effect";
 import type { AgentId, ResolvedPolicy } from "./types.js";
 import type { Status } from "./status.js";
 export type { Status };
@@ -18,7 +18,9 @@ export class AgentDepthExceeded extends Data.TaggedError("AgentDepthExceeded")<{
 export class AgentAlreadyShutdown extends Data.TaggedError("AgentAlreadyShutdown")<{
 	readonly id: AgentId;
 }> {}
-export class ManagerDropped extends Data.TaggedError("ManagerDropped")<{}> {}
+export class ManagerDropped extends Data.TaggedError("ManagerDropped")<{
+	readonly message?: string;
+}> {}
 export class AgentError extends Data.TaggedError("AgentError")<{
 	readonly message: string;
 }> {}
@@ -50,7 +52,7 @@ export interface Agent {
 	readonly interrupt: () => Effect.Effect<void>;
 	readonly shutdown: () => Effect.Effect<void>;
 	readonly status: Effect.Effect<Status>;
-	readonly subscribeStatus: () => any; // Will be a Stream or similar
+	readonly subscribeStatus: () => Stream.Stream<Status>;
 }
 
 // Agent Manager
@@ -112,8 +114,7 @@ export class AgentControl extends Context.Tag("AgentControl")<
 			timeoutMs?: number,
 		) => Effect.Effect<
 			{ status: Record<AgentId, Status>; timedOut: boolean },
-			any,
-			any
+			unknown
 		>;
 		readonly close: (id: AgentId) => Effect.Effect<void, AgentNotFound>;
 		readonly list: Effect.Effect<AgentInfo[]>;

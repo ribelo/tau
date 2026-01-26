@@ -38,20 +38,21 @@ export function applyDefaults(cfg: SandboxConfig | undefined): Required<SandboxC
 function readSandboxNamespace(settings: unknown): SandboxConfig {
 	if (!isRecord(settings)) return {};
 	// New namespace: settings.tau.sandbox
-	const tau = settings.tau;
-	const tauSandbox = isRecord(tau) ? tau.sandbox : undefined;
+	const tau = settings["tau"];
+	const tauSandbox = isRecord(tau) ? tau["sandbox"] : undefined;
 	if (isRecord(tauSandbox)) return tauSandbox as SandboxConfig;
 
 	// Back-compat: settings.sandbox
-	const legacy = settings.sandbox;
+	const legacy = settings["sandbox"];
 	if (isRecord(legacy)) return legacy as SandboxConfig;
 	return {};
 }
 
 export function getUserSettingsPath(): string {
 	// Allow override for tests.
-	if (process.env.TAU_SANDBOX_USER_SETTINGS_PATH) {
-		return process.env.TAU_SANDBOX_USER_SETTINGS_PATH;
+	const override = process.env["TAU_SANDBOX_USER_SETTINGS_PATH"];
+	if (override) {
+		return override;
 	}
 	return path.join(os.homedir(), ".pi", "agent", "settings.json");
 }
@@ -70,15 +71,16 @@ export function ensureUserDefaults(): void {
 	const existing = readSandboxNamespace(current);
 	const withDefaults = applyDefaults(existing);
 
+	const currentTau = isRecord(current["tau"]) ? current["tau"] : undefined;
 	const needsWrite =
-		current.tau?.sandbox === undefined ||
+		currentTau?.["sandbox"] === undefined ||
 		existing.filesystemMode === undefined ||
 		existing.networkMode === undefined ||
 		existing.approvalPolicy === undefined ||
 		existing.approvalTimeoutSeconds === undefined;
 
 	if (!needsWrite) return;
-	const merged = deepMerge(current, { tau: { ...(current.tau ?? {}), sandbox: withDefaults } });
+	const merged = deepMerge(current, { tau: { ...(currentTau ?? {}), sandbox: withDefaults } });
 	writeJsonFile(settingsPath, merged);
 }
 
@@ -102,7 +104,8 @@ export function persistUserConfigPatch(patch: SandboxConfig): void {
 	const current = readJsonFile(settingsPath) ?? {};
 	const existing = readSandboxNamespace(current);
 	const nextSandbox = deepMerge(existing, patch);
-	const merged = deepMerge(current, { tau: { ...(current.tau ?? {}), sandbox: nextSandbox } });
+	const currentTau = isRecord(current["tau"]) ? current["tau"] : {};
+	const merged = deepMerge(current, { tau: { ...currentTau, sandbox: nextSandbox } });
 	writeJsonFile(settingsPath, merged);
 }
 
@@ -111,6 +114,7 @@ export function persistProjectConfigPatch(workspaceRoot: string, patch: SandboxC
 	const current = readJsonFile(settingsPath) ?? {};
 	const existing = readSandboxNamespace(current);
 	const nextSandbox = deepMerge(existing, patch);
-	const merged = deepMerge(current, { tau: { ...(current.tau ?? {}), sandbox: nextSandbox } });
+	const currentTau = isRecord(current["tau"]) ? current["tau"] : {};
+	const merged = deepMerge(current, { tau: { ...currentTau, sandbox: nextSandbox } });
 	writeJsonFile(settingsPath, merged);
 }

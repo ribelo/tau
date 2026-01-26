@@ -8,28 +8,30 @@ import { wrapEditorRender } from "../terminal-prompt/index.js";
 
 export class TauEditor extends CustomEditor {
 	private baseAutocompleteProvider?: AutocompleteProvider;
+	private tauState: TauState;
 
 	constructor(
 		tui: TUI,
 		theme: EditorTheme,
 		keybindings: KeybindingsManager,
-		private state: TauState,
+		tauState: TauState,
 	) {
 		super(tui, theme, keybindings);
+		this.tauState = tauState;
 	}
 
 	override setAutocompleteProvider(provider: AutocompleteProvider): void {
 		this.baseAutocompleteProvider = provider;
-		super.setAutocompleteProvider(wrapAutocompleteProvider(this.state, provider, this));
+		super.setAutocompleteProvider(wrapAutocompleteProvider(this.tauState, provider, this));
 	}
 
 	override handleInput(data: string): void {
 		super.handleInput(data);
-		afterInput(this.state, data, this);
+		afterInput(this.tauState, data, this);
 	}
 
 	override render(width: number): string[] {
-		return wrapEditorRender(this.state, width, (w: number) => super.render(w));
+		return wrapEditorRender(this.tauState, width, (w: number) => super.render(w));
 	}
 
 	rewrapAutocompleteProvider(): void {

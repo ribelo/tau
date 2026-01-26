@@ -6,7 +6,6 @@ import { readJsonFile } from "../shared/fs.js";
 import { isRecord } from "../shared/json.js";
 import {
 	type FilesystemMode,
-	type NetworkMode,
 	APPROVAL_POLICIES,
 	FILESYSTEM_MODES,
 	NETWORK_MODES,
@@ -48,11 +47,17 @@ function normalizeThinkingLevel(level: unknown): ThinkingLevel | undefined {
 	return undefined;
 }
 
+type MutableComplexity = {
+	low?: { model?: string; thinking?: ThinkingLevel };
+	medium?: { model?: string; thinking?: ThinkingLevel };
+	high?: { model?: string; thinking?: ThinkingLevel };
+};
+
 function normalizeComplexityConfig(
 	v: unknown,
 ): TaskType["complexity"] | undefined {
 	if (!isRecord(v)) return undefined;
-	const out: TaskType["complexity"] = {};
+	const out: MutableComplexity = {};
 	for (const key of ["low", "medium", "high"] as const) {
 		const item = v[key];
 		if (!isRecord(item)) continue;
@@ -211,12 +216,16 @@ function resolveComplexityConfig(
 	if (start === -1) return undefined;
 
 	for (let i = start; i < order.length; i++) {
-		const candidate = complexityConfig?.[order[i]];
+		const level = order[i];
+		if (level === undefined) continue;
+		const candidate = complexityConfig?.[level];
 		if (candidate) return candidate;
 	}
 
 	for (let i = start - 1; i >= 0; i--) {
-		const candidate = complexityConfig?.[order[i]];
+		const level = order[i];
+		if (level === undefined) continue;
+		const candidate = complexityConfig?.[level];
 		if (candidate) return candidate;
 	}
 
@@ -416,7 +425,7 @@ export class TaskRegistry {
 			skills: (t.skills ?? []).slice(),
 		};
 		if (model) result.model = model;
-		if (thinking) result.thinking = thinking as any;
+		if (thinking) result.thinking = thinking;
 		if (t.tools) result.tools = t.tools;
 		if (t.sandbox) result.sandbox = { ...t.sandbox };
 

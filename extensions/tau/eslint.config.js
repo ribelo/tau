@@ -24,6 +24,9 @@ export default [
 			...tsPlugin.configs.recommended.rules,
 			"@typescript-eslint/no-explicit-any": "error",
 			"@typescript-eslint/no-unused-vars": ["warn", { "argsIgnorePattern": "^_" }],
+			"no-redeclare": "off",
+			"@typescript-eslint/no-redeclare": "off",
+			"no-undef": "off",
 		},
 	},
 ];

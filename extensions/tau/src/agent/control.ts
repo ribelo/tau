@@ -1,12 +1,12 @@
-import { Effect, Layer, Stream, Option } from "effect";
+import { Effect, Layer, Stream } from "effect";
 import {
 	AgentControl,
 	AgentManager,
 	type Status,
 	type ControlSpawnOptions,
+	type SpawnOptions,
 } from "./services.js";
 import { TaskRegistry } from "./registry.js";
-import { PiAPI } from "../effect/pi.js";
 import { isFinal } from "./status.js";
 import type { AgentId, Complexity } from "./types.js";
 import { Sandbox } from "../services/sandbox.js";
@@ -15,7 +15,6 @@ export const AgentControlLive = Layer.effect(
 	AgentControl,
 	Effect.gen(function* () {
 		const manager = yield* AgentManager;
-		const pi = yield* PiAPI;
 		const sandbox = yield* Sandbox;
 
 		return AgentControl.of({
@@ -40,7 +39,7 @@ export const AgentControlLive = Layer.effect(
 						parentSandboxConfig,
 						approvalBroker: opts.approvalBroker,
 						resultSchema: opts.result_schema,
-					} as any);
+					} satisfies SpawnOptions as SpawnOptions);
 				}),
 			send: (id: AgentId, message: string, interrupt?: boolean) =>
 				Effect.gen(function* () {
@@ -95,7 +94,7 @@ export const AgentControlLive = Layer.effect(
 						return yield* getStatusMap;
 					});
 
-					return yield* (waitAny.pipe(
+					return yield* waitAny.pipe(
 						Effect.timeout(timeout),
 						Effect.map((status) => ({ status, timedOut: false })),
 						Effect.catchAll(() =>
@@ -103,7 +102,7 @@ export const AgentControlLive = Layer.effect(
 								Effect.map((status) => ({ status, timedOut: true })),
 							),
 						),
-					) as any);
+					);
 				}),
 			close: (id: AgentId) => manager.shutdown(id),
 			list: manager.list,

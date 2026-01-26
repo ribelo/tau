@@ -26,6 +26,7 @@ type BdIssue = {
 	blocked_by?: string[];
 	dependency_count?: number;
 	dependent_count?: number;
+	dependency_type?: string;
 	[extra: string]: unknown;
 };
 

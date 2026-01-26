@@ -54,7 +54,7 @@ export const AgentManagerLive = Layer.effect(
 						approvalBroker: opts.approvalBroker,
 						skills,
 						resultSchema: opts.resultSchema,
-					} as any);
+					});
 
 					const id = agent.id;
 					yield* Ref.update(agentsRef, (map) => HashMap.set(map, id, agent));

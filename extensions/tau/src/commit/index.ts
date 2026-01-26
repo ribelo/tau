@@ -58,7 +58,7 @@ export default function initCommit(pi: ExtensionAPI, _state: TauState) {
 					return;
 				}
 
-				mode = selection.split(" - ")[0];
+				mode = selection.split(" - ")[0] ?? "auto";
 
 				if (mode === "other") {
 					const input = await ctx.ui.input("What do you want to commit?");
@@ -132,7 +132,8 @@ ${COMMIT_FORMAT_GUIDE}`,
 			),
 		}),
 
-		async execute(_toolCallId, params, _onUpdate, ctx, signal) {
+		async execute(_toolCallId, params, _onUpdate, ctx, signal?: AbortSignal) {
+			const execOpts = signal ? { signal } : {};
 			if (!ctx.hasUI) {
 				return {
 					content: [{ type: "text", text: "Error: UI not available (running in non-interactive mode)" }],
@@ -142,7 +143,7 @@ ${COMMIT_FORMAT_GUIDE}`,
 
 			// Stage files if provided
 			if (params.files && params.files.length > 0) {
-				const stageResult = await pi.exec("git", ["add", "--", ...params.files], { signal });
+				const stageResult = await pi.exec("git", ["add", "--", ...params.files], execOpts);
 				if (stageResult.code !== 0) {
 					return {
 						content: [{ type: "text", text: `Error staging files: ${stageResult.stderr}` }],
@@ -152,7 +153,7 @@ ${COMMIT_FORMAT_GUIDE}`,
 			}
 
 			// Check if there's anything to commit
-			const statusResult = await pi.exec("git", ["diff", "--cached", "--quiet"], { signal });
+			const statusResult = await pi.exec("git", ["diff", "--cached", "--quiet"], execOpts);
 			if (statusResult.code === 0) {
 				return {
 					content: [{ type: "text", text: "Nothing staged to commit" }],
@@ -161,7 +162,7 @@ ${COMMIT_FORMAT_GUIDE}`,
 			}
 
 			// Show what will be committed
-			const diffStatResult = await pi.exec("git", ["diff", "--cached", "--stat"], { signal });
+			const diffStatResult = await pi.exec("git", ["diff", "--cached", "--stat"], execOpts);
 			const stagedInfo = diffStatResult.stdout.trim();
 
 			// Let user edit the commit message
@@ -177,7 +178,7 @@ ${COMMIT_FORMAT_GUIDE}`,
 			}
 
 			// Execute the commit
-			const commitResult = await pi.exec("git", ["commit", "-m", finalMessage.trim()], { signal });
+			const commitResult = await pi.exec("git", ["commit", "-m", finalMessage.trim()], execOpts);
 
 			if (commitResult.code !== 0) {
 				return {
@@ -187,7 +188,7 @@ ${COMMIT_FORMAT_GUIDE}`,
 			}
 
 			// Get the commit hash
-			const hashResult = await pi.exec("git", ["rev-parse", "--short", "HEAD"], { signal });
+			const hashResult = await pi.exec("git", ["rev-parse", "--short", "HEAD"], execOpts);
 			const commitHash = hashResult.stdout.trim();
 
 			return {

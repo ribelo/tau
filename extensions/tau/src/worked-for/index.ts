@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { Theme } from "@mariozechner/pi-coding-agent";
 import { visibleWidth, type Component } from "@mariozechner/pi-tui";
 import type { Message } from "@mariozechner/pi-ai";
 
@@ -14,11 +15,6 @@ type WorkedForDetails = {
 type WorkedForState = {
 	enabled?: boolean;
 	toolsEnabled?: boolean;
-};
-
-type Theme = {
-	fg: (key: string, s: string) => string;
-	bold: (s: string) => string;
 };
 
 function formatDuration(ms: number): string {
@@ -128,7 +124,7 @@ export default function initWorkedFor(pi: ExtensionAPI, state: TauState) {
 		lastRenderedDurationText = durationText;
 
 		// Widgets do not participate in LLM context and won't enqueue follow-ups.
-		ctx.ui.setWidget("worked-for-separator", (_tui: unknown, theme: Theme) => new WorkedForWidget(durationText, theme));
+		ctx.ui.setWidget("worked-for-separator", (_tui, theme) => new WorkedForWidget(durationText, theme));
 	}
 
 	function startTick(ctx: ExtensionContext): void {
@@ -163,12 +159,15 @@ export default function initWorkedFor(pi: ExtensionAPI, state: TauState) {
 
 	pi.registerMessageRenderer<WorkedForDetails>(WORKED_FOR_MESSAGE_TYPE, (message, _options, theme) => {
 		const elapsedMs = typeof message.details?.elapsedMs === "number" ? message.details.elapsedMs : 0;
-		return new WorkedForSeparator(formatDuration(elapsedMs), theme as Theme);
+		return new WorkedForSeparator(formatDuration(elapsedMs), theme);
 	});
 
 	pi.on("context", async (event) => {
 		// Never send UI-only worked-for separators to the model (old sessions may contain them).
-		const filtered = event.messages.filter((m) => m?.customType !== WORKED_FOR_MESSAGE_TYPE);
+		const filtered = event.messages.filter((m) => {
+			if (m && "customType" in m && m.customType === WORKED_FOR_MESSAGE_TYPE) return false;
+			return true;
+		});
 		return { messages: filtered };
 	});
 

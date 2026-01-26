@@ -19,9 +19,12 @@ describe("agent-awareness", () => {
 
 		const out = injectAgentContextIntoMessages(messages, "AGENT_CONTEXT: 1 other pi agent detected");
 		expect(out).toHaveLength(3);
-		expect(out[2]!.role).toBe("user");
-		expect(out[2]!.content[0].type).toBe("text");
-		expect(out[2]!.content[0].text).toContain("AGENT_CONTEXT:");
+		expect(out[2]?.role).toBe("user");
+		const content = out[2]?.content;
+		expect(Array.isArray(content)).toBe(true);
+		const contentArr = content as unknown as Array<{ type: string; text: string }>;
+		expect(contentArr[0]?.type).toBe("text");
+		expect(contentArr[0]?.text).toContain("AGENT_CONTEXT:");
 	});
 
 	it("injectAgentContextIntoMessages: does not double-inject", () => {

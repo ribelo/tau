@@ -10,7 +10,7 @@ import type { Model, Api, ThinkingLevel, Message } from "@mariozechner/pi-ai";
 import { stream, streamSimple } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
 import { Effect, SubscriptionRef, Stream } from "effect";
-import { type Status, isFinal } from "./status.js";
+import { type Status } from "./status.js";
 import type { AgentId, ResolvedPolicy } from "./types.js";
 import { type Agent, AgentError } from "./services.js";
 import { computeClampedWorkerSandboxConfig } from "./sandbox-policy.js";
@@ -24,54 +24,38 @@ import { withWorkerSandboxOverride } from "./worker-sandbox.js";
 import { setWorkerApprovalBroker } from "./approval-broker.js";
 import type { ApprovalBroker } from "./approval-broker.js";
 
-const TOOL_CHOICE_APIS = new Set([
-	"anthropic-messages",
-	"openai-completions",
-	"google-generative-ai",
-	"google-vertex",
-	"google-gemini-cli",
-	"bedrock-converse-stream",
-	"amazon-bedrock",
-]);
 
 function toolOnlyStreamFn(
 	model: Model<Api>,
 	context: Message[],
-	options?: any,
+	options?: Record<string, unknown>,
 ) {
-	const base = {
-		temperature: options?.temperature,
-		maxTokens: options?.maxTokens || Math.min(model.maxTokens, 32000),
-		signal: options?.signal,
-		apiKey: options?.apiKey,
-		sessionId: options?.sessionId,
+	// Build options without undefined values (exactOptionalPropertyTypes compliance)
+	const base: Record<string, unknown> = {
+		maxTokens: (options?.["maxTokens"] as number | undefined) || Math.min(model.maxTokens, 32000),
 	};
+	if (options?.["temperature"] !== undefined) base["temperature"] = options["temperature"];
+	if (options?.["signal"] !== undefined) base["signal"] = options["signal"];
+	if (options?.["apiKey"] !== undefined) base["apiKey"] = options["apiKey"];
+	if (options?.["sessionId"] !== undefined) base["sessionId"] = options["sessionId"];
 
-	switch (model.api) {
+	const api = model.api as string;
+	const ctx = { messages: context };
+
+	switch (api) {
 		case "anthropic-messages":
-			return stream(model as Model<"anthropic-messages">, (context as any).messages || context, {
-				...base,
-				thinkingEnabled: false,
-				toolChoice: "any",
-			});
+			return stream(model as Model<"anthropic-messages">, ctx, { ...base, thinkingEnabled: false, toolChoice: "any" });
 		case "openai-completions":
-			return stream(model as Model<"openai-completions">, (context as any).messages || context, {
-				...base,
-				toolChoice: "required",
-			});
+			return stream(model as Model<"openai-completions">, ctx, { ...base, toolChoice: "required" });
 		case "google-generative-ai":
 		case "google-vertex":
 		case "google-gemini-cli":
-			return stream(model as any, (context as any).messages || context, {
-				...base,
-				toolChoice: "any",
-				thinking: { enabled: false },
-			});
+			return stream(model as Model<"google-generative-ai">, ctx, { ...base, toolChoice: "any", thinking: { enabled: false } });
 		case "bedrock-converse-stream":
 		case "amazon-bedrock":
-			return stream(model as any, (context as any).messages || context, { ...base, toolChoice: "any" });
+			return stream(model as Model<"bedrock-converse-stream">, ctx, { ...base, toolChoice: "any" });
 		default:
-			return streamSimple(model, context, options);
+			return streamSimple(model, { messages: context }, options);
 	}
 }
 
@@ -153,9 +137,9 @@ export class AgentWorker implements Agent {
 		cwd: string;
 		parentSessionId: string;
 		parentSandboxConfig: Required<SandboxConfig>;
-		approvalBroker?: ApprovalBroker;
+		approvalBroker: ApprovalBroker | undefined;
 		skills: LoadedSkill[];
-		resultSchema?: any;
+		resultSchema: unknown;
 	}) {
 		return Effect.gen(function* () {
 			const authStorage = discoverAuthStorage();
@@ -184,19 +168,19 @@ export class AgentWorker implements Agent {
 							name: "submit_result",
 							label: "submit_result",
 							description: "Submit structured result for the task",
-							parameters: Type.Unsafe(opts.resultSchema),
+							parameters: Type.Unsafe(opts.resultSchema as object),
 							async execute(
 								_toolCallId: string,
-								params: any,
-								_onUpdate: any,
-								_ctx: any,
+								params: unknown,
+								_onUpdate: unknown,
+								_ctx: unknown,
 								signal?: AbortSignal,
 							) {
 								if (signal?.aborted) throw new Error("Aborted");
 								agent.structuredOutput = params;
 								agent.session.abort().catch(() => undefined);
 								return {
-									content: [{ type: "text", text: "Result received." }],
+									content: [{ type: "text" as const, text: "Result received." }],
 									details: { ok: true },
 								};
 							},
@@ -204,24 +188,24 @@ export class AgentWorker implements Agent {
 					]
 				: undefined;
 
-			const { session } = yield* Effect.promise(() =>
-				createAgentSession({
-					cwd: opts.cwd,
-					authStorage,
-					modelRegistry,
-					sessionManager: SessionManager.inMemory(opts.cwd),
-					settingsManager: SettingsManager.inMemory(),
-					systemPrompt: (defaultPrompt) => `${defaultPrompt}\n\n${systemPrompt}`,
-					skills: [],
-					customTools: customTools as any,
-					model: resolvedModel,
-				}),
-			);
+			const sessionOpts = {
+				cwd: opts.cwd,
+				authStorage,
+				modelRegistry,
+				sessionManager: SessionManager.inMemory(opts.cwd),
+				settingsManager: SettingsManager.inMemory(),
+				systemPrompt: (defaultPrompt: string) => `${defaultPrompt}\n\n${systemPrompt}`,
+				skills: [],
+				customTools,
+				...(resolvedModel ? { model: resolvedModel } : {}),
+			};
+			const { session } = yield* Effect.promise(() => createAgentSession(sessionOpts as unknown as Parameters<typeof createAgentSession>[0]));
 
-			const sandboxConfig = computeClampedWorkerSandboxConfig({
-				parent: opts.parentSandboxConfig,
-				requested: opts.policy.sandbox,
-			});
+			const sandboxConfig = computeClampedWorkerSandboxConfig(
+				opts.policy.sandbox
+					? { parent: opts.parentSandboxConfig, requested: opts.policy.sandbox }
+					: { parent: opts.parentSandboxConfig },
+			);
 
 			// Re-snapshot: update the worker's tau sandbox override and approval broker
 			{
@@ -238,7 +222,7 @@ export class AgentWorker implements Agent {
 			}
 
 			if (opts.resultSchema) {
-				session.agent.streamFn = toolOnlyStreamFn as any;
+				session.agent.streamFn = toolOnlyStreamFn as unknown as typeof session.agent.streamFn;
 			}
 
 			agent = new AgentWorker(
@@ -258,8 +242,8 @@ export class AgentWorker implements Agent {
 					const message =
 						lastMsg?.role === "assistant"
 							? lastMsg.content
-									.filter((p: any) => p.type === "text")
-									.map((p: any) => p.text)
+									.filter((p): p is { type: "text"; text: string } => typeof p === "object" && p !== null && "type" in p && p["type"] === "text")
+									.map((p) => p.text)
 									.join("\n")
 							: undefined;
 
@@ -278,7 +262,7 @@ export class AgentWorker implements Agent {
 	}
 
 	prompt(message: string): Effect.Effect<string, AgentError> {
-		return Effect.gen(this, function* () {
+		return Effect.sync(() => {
 			// For now, we'll just return a dummy or use session ID as base for submission
 			const submissionId = `sub-${crypto.randomUUID()}`;
 
@@ -286,11 +270,12 @@ export class AgentWorker implements Agent {
 				Effect.promise(() =>
 					this.session.prompt(message, { source: "extension" }),
 				).pipe(
-					Effect.catchAll((err) => {
+					Effect.catchAll((err: unknown) => {
 						// Log error but don't fail the prompt return as it's fire-and-forget-ish
+						const reason = err instanceof Error ? err.message : String(err);
 						return SubscriptionRef.set(this.statusRef, {
 							state: "failed",
-							reason: err instanceof Error ? err.message : String(err),
+							reason,
 						});
 					}),
 				),

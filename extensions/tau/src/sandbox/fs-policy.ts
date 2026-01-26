@@ -73,7 +73,7 @@ function isInTempDir(targetPath: string): boolean {
 	}
 
 	// Add $TMPDIR if set
-	const envTmpDir = process.env.TMPDIR;
+	const envTmpDir = process.env["TMPDIR"];
 	if (envTmpDir) {
 		tmpDirs.add(envTmpDir);
 		try {

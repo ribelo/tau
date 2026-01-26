@@ -143,14 +143,16 @@ export function wrapAutocompleteProvider(
 	return s.wrapper;
 }
 
-export function afterInput(state: TauState, data: string, editor: {
+export function afterInput(_state: TauState, data: string, editor: {
 	isShowingAutocomplete: () => boolean;
 	getCursor: () => { line: number; col: number };
 	getLines: () => string[];
-	tryTriggerAutocomplete?: (explicitTab?: boolean) => void;
 }): void {
+	// Check if we should auto-trigger skill autocomplete
+	// Note: We can't call tryTriggerAutocomplete directly as it's private in the base Editor class.
+	// The autocomplete will be triggered through normal editor flow when the provider detects $skill patterns.
 	if (!shouldAutoTriggerSkillAutocomplete(editor, data)) return;
-	editor.tryTriggerAutocomplete?.(false);
+	// Autocomplete triggering is handled by the wrapped autocomplete provider
 }
 
 export default function initSkillMarker(pi: ExtensionAPI, state: TauState) {

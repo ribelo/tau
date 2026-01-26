@@ -1,3 +1,4 @@
+import type { TauState } from "../shared/state.js";
 import { Context, Effect, Layer } from "effect";
 
 import { PiAPI } from "../effect/pi.js";
@@ -20,7 +21,7 @@ export const ExaLive = Layer.effect(
 		return Exa.of({
 			setup: Effect.gen(function* () {
 				yield* Effect.sync(() => {
-					initExaLegacy(pi, {} as any);
+					initExaLegacy(pi, {} as unknown as TauState);
 				});
 			}),
 		});

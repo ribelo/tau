@@ -1,4 +1,7 @@
-import type { ImageContent, Message, TextContent } from "@mariozechner/pi-ai";
+import type { ImageContent, TextContent } from "@mariozechner/pi-ai";
+
+/** Minimal message shape for injection functions - content is kept loose to support all message types */
+type MessageLike = { role: string; content?: unknown };
 
 import type { SandboxConfig } from "./config.js";
 
@@ -35,18 +38,19 @@ export function buildSandboxChangeNoticeText(cfg: Required<SandboxConfig>): stri
 }
 
 function asContentArray(
-	content: string | (TextContent | ImageContent)[] | undefined,
+	content: unknown,
 ): (TextContent | ImageContent)[] {
-	if (content === undefined) return [];
+	if (content === undefined || content === null) return [];
 	if (typeof content === "string") return [{ type: "text", text: content }];
-	return content;
+	if (Array.isArray(content)) return content as (TextContent | ImageContent)[];
+	return [];
 }
 
 /**
  * Prepend injected notice text as content[0] on the last user message.
  * Returns a new messages array (does not mutate input).
  */
-export function injectSandboxNoticeIntoMessages<T extends Message>(
+export function injectSandboxNoticeIntoMessages<T extends MessageLike>(
 	messages: T[],
 	noticeText: string,
 ): T[] {

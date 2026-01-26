@@ -1,4 +1,5 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ThemeColor } from "@mariozechner/pi-coding-agent";
+import { Theme } from "@mariozechner/pi-coding-agent";
 import { Text, visibleWidth, type Component } from "@mariozechner/pi-tui";
 import https from "node:https";
 
@@ -6,11 +7,6 @@ import type { TauState } from "../shared/state.js";
 import { updatePersistedState } from "../shared/state.js";
 
 const STATUS_MESSAGE_TYPE = "tau:status";
-
-type Theme = {
-	fg: (key: string, s: string) => string;
-	bold: (s: string) => string;
-};
 
 type StatusState = {
 	fetchedAt: number;
@@ -22,6 +18,28 @@ type BurnInfo = {
 	exhaustsAt?: number | undefined;
 	exhaustsBeforeReset?: boolean | undefined;
 };
+
+// Helper to build StatusRow with only defined optional properties
+function buildStatusRow(data: {
+	label: string;
+	subLabel?: string | undefined;
+	percentLeft?: number | undefined;
+	resetsAt?: number | undefined;
+	burnRatePerHour?: number | undefined;
+	exhaustsAt?: number | undefined;
+	exhaustsBeforeReset?: boolean | undefined;
+	isDepleted?: boolean | undefined;
+}): StatusRow {
+	const row: StatusRow = { label: data.label };
+	if (data.subLabel !== undefined) row.subLabel = data.subLabel;
+	if (data.percentLeft !== undefined) row.percentLeft = data.percentLeft;
+	if (data.resetsAt !== undefined) row.resetsAt = data.resetsAt;
+	if (data.burnRatePerHour !== undefined) row.burnRatePerHour = data.burnRatePerHour;
+	if (data.exhaustsAt !== undefined) row.exhaustsAt = data.exhaustsAt;
+	if (data.exhaustsBeforeReset !== undefined) row.exhaustsBeforeReset = data.exhaustsBeforeReset;
+	if (data.isDepleted !== undefined) row.isDepleted = data.isDepleted;
+	return row;
+}
 
 type OpenAiUsagePayload = {
 	plan_type?: string;
@@ -84,13 +102,13 @@ type AntigravityUserStatus = {
 
 type StatusRow = {
 	label: string;
-	subLabel?: string;
-	percentLeft?: number;
-	resetsAt?: number;
-	burnRatePerHour?: number;
-	exhaustsAt?: number;
-	exhaustsBeforeReset?: boolean;
-	isDepleted?: boolean;
+	subLabel?: string | undefined;
+	percentLeft?: number | undefined;
+	resetsAt?: number | undefined;
+	burnRatePerHour?: number | undefined;
+	exhaustsAt?: number | undefined;
+	exhaustsBeforeReset?: boolean | undefined;
+	isDepleted?: boolean | undefined;
 };
 
 type StatusSectionData = {
@@ -134,7 +152,7 @@ function computeBurnAndExhaust(
 	currentPercentLeft: number | undefined,
 	resetsAt: number | undefined,
 	windowSeconds?: number,
-): { burnRatePerHour?: number; exhaustsAt?: number; exhaustsBeforeReset?: boolean } {
+): { burnRatePerHour?: number | undefined; exhaustsAt?: number | undefined; exhaustsBeforeReset?: boolean | undefined } {
 	if (typeof currentPercentLeft !== "number" || !Number.isFinite(currentPercentLeft)) return {};
 
 	let burnRatePerHour: number | undefined;
@@ -200,13 +218,13 @@ function mapOpenAiRow(
 
 	const metrics = computeBurnAndExhaust(prev, `openai:${label}`, fetchedAtMs, percentLeft, resetsAt, seconds);
 
-	return {
+	return buildStatusRow({
 		label,
 		percentLeft,
 		resetsAt,
 		isDepleted: percentLeft === 0,
 		...metrics,
-	};
+	});
 }
 
 function renderProgressBar(percentLeft: number | undefined, width: number): string {
@@ -522,7 +540,9 @@ function getPortListCommand(pid: number): ExecSpec {
 }
 
 async function execSpec(pi: ExtensionAPI, spec: ExecSpec, signal?: AbortSignal) {
-	return await pi.exec(spec.command, spec.args, { signal });
+	const opts: { signal?: AbortSignal } = {};
+	if (signal) opts.signal = signal;
+	return await pi.exec(spec.command, spec.args, opts);
 }
 
 async function fetchAntigravityStatus(pi: ExtensionAPI, signal?: AbortSignal): Promise<AntigravityUserStatus> {
@@ -654,7 +674,7 @@ async function fetchAntigravityUserStatus(
 
 async function fetchOpenAiUsage(
 	token: string,
-	options: { accountId?: string },
+	options: { accountId?: string | undefined },
 ): Promise<OpenAiUsagePayload> {
 	const res = await fetch("https://chatgpt.com/backend-api/wham/usage", {
 		headers: {
@@ -739,9 +759,11 @@ export default function initStatus(pi: ExtensionAPI, state: TauState) {
 						return { title: "OpenAI", notConfigured: true, rows: [] };
 					}
 
-					const usage = await fetchOpenAiUsage(token, { accountId: cred?.accountId });
+					const accountIdOpts: { accountId?: string } = {};
+					if (cred?.accountId) accountIdOpts.accountId = cred.accountId;
+					const usage = await fetchOpenAiUsage(token, accountIdOpts);
 					const plan = formatPlanType(usage.plan_type);
-					const hasKey = Boolean(process.env.OPENAI_API_KEY);
+					const hasKey = Boolean(process.env["OPENAI_API_KEY"]);
 					const statusLine = `[${plan ?? "Pro"}] [Key: ${hasKey ? "Configured" : "Not set"}]`;
 
 					const rows: StatusRow[] = [];
@@ -798,14 +820,14 @@ export default function initStatus(pi: ExtensionAPI, state: TauState) {
 							const percentLeft = percentLeftFromRemainingFraction(b.remainingFraction) ?? 0;
 							const resetsAt = parseIsoTimeSeconds(b.resetTime);
 							const metrics = computeBurnAndExhaust(prevState, `gemini-cli:${tier.label}`, fetchedAt, percentLeft, resetsAt, 86400);
-							groupRows.push({
+							groupRows.push(buildStatusRow({
 								label: tier.label,
 								subLabel: tier.subLabel,
 								percentLeft,
 								resetsAt,
 								isDepleted: percentLeft === 0,
 								...metrics
-							});
+							}));
 							nextState.values[`gemini-cli:${tier.label}`] = { percentLeft };
 						}
 					}
@@ -832,14 +854,14 @@ export default function initStatus(pi: ExtensionAPI, state: TauState) {
 						const percentLeft = percentLeftFromRemainingFraction(c.quotaInfo?.remainingFraction) ?? 0;
 						const resetsAt = parseIsoTimeSeconds(c.quotaInfo?.resetTime);
 						const metrics = computeBurnAndExhaust(prevState, `antigravity:Pro`, fetchedAt, percentLeft, resetsAt, 18000); // 5h heuristic
-						rows.push({
+						rows.push(buildStatusRow({
 							label: "Gemini 3 Pro",
 							subLabel: "High/Low",
 							percentLeft,
 							resetsAt,
 							isDepleted: percentLeft === 0,
 							...metrics
-						});
+						}));
 						nextState.values[`antigravity:Pro`] = { percentLeft };
 					}
 
@@ -849,20 +871,20 @@ export default function initStatus(pi: ExtensionAPI, state: TauState) {
 						const percentLeft = percentLeftFromRemainingFraction(c.quotaInfo?.remainingFraction) ?? 0;
 						const resetsAt = parseIsoTimeSeconds(c.quotaInfo?.resetTime);
 						const metrics = computeBurnAndExhaust(prevState, `antigravity:Flash`, fetchedAt, percentLeft, resetsAt, 18000); // 5h heuristic
-						rows.push({
+						rows.push(buildStatusRow({
 							label: "Gemini 3 Flash",
 							percentLeft,
 							resetsAt,
 							isDepleted: percentLeft === 0,
 							...metrics
-						});
+						}));
 						nextState.values[`antigravity:Flash`] = { percentLeft };
 					} else {
-						rows.push({
+						rows.push(buildStatusRow({
 							label: "Gemini 3 Flash",
 							percentLeft: 0,
 							isDepleted: true,
-						});
+						}));
 					}
 
 					return { title: "Antigravity", statusLine, rows };

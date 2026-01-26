@@ -1,3 +1,4 @@
+import type { TauState } from "../shared/state.js";
 import { Context, Effect, Layer } from "effect";
 
 import { PiAPI } from "../effect/pi.js";
@@ -23,7 +24,7 @@ export const TerminalPromptLive = Layer.effect(
 		return TerminalPrompt.of({
 			setup: Effect.gen(function* () {
 				yield* Effect.sync(() => {
-					initTerminalPromptLegacy(pi, makeLegacyStateBridge(persistence.state) as any);
+					initTerminalPromptLegacy(pi, makeLegacyStateBridge(persistence.state) as unknown as TauState);
 				});
 			}),
 		});

@@ -29,6 +29,17 @@ function oneLine(s: string): string {
 	return s.replace(/\s+/g, " ").trim();
 }
 
+/** Remove properties with undefined values (for exactOptionalPropertyTypes compliance) */
+function omitUndefined<T extends Record<string, unknown>>(obj: T): T {
+	const result = {} as T;
+	for (const key of Object.keys(obj) as Array<keyof T>) {
+		if (obj[key] !== undefined) {
+			result[key] = obj[key];
+		}
+	}
+	return result;
+}
+
 function fmtValue(v: unknown): string {
 	if (v === undefined) return "(default)";
 	if (v === null) return "null";
@@ -106,14 +117,14 @@ type ExaContextResponse = {
 };
 
 function getExaConfig(): { baseUrl: string; apiKey: string } {
-	const apiKey = (process.env.EXA_API_KEY || "").trim();
+	const apiKey = (process.env["EXA_API_KEY"] || "").trim();
 	if (!apiKey) {
 		throw new Error(
 			"EXA_API_KEY is not set. Set it in your environment before using Exa tools (e.g. export EXA_API_KEY=...).",
 		);
 	}
 
-	const baseUrl = (process.env.EXA_API_BASE_URL || "https://api.exa.ai").replace(/\/+$/, "");
+	const baseUrl = (process.env["EXA_API_BASE_URL"] || "https://api.exa.ai").replace(/\/+$/, "");
 	return { baseUrl, apiKey };
 }
 
@@ -121,7 +132,7 @@ async function exaPost<T>(p: string, body: JsonRecord, signal?: AbortSignal): Pr
 	const { baseUrl, apiKey } = getExaConfig();
 	const url = `${baseUrl}${p.startsWith("/") ? "" : "/"}${p}`;
 
-	const res = await fetch(url, {
+	const fetchOpts = {
 		method: "POST",
 		headers: {
 			"content-type": "application/json",
@@ -130,8 +141,10 @@ async function exaPost<T>(p: string, body: JsonRecord, signal?: AbortSignal): Pr
 			authorization: `Bearer ${apiKey}`,
 		},
 		body: JSON.stringify(body),
-		signal,
-	});
+		...(signal ? { signal } : {}),
+	};
+
+	const res = await fetch(url, fetchOpts);
 
 	let json: unknown;
 	try {
@@ -148,21 +161,12 @@ async function exaPost<T>(p: string, body: JsonRecord, signal?: AbortSignal): Pr
 	return json as T;
 }
 
-function compactSearchResults(results: ExaSearchResult[] | undefined): Array<{
-	url?: string;
-	title?: string;
-	score?: number;
-	publishedDate?: string;
-	author?: string;
-	id?: string;
-	text?: string;
-	highlights?: string[];
-}> {
+function compactSearchResults(results: ExaSearchResult[] | undefined) {
 	const MAX_TEXT_CHARS = 2000;
 	const MAX_HIGHLIGHTS = 5;
 	const MAX_HIGHLIGHT_CHARS = 240;
 
-	return (results || []).map((r) => ({
+	return (results || []).map((r) => omitUndefined({
 		id: r.id,
 		url: r.url,
 		title: r.title,
@@ -178,22 +182,13 @@ function compactSearchResults(results: ExaSearchResult[] | undefined): Array<{
 	}));
 }
 
-function compactContentsResults(results: ExaContentsResult[] | undefined): Array<{
-	id?: string;
-	url?: string;
-	title?: string;
-	author?: string;
-	publishedDate?: string;
-	summary?: string;
-	text?: string;
-	highlights?: string[];
-}> {
+function compactContentsResults(results: ExaContentsResult[] | undefined) {
 	const MAX_TEXT_CHARS = 6000;
 	const MAX_SUMMARY_CHARS = 2000;
 	const MAX_HIGHLIGHTS = 8;
 	const MAX_HIGHLIGHT_CHARS = 240;
 
-	return (results || []).map((r) => ({
+	return (results || []).map((r) => omitUndefined({
 		id: r.id,
 		url: r.url,
 		title: r.title,
@@ -444,30 +439,30 @@ export default function initExa(pi: ExtensionAPI, _state: TauState) {
 		},
 
 		async execute(_toolCallId, params, onUpdate, _ctx, signal) {
-			onUpdate?.({ content: [{ type: "text", text: "Searching Exa…" }] });
+			onUpdate?.({ content: [{ type: "text", text: "Searching Exa…" }], details: {} });
 
 			const typedParams = params as WebSearchArgs;
 			const body: JsonRecord = { query: typedParams.query };
 
-			const type = typedParams.type;
-			if (typeof type === "string" && type.trim().length > 0) body.type = type;
-			if (Array.isArray(typedParams.additionalQueries) && typedParams.additionalQueries.length > 0) body.additionalQueries = typedParams.additionalQueries;
-			if (typeof typedParams.category === "string" && typedParams.category.trim().length > 0) body.category = typedParams.category;
-			if (typeof typedParams.userLocation === "string" && typedParams.userLocation.trim().length > 0) body.userLocation = typedParams.userLocation;
+			const type = typedParams["type"];
+			if (typeof type === "string" && type.trim().length > 0) body["type"] = type;
+			if (Array.isArray(typedParams["additionalQueries"]) && typedParams["additionalQueries"].length > 0) body["additionalQueries"] = typedParams["additionalQueries"];
+			if (typeof typedParams["category"] === "string" && typedParams["category"].trim().length > 0) body["category"] = typedParams["category"];
+			if (typeof typedParams["userLocation"] === "string" && typedParams["userLocation"].trim().length > 0) body["userLocation"] = typedParams["userLocation"];
 
-			if (typeof typedParams.text === "boolean") body.text = typedParams.text;
-			if (typeof typedParams.numResults === "number") body.numResults = typedParams.numResults;
-			if (typeof typedParams.context === "boolean") body.context = typedParams.context;
+			if (typeof typedParams["text"] === "boolean") body["text"] = typedParams["text"];
+			if (typeof typedParams["numResults"] === "number") body["numResults"] = typedParams["numResults"];
+			if (typeof typedParams["context"] === "boolean") body["context"] = typedParams["context"];
 
-			if (typedParams.includeDomains?.length) body.includeDomains = typedParams.includeDomains;
-			if (typedParams.excludeDomains?.length) body.excludeDomains = typedParams.excludeDomains;
-			if (typeof typedParams.startCrawlDate === "string" && typedParams.startCrawlDate.trim().length > 0) body.startCrawlDate = typedParams.startCrawlDate;
-			if (typeof typedParams.endCrawlDate === "string" && typedParams.endCrawlDate.trim().length > 0) body.endCrawlDate = typedParams.endCrawlDate;
-			if (typedParams.startPublishedDate) body.startPublishedDate = typedParams.startPublishedDate;
-			if (typedParams.endPublishedDate) body.endPublishedDate = typedParams.endPublishedDate;
-			if (Array.isArray(typedParams.includeText) && typedParams.includeText.length > 0) body.includeText = typedParams.includeText;
-			if (Array.isArray(typedParams.excludeText) && typedParams.excludeText.length > 0) body.excludeText = typedParams.excludeText;
-			if (typeof typedParams.moderation === "boolean") body.moderation = typedParams.moderation;
+			if (typedParams["includeDomains"]?.length) body["includeDomains"] = typedParams["includeDomains"];
+			if (typedParams["excludeDomains"]?.length) body["excludeDomains"] = typedParams["excludeDomains"];
+			if (typeof typedParams["startCrawlDate"] === "string" && typedParams["startCrawlDate"].trim().length > 0) body["startCrawlDate"] = typedParams["startCrawlDate"];
+			if (typeof typedParams["endCrawlDate"] === "string" && typedParams["endCrawlDate"].trim().length > 0) body["endCrawlDate"] = typedParams["endCrawlDate"];
+			if (typedParams["startPublishedDate"]) body["startPublishedDate"] = typedParams["startPublishedDate"];
+			if (typedParams["endPublishedDate"]) body["endPublishedDate"] = typedParams["endPublishedDate"];
+			if (Array.isArray(typedParams["includeText"]) && typedParams["includeText"].length > 0) body["includeText"] = typedParams["includeText"];
+			if (Array.isArray(typedParams["excludeText"]) && typedParams["excludeText"].length > 0) body["excludeText"] = typedParams["excludeText"];
+			if (typeof typedParams["moderation"] === "boolean") body["moderation"] = typedParams["moderation"];
 
 			const response = await exaPost<ExaSearchResponse>("/search", body, signal);
 			const results = compactSearchResults(response.results);
@@ -478,17 +473,13 @@ export default function initExa(pi: ExtensionAPI, _state: TauState) {
 						type: "text",
 						text: formatSearchResultsAsText(results),
 					},
-					{
-						type: "json",
-						json: {
-							requestId: response.requestId,
-							resolvedSearchType: response.resolvedSearchType,
-							results,
-							context: response.context,
-						},
-					},
 				],
-				details: response,
+				details: {
+					requestId: response.requestId,
+					resolvedSearchType: response.resolvedSearchType,
+					results,
+					context: response.context,
+				},
 			};
 		},
 	});
@@ -629,23 +620,23 @@ type CrawlingArgs = {
 		},
 
 		async execute(_toolCallId, params, onUpdate, _ctx, signal) {
-			onUpdate?.({ content: [{ type: "text", text: "Fetching contents from Exa…" }] });
+			onUpdate?.({ content: [{ type: "text", text: "Fetching contents from Exa…" }], details: {} });
 
 			const typedParams = params as CrawlingArgs;
-			const urls = (typedParams.urls || []).filter(Boolean);
+			const urls = (typedParams["urls"] || []).filter(Boolean);
 			if (urls.length === 0) throw new Error("crawling_exa requires at least one url");
 
 			const body: JsonRecord = {
-				text: typedParams.text ?? true,
+				text: typedParams["text"] ?? true,
 				urls,
 			};
-			if (typeof typedParams.context === "boolean") body.context = typedParams.context;
-			if (typeof typedParams.highlights === "boolean") body.highlights = typedParams.highlights;
-			if (typeof typedParams.summary === "boolean") body.summary = typedParams.summary;
-			if (typedParams.livecrawl) body.livecrawl = typedParams.livecrawl;
-			if (typeof typedParams.livecrawlTimeout === "number") body.livecrawlTimeout = typedParams.livecrawlTimeout;
-			if (typeof typedParams.subpages === "number") body.subpages = typedParams.subpages;
-			if (typedParams.subpageTarget?.length) body.subpageTarget = typedParams.subpageTarget;
+			if (typeof typedParams["context"] === "boolean") body["context"] = typedParams["context"];
+			if (typeof typedParams["highlights"] === "boolean") body["highlights"] = typedParams["highlights"];
+			if (typeof typedParams["summary"] === "boolean") body["summary"] = typedParams["summary"];
+			if (typedParams["livecrawl"]) body["livecrawl"] = typedParams["livecrawl"];
+			if (typeof typedParams["livecrawlTimeout"] === "number") body["livecrawlTimeout"] = typedParams["livecrawlTimeout"];
+			if (typeof typedParams["subpages"] === "number") body["subpages"] = typedParams["subpages"];
+			if (typedParams["subpageTarget"]?.length) body["subpageTarget"] = typedParams["subpageTarget"];
 
 			const response = await exaPost<ExaContentsResponse>("/contents", body, signal);
 			const results = compactContentsResults(response.results);
@@ -656,18 +647,14 @@ type CrawlingArgs = {
 						type: "text",
 						text: formatContentsResultsAsText(results),
 					},
-					{
-						type: "json",
-						json: {
-							requestId: response.requestId,
-							results,
-							statuses: response.statuses,
-							context: response.context,
-							costDollars: response.costDollars,
-						},
-					},
 				],
-				details: response,
+				details: {
+					requestId: response.requestId,
+					results,
+					statuses: response.statuses,
+					context: response.context,
+					costDollars: response.costDollars,
+				},
 			};
 		},
 	});
@@ -724,8 +711,7 @@ type CodeContextArgs = {
 
 			if (options.expanded) {
 				const mdTheme = getMarkdownTheme();
-				const md = new Markdown(responseText, 0, 0, mdTheme);
-				return new Text(`${sepLine}\n${md.render(theme)}`, 0, 0);
+				return new Markdown(`${sepLine}\n${responseText}`, 0, 0, mdTheme);
 			}
 
 			const head = truncateLines(responseText, 20);
@@ -735,26 +721,26 @@ type CodeContextArgs = {
 		},
 
 		async execute(_toolCallId, params, onUpdate, _ctx, signal) {
-			onUpdate?.({ content: [{ type: "text", text: "Getting code context from Exa…" }] });
+			onUpdate?.({ content: [{ type: "text", text: "Getting code context from Exa…" }], details: {} });
 
 			const typedParams = params as CodeContextArgs;
 			const body: JsonRecord = { query: typedParams.query };
 
-			const rawTokensNum = typeof typedParams.tokensNum === "string" ? typedParams.tokensNum.trim() : "";
+			const rawTokensNum = typeof typedParams["tokensNum"] === "string" ? typedParams["tokensNum"].trim() : "";
 			if (rawTokensNum.length === 0) {
-				body.tokensNum = "dynamic";
+				body["tokensNum"] = "dynamic";
 			} else if (/^\d+$/.test(rawTokensNum)) {
 				const n = Number(rawTokensNum);
 				if (!Number.isFinite(n) || n < 50 || n > 100000) {
 					throw new Error("tokensNum must be between 50 and 100000 (or the literal 'dynamic')");
 				}
-				body.tokensNum = n;
+				body["tokensNum"] = n;
 			} else {
 				const mode = rawTokensNum.toLowerCase();
 				if (mode !== "dynamic") {
 					throw new Error("tokensNum must be between 50 and 100000 (or the literal 'dynamic')");
 				}
-				body.tokensNum = "dynamic";
+				body["tokensNum"] = "dynamic";
 			}
 
 			const response = await exaPost<ExaContextResponse>("/context", body, signal);
@@ -765,20 +751,16 @@ type CodeContextArgs = {
 						type: "text",
 						text: response.response || "(no response)",
 					},
-					{
-						type: "json",
-						json: {
-							requestId: response.requestId,
-							query: response.query,
-							response: response.response,
-							resultsCount: response.resultsCount,
-							costDollars: response.costDollars,
-							searchTime: response.searchTime,
-							outputTokens: response.outputTokens,
-						},
-					},
 				],
-				details: response,
+				details: {
+					requestId: response.requestId,
+					query: response.query,
+					response: response.response,
+					resultsCount: response.resultsCount,
+					costDollars: response.costDollars,
+					searchTime: response.searchTime,
+					outputTokens: response.outputTokens,
+				},
 			};
 		},
 	});

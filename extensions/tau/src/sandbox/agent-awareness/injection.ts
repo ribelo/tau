@@ -1,4 +1,7 @@
-import type { ImageContent, Message, TextContent } from "@mariozechner/pi-ai";
+import type { ImageContent, TextContent } from "@mariozechner/pi-ai";
+
+/** Minimal message shape for injection functions - content is kept loose to support all message types */
+type MessageLike = { role: string; content?: unknown };
 
 type AgentContextOpts = {
 	count: number;
@@ -19,14 +22,15 @@ export function buildAgentContextNotice(opts: AgentContextOpts): string {
 }
 
 function asContentArray(
-	content: string | (TextContent | ImageContent)[] | undefined,
+	content: unknown,
 ): (TextContent | ImageContent)[] {
-	if (content === undefined) return [];
+	if (content === undefined || content === null) return [];
 	if (typeof content === "string") return [{ type: "text", text: content }];
-	return content;
+	if (Array.isArray(content)) return content as (TextContent | ImageContent)[];
+	return [];
 }
 
-export function injectAgentContextIntoMessages<T extends Message>(
+export function injectAgentContextIntoMessages<T extends MessageLike>(
 	messages: T[],
 	noticeText: string,
 ): T[] {
