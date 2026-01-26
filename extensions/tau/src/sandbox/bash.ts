@@ -110,7 +110,7 @@ export async function wrapCommandWithSandbox(opts: {
 		return {
 			success: true,
 			wrappedCommand: command,
-			home: os.homedir(), // Use real HOME in danger mode
+			home: os.homedir(), 
 		};
 	}
 
@@ -140,9 +140,21 @@ export async function wrapCommandWithSandbox(opts: {
 	}
 
 	// Filesystem permissions
+	// For read-only and workspace-write, we need the home directory readable
+	const home = os.homedir();
+	const resolvedHome = safeRealpath(home);
+
 	if (filesystemMode === "read-only") {
-		args.push("--ro-bind", resolvedWorkspace, resolvedWorkspace);
+		// Entire home is read-only, workspace is read-only
+		args.push("--ro-bind", resolvedHome, resolvedHome);
+		// Workspace binding comes after home so it takes precedence if workspace is under home
+		if (!resolvedWorkspace.startsWith(resolvedHome)) {
+			args.push("--ro-bind", resolvedWorkspace, resolvedWorkspace);
+		}
 	} else if (filesystemMode === "workspace-write") {
+		// Home is read-only, workspace is writable
+		args.push("--ro-bind", resolvedHome, resolvedHome);
+		// Workspace binding comes after home so it takes precedence (writable overlay)
 		args.push("--bind", resolvedWorkspace, resolvedWorkspace);
 	} else if (filesystemMode === "danger-full-access") {
 		args.push("--bind", "/", "/");
