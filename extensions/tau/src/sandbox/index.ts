@@ -35,7 +35,7 @@ import {
   injectSandboxNoticeIntoMessages,
 } from "./sandbox-change.js";
 import type { ApprovalPolicy, FilesystemMode, NetworkMode, SandboxConfig } from "./config.js";
-import { computeEffectiveConfig, ensureUserDefaults } from "./config.js";
+import { computeEffectiveConfig, ensureUserDefaults, persistProjectConfigPatch } from "./config.js";
 import { checkWriteAllowed } from "./fs-policy.js";
 import { wrapCommandWithSandbox, isAsrtAvailable, getAsrtLoadError } from "./bash.js";
 import { detectMissingSandboxDeps, formatMissingDepsMessage } from "./sandbox-prereqs.js";
@@ -71,11 +71,8 @@ export function getEffectiveSandboxConfig(state: TauState, ctx: ExtensionContext
   const sandboxState = state.sandbox as SandboxStateInternal | undefined;
   if (sandboxState?.effectiveConfig) return sandboxState.effectiveConfig;
 
-  const sessionState = state.persisted?.sandbox as { override?: SandboxConfig } | undefined;
-
   return computeEffectiveConfig({
     workspaceRoot: discoverWorkspaceRoot(ctx.cwd),
-    sessionOverride: sessionState?.override,
   });
 }
 
@@ -97,20 +94,17 @@ function killProcessTree(pid: number): void {
 }
 
 const SANDBOX_CHANGE_MESSAGE_TYPE = "sandbox:change";
-const INHERIT = "inherit";
 
 const FILESYSTEM_VALUES = [
-  INHERIT,
   "read-only",
   "workspace-write",
   "danger-full-access",
 ] as const;
-const NETWORK_VALUES = [INHERIT, "deny", "allow-all"] as const;
-const APPROVAL_VALUES = [INHERIT, "never", "on-failure", "on-request", "unless-trusted"] as const;
-const TIMEOUT_VALUES = [INHERIT, "15", "30", "60", "120", "300"] as const;
+const NETWORK_VALUES = ["deny", "allow-all"] as const;
+const APPROVAL_VALUES = ["never", "on-failure", "on-request", "unless-trusted"] as const;
+const TIMEOUT_VALUES = ["15", "30", "60", "120", "300"] as const;
 
 type SessionState = {
-  override?: SandboxConfig;
   /**
    * When ASRT is unavailable due to missing deps, we prompt once per session.
    * This caches the user's choice.
@@ -145,22 +139,17 @@ function loadSessionState(state: TauState): SessionState | undefined {
   // Defensive copy.
   return {
     ...last,
-    override: last.override ? { ...last.override } : undefined,
     pendingSandboxNotice: cleanPending ? { ...cleanPending } : undefined,
   };
 }
 
-function buildSourceHint(
-  sessionOverride: SandboxConfig | undefined,
-  key: keyof SandboxConfig,
-): string {
-  return sessionOverride?.[key] !== undefined
-    ? "session override"
-    : "inherited";
+function buildSourceHint(): string {
+  return "saved to project .pi/settings.json";
 }
 
 export default function initSandbox(pi: ExtensionAPI, state: TauState) {
-  initAgentAwareness(pi, state);
+  // Disabled: agent awareness (concurrent pi detection)
+  // initAgentAwareness(pi, state);
 
   // Register CLI flags for testing sandbox modes
   pi.registerFlag("sandbox-fs", {
@@ -188,11 +177,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 
   let workspaceRoot = process.cwd();
   let sessionState: SessionState = {};
-  let sessionOverride: SandboxConfig | undefined = sessionState.override;
-  let effectiveConfig = computeEffectiveConfig({
-    workspaceRoot,
-    sessionOverride,
-  });
+  let effectiveConfig = computeEffectiveConfig({ workspaceRoot });
   let cliOverride: SandboxConfig | undefined;
 
   function refreshConfig(ctx: ExtensionContext) {
@@ -202,14 +187,11 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
     const ctxWithSession = ctx as unknown as { sessionManager: { getEntries: () => unknown[] } };
     state.persisted = loadPersistedState(ctxWithSession);
     sessionState = loadSessionState(state) ?? {};
-    sessionOverride = sessionState.override;
 
-    // Merge CLI override with session override (CLI takes precedence)
-    const mergedOverride = { ...sessionOverride, ...cliOverride };
-    effectiveConfig = computeEffectiveConfig({
-      workspaceRoot,
-      sessionOverride: mergedOverride,
-    });
+    // Only CLI flags can override file-based settings now
+    const opts: { workspaceRoot: string; sessionOverride?: SandboxConfig } = { workspaceRoot };
+    if (cliOverride) opts.sessionOverride = cliOverride;
+    effectiveConfig = computeEffectiveConfig(opts);
 
     const sessionId = (ctx as unknown as { sessionManager?: { getSessionId?: () => string } }).sessionManager?.getSessionId?.() ?? "";
 
@@ -224,8 +206,6 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
   }
 
   function persistState() {
-    // Keep sessionState.override in sync with the current override.
-    sessionState.override = sessionOverride;
     updatePersistedState(pi, state, { sandbox: sessionState as unknown as Record<string, unknown> });
   }
 
@@ -274,54 +254,36 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
   ) {
     const prevHash = computeSandboxConfigHash(effectiveConfig);
 
-    const next: SandboxConfig = { ...(sessionOverride ?? {}) };
-    if (value === undefined) {
-      delete next[key];
-    } else {
-      next[key] = value;
+    // Persist to project .pi/settings.json
+    if (value !== undefined) {
+      persistProjectConfigPatch(workspaceRoot, { [key]: value } as SandboxConfig);
     }
 
-    sessionOverride = Object.keys(next).length > 0 ? next : undefined;
-    effectiveConfig = computeEffectiveConfig({
-      workspaceRoot,
-      sessionOverride,
-    });
+    // Recompute effective config from files
+    const opts: { workspaceRoot: string; sessionOverride?: SandboxConfig } = { workspaceRoot };
+    if (cliOverride) opts.sessionOverride = cliOverride;
+    effectiveConfig = computeEffectiveConfig(opts);
 
     const nextHash = computeSandboxConfigHash(effectiveConfig);
     queueSandboxChangeNotice(prevHash, nextHash);
 
-    persistState();
     pi.events.emit("tau:sandbox:changed", effectiveConfig);
   }
 
-  /** Get the display value for UI - shows "inherit" if no override, otherwise the actual value */
+  /** Get the display value for UI - returns the effective value */
   function getDisplayValue<K extends keyof SandboxConfig>(key: K): string {
-    if (!sessionOverride) {
-      return INHERIT;
-    }
-    const override = sessionOverride[key];
-    if (override === undefined) {
-      return INHERIT;
-    }
-    return override as string;
+    const value = effectiveConfig[key];
+    return String(value);
   }
 
   function updateSettingFromSelect<K extends keyof SandboxConfig>(
     key: K,
     value: string,
   ) {
-    if (value === INHERIT) {
-      setOverrideValue(key, undefined);
-      return;
-    }
     setOverrideValue(key, value as SandboxConfig[K]);
   }
 
   function updateTimeoutFromSelect(rawValue: string, ctx: ExtensionContext) {
-    if (rawValue === INHERIT) {
-      setOverrideValue("approvalTimeoutSeconds", undefined);
-      return;
-    }
     const parsed = Number.parseInt(rawValue, 10);
     if (!Number.isFinite(parsed) || parsed <= 0) {
       ctx.ui.notify(`Invalid timeout: ${rawValue}`, "warning");
@@ -356,31 +318,28 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
          label: "Filesystem mode",
          currentValue: getDisplayValue("filesystemMode"),
          values: [...FILESYSTEM_VALUES],
-         description: buildSourceHint(sessionOverride, "filesystemMode"),
+         description: buildSourceHint(),
        },
        {
          id: "networkMode",
          label: "Network mode",
          currentValue: getDisplayValue("networkMode"),
          values: [...NETWORK_VALUES],
-         description: buildSourceHint(sessionOverride, "networkMode"),
+         description: buildSourceHint(),
        },
         {
           id: "approvalPolicy",
           label: "Approval policy",
           currentValue: getDisplayValue("approvalPolicy"),
           values: [...APPROVAL_VALUES],
-          description: buildSourceHint(sessionOverride, "approvalPolicy"),
+          description: buildSourceHint(),
         },
         {
           id: "approvalTimeoutSeconds",
           label: "Approval timeout (s)",
           currentValue: getDisplayValue("approvalTimeoutSeconds"),
           values: [...TIMEOUT_VALUES],
-          description: buildSourceHint(
-            sessionOverride,
-            "approvalTimeoutSeconds",
-          ),
+          description: buildSourceHint(),
         },
       ];
 
@@ -407,18 +366,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
             updateTimeoutFromSelect(newValue, ctx);
           }
 
-          items.find((item) => item.id === "filesystemMode")!.description =
-            buildSourceHint(sessionOverride, "filesystemMode");
-          items.find((item) => item.id === "networkMode")!.description =
-            buildSourceHint(sessionOverride, "networkMode");
-          items.find((item) => item.id === "approvalPolicy")!.description =
-            buildSourceHint(sessionOverride, "approvalPolicy");
-          items.find(
-            (item) => item.id === "approvalTimeoutSeconds",
-          )!.description = buildSourceHint(
-            sessionOverride,
-            "approvalTimeoutSeconds",
-          );
+          // Descriptions stay the same - all settings saved to project .pi/settings.json
 
           settingsList.updateValue(
             "filesystemMode",

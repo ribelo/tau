@@ -21,7 +21,7 @@ export type SandboxConfig = {
 
 export const DEFAULT_SANDBOX_CONFIG: Required<SandboxConfig> = {
 	filesystemMode: "workspace-write",
-	networkMode: "deny",
+	networkMode: "allow-all",
 	approvalPolicy: "on-failure",
 	approvalTimeoutSeconds: 60,
 };
@@ -99,6 +99,15 @@ export function computeEffectiveConfig(opts: {
 
 export function persistUserConfigPatch(patch: SandboxConfig): void {
 	const settingsPath = getUserSettingsPath();
+	const current = readJsonFile(settingsPath) ?? {};
+	const existing = readSandboxNamespace(current);
+	const nextSandbox = deepMerge(existing, patch);
+	const merged = deepMerge(current, { tau: { ...(current.tau ?? {}), sandbox: nextSandbox } });
+	writeJsonFile(settingsPath, merged);
+}
+
+export function persistProjectConfigPatch(workspaceRoot: string, patch: SandboxConfig): void {
+	const settingsPath = getProjectSettingsPath(workspaceRoot);
 	const current = readJsonFile(settingsPath) ?? {};
 	const existing = readSandboxNamespace(current);
 	const nextSandbox = deepMerge(existing, patch);
