@@ -51,6 +51,7 @@ export const AgentManagerLive = Layer.effect(
 						cwd: opts.cwd,
 						parentSessionId: opts.parentSessionId,
 						parentSandboxConfig: opts.parentSandboxConfig,
+						parentModel: opts.parentModel,
 						approvalBroker: opts.approvalBroker,
 						skills,
 						resultSchema: opts.resultSchema,

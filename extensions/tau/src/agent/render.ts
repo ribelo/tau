@@ -21,8 +21,55 @@ function statusMark(state: string, theme: Theme): string {
 	return theme.fg("dim", "◦");
 }
 
-export function renderAgentCall(_args: unknown, _theme: Theme) {
-	return new Text("", 0, 0);
+export function renderAgentCall(args: unknown, theme: Theme) {
+	const params = args as Record<string, unknown>;
+	const action = params["action"] as string;
+
+	switch (action) {
+		case "spawn": {
+			const type = params["type"] as string || "?";
+			const msg = params["message"] as string || "";
+			const preview = truncate(oneLine(msg), 60);
+			return new Text(
+				`${theme.fg("dim", "⋯")} agent spawn ${theme.fg("accent", type)} ${theme.fg("dim", `"${preview}"`)}`,
+				0, 0,
+			);
+		}
+		case "wait": {
+			const ids = params["ids"] as string[] || [];
+			const timeout = params["timeout_ms"] as number;
+			const idList = ids.length <= 3
+				? ids.map(id => theme.fg("accent", id.slice(0, 8))).join(", ")
+				: `${ids.slice(0, 2).map(id => theme.fg("accent", id.slice(0, 8))).join(", ")} +${ids.length - 2} more`;
+			const timeoutStr = timeout ? theme.fg("dim", ` (${Math.round(timeout / 1000)}s timeout)`) : "";
+			return new Text(
+				`${theme.fg("accent", "◐")} agent wait [${idList}]${timeoutStr}`,
+				0, 0,
+			);
+		}
+		case "send": {
+			const id = params["id"] as string || "?";
+			return new Text(
+				`${theme.fg("dim", "⋯")} agent send → ${theme.fg("accent", id.slice(0, 8))}`,
+				0, 0,
+			);
+		}
+		case "close": {
+			const id = params["id"] as string || "?";
+			return new Text(
+				`${theme.fg("dim", "⋯")} agent close ${theme.fg("accent", id.slice(0, 8))}`,
+				0, 0,
+			);
+		}
+		case "list": {
+			return new Text(
+				`${theme.fg("dim", "⋯")} agent list`,
+				0, 0,
+			);
+		}
+		default:
+			return new Text(`${theme.fg("dim", "⋯")} agent ${action || "?"}`, 0, 0);
+	}
 }
 
 export function renderAgentResult(
@@ -52,9 +99,9 @@ export function renderAgentResult(
 	};
 
 	// spawn
-	if (data["agent_id"] && !data["agents"] && !data["status"]) {
+	if (data["agent_id"] && data["status"] === "running") {
 		return new Text(
-			`${theme.fg("success", "✔")} agent spawn → ${theme.fg("accent", data["agent_id"] as string)}`,
+			`${theme.fg("success", "✔")} agent spawn → ${theme.fg("accent", data["agent_id"] as string)} ${theme.fg("dim", "(running)")}`,
 			0,
 			0,
 		);

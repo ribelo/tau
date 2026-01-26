@@ -32,6 +32,19 @@ export interface TaskType {
 	sandbox?: SandboxConfig | undefined;
 }
 
+export interface AgentDefinition {
+	readonly name: string;
+	readonly description: string;
+	/**
+	 * Default model to use.
+	 * - undefined or "inherit": use parent model
+	 */
+	readonly model?: string | "inherit" | undefined;
+	readonly thinking?: ThinkingLevel | undefined;
+	readonly sandbox: SandboxConfig;
+	readonly systemPrompt: string;
+}
+
 export interface ResolvedPolicy {
 	readonly taskType: string;
 	readonly complexity: Complexity;
