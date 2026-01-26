@@ -20,7 +20,6 @@ export function computeSandboxConfigHash(cfg: Required<SandboxConfig>): string {
 function buildSandboxNotice(prefix: "SANDBOX_STATE:" | "SANDBOX_CHANGE:", cfg: Required<SandboxConfig>): string {
 	return [
 		prefix,
-		`v3`,
 		`fs=${cfg.filesystemMode}`,
 		`net=${cfg.networkMode}`,
 		`approval=${cfg.approvalPolicy}`,

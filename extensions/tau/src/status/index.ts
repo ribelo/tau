@@ -82,50 +82,29 @@ type AntigravityUserStatus = {
 	};
 };
 
-type StatusSection<T> =
-	| { ok: true; data: T }
-	| { ok: false; error: string; notConfigured?: boolean };
-
-type StatusMessageDetails = {
-	openai: StatusSection<{
-		email?: string;
-		planType?: string;
-		primary?: RateLimitRow;
-		secondary?: RateLimitRow;
-		hasApiKeyEnv?: boolean;
-	}>;
-	geminiCli: StatusSection<{
-		email?: string;
-		hasApiKeyEnv?: boolean;
-		rows: GeminiRow[];
-	}>;
-	antigravity: StatusSection<{
-		email?: string;
-		plan?: string;
-		promptCredits?: { available: number; monthly: number };
-		flowCredits?: { available: number; monthly: number };
-		rows: AntigravityRow[];
-	}>;
-	fetchedAt: number;
+type StatusRow = {
+	label: string;
+	subLabel?: string;
+	percentLeft?: number;
+	resetsAt?: number;
+	burnRatePerHour?: number;
+	exhaustsAt?: number;
+	exhaustsBeforeReset?: boolean;
+	isDepleted?: boolean;
 };
 
-type RateLimitRow = {
-	label: string;
-	percentLeft?: number | undefined;
-	resetsAt?: number | undefined;
-} & BurnInfo;
+type StatusSectionData = {
+	title: string;
+	statusLine?: string; // e.g. "[Pro] [Key: Configured]"
+	error?: string;
+	notConfigured?: boolean;
+	rows: StatusRow[];
+};
 
-type GeminiRow = {
-	label: string;
-	percentLeft?: number | undefined;
-	resetsAt?: number | undefined;
-} & BurnInfo;
-
-type AntigravityRow = {
-	label: string;
-	percentLeft?: number | undefined;
-	resetsAt?: number | undefined;
-} & BurnInfo;
+type StatusMessageDetails = {
+	sections: StatusSectionData[];
+	fetchedAt: number;
+};
 
 function envVarNameOrMissing(value: string | undefined, envVarName: string): string | undefined {
 	return value ? envVarName : undefined;
@@ -148,16 +127,70 @@ function parseIsoTimeSeconds(iso: string | undefined): number | undefined {
 	return Math.floor(t / 1000);
 }
 
-function openAiRowFromWindow(window: RateLimitWindowSnapshot | null | undefined, fetchedAtMs: number): RateLimitRow | undefined {
+function computeBurnAndExhaust(
+	prev: StatusState | undefined,
+	key: string,
+	fetchedAtMs: number,
+	currentPercentLeft: number | undefined,
+	resetsAt: number | undefined,
+	windowSeconds?: number,
+): { burnRatePerHour?: number; exhaustsAt?: number; exhaustsBeforeReset?: boolean } {
+	if (typeof currentPercentLeft !== "number" || !Number.isFinite(currentPercentLeft)) return {};
+
+	let burnRatePerHour: number | undefined;
+
+	// Method 1: If we know the window size, we can calculate the average burn since window start.
+	if (typeof windowSeconds === "number" && windowSeconds > 0 && typeof resetsAt === "number") {
+		const windowStartMs = resetsAt * 1000 - windowSeconds * 1000;
+		const elapsedMs = fetchedAtMs - windowStartMs;
+		const elapsedHours = elapsedMs / (1000 * 60 * 60);
+		if (elapsedHours > 0.01) {
+			const usedPercent = 100 - currentPercentLeft;
+			burnRatePerHour = usedPercent / elapsedHours;
+		}
+	}
+
+	// Method 2: Fallback to sample-based burn rate if Method 1 fails or isn't available.
+	if ((burnRatePerHour === undefined || burnRatePerHour < 0.01) && prev) {
+		const prevPercentLeft = prev.values[key]?.percentLeft;
+		if (typeof prevPercentLeft === "number" && Number.isFinite(prevPercentLeft)) {
+			const elapsedMs = fetchedAtMs - prev.fetchedAt;
+			const elapsedHours = elapsedMs / (1000 * 60 * 60);
+			if (elapsedHours > 0.01) {
+				const usedPercent = prevPercentLeft - currentPercentLeft;
+				if (usedPercent > 0) {
+					burnRatePerHour = usedPercent / elapsedHours;
+				}
+			}
+		}
+	}
+
+	if (typeof burnRatePerHour !== "number" || !Number.isFinite(burnRatePerHour) || burnRatePerHour < 0.01) {
+		return {};
+	}
+
+	const exhaustHours = currentPercentLeft / burnRatePerHour;
+	const exhaustsAtMs = fetchedAtMs + exhaustHours * 60 * 60 * 1000;
+	const exhaustsAt = Math.floor(exhaustsAtMs / 1000);
+	const exhaustsBeforeReset = typeof resetsAt === "number" ? exhaustsAt < resetsAt : undefined;
+
+	return { burnRatePerHour, exhaustsAt, exhaustsBeforeReset };
+}
+
+function mapOpenAiRow(
+	window: RateLimitWindowSnapshot | null | undefined,
+	prev: StatusState | undefined,
+	fetchedAtMs: number,
+): StatusRow | undefined {
 	if (!window) return undefined;
 
 	const seconds = typeof window.limit_window_seconds === "number" ? window.limit_window_seconds : undefined;
 	const minutes = seconds && seconds > 0 ? Math.ceil(seconds / 60) : undefined;
 	const label = (() => {
-		if (minutes === 300) return "5h limit";
-		if (minutes === 10080) return "Weekly limit";
-		if (minutes === 43200) return "Monthly limit";
-		if (minutes) return `${minutes}m limit`;
+		if (minutes === 300) return "5h Limit";
+		if (minutes === 10080) return "Weekly Limit";
+		if (minutes === 43200) return "Monthly Limit";
+		if (minutes) return `${minutes}m Limit`;
 		return "Limit";
 	})();
 
@@ -165,71 +198,15 @@ function openAiRowFromWindow(window: RateLimitWindowSnapshot | null | undefined,
 	const usedPercent = typeof window.used_percent === "number" ? window.used_percent : undefined;
 	const percentLeft = percentLeftFromUsedPercent(usedPercent);
 
-	let burnRatePerHour: number | undefined;
-	let exhaustsAt: number | undefined;
-	let exhaustsBeforeReset: boolean | undefined;
+	const metrics = computeBurnAndExhaust(prev, `openai:${label}`, fetchedAtMs, percentLeft, resetsAt, seconds);
 
-	if (
-		typeof usedPercent === "number" &&
-		Number.isFinite(usedPercent) &&
-		usedPercent > 0 &&
-		typeof seconds === "number" &&
-		Number.isFinite(seconds) &&
-		seconds > 0 &&
-		typeof resetsAt === "number" &&
-		Number.isFinite(resetsAt)
-	) {
-		const windowStartMs = (resetsAt - seconds) * 1000;
-		const elapsedMs = fetchedAtMs - windowStartMs;
-		const elapsedHours = elapsedMs / (1000 * 60 * 60);
-		if (elapsedHours > 0) {
-			burnRatePerHour = usedPercent / elapsedHours;
-			if (Number.isFinite(burnRatePerHour) && burnRatePerHour > 0.01 && typeof percentLeft === "number") {
-				const exhaustHours = percentLeft / burnRatePerHour;
-				const exhaustMs = fetchedAtMs + exhaustHours * 60 * 60 * 1000;
-				exhaustsAt = Math.floor(exhaustMs / 1000);
-				exhaustsBeforeReset = exhaustsAt < resetsAt;
-			}
-		}
-	}
-
-	return { label, percentLeft, resetsAt, burnRatePerHour, exhaustsAt, exhaustsBeforeReset };
-}
-
-function computeBurnInfo(
-	prev: StatusState | undefined,
-	key: string,
-	fetchedAtMs: number,
-	currentPercentLeft: number | undefined,
-	resetsAt: number | undefined,
-): BurnInfo {
-	if (typeof currentPercentLeft !== "number" || !Number.isFinite(currentPercentLeft)) return {};
-	if (!prev) return {};
-
-	const prevPercentLeft = prev.values[key]?.percentLeft;
-	if (typeof prevPercentLeft !== "number" || !Number.isFinite(prevPercentLeft)) return {};
-
-	const elapsedMs = fetchedAtMs - prev.fetchedAt;
-	if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) return {};
-	const elapsedHours = elapsedMs / (1000 * 60 * 60);
-	if (elapsedHours < 1 / 3600) return {};
-
-	const usedPercent = prevPercentLeft - currentPercentLeft;
-	// No delta => we can't infer burn, don't show anything.
-	if (!Number.isFinite(usedPercent) || usedPercent <= 0) return {};
-
-	const burnRatePerHour = usedPercent / elapsedHours;
-	if (!Number.isFinite(burnRatePerHour) || burnRatePerHour < 0.01) return {};
-
-	const exhaustHours = currentPercentLeft / burnRatePerHour;
-	if (!Number.isFinite(exhaustHours) || exhaustHours <= 0) {
-		return { burnRatePerHour };
-	}
-
-	const exhaustsAtMs = fetchedAtMs + exhaustHours * 60 * 60 * 1000;
-	const exhaustsAt = Math.floor(exhaustsAtMs / 1000);
-	const exhaustsBeforeReset = typeof resetsAt === "number" ? exhaustsAt < resetsAt : undefined;
-	return { burnRatePerHour, exhaustsAt, exhaustsBeforeReset };
+	return {
+		label,
+		percentLeft,
+		resetsAt,
+		isDepleted: percentLeft === 0,
+		...metrics,
+	};
 }
 
 function renderProgressBar(percentLeft: number | undefined, width: number): string {
@@ -259,103 +236,122 @@ function formatTime(tsSeconds: number): { time: string; date?: string } {
 	return { time, date: `${day} ${month}` };
 }
 
-function wrapRow(
-	label: string,
-	value: string,
-	extraLines: string[] | undefined,
-	options: { labelWidth: number; innerWidth: number },
-): string[] {
-	const labelCol = `${label}:`;
-	const labelPadded = labelCol + " ".repeat(Math.max(0, options.labelWidth - visibleWidth(labelCol)));
-	const prefix = `  ${labelPadded} `;
-
-	const first = prefix + value;
+function buildStatusLines(section: StatusSectionData, width: number, th: Theme, fetchedAtMs: number): string[] {
+	const innerWidth = Math.max(1, width - 2);
 	const lines: string[] = [];
-	if (visibleWidth(first) <= options.innerWidth) {
-		lines.push(first);
-	} else {
-		// Hard truncate value if needed.
-		const maxValueWidth = Math.max(0, options.innerWidth - visibleWidth(prefix));
-		lines.push(prefix + value.slice(0, maxValueWidth));
+
+	if (section.error) {
+		const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
+		lines.push(`  ${section.notConfigured ? th.fg("dim", "Not configured") : `${th.fg("error", "Error:")} ${oneLine(section.error)}`}`);
+		return lines;
 	}
 
-	if (extraLines && extraLines.length > 0) {
-		for (const extra of extraLines) {
-			const extraPrefix = `  ${" ".repeat(options.labelWidth)} `;
-			const extraLine = extraPrefix + extra;
-			if (visibleWidth(extraLine) <= options.innerWidth) {
-				lines.push(extraLine);
-			} else {
-				const maxExtraWidth = Math.max(0, options.innerWidth - visibleWidth(extraPrefix));
-				lines.push(extraPrefix + extra.slice(0, maxExtraWidth));
-			}
+	if (section.rows.length === 0 && section.notConfigured) {
+		lines.push(`  ${th.fg("dim", "Not configured")}`);
+		return lines;
+	}
+
+	for (let i = 0; i < section.rows.length; i++) {
+		const row = section.rows[i]!;
+		if (i > 0) lines.push("");
+
+		// Title line
+		lines.push(` ${row.label}${row.subLabel ? th.fg("dim", ` (${row.subLabel})`) : ""}`);
+
+		// Progress bar line
+		const bar = renderProgressBar(row.percentLeft, 20);
+		const pct = typeof row.percentLeft === "number" ? Math.round(row.percentLeft) : undefined;
+		const percent = typeof pct === "number" ? `${pct}% Left` : "?% Left";
+		const depletedText = row.isDepleted ? th.fg("error", " (Depleted)") : "";
+		lines.push(` ${bar} ${percent}${depletedText}`);
+
+		// Metadata line (Burn, Reset, Depletes)
+		const metadata: string[] = [];
+		if (typeof row.resetsAt === "number") {
+			const fmt = formatTime(row.resetsAt);
+			metadata.push(`Reset: ${fmt.date ? `${fmt.date} ${fmt.time}` : fmt.time}`);
+		}
+
+		if (typeof row.burnRatePerHour === "number" && Number.isFinite(row.burnRatePerHour)) {
+			metadata.push(`Burn: ${row.burnRatePerHour.toFixed(1)}%/h`);
+		}
+
+		if (row.isDepleted) {
+			metadata.push(th.fg("error", "Limit Reached. Waiting for reset."));
+		} else if (typeof row.exhaustsAt === "number") {
+			const fmt = formatTime(row.exhaustsAt);
+			const base = fmt.date ? `${fmt.date} ${fmt.time}` : fmt.time;
+			const color = row.exhaustsBeforeReset ? "error" : "success";
+			const label = row.exhaustsBeforeReset ? "Depletes" : "Safe";
+			metadata.push(`${label}: ${th.fg(color, base)}`);
+		} else if (typeof row.percentLeft === "number" && row.percentLeft === 100) {
+			metadata.push(th.fg("success", "Safe"));
+		}
+
+		if (metadata.length > 0) {
+			lines.push(` ${th.fg("dim", "└─")} ${metadata.join(th.fg("dim", " · "))}`);
 		}
 	}
 
 	return lines;
 }
 
-function buildLimitRow(
-	row: {
-		label: string;
-		percentLeft?: number | undefined;
-		resetsAt?: number | undefined;
-		burnRatePerHour?: number | undefined;
-		exhaustsAt?: number | undefined;
-		exhaustsBeforeReset?: boolean | undefined;
-	},
-	fetchedAtMs: number,
-): { value: string; extraLines?: string[] | undefined } {
-	const bar = renderProgressBar(row.percentLeft, 20);
-	const pct = typeof row.percentLeft === "number" ? Math.round(row.percentLeft) : undefined;
-	const percent = typeof pct === "number" ? `${pct}% left` : "? left";
+class StatusCard implements Component {
+	private cachedWidth = -1;
+	private cachedLines: string[] = [];
 
-	const value = `${bar} ${percent}`;
-	const extraLines: string[] = [];
+	constructor(
+		private details: StatusMessageDetails,
+		private theme: Theme,
+	) {}
 
-	// Reset line
-	if (typeof row.resetsAt === "number") {
-		const fmt = formatTime(row.resetsAt);
-		const base = fmt.date ? `resets ${fmt.time} on ${fmt.date}` : `resets ${fmt.time}`;
+	render(width: number): string[] {
+		if (width <= 0) return [""];
+		if (this.cachedWidth === width && this.cachedLines.length > 0) return this.cachedLines;
 
-		const compare =
-			typeof row.exhaustsAt === "number" && typeof row.exhaustsBeforeReset === "boolean"
-				? row.exhaustsBeforeReset
-					? "empty before reset"
-					: "empty after reset"
-				: undefined;
+		const th = this.theme;
+		const innerWidth = Math.max(1, width - 2);
+		const lines: string[] = [];
 
-		extraLines.push(compare ? `(${base}; ${compare})` : `(${base})`);
-	}
+		const pad = (s: string, len: number) => {
+			const w = visibleWidth(s);
+			return s + " ".repeat(Math.max(0, len - w));
+		};
 
-	// Pace line (always available when we know reset + remaining)
-	if (typeof row.resetsAt === "number" && typeof row.percentLeft === "number") {
-		const hoursToReset = (row.resetsAt * 1000 - fetchedAtMs) / (1000 * 60 * 60);
-		if (Number.isFinite(hoursToReset) && hoursToReset > 0.01) {
-			const pace = row.percentLeft / hoursToReset;
-			if (Number.isFinite(pace) && pace > 0) {
-				extraLines.push(`pace ${pace.toFixed(1)}%/h to empty at reset`);
+		const drawBox = (section: StatusSectionData) => {
+			// Header
+			const title = ` ${th.bold(section.title)}`;
+			const status = section.statusLine ? `${section.statusLine} ` : "";
+			const headerPadding = innerWidth - visibleWidth(title) - visibleWidth(status);
+			
+			lines.push(th.fg("border", "╭") + th.fg("border", "─".repeat(innerWidth)) + th.fg("border", "╮"));
+			lines.push(th.fg("border", "│") + title + " ".repeat(Math.max(0, headerPadding)) + status + th.fg("border", "│"));
+			lines.push(th.fg("border", "├") + th.fg("border", "─".repeat(innerWidth)) + th.fg("border", "┤"));
+
+			// Content
+			const content = buildStatusLines(section, width, th, this.details.fetchedAt);
+			for (const line of content) {
+				lines.push(th.fg("border", "│") + pad(line, innerWidth) + th.fg("border", "│"));
 			}
+
+			// Footer
+			lines.push(th.fg("border", "╰") + th.fg("border", "─".repeat(innerWidth)) + th.fg("border", "╯"));
+		};
+
+		for (let i = 0; i < this.details.sections.length; i++) {
+			if (i > 0) lines.push("");
+			drawBox(this.details.sections[i]!);
 		}
+
+		this.cachedWidth = width;
+		this.cachedLines = lines;
+		return lines;
 	}
 
-	// Burn + empty line (only when we have burn)
-	const burn =
-		typeof row.burnRatePerHour === "number" && Number.isFinite(row.burnRatePerHour)
-			? `burn ${row.burnRatePerHour.toFixed(1)}%/h`
-			: undefined;
-
-	const empty = (() => {
-		if (typeof row.exhaustsAt !== "number") return undefined;
-		const fmt = formatTime(row.exhaustsAt);
-		return fmt.date ? `empty ${fmt.time} on ${fmt.date}` : `empty ${fmt.time}`;
-	})();
-
-	if (burn || empty) {
-		extraLines.push([burn, empty].filter(Boolean).join(" · "));
+	invalidate(): void {
+		this.cachedWidth = -1;
+		this.cachedLines = [];
 	}
-
-	return { value, extraLines: extraLines.length > 0 ? extraLines : undefined };
 }
 
 function parseGoogleProjectToken(apiKey: string): { token: string; projectId: string } | null {
@@ -375,12 +371,10 @@ async function fetchGeminiQuota(token: string, projectId: string): Promise<Gemin
 		headers: {
 			Authorization: `Bearer ${token}`,
 			"Content-Type": "application/json",
-			// Match Codex headers for this endpoint.
 			"User-Agent": "google-api-nodejs-client/9.15.1",
 			"X-Goog-Api-Client": "gl-node/22.17.0",
 			"Client-Metadata": "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI",
 		},
-		// IMPORTANT: omit user_agent (null breaks proto JSON parsing and yields "Invalid JSON")
 		body: JSON.stringify({ project: projectId }),
 	});
 
@@ -695,175 +689,6 @@ function formatPlanType(planType: string | undefined): string | undefined {
 	return t.charAt(0).toUpperCase() + t.slice(1);
 }
 
-function buildStatusText(details: StatusMessageDetails, width: number): string[] {
-	const innerWidth = Math.max(1, width - 2);
-	const lines: string[] = [];
-
-	const pushSectionTitle = (title: string) => {
-		lines.push(` ${title}`);
-	};
-
-	const pushBlank = () => {
-		lines.push("");
-	};
-
-	// OpenAI
-	const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
-
-	pushSectionTitle("OpenAI");
-	if (!details.openai.ok) {
-		lines.push(`  ${details.openai.notConfigured ? "Not configured" : `Error: ${oneLine(details.openai.error)}`}`);
-	} else {
-		const openai = details.openai.data;
-		const labelWidth = Math.max(
-			...[
-				"ChatGPT",
-				"API Key",
-				openai.primary?.label ?? "",
-				openai.secondary?.label ?? "",
-			]
-				.filter(Boolean)
-				.map((s) => visibleWidth(`${s}:`)),
-		);
-
-		const chatgptValue = (() => {
-			const email = openai.email;
-			const planLabel = formatPlanType(openai.planType);
-			const plan = planLabel ? `(${planLabel})` : undefined;
-			if (email && plan) return `${email} ${plan}`;
-			if (email) return email;
-			if (plan) return plan;
-			return "(not logged in)";
-		})();
-
-		lines.push(...wrapRow("ChatGPT", chatgptValue, undefined, { labelWidth, innerWidth }));
-
-		const apiKeyLine = envVarNameOrMissing(openai.hasApiKeyEnv ? "1" : undefined, "OPENAI_API_KEY");
-		lines.push(...wrapRow("API Key", apiKeyLine ?? "(not set)", undefined, { labelWidth, innerWidth }));
-
-		if (openai.primary) {
-			const row = buildLimitRow(openai.primary, details.fetchedAt);
-			lines.push(...wrapRow(openai.primary.label, row.value, row.extraLines, { labelWidth, innerWidth }));
-		}
-		if (openai.secondary) {
-			const row = buildLimitRow(openai.secondary, details.fetchedAt);
-			lines.push(...wrapRow(openai.secondary.label, row.value, row.extraLines, { labelWidth, innerWidth }));
-		}
-	}
-
-	pushBlank();
-
-	// Gemini CLI
-	pushSectionTitle("Gemini CLI");
-	if (!details.geminiCli.ok) {
-		lines.push(`  ${details.geminiCli.notConfigured ? "Not configured" : `Error: ${oneLine(details.geminiCli.error)}`}`);
-	} else {
-		const gemini = details.geminiCli.data;
-		const labels = ["OAuth", "API Key", ...gemini.rows.map((r) => r.label)];
-		const labelWidth = Math.max(...labels.map((s) => visibleWidth(`${s}:`)));
-
-		lines.push(...wrapRow("OAuth", gemini.email ?? "(not logged in)", undefined, { labelWidth, innerWidth }));
-		const apiKeyLine = envVarNameOrMissing(gemini.hasApiKeyEnv ? "1" : undefined, "GEMINI_API_KEY");
-		lines.push(...wrapRow("API Key", apiKeyLine ?? "(not set)", undefined, { labelWidth, innerWidth }));
-
-		for (const r of gemini.rows) {
-			const row = buildLimitRow({ label: r.label, percentLeft: r.percentLeft, resetsAt: r.resetsAt }, details.fetchedAt);
-			lines.push(...wrapRow(r.label, row.value, row.extraLines, { labelWidth, innerWidth }));
-		}
-	}
-
-	pushBlank();
-
-	// Antigravity
-	pushSectionTitle("Antigravity");
-	if (!details.antigravity.ok) {
-		lines.push(
-			`  ${details.antigravity.notConfigured ? "Not running" : `Error: ${oneLine(details.antigravity.error)}`}`,
-		);
-	} else {
-		const ag = details.antigravity.data;
-		const labels = [
-			"OAuth",
-			"Plan",
-			"Prompt credits",
-			"Flow credits",
-			...ag.rows.map((r) => r.label),
-		];
-		const labelWidth = Math.max(...labels.map((s) => visibleWidth(`${s}:`)));
-
-		lines.push(...wrapRow("OAuth", ag.email ?? "(unknown)", undefined, { labelWidth, innerWidth }));
-		if (ag.plan) {
-			lines.push(...wrapRow("Plan", ag.plan, undefined, { labelWidth, innerWidth }));
-		}
-		if (ag.promptCredits) {
-			lines.push(
-				...wrapRow(
-					"Prompt credits",
-					`${ag.promptCredits.available} / ${ag.promptCredits.monthly} monthly`,
-					undefined,
-					{ labelWidth, innerWidth },
-				),
-			);
-		}
-		if (ag.flowCredits) {
-			lines.push(
-				...wrapRow(
-					"Flow credits",
-					`${ag.flowCredits.available} / ${ag.flowCredits.monthly} monthly`,
-					undefined,
-					{ labelWidth, innerWidth },
-				),
-			);
-		}
-
-		for (const r of ag.rows) {
-			const row = buildLimitRow({ label: r.label, percentLeft: r.percentLeft, resetsAt: r.resetsAt }, details.fetchedAt);
-			lines.push(...wrapRow(r.label, row.value, row.extraLines, { labelWidth, innerWidth }));
-		}
-	}
-
-	// Fit to width
-	return lines.map((l) => (visibleWidth(l) <= innerWidth ? l : l.slice(0, innerWidth)));
-}
-
-class StatusCard implements Component {
-	private cachedWidth = -1;
-	private cachedLines: string[] = [];
-
-	constructor(
-		private details: StatusMessageDetails,
-		private theme: Theme,
-	) {}
-
-	render(width: number): string[] {
-		if (width <= 0) return [""];
-		if (this.cachedWidth === width && this.cachedLines.length > 0) return this.cachedLines;
-
-		const th = this.theme;
-		const innerWidth = Math.max(1, width - 2);
-		const content = buildStatusText(this.details, width);
-
-		const pad = (s: string, len: number) => s + " ".repeat(Math.max(0, len - visibleWidth(s)));
-		const row = (contentLine: string) => th.fg("border", "│") + pad(contentLine, innerWidth) + th.fg("border", "│");
-
-		const lines: string[] = [];
-		lines.push(th.fg("border", `╭${"─".repeat(innerWidth)}╮`));
-		for (const line of content) {
-			lines.push(row(line));
-		}
-		lines.push(th.fg("border", `╰${"─".repeat(innerWidth)}╯`));
-
-		this.cachedWidth = width;
-		this.cachedLines = lines;
-		return lines;
-	}
-
-	invalidate(): void {
-		this.cachedWidth = -1;
-		this.cachedLines = [];
-	}
-}
-
 export default function initStatus(pi: ExtensionAPI, state: TauState) {
 	pi.registerMessageRenderer<StatusMessageDetails>(STATUS_MESSAGE_TYPE, (message, _options, theme) => {
 		const details = message.details as StatusMessageDetails | undefined;
@@ -891,11 +716,9 @@ export default function initStatus(pi: ExtensionAPI, state: TauState) {
 
 			ctx.ui.setStatus("tau:status", "Fetching quotas...");
 			try {
-				// Avoid interfering with an active agent run. This ensures we don't inject steering/follow-up.
 				await ctx.waitForIdle();
 
 				const fetchedAt = Date.now();
-
 				const prevState = (() => {
 					const data = state.persisted?.status;
 					if (!data || typeof data !== "object") return undefined;
@@ -907,41 +730,36 @@ export default function initStatus(pi: ExtensionAPI, state: TauState) {
 
 				const nextState: StatusState = { fetchedAt, values: {} };
 
-				const openaiPromise = (async (): Promise<StatusMessageDetails["openai"]> => {
+				const openaiPromise = (async (): Promise<StatusSectionData> => {
 					const cred = ctx.modelRegistry.authStorage.get("openai-codex") as
 						| { type: string; access?: string; accountId?: string; email?: string }
 						| undefined;
 					const token = await ctx.modelRegistry.getApiKeyForProvider("openai-codex");
 					if (!token) {
-						return { ok: false, error: "Not logged in", notConfigured: true };
+						return { title: "OpenAI", notConfigured: true, rows: [] };
 					}
 
 					const usage = await fetchOpenAiUsage(token, { accountId: cred?.accountId });
-					const primary = openAiRowFromWindow(usage.rate_limit?.primary_window ?? undefined, fetchedAt);
-					const secondary = openAiRowFromWindow(usage.rate_limit?.secondary_window ?? undefined, fetchedAt);
+					const plan = formatPlanType(usage.plan_type);
+					const hasKey = Boolean(process.env.OPENAI_API_KEY);
+					const statusLine = `[${plan ?? "Pro"}] [Key: ${hasKey ? "Configured" : "Not set"}]`;
 
-					const email = (() => {
-						if (cred?.email) return cred.email;
-						const payload = decodeJwtPayload(token);
-						const jwtEmail = payload && typeof payload.email === "string" ? payload.email : undefined;
-						return jwtEmail;
-					})();
+					const rows: StatusRow[] = [];
+					const p = mapOpenAiRow(usage.rate_limit?.primary_window, prevState, fetchedAt);
+					if (p) rows.push(p);
+					const s = mapOpenAiRow(usage.rate_limit?.secondary_window, prevState, fetchedAt);
+					if (s) rows.push(s);
 
-					return {
-						ok: true,
-						data: {
-							email,
-							planType: usage.plan_type,
-							primary,
-							secondary,
-							hasApiKeyEnv: Boolean(process.env.OPENAI_API_KEY),
-						},
-					};
+					for (const r of rows) {
+						if (typeof r.percentLeft === "number") {
+							nextState.values[`openai:${r.label}`] = { percentLeft: r.percentLeft };
+						}
+					}
+
+					return { title: "OpenAI", statusLine, rows };
 				})();
 
-				const geminiPromise = (async (): Promise<StatusMessageDetails["geminiCli"]> => {
-					// Prefer real Gemini CLI OAuth.
-					// Fallback: if only Antigravity OAuth is configured, try using it to fetch quota buckets as well.
+				const geminiPromise = (async (): Promise<StatusSectionData> => {
 					let provider: "google-gemini-cli" | "google-antigravity" = "google-gemini-cli";
 					let apiKey = await ctx.modelRegistry.getApiKeyForProvider(provider);
 					if (!apiKey) {
@@ -950,128 +768,122 @@ export default function initStatus(pi: ExtensionAPI, state: TauState) {
 					}
 
 					const cred = ctx.modelRegistry.authStorage.get(provider) as | { type: string; email?: string } | undefined;
+					const statusLine = `[${cred?.email ? cred.email : "Not logged in"}]`;
 
 					if (!apiKey) {
-						return { ok: false, error: "Not logged in", notConfigured: true };
+						return { title: "Gemini CLI", notConfigured: true, rows: [], statusLine };
 					}
 
 					const parsed = parseGoogleProjectToken(apiKey);
 					if (!parsed) {
-						return { ok: false, error: "Missing Google projectId" };
+						return { title: "Gemini CLI", error: "Missing Google projectId", rows: [], statusLine };
 					}
 
 					const quota = await fetchGeminiQuota(parsed.token, parsed.projectId);
 					const buckets = quota.buckets ?? [];
-					const rows: GeminiRow[] = buckets
-						.filter((b) => b.modelId && b.tokenType)
-						.map((b) => {
-							const model = b.modelId ?? "";
-							const tokenType = b.tokenType ?? "";
-							return {
-								label: `${model} (${tokenType})`,
-								percentLeft: percentLeftFromRemainingFraction(b.remainingFraction),
-								resetsAt: parseIsoTimeSeconds(b.resetTime),
-							};
-						});
 
-					rows.sort((a, b) => a.label.localeCompare(b.label));
+					const groupRows: StatusRow[] = [];
+					const tiers = [
+						{ label: "Flash Tier", subLabel: "2.0, 2.5, 3-Pre", pattern: /flash/i, exclude: /lite/i },
+						{ label: "Pro Tier", subLabel: "2.5, 3-Pre", pattern: /pro/i },
+						{ label: "Lite Tier", subLabel: "2.5-Lite", pattern: /lite/i },
+					];
 
-					return {
-						ok: true,
-						data: {
-							email: cred?.email,
-							hasApiKeyEnv: Boolean(process.env.GEMINI_API_KEY),
-							rows,
-						},
-					};
+					for (const tier of tiers) {
+						const tierBuckets = buckets.filter(b => 
+							b.modelId && tier.pattern.test(b.modelId) && (!tier.exclude || !tier.exclude.test(b.modelId))
+						);
+						if (tierBuckets.length > 0) {
+							const b = tierBuckets[0]!;
+							const percentLeft = percentLeftFromRemainingFraction(b.remainingFraction) ?? 0;
+							const resetsAt = parseIsoTimeSeconds(b.resetTime);
+							const metrics = computeBurnAndExhaust(prevState, `gemini-cli:${tier.label}`, fetchedAt, percentLeft, resetsAt, 86400);
+							groupRows.push({
+								label: tier.label,
+								subLabel: tier.subLabel,
+								percentLeft,
+								resetsAt,
+								isDepleted: percentLeft === 0,
+								...metrics
+							});
+							nextState.values[`gemini-cli:${tier.label}`] = { percentLeft };
+						}
+					}
+
+					return { title: "Gemini CLI", statusLine, rows: groupRows };
 				})();
 
-				const antigravityPromise = (async (): Promise<StatusMessageDetails["antigravity"]> => {
+				const antigravityPromise = (async (): Promise<StatusSectionData> => {
 					const status = await fetchAntigravityStatus(pi);
 					const user = status.userStatus;
+					const email = user?.email ?? "Unknown";
 					const planName = user?.planStatus?.planInfo?.planName;
 					const tierName = user?.userTier?.name;
 					const plan = [planName, tierName].filter(Boolean).join(" (") + (planName && tierName ? ")" : "");
-
-					const promptAvail = user?.planStatus?.availablePromptCredits;
-					const promptMonthly = user?.planStatus?.planInfo?.monthlyPromptCredits;
-					const flowAvail = user?.planStatus?.availableFlowCredits;
-					const flowMonthly = user?.planStatus?.planInfo?.monthlyFlowCredits;
+					const statusLine = `[${email}]${plan ? ` [${plan}]` : ""}`;
 
 					const configs = user?.cascadeModelConfigData?.clientModelConfigs ?? [];
-					const rows: AntigravityRow[] = configs
-						.filter((c) => c.label && c.quotaInfo?.remainingFraction !== undefined)
-						.map((c) => ({
-							label: c.label ?? c.modelOrAlias?.model ?? "(unknown)",
-							percentLeft: percentLeftFromRemainingFraction(c.quotaInfo?.remainingFraction),
-							resetsAt: parseIsoTimeSeconds(c.quotaInfo?.resetTime),
-						}));
+					
+					const rows: StatusRow[] = [];
+					
+					const proConfigs = configs.filter(c => c.label?.toLowerCase().includes("pro"));
+					if (proConfigs.length > 0) {
+						const c = proConfigs[0]!;
+						const percentLeft = percentLeftFromRemainingFraction(c.quotaInfo?.remainingFraction) ?? 0;
+						const resetsAt = parseIsoTimeSeconds(c.quotaInfo?.resetTime);
+						const metrics = computeBurnAndExhaust(prevState, `antigravity:Pro`, fetchedAt, percentLeft, resetsAt, 18000); // 5h heuristic
+						rows.push({
+							label: "Gemini 3 Pro",
+							subLabel: "High/Low",
+							percentLeft,
+							resetsAt,
+							isDepleted: percentLeft === 0,
+							...metrics
+						});
+						nextState.values[`antigravity:Pro`] = { percentLeft };
+					}
 
-					rows.sort((a, b) => a.label.localeCompare(b.label));
+					const flashConfigs = configs.filter(c => c.label?.toLowerCase().includes("flash"));
+					if (flashConfigs.length > 0) {
+						const c = flashConfigs[0]!;
+						const percentLeft = percentLeftFromRemainingFraction(c.quotaInfo?.remainingFraction) ?? 0;
+						const resetsAt = parseIsoTimeSeconds(c.quotaInfo?.resetTime);
+						const metrics = computeBurnAndExhaust(prevState, `antigravity:Flash`, fetchedAt, percentLeft, resetsAt, 18000); // 5h heuristic
+						rows.push({
+							label: "Gemini 3 Flash",
+							percentLeft,
+							resetsAt,
+							isDepleted: percentLeft === 0,
+							...metrics
+						});
+						nextState.values[`antigravity:Flash`] = { percentLeft };
+					} else {
+						rows.push({
+							label: "Gemini 3 Flash",
+							percentLeft: 0,
+							isDepleted: true,
+						});
+					}
 
-					return {
-						ok: true,
-						data: {
-							email: user?.email,
-							plan: plan || undefined,
-							promptCredits:
-								typeof promptAvail === "number" && typeof promptMonthly === "number"
-									? { available: promptAvail, monthly: promptMonthly }
-									: undefined,
-							flowCredits:
-								typeof flowAvail === "number" && typeof flowMonthly === "number"
-									? { available: flowAvail, monthly: flowMonthly }
-									: undefined,
-							rows,
-						},
-					};
+					return { title: "Antigravity", statusLine, rows };
 				})();
 
 				const toErrorString = (e: unknown): string => {
 					if (e instanceof Error) {
-						return e.stack || e.message;
+						return e.message;
 					}
 					return String(e);
 				};
 
-				const [openai, geminiCli, antigravity] = await Promise.all([
-					openaiPromise.catch((e: unknown) => ({ ok: false, error: toErrorString(e) }) as StatusMessageDetails["openai"]),
-					geminiPromise.catch((e: unknown) => ({ ok: false, error: toErrorString(e) }) as StatusMessageDetails["geminiCli"]),
-					antigravityPromise.catch((e: unknown) => {
-						const msg = toErrorString(e);
-						const notConfigured = /process not found|language server process not found/i.test(msg);
-						return { ok: false, error: msg, notConfigured } as StatusMessageDetails["antigravity"];
-					}),
-				]);
-
-				const applyBurn = (key: string, row: BurnInfo & { percentLeft?: number | undefined; resetsAt?: number | undefined }) => {
-					if (!row) return;
-					if (typeof row.percentLeft === "number" && Number.isFinite(row.percentLeft)) {
-						nextState.values[key] = { percentLeft: row.percentLeft };
-						Object.assign(row, computeBurnInfo(prevState, key, fetchedAt, row.percentLeft, row.resetsAt));
-					}
-				};
-
-				if (openai.ok) {
-					if (openai.data.primary && typeof openai.data.primary.percentLeft === "number") {
-						nextState.values[`openai:${openai.data.primary.label}`] = { percentLeft: openai.data.primary.percentLeft };
-					}
-					if (openai.data.secondary && typeof openai.data.secondary.percentLeft === "number") {
-						nextState.values[`openai:${openai.data.secondary.label}`] = { percentLeft: openai.data.secondary.percentLeft };
-					}
-				}
-
-				if (geminiCli.ok) {
-					for (const row of geminiCli.data.rows) {
-						applyBurn(`gemini-cli:${row.label}`, row);
-					}
-				}
-
-				if (antigravity.ok) {
-					for (const row of antigravity.data.rows) {
-						applyBurn(`antigravity:${row.label}`, row);
-					}
-				}
+				const results = await Promise.allSettled([openaiPromise, geminiPromise, antigravityPromise]);
+				const sections: StatusSectionData[] = results.map((r, i) => {
+					if (r.status === "fulfilled") return r.value;
+					const titles = ["OpenAI", "Gemini CLI", "Antigravity"];
+					const title = titles[i]!;
+					const msg = toErrorString(r.reason);
+					const notConfigured = /process not found|language server process not found|not logged in/i.test(msg);
+					return { title, error: msg, notConfigured, rows: [] };
+				});
 
 				if (Object.keys(nextState.values).length > 0) {
 					updatePersistedState(pi, state, { status: nextState });
@@ -1083,9 +895,7 @@ export default function initStatus(pi: ExtensionAPI, state: TauState) {
 						content: "",
 						display: true,
 						details: {
-							openai,
-							geminiCli,
-							antigravity,
+							sections,
 							fetchedAt,
 						} satisfies StatusMessageDetails,
 					},
