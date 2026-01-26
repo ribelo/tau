@@ -141,7 +141,7 @@ export async function checkBashApproval(
 		if (approved) {
 			return { approved: true, runUnsandboxed: true };
 		}
-		return { approved: false, reason: "User denied escalation" };
+		return { approved: false, reason: "Escalation not approved (declined or timed out)" };
 	}
 
 	// "unless-trusted" - auto-approve safe commands, prompt for unsafe
@@ -163,7 +163,7 @@ export async function checkBashApproval(
 			if (approved) {
 				return { approved: true, runUnsandboxed: true };
 			}
-			return { approved: false, reason: "User denied escalation" };
+			return { approved: false, reason: "Escalation not approved (declined or timed out)" };
 		}
 
 		// Check if command is safe
@@ -188,7 +188,7 @@ export async function checkBashApproval(
 		if (approved) {
 			return { approved: true, runUnsandboxed: false };
 		}
-		return { approved: false, reason: "User denied command" };
+		return { approved: false, reason: "Command not approved (declined or timed out)" };
 	}
 
 	// Unknown policy - deny
@@ -231,7 +231,7 @@ export async function checkFilesystemApproval(
 	if (approved) {
 		return { approved: true };
 	}
-	return { approved: false, reason: "User denied" };
+	return { approved: false, reason: "Not approved (declined or timed out)" };
 }
 
 /**
@@ -278,5 +278,5 @@ export async function requestApprovalAfterFailure(
 	if (approved) {
 		return { approved: true, runUnsandboxed: true };
 	}
-	return { approved: false, reason: "User denied retry" };
+	return { approved: false, reason: "Retry not approved (declined or timed out)" };
 }
