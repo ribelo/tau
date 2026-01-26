@@ -1008,7 +1008,8 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
     if (sessionState.systemPromptInjected) return;
 
     sessionState.systemPromptInjected = true;
-    sessionState.lastCommunicatedHash = computeSandboxConfigHash(effectiveConfig);
+    // Don't set lastCommunicatedHash here - let the context hook do it
+    // so that SANDBOX_STATE gets injected into the first user message.
     sessionState.pendingSandboxNotice = undefined;
     persistState();
 
