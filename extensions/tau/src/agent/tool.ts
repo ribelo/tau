@@ -3,7 +3,7 @@ import { Effect } from "effect";
 import { StringEnum } from "@mariozechner/pi-ai";
 import type { Model, Api } from "@mariozechner/pi-ai";
 import { AgentControl, type ControlSpawnOptions } from "./services.js";
-import { TaskRegistry } from "./registry.js";
+import { AgentRegistry } from "./agent-registry.js";
 import type { AgentId } from "./types.js";
 import { renderAgentCall, renderAgentResult } from "./render.js";
 import type { ApprovalBroker } from "./approval-broker.js";
@@ -13,8 +13,8 @@ export const AgentParams = Type.Object({
 		description: "Action: spawn (create), send (message existing), wait (block until done), close (terminate), list (show all)",
 	}),
 	// spawn
-	type: Type.Optional(Type.String({ 
-		description: "Task type from registry: code, search, review, planning, advisor, refactor, bash, custom" 
+	agent: Type.Optional(Type.String({ 
+		description: "Agent name to spawn (e.g., oracle, finder, rush, general, review, painter, librarian)" 
 	})),
 	message: Type.Optional(
 		Type.String({ description: "Task instructions for the agent" }),
@@ -22,11 +22,6 @@ export const AgentParams = Type.Object({
 	complexity: Type.Optional(
 		StringEnum(["low", "medium", "high"] as const, {
 			description: "Model selection: low (fast/cheap), medium (default), high (capable/expensive)",
-		}),
-	),
-	skills: Type.Optional(
-		Type.Array(Type.String(), {
-			description: "Additional skills to load into agent's context",
 		}),
 	),
 	result_schema: Type.Optional(
@@ -54,8 +49,11 @@ export const AgentParams = Type.Object({
 	),
 });
 
-export function buildToolDescription(): string {
-	const registry = TaskRegistry.builtins();
+export function buildToolDescription(cwd?: string): string {
+	// Load registry to get available agents
+	const registry = AgentRegistry.load(cwd ?? process.cwd());
+	const agents = registry.list();
+	
 	const lines: string[] = [];
 	lines.push("Manage non-blocking agent tasks. Actions: spawn, send, wait, close, list.");
 	lines.push("");
@@ -66,9 +64,11 @@ export function buildToolDescription(): string {
 	lines.push("");
 	lines.push("You can spawn multiple agents and wait for all at once.");
 	lines.push("");
-	lines.push("## Task types");
-	for (const t of registry) {
-		lines.push(`- ${t.name}: ${t.description || ""}`.trim());
+	lines.push("## Available agents");
+	for (const a of agents) {
+		// Take first line of description for brevity
+		const shortDesc = a.description.split("\n")[0]?.trim() || "";
+		lines.push(`- ${a.name}: ${shortDesc}`);
 	}
 	return lines.join("\n").trim();
 }
@@ -123,16 +123,15 @@ export function createAgentToolDef(
 
 				switch (p.action) {
 					case "spawn": {
-						if (!p.type || !p.message) {
+						if (!p.agent || !p.message) {
 							return yield* Effect.fail(
-								new Error("spawn requires 'type' and 'message'"),
+								new Error("spawn requires 'agent' and 'message'"),
 							);
 						}
 						const id = yield* control.spawn({
-							type: p.type,
+							agent: p.agent,
 							message: p.message,
 							complexity: p.complexity,
-							skills: p.skills,
 							result_schema: p.result_schema,
 							approvalBroker: context.approvalBroker,
 							parentSessionId: context.parentSessionId,

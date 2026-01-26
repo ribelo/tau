@@ -11,11 +11,10 @@ import { stream, streamSimple } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
 import { Effect, SubscriptionRef, Stream } from "effect";
 import { type Status } from "./status.js";
-import type { AgentId, ResolvedPolicy } from "./types.js";
+import type { AgentId, AgentDefinition } from "./types.js";
 import { type Agent, AgentError } from "./services.js";
 import { computeClampedWorkerSandboxConfig } from "./sandbox-policy.js";
 import type { SandboxConfig } from "../sandbox/config.js";
-import type { LoadedSkill } from "./skills.js";
 import {
 	TAU_PERSISTED_STATE_TYPE,
 	loadPersistedState,
@@ -91,33 +90,17 @@ function resolveModelPattern(
 }
 
 export function buildWorkerSystemPrompt(options: {
-	parentSessionId: string;
-	skills: LoadedSkill[];
+	definition: AgentDefinition;
+	resultSchema?: unknown;
 }): string {
-	const lines: string[] = [];
-	lines.push("# Task Execution Context");
-	lines.push(
-		`You are executing a delegated task from parent session: ${options.parentSessionId}`,
-	);
-	lines.push("");
-	lines.push("## Guidelines");
-	lines.push("- Focus on the requested task");
-	lines.push("- Use available tools as needed");
-	lines.push("- If specific output format required, follow it exactly");
-	lines.push("- Otherwise, summarize what you did and why");
+	let systemPrompt = options.definition.systemPrompt;
 
-	if (options.skills.length > 0) {
-		lines.push("");
-		lines.push("---");
-		for (const s of options.skills) {
-			lines.push(`<skill name="${s.name}" path="${s.path}">`);
-			lines.push(s.contents.trim());
-			lines.push("</skill>");
-			lines.push("");
-		}
+	// Append structured output instructions if schema provided
+	if (options.resultSchema) {
+		systemPrompt += `\n\n## Structured Output\n- You must call submit_result exactly once with JSON matching the provided schema.\n- Do not respond with free text.\n- Stop immediately after calling submit_result.\n\nSchema:\n\n\`\`\`json\n${JSON.stringify(options.resultSchema, null, 2)}\n\`\`\`\n`;
 	}
 
-	return lines.join("\n").trim() + "\n";
+	return systemPrompt;
 }
 
 export class AgentWorker implements Agent {
@@ -132,35 +115,30 @@ export class AgentWorker implements Agent {
 	) {}
 
 	static make(opts: {
-		type: string;
+		definition: AgentDefinition;
 		depth: number;
-		policy: ResolvedPolicy;
 		cwd: string;
 		parentSessionId: string;
 		parentSandboxConfig: Required<SandboxConfig>;
 		parentModel: Model<Api> | undefined;
 		approvalBroker: ApprovalBroker | undefined;
-		skills: LoadedSkill[];
-		resultSchema: unknown;
+		resultSchema?: unknown;
 	}) {
 		return Effect.gen(function* () {
 			const authStorage = new AuthStorage();
 			const modelRegistry = new ModelRegistry(authStorage);
 
-			const systemPromptBase = buildWorkerSystemPrompt({
-				parentSessionId: opts.parentSessionId,
-				skills: opts.skills,
+			const systemPrompt = buildWorkerSystemPrompt({
+				definition: opts.definition,
+				resultSchema: opts.resultSchema,
 			});
-
-			const systemPrompt = opts.resultSchema
-				? `${systemPromptBase}\n\n## Structured Output\n- You must call submit_result exactly once with JSON matching the provided schema.\n- Do not respond with free text.\n- Stop immediately after calling submit_result.\n\nSchema:\n\n\`\`\`json\n${JSON.stringify(opts.resultSchema, null, 2)}\n\`\`\`\n`
-				: systemPromptBase;
 
 			const statusRef = yield* SubscriptionRef.make<Status>({ state: "pending" });
 
-			// Use explicit policy model, or inherit from parent
-			const resolvedModel = opts.policy.model
-				? resolveModelPattern(opts.policy.model, modelRegistry.getAll())
+			// Use explicit definition model, or inherit from parent
+			const definitionModel = opts.definition.model;
+			const resolvedModel = (definitionModel && definitionModel !== "inherit")
+				? resolveModelPattern(definitionModel, modelRegistry.getAll())
 				: opts.parentModel;
 
 			let agent: AgentWorker;
@@ -221,8 +199,8 @@ export class AgentWorker implements Agent {
 			agentContext.parentSessionId = session.sessionId;
 
 			const sandboxConfig = computeClampedWorkerSandboxConfig(
-				opts.policy.sandbox
-					? { parent: opts.parentSandboxConfig, requested: opts.policy.sandbox }
+				opts.definition.sandbox
+					? { parent: opts.parentSandboxConfig, requested: opts.definition.sandbox }
 					: { parent: opts.parentSandboxConfig },
 			);
 
@@ -236,8 +214,10 @@ export class AgentWorker implements Agent {
 				setWorkerApprovalBroker(session.sessionId, opts.approvalBroker);
 			}
 
-			if (opts.policy.thinking) {
-				session.setThinkingLevel(opts.policy.thinking as ThinkingLevel);
+			// Apply thinking level from definition (if not "inherit")
+			const thinkingLevel = opts.definition.thinking;
+			if (thinkingLevel && thinkingLevel !== "inherit") {
+				session.setThinkingLevel(thinkingLevel as ThinkingLevel);
 			}
 
 			if (opts.resultSchema) {
@@ -246,7 +226,7 @@ export class AgentWorker implements Agent {
 
 			agent = new AgentWorker(
 				session.sessionId as AgentId,
-				opts.type,
+				opts.definition.name,
 				opts.depth,
 				session,
 				statusRef,

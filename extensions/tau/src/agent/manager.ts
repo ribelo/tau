@@ -10,7 +10,6 @@ import {
 } from "./services.js";
 import type { AgentId } from "./types.js";
 import { AgentWorker } from "./worker.js";
-import { loadSkills } from "./skills.js";
 
 export const AgentManagerLive = Layer.effect(
 	AgentManager,
@@ -42,18 +41,14 @@ export const AgentManagerLive = Layer.effect(
 						);
 					}
 
-					const { loaded: skills } = loadSkills(opts.policy.skills, opts.cwd);
-
 					const agent = yield* AgentWorker.make({
-						type: opts.type,
+						definition: opts.definition,
 						depth: depth,
-						policy: opts.policy,
 						cwd: opts.cwd,
 						parentSessionId: opts.parentSessionId,
 						parentSandboxConfig: opts.parentSandboxConfig,
 						parentModel: opts.parentModel,
 						approvalBroker: opts.approvalBroker,
-						skills,
 						resultSchema: opts.resultSchema,
 					});
 

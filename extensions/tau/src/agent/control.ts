@@ -2,11 +2,12 @@ import { Effect, Layer, Stream } from "effect";
 import {
 	AgentControl,
 	AgentManager,
+	AgentError,
 	type Status,
 	type ControlSpawnOptions,
 	type SpawnOptions,
 } from "./services.js";
-import { TaskRegistry } from "./registry.js";
+import { AgentRegistry } from "./agent-registry.js";
 import { isFinal } from "./status.js";
 import type { AgentId, Complexity } from "./types.js";
 import { Sandbox } from "../services/sandbox.js";
@@ -20,18 +21,20 @@ export const AgentControlLive = Layer.effect(
 		return AgentControl.of({
 			spawn: (opts: ControlSpawnOptions) =>
 				Effect.gen(function* () {
-					const registry = TaskRegistry.load(opts.cwd);
+					const registry = AgentRegistry.load(opts.cwd);
 					const complexity = (opts.complexity || "medium") as Complexity;
-					const policy = registry.resolve(opts.type, complexity);
-					if (opts.skills) {
-						policy.skills.push(...opts.skills);
+					const definition = registry.resolve(opts.agent, complexity);
+					
+					if (!definition) {
+						return yield* Effect.fail(
+							new AgentError({ message: `Unknown agent: "${opts.agent}". Available: ${registry.names().join(", ")}` })
+						);
 					}
 
 					const parentSandboxConfig = yield* sandbox.getConfig;
 
 					return yield* manager.spawn({
-						type: opts.type,
-						policy,
+						definition,
 						message: opts.message,
 						depth: 0, // Depth is handled by manager now
 						cwd: opts.cwd,

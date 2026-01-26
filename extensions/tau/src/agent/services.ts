@@ -1,6 +1,6 @@
 import { Context, Data, Effect, Stream } from "effect";
 import type { Model, Api } from "@mariozechner/pi-ai";
-import type { AgentId, ResolvedPolicy } from "./types.js";
+import type { AgentId, AgentDefinition } from "./types.js";
 import type { Status } from "./status.js";
 export type { Status };
 import type { SandboxConfig } from "../sandbox/config.js";
@@ -58,8 +58,7 @@ export interface Agent {
 
 // Agent Manager
 export interface SpawnOptions {
-	readonly type: string;
-	readonly policy: ResolvedPolicy;
+	readonly definition: AgentDefinition;
 	readonly message: string;
 	readonly depth: number;
 	readonly cwd: string;
@@ -87,10 +86,9 @@ export class AgentManager extends Context.Tag("AgentManager")<
 
 // Agent Control
 export interface ControlSpawnOptions {
-	readonly type: string;
+	readonly agent: string;
 	readonly message: string;
 	readonly complexity?: string | undefined;
-	readonly skills?: string[] | undefined;
 	readonly result_schema?: unknown;
 	readonly approvalBroker?: ApprovalBroker | undefined;
 	readonly parentSessionId: string;
