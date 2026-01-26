@@ -29,6 +29,7 @@
 	"scripts": {
 		"test": "vitest --run --passWithNoTests",
 		"typecheck": "tsc",
-		"lint": "eslint src"
+		"lint": "eslint src",
+		"gate": "npm run typecheck && npm run lint && npm run test"
 	}
 }

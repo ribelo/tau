@@ -62,6 +62,25 @@ bd sync                                       # Sync with git (run at session en
 bd prime                                      # Full workflow details
 ```
 
+## Quality Gate
+
+Run from `extensions/tau/`:
+```bash
+npm run gate
+```
+
+This runs: typecheck → lint → test
+
+## Saying "Done" (chat / handoff rule)
+
+Before the agent says "I'm done" (or hands off work as complete):
+
+1. The agent MUST run `npm run gate` in `extensions/tau/`.
+2. The agent MUST NOT present broken / failing code as finished work.
+3. If `npm run gate` fails:
+   - If the failure is caused by the agent's changes: fix it (or explicitly ask for approval to ship broken code).
+   - If the failure seems pre-existing or unrelated: stop and ask the user before continuing, and record it (bd issue).
+
 ## Landing the Plane (Session Completion)
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
