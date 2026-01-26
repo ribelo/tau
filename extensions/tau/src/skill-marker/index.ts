@@ -2,9 +2,8 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
-	discoverSkills,
 	getAgentDir,
-	loadSettings,
+	loadSkills,
 	stripFrontmatter,
 	truncateHead,
 	type Skill,
@@ -126,8 +125,7 @@ function escapeXml(str: string): string {
 
 async function reloadSkills(state: SkillMarkerState, cwd: string) {
 	const agentDir = getAgentDir();
-	const settings = loadSettings(cwd, agentDir);
-	const { skills } = discoverSkills(cwd, agentDir, settings.skills);
+	const { skills } = loadSkills({ cwd, agentDir });
 	state.registry.refresh(skills);
 }
 

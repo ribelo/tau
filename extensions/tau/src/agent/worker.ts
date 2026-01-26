@@ -3,8 +3,8 @@ import {
 	type AgentSession,
 	SessionManager,
 	SettingsManager,
-	discoverAuthStorage,
-	discoverModels,
+	AuthStorage,
+	ModelRegistry,
 } from "@mariozechner/pi-coding-agent";
 import type { Model, Api, ThinkingLevel, Message } from "@mariozechner/pi-ai";
 import { stream, streamSimple } from "@mariozechner/pi-ai";
@@ -23,6 +23,7 @@ import {
 import { withWorkerSandboxOverride } from "./worker-sandbox.js";
 import { setWorkerApprovalBroker } from "./approval-broker.js";
 import type { ApprovalBroker } from "./approval-broker.js";
+import { createWorkerAgentTool } from "./runtime.js";
 
 
 function toolOnlyStreamFn(
@@ -137,13 +138,14 @@ export class AgentWorker implements Agent {
 		cwd: string;
 		parentSessionId: string;
 		parentSandboxConfig: Required<SandboxConfig>;
+		parentModel: Model<Api> | undefined;
 		approvalBroker: ApprovalBroker | undefined;
 		skills: LoadedSkill[];
 		resultSchema: unknown;
 	}) {
 		return Effect.gen(function* () {
-			const authStorage = discoverAuthStorage();
-			const modelRegistry = discoverModels(authStorage);
+			const authStorage = new AuthStorage();
+			const modelRegistry = new ModelRegistry(authStorage);
 
 			const systemPromptBase = buildWorkerSystemPrompt({
 				parentSessionId: opts.parentSessionId,
@@ -156,37 +158,51 @@ export class AgentWorker implements Agent {
 
 			const statusRef = yield* SubscriptionRef.make<Status>({ state: "pending" });
 
+			// Use explicit policy model, or inherit from parent
 			const resolvedModel = opts.policy.model
 				? resolveModelPattern(opts.policy.model, modelRegistry.getAll())
-				: undefined;
+				: opts.parentModel;
 
 			let agent: AgentWorker;
 
-			const customTools = opts.resultSchema
-				? [
-						{
-							name: "submit_result",
-							label: "submit_result",
-							description: "Submit structured result for the task",
-							parameters: Type.Unsafe(opts.resultSchema as object),
-							async execute(
-								_toolCallId: string,
-								params: unknown,
-								_onUpdate: unknown,
-								_ctx: unknown,
-								signal?: AbortSignal,
-							) {
-								if (signal?.aborted) throw new Error("Aborted");
-								agent.structuredOutput = params;
-								agent.session.abort().catch(() => undefined);
-								return {
-									content: [{ type: "text" as const, text: "Result received." }],
-									details: { ok: true },
-								};
-							},
-						},
-					]
-				: undefined;
+			// Create mutable context for agent tool - parentSessionId will be updated after session creation
+			const agentContext = {
+				parentSessionId: opts.parentSessionId, // Placeholder, updated below
+				parentModel: opts.parentModel,
+				cwd: opts.cwd,
+				approvalBroker: opts.approvalBroker,
+			};
+
+			// Create agent tool for nested spawning (uses agentContext by reference)
+			const agentTool = createWorkerAgentTool(agentContext);
+
+			// Build custom tools array
+			const customTools: unknown[] = [agentTool];
+
+			// Add submit_result tool if structured output is requested
+			if (opts.resultSchema) {
+				customTools.push({
+					name: "submit_result",
+					label: "submit_result",
+					description: "Submit structured result for the task",
+					parameters: Type.Unsafe(opts.resultSchema as object),
+					async execute(
+						_toolCallId: string,
+						params: unknown,
+						_onUpdate: unknown,
+						_ctx: unknown,
+						signal?: AbortSignal,
+					) {
+						if (signal?.aborted) throw new Error("Aborted");
+						agent.structuredOutput = params;
+						agent.session.abort().catch(() => undefined);
+						return {
+							content: [{ type: "text" as const, text: "Result received." }],
+							details: { ok: true },
+						};
+					},
+				});
+			}
 
 			const sessionOpts = {
 				cwd: opts.cwd,
@@ -200,6 +216,9 @@ export class AgentWorker implements Agent {
 				...(resolvedModel ? { model: resolvedModel } : {}),
 			};
 			const { session } = yield* Effect.promise(() => createAgentSession(sessionOpts as unknown as Parameters<typeof createAgentSession>[0]));
+
+			// Update context with actual session ID so nested spawns use this worker's ID
+			agentContext.parentSessionId = session.sessionId;
 
 			const sandboxConfig = computeClampedWorkerSandboxConfig(
 				opts.policy.sandbox
@@ -240,7 +259,7 @@ export class AgentWorker implements Agent {
 				} else if (event.type === "agent_end") {
 					const lastMsg = event.messages[event.messages.length - 1];
 					const message =
-						lastMsg?.role === "assistant"
+						lastMsg?.role === "assistant" && "content" in lastMsg
 							? lastMsg.content
 									.filter((p): p is { type: "text"; text: string } => typeof p === "object" && p !== null && "type" in p && p["type"] === "text")
 									.map((p) => p.text)
