@@ -461,6 +461,18 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
           );
         }
 
+        // Git commands always run unsandboxed (needs ~/.gnupg for signing, ~/.gitconfig, etc.)
+        const trimmedCmd = command.trim();
+        const isGitCommand = /^git\s/.test(trimmedCmd) || /;\s*git\s/.test(trimmedCmd) || /&&\s*git\s/.test(trimmedCmd);
+        if (isGitCommand) {
+          return runCommandDirect(
+            command,
+            cwd,
+            process.env as Record<string, string>,
+            { onData, signal, timeout },
+          );
+        }
+
         const currentConfig = effectiveConfig;
         const currentWorkspace = workspaceRoot;
         const approvalTimeout = currentConfig.approvalTimeoutSeconds;
