@@ -165,8 +165,8 @@ export async function wrapCommandWithSandbox(opts: {
 		args.push("--unshare-net");
 	}
 
-	// Set HOME to workspace root to avoid leaking real HOME artifacts
-	args.push("--setenv", "HOME", resolvedWorkspace);
+	// Keep HOME as real home directory (read-only in sandbox)
+	// Tools that try to write to ~/.config, ~/.cache will fail - that's intended
 	
 	// Final command assembly. Use single quotes to prevent host expansion of $vars.
 	const escapedCommand = command.replace(/'/g, "'\\''");
@@ -175,6 +175,6 @@ export async function wrapCommandWithSandbox(opts: {
 	return {
 		success: true,
 		wrappedCommand: wrapped,
-		home: resolvedWorkspace,
+		home: resolvedHome,
 	};
 }
