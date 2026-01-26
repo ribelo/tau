@@ -826,15 +826,20 @@ export default function initBeads(pi: ExtensionAPI, _state: TauState) {
 			if (args?.cwd) {
 				out += `\n${theme.fg("muted", `cwd: ${args.cwd}`)}`;
 			}
-			for (const [key, value] of Object.entries(flags)) {
+
+			// Sort flags by value length (shorter first) for readability
+			const flagEntries = Object.entries(flags).map(([key, value]) => {
 				let k = key;
 				let v = value === true ? "true" : String(value);
-
 				if (k === "json") {
 					k = "output";
 					v = "json";
 				}
+				return { k, v };
+			});
+			flagEntries.sort((a, b) => a.v.length - b.v.length);
 
+			for (const { k, v } of flagEntries) {
 				out += `\n${theme.fg("muted", `${k}: ${v}`)}`;
 			}
 
