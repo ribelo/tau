@@ -43,7 +43,7 @@ import { discoverWorkspaceRoot } from "./workspace-root.js";
 
 import type { TauState } from "../shared/state.js";
 import { loadPersistedState, updatePersistedState } from "../shared/state.js";
-import { type ApprovalBroker, getWorkerApprovalBroker } from "../task/approval-broker.js";
+import { type ApprovalBroker, getWorkerApprovalBroker } from "../agent/approval-broker.js";
 
 import initAgentAwareness from "./agent-awareness/index.js";
 

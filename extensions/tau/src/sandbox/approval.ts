@@ -13,7 +13,7 @@ import type { ApprovalPolicy } from "./config.js";
 import { spawn } from "node:child_process";
 import { classifySandboxFailure } from "./sandbox-diagnostics.js";
 import { isSafeCommand } from "./safe-commands.js";
-import type { ApprovalBroker } from "../task/approval-broker.js";
+import type { ApprovalBroker } from "../agent/approval-broker.js";
 
 /** Default approval timeout in milliseconds */
 export const DEFAULT_APPROVAL_TIMEOUT_MS = 60_000;
