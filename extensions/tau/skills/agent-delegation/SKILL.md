@@ -98,10 +98,18 @@ Terminate a running agent. Use to cancel work you no longer need.
 
 ## Writing Effective Prompts
 
-Agents don't see your conversation. Be explicit:
+Agents don't see your conversation. Be explicit but high-level.
+
+**Prompt guidelines**:
+- Keep prompts conceptual and high-level
+- Do NOT include code snippets in delegation prompts
+- Specify file paths, what to accomplish, and Definition of Done
+- Reference beads task ID when applicable - agent can run `bd show <id>` for full context
 
 ```
 Bad: "Review the auth changes"
+
+Bad: "Change line 42 to: const x = foo.bar()" (don't include code)
 
 Good: "Review packages/auth/src/ for security issues. Focus on:
       - Input validation
@@ -113,11 +121,24 @@ Good: "Implement tau-xyz123. Run `bd show tau-xyz123` for full context.
       DoD: tests pass, no type errors."
 ```
 
-Include:
-- Specific file paths or directories
-- What to look for or accomplish
-- Beads task ID if applicable
-- Definition of Done for implementation work
+## Beads as Communication Channel
+
+Beads tasks serve as a communication mechanism between you and agents:
+
+**Orchestrator → Agent**:
+- Create beads task with detailed description, context, and Definition of Done
+- Delegate with: "Implement tau-xyz. Run `bd show tau-xyz` for context."
+- Agent reads full task details via `bd show`
+
+**Agent → Orchestrator**:
+- Agent can add notes to beads task: `bd update tau-xyz --note "Found issue with X"`
+- Agent can create child tasks for discovered work: `bd create "Fix Y" --parent tau-xyz`
+- Orchestrator checks task notes after completion
+
+**Capturing Discovered Work**:
+- If agent finds issues outside current scope, create new beads tasks
+- Never lose discovered work - track it in beads
+- Split large/vague tasks into actionable sub-tasks
 
 ## Coordination Patterns
 
@@ -153,6 +174,22 @@ spawn rush "In src/api.ts, add rate limiting to /login endpoint" → id2
 wait [id1, id2] → both done
 ```
 
+### Beads-Driven Delegation
+
+When beads tasks exist, delegate them directly:
+
+```
+spawn general "Implement tau-abc123. Run `bd show tau-abc123` for context." → id1
+spawn general "Implement tau-def456. Run `bd show tau-def456` for context." → id2
+wait [id1, id2]
+# Check task notes for any discovered issues
+bd show tau-abc123
+bd show tau-def456
+# Close completed work
+bd close tau-abc123
+bd close tau-def456
+```
+
 ## Integration with Beads
 
 Typical workflow: chat → plan → create beads tasks → delegate to agents
@@ -162,18 +199,11 @@ Typical workflow: chat → plan → create beads tasks → delegate to agents
 - If work is worth delegating, it's probably worth creating a beads task first
 - Exception: ephemeral work (search, quick review, planning)
 
-When delegating beads work:
-
-```
-spawn general "Implement tau-abc123. Run `bd show tau-abc123` for context. 
-              DoD: tests pass, no type errors." → id
-wait [id]
-bd close tau-abc123  # After verifying completion
-```
-
-- Reference the beads task ID in the prompt
-- Beads tasks should have good descriptions and Definition of Done
-- After completion, update/close the beads task
+**After delegation completes**:
+- Check task notes for agent findings
+- Review any child tasks agent created
+- Close completed tasks or update status
+- Create follow-up tasks for remaining work
 
 ## Definition of Done
 
