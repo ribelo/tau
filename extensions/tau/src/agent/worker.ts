@@ -132,6 +132,8 @@ export class AgentWorker implements Agent {
 	private structuredOutput?: unknown;
 	private turns = 0;
 	private toolCalls = 0;
+	private workedMs = 0;
+	private turnStartTime: number | undefined = undefined;
 
 	constructor(
 		readonly id: AgentId,
@@ -273,10 +275,23 @@ export class AgentWorker implements Agent {
 			session.subscribe((event) => {
 				if (event.type === "turn_start") {
 					agent.turns++;
+					agent.turnStartTime = Date.now();
 					Effect.runFork(SubscriptionRef.set(statusRef, { 
 						state: "running",
 						turns: agent.turns,
 						toolCalls: agent.toolCalls,
+						workedMs: agent.workedMs,
+					}));
+				} else if (event.type === "turn_end") {
+					if (agent.turnStartTime !== undefined) {
+						agent.workedMs += Date.now() - agent.turnStartTime;
+						agent.turnStartTime = undefined;
+					}
+					Effect.runFork(SubscriptionRef.set(statusRef, { 
+						state: "running",
+						turns: agent.turns,
+						toolCalls: agent.toolCalls,
+						workedMs: agent.workedMs,
 					}));
 				} else if (event.type === "tool_execution_start") {
 					agent.toolCalls++;
@@ -284,8 +299,15 @@ export class AgentWorker implements Agent {
 						state: "running",
 						turns: agent.turns,
 						toolCalls: agent.toolCalls,
+						workedMs: agent.workedMs,
 					}));
 				} else if (event.type === "agent_end") {
+					// Finalize any in-progress turn
+					if (agent.turnStartTime !== undefined) {
+						agent.workedMs += Date.now() - agent.turnStartTime;
+						agent.turnStartTime = undefined;
+					}
+					
 					const lastMsg = event.messages[event.messages.length - 1];
 					const message =
 						lastMsg?.role === "assistant" && "content" in lastMsg
@@ -302,6 +324,7 @@ export class AgentWorker implements Agent {
 							structured_output: agent.structuredOutput,
 							turns: agent.turns,
 							toolCalls: agent.toolCalls,
+							workedMs: agent.workedMs,
 						}),
 					);
 				}
