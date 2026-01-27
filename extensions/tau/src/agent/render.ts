@@ -87,9 +87,14 @@ export function renderAgentResult(
 	// Helper to render a single agent status line
 	const renderAgentLine = (id: string, type: string, status: Record<string, unknown>) => {
 		const state = (status["state"] as string) || "unknown";
+		const turns = status["turns"] as number | undefined;
+		const toolCalls = status["toolCalls"] as number | undefined;
 		const idStr = id.slice(0, 8);
 		const typeStr = type ? ` (${type})` : "";
-		let line = `  ${statusMark(state, theme)} ${theme.fg("accent", idStr)}${theme.fg("dim", typeStr)} ${theme.fg("dim", state)}`;
+		const progressStr = (turns !== undefined || toolCalls !== undefined)
+			? ` [turns: ${turns ?? 0}, tools: ${toolCalls ?? 0}]`
+			: "";
+		let line = `  ${statusMark(state, theme)} ${theme.fg("accent", idStr)}${theme.fg("dim", typeStr)} ${theme.fg("dim", state)}${theme.fg("dim", progressStr)}`;
 		if (status["message"]) {
 			line += `\n    ${theme.fg("dim", "↩ ")}${theme.fg("toolOutput", truncate(oneLine(status["message"] as string), 140))}`;
 		}

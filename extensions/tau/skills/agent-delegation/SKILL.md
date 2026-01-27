@@ -59,6 +59,10 @@ Parameters:
 - `ids`: Array of agent IDs to wait for
 - `timeout_ms`: Max wait time (default 15 min, max 4 hours)
 
+**Long-running agents are normal.** Complex tasks can take hours. An agent working for 30+ minutes on a substantial feature is expected behavior, not a problem.
+
+**Progress tracking**: Use `agent list` to check agent progress. Status includes `turns` (LLM rounds) and `toolCalls` counts. If these numbers increase, the agent is making progress.
+
 ### Send (Session Continuation)
 
 ```

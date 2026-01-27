@@ -130,6 +130,8 @@ export function buildWorkerAppendPrompts(options: {
 
 export class AgentWorker implements Agent {
 	private structuredOutput?: unknown;
+	private turns = 0;
+	private toolCalls = 0;
 
 	constructor(
 		readonly id: AgentId,
@@ -267,10 +269,22 @@ export class AgentWorker implements Agent {
 				statusRef,
 			);
 
-			// Subscribe to session events to update status
+			// Subscribe to session events to update status with progress
 			session.subscribe((event) => {
-				if (event.type === "message_start") {
-					Effect.runFork(SubscriptionRef.set(statusRef, { state: "running" }));
+				if (event.type === "turn_start") {
+					agent.turns++;
+					Effect.runFork(SubscriptionRef.set(statusRef, { 
+						state: "running",
+						turns: agent.turns,
+						toolCalls: agent.toolCalls,
+					}));
+				} else if (event.type === "tool_execution_start") {
+					agent.toolCalls++;
+					Effect.runFork(SubscriptionRef.set(statusRef, { 
+						state: "running",
+						turns: agent.turns,
+						toolCalls: agent.toolCalls,
+					}));
 				} else if (event.type === "agent_end") {
 					const lastMsg = event.messages[event.messages.length - 1];
 					const message =
@@ -286,6 +300,8 @@ export class AgentWorker implements Agent {
 							state: "completed",
 							message,
 							structured_output: agent.structuredOutput,
+							turns: agent.turns,
+							toolCalls: agent.toolCalls,
 						}),
 					);
 				}
