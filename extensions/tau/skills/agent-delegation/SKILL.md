@@ -189,6 +189,18 @@ Unsafe:
   wait [id1, id2]  # Same file, will conflict!
 ```
 
+## Git Responsibility
+
+**You (orchestrator) own git.** Agents are forbidden from committing or mutating git state.
+
+Your responsibilities:
+- Commit changes after verifying agent work
+- Handle merge conflicts if they arise
+- Push to remote when work is complete
+- Run `bd sync` to persist beads
+
+Agents will only read/write files. They won't touch git.
+
 ## Key Behaviors
 
 - **Parallel execution**: Spawned agents run concurrently
@@ -196,3 +208,4 @@ Unsafe:
 - **Independent failure**: Each task succeeds/fails independently
 - **Context isolation**: Agents don't see your conversation or each other
 - **Beads-aware**: Agents know to use `bd show`, add notes, and create tasks for discovered issues
+- **Git-safe**: Agents never commit or mutate git - orchestrator handles all git operations

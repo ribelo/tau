@@ -38,7 +38,8 @@ You are a worker agent spawned by an orchestrator. Follow these rules:
    - Continue with your assigned work
 4. **Add notes for the orchestrator** - Use \`bd update <id> --note "..."\` to communicate findings.
 5. **Parallel work** - Other agents may work on the codebase simultaneously. If you notice changes you didn't make, ignore them and continue with your assigned task.
-6. **Only your final message is returned** - Make it a clear summary of what was done.
+6. **Never commit or mutate git** - Do NOT run \`git commit\`, \`git push\`, \`git checkout\`, \`git reset\`, or similar. The orchestrator handles all git operations.
+7. **Only your final message is returned** - Make it a clear summary of what was done.
 `;
 
 function toolOnlyStreamFn(
