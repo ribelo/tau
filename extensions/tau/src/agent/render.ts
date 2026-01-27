@@ -85,10 +85,23 @@ export function renderAgentResult(
 
 	const data = (result.details || result) as Record<string, unknown>;
 
+	// Helper to render tool history
+	const renderTools = (tools: Array<{ name: string; args?: string; result?: string; isError?: boolean }>) => {
+		if (tools.length === 0) return "";
+		const lines = tools.map(t => {
+			const mark = t.isError ? theme.fg("error", "✘") : theme.fg("dim", "·");
+			const name = theme.fg("accent", t.name);
+			const args = t.args ? theme.fg("dim", ` ${truncate(t.args, 50)}`) : "";
+			return `      ${mark} ${name}${args}`;
+		});
+		return "\n" + lines.join("\n");
+	};
+
 	// Helper to render a single agent status line
-	const renderAgentLine = (id: string, type: string, status: Record<string, unknown>) => {
+	const renderAgentLine = (id: string, type: string, status: Record<string, unknown>, expanded: boolean) => {
 		const state = (status["state"] as string) || "unknown";
 		const workedMs = status["workedMs"] as number | undefined;
+		const tools = status["tools"] as Array<{ name: string; args?: string; result?: string; isError?: boolean }> | undefined;
 		const idStr = id.slice(0, 8);
 		const typeStr = type ? ` (${type})` : "";
 		const workedStr = workedMs !== undefined && workedMs > 0 
@@ -100,6 +113,10 @@ export function renderAgentResult(
 		}
 		if (status["reason"]) {
 			line += `\n    ${theme.fg("error", `✘ ${status["reason"]}`)}`;
+		}
+		// Show tool history when expanded
+		if (expanded && tools && tools.length > 0) {
+			line += `\n    ${theme.fg("dim", `tools (${tools.length}):`)}${renderTools(tools)}`;
 		}
 		return line;
 	};
@@ -132,7 +149,7 @@ export function renderAgentResult(
 		const agents = data["agents"] as Array<{ id: string; type: string; status: Record<string, unknown> }>;
 		const lines = [];
 		for (const a of agents) {
-			lines.push(renderAgentLine(a.id, a.type, a.status));
+			lines.push(renderAgentLine(a.id, a.type, a.status, options.expanded));
 		}
 		return new Text(lines.join("\n"), 0, 0);
 	}
@@ -143,7 +160,7 @@ export function renderAgentResult(
 		const ids = Object.keys(statusMap);
 		const lines = [];
 		for (const id of ids) {
-			lines.push(renderAgentLine(id, "", statusMap[id]!));
+			lines.push(renderAgentLine(id, "", statusMap[id]!, options.expanded));
 		}
 		return new Text(lines.join("\n"), 0, 0);
 	}

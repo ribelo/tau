@@ -26,6 +26,11 @@ import { setWorkerApprovalBroker } from "./approval-broker.js";
 import type { ApprovalBroker } from "./approval-broker.js";
 import { createWorkerAgentTool } from "./runtime.js";
 
+function truncateStr(s: string, max: number): string {
+	if (s.length <= max) return s;
+	return s.slice(0, max - 3) + "...";
+}
+
 const WORKER_DELEGATION_PROMPT = `## Worker Agent Instructions
 
 You are a worker agent spawned by an orchestrator. Follow these rules:
@@ -128,12 +133,16 @@ export function buildWorkerAppendPrompts(options: {
 	return prompts;
 }
 
+import type { ToolRecord } from "./status.js";
+
 export class AgentWorker implements Agent {
 	private structuredOutput?: unknown;
 	private turns = 0;
 	private toolCalls = 0;
 	private workedMs = 0;
 	private turnStartTime: number | undefined = undefined;
+	private tools: ToolRecord[] = [];
+	private pendingTools: Map<string, ToolRecord> = new Map();
 
 	constructor(
 		readonly id: AgentId,
@@ -281,6 +290,7 @@ export class AgentWorker implements Agent {
 						turns: agent.turns,
 						toolCalls: agent.toolCalls,
 						workedMs: agent.workedMs,
+						tools: agent.tools,
 					}));
 				} else if (event.type === "turn_end") {
 					if (agent.turnStartTime !== undefined) {
@@ -292,14 +302,42 @@ export class AgentWorker implements Agent {
 						turns: agent.turns,
 						toolCalls: agent.toolCalls,
 						workedMs: agent.workedMs,
+						tools: agent.tools,
 					}));
 				} else if (event.type === "tool_execution_start") {
 					agent.toolCalls++;
+					const argsPreview = truncateStr(JSON.stringify(event.args), 100);
+					agent.pendingTools.set(event.toolCallId, { 
+						name: event.toolName, 
+						args: argsPreview,
+					});
 					Effect.runFork(SubscriptionRef.set(statusRef, { 
 						state: "running",
 						turns: agent.turns,
 						toolCalls: agent.toolCalls,
 						workedMs: agent.workedMs,
+						tools: agent.tools,
+					}));
+				} else if (event.type === "tool_execution_end") {
+					const pending = agent.pendingTools.get(event.toolCallId);
+					if (pending) {
+						agent.pendingTools.delete(event.toolCallId);
+						const resultPreview = truncateStr(
+							typeof event.result === "string" ? event.result : JSON.stringify(event.result), 
+							100
+						);
+						agent.tools.push({
+							...pending,
+							result: resultPreview,
+							isError: event.isError,
+						});
+					}
+					Effect.runFork(SubscriptionRef.set(statusRef, { 
+						state: "running",
+						turns: agent.turns,
+						toolCalls: agent.toolCalls,
+						workedMs: agent.workedMs,
+						tools: agent.tools,
 					}));
 				} else if (event.type === "agent_end") {
 					// Finalize any in-progress turn
@@ -325,6 +363,7 @@ export class AgentWorker implements Agent {
 							turns: agent.turns,
 							toolCalls: agent.toolCalls,
 							workedMs: agent.workedMs,
+							tools: agent.tools,
 						}),
 					);
 				}

@@ -1,5 +1,14 @@
 import * as Schema from "@effect/schema/Schema";
 
+export const ToolRecord = Schema.Struct({
+	name: Schema.String,
+	args: Schema.optional(Schema.String), // truncated args preview
+	result: Schema.optional(Schema.String), // truncated result preview
+	isError: Schema.optional(Schema.Boolean),
+});
+
+export type ToolRecord = Schema.Schema.Type<typeof ToolRecord>;
+
 export const Status = Schema.Union(
 	Schema.Struct({ state: Schema.Literal("pending") }),
 	Schema.Struct({ 
@@ -7,6 +16,7 @@ export const Status = Schema.Union(
 		turns: Schema.optional(Schema.Number),
 		toolCalls: Schema.optional(Schema.Number),
 		workedMs: Schema.optional(Schema.Number),
+		tools: Schema.optional(Schema.Array(ToolRecord)),
 	}),
 	Schema.Struct({
 		state: Schema.Literal("completed"),
@@ -15,6 +25,7 @@ export const Status = Schema.Union(
 		turns: Schema.optional(Schema.Number),
 		toolCalls: Schema.optional(Schema.Number),
 		workedMs: Schema.optional(Schema.Number),
+		tools: Schema.optional(Schema.Array(ToolRecord)),
 	}),
 	Schema.Struct({
 		state: Schema.Literal("failed"),
@@ -22,6 +33,7 @@ export const Status = Schema.Union(
 		turns: Schema.optional(Schema.Number),
 		toolCalls: Schema.optional(Schema.Number),
 		workedMs: Schema.optional(Schema.Number),
+		tools: Schema.optional(Schema.Array(ToolRecord)),
 	}),
 	Schema.Struct({ state: Schema.Literal("shutdown") }),
 );
