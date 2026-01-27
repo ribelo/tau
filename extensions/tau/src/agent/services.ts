@@ -81,6 +81,7 @@ export class AgentManager extends Context.Tag("AgentManager")<
 		readonly get: (id: AgentId) => Effect.Effect<Agent, AgentNotFound>;
 		readonly list: Effect.Effect<AgentInfo[]>;
 		readonly shutdown: (id: AgentId) => Effect.Effect<void, AgentNotFound>;
+		readonly shutdownAll: Effect.Effect<void>;
 	}
 >() {}
 
@@ -118,6 +119,7 @@ export class AgentControl extends Context.Tag("AgentControl")<
 			unknown
 		>;
 		readonly close: (id: AgentId) => Effect.Effect<void, AgentNotFound>;
+		readonly closeAll: Effect.Effect<void>;
 		readonly list: Effect.Effect<AgentInfo[]>;
 	}
 >() {}

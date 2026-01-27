@@ -94,6 +94,14 @@ export const AgentManagerLive = Layer.effect(
 					yield* Ref.update(agentsRef, (map) => HashMap.remove(map, id));
 					yield* Ref.update(depthMapRef, (map) => HashMap.remove(map, id));
 				}),
+			shutdownAll: Effect.gen(function* () {
+				const agents = yield* Ref.get(agentsRef);
+				for (const agent of HashMap.values(agents)) {
+					yield* agent.shutdown().pipe(Effect.ignore);
+				}
+				yield* Ref.set(agentsRef, HashMap.empty());
+				yield* Ref.set(depthMapRef, HashMap.empty());
+			}),
 		});
 	}),
 );

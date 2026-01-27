@@ -1,4 +1,4 @@
-import { Layer, ManagedRuntime } from "effect";
+import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { AgentControl, AgentConfig } from "./services.js";
 import { AgentControlLive } from "./control.js";
@@ -49,6 +49,21 @@ export function getAgentRuntime(): ManagedRuntime.ManagedRuntime<AgentControl, n
 		throw new Error("Agent runtime not initialized. Call initAgentRuntime() first.");
 	}
 	return sharedRuntime;
+}
+
+/**
+ * Close all running agents.
+ * Called when session switches (e.g., /new command) to prevent agent leakage.
+ */
+export async function closeAllAgents(): Promise<void> {
+	if (!sharedRuntime) return;
+	
+	const program = Effect.gen(function* () {
+		const control = yield* AgentControl;
+		yield* control.closeAll;
+	});
+	
+	await sharedRuntime.runPromise(program);
 }
 
 /**

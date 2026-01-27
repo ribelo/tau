@@ -116,6 +116,7 @@ export const AgentControlLive = Layer.effect(
 					);
 				}),
 			close: (id: AgentId) => manager.shutdown(id),
+			closeAll: manager.shutdownAll,
 			list: manager.list,
 		});
 	}),

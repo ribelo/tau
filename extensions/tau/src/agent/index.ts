@@ -1,12 +1,17 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { renderAgentCall, renderAgentResult } from "./render.js";
 import { createUiApprovalBroker } from "./approval-broker.js";
-import { initAgentRuntime, getAgentRuntime } from "./runtime.js";
+import { initAgentRuntime, getAgentRuntime, closeAllAgents } from "./runtime.js";
 import { AgentParams, buildToolDescription, createAgentToolDef } from "./tool.js";
 
 export default function initAgent(pi: ExtensionAPI) {
 	// Initialize the shared runtime
 	initAgentRuntime(pi);
+
+	// Close all agents when session switches (e.g., /new command)
+	pi.on("session_switch", async () => {
+		await closeAllAgents();
+	});
 
 	pi.registerTool({
 		name: "agent",
