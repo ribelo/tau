@@ -91,7 +91,9 @@ export function renderAgentResult(
 		const workedMs = status["workedMs"] as number | undefined;
 		const idStr = id.slice(0, 8);
 		const typeStr = type ? ` (${type})` : "";
-		const workedStr = workedMs !== undefined && workedMs > 0 ? ` ${formatDuration(workedMs)}` : "";
+		const workedStr = workedMs !== undefined && workedMs > 0 
+			? theme.fg("dim", ` (worked ${formatDuration(workedMs)})`)
+			: "";
 		let line = `  ${statusMark(state, theme)} ${theme.fg("accent", idStr)}${theme.fg("dim", typeStr)} ${theme.fg("dim", state)}${workedStr}`;
 		if (status["message"]) {
 			line += `\n    ${theme.fg("dim", "↩ ")}${theme.fg("toolOutput", truncate(oneLine(status["message"] as string), 140))}`;
