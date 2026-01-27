@@ -7,6 +7,7 @@ import {
 	AgentLimitReached,
 	AgentDepthExceeded,
 	AgentNotFound,
+	AgentError,
 	type ControlSpawnOptions,
 } from "./services.js";
 import { AgentRegistry } from "./agent-registry.js";
@@ -189,27 +190,19 @@ export function createAgentToolDef(
 			try {
 				const result = await runEffect(
 					program.pipe(
-						Effect.catchTag("AgentLimitReached", (err) =>
-							Effect.fail(
-								new Error(
-									`Agent limit reached (max: ${err.max}). Wait for existing agents to finish or close them.`,
-								),
-							),
-						),
-						Effect.catchTag("AgentDepthExceeded", (err) =>
-							Effect.fail(
-								new Error(
-									`Agent depth exceeded (max: ${err.max}). Deeply nested agent spawns are restricted.`,
-								),
-							),
-						),
-						Effect.catchTag("AgentNotFound", (err) =>
-							Effect.fail(new Error(`Agent not found: ${err.id}`)),
-						),
-						Effect.catchAll((err) => {
-							const message = err instanceof Error ? err.message : String(err);
-							return Effect.fail(new Error(message));
+						Effect.catchTags({
+							AgentLimitReached: (err: AgentLimitReached) =>
+								Effect.fail(new Error(`Agent limit reached (max: ${err.max}). Wait for existing agents to finish or close them.`)),
+							AgentDepthExceeded: (err: AgentDepthExceeded) =>
+								Effect.fail(new Error(`Agent depth exceeded (max: ${err.max}). Deeply nested agent spawns are restricted.`)),
+							AgentNotFound: (err: AgentNotFound) =>
+								Effect.fail(new Error(`Agent not found: ${err.id}`)),
+							AgentError: (err: AgentError) =>
+								Effect.fail(new Error(err.message)),
 						}),
+						Effect.catchAll((err: unknown) =>
+							Effect.fail(err instanceof Error ? err : new Error(String(err))),
+						),
 					),
 				);
 				return {

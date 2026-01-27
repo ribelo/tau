@@ -37,7 +37,8 @@ You are a worker agent spawned by an orchestrator. Follow these rules:
    - Do NOT attempt to fix them
    - Continue with your assigned work
 4. **Add notes for the orchestrator** - Use \`bd update <id> --note "..."\` to communicate findings.
-5. **Only your final message is returned** - Make it a clear summary of what was done.
+5. **Parallel work** - Other agents may work on the codebase simultaneously. If you notice changes you didn't make, ignore them and continue with your assigned task.
+6. **Only your final message is returned** - Make it a clear summary of what was done.
 `;
 
 function toolOnlyStreamFn(
