@@ -5,6 +5,8 @@ import {
 	SettingsManager,
 	AuthStorage,
 	ModelRegistry,
+	DefaultResourceLoader,
+	type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
 import type { Model, Api, ThinkingLevel, Message } from "@mariozechner/pi-ai";
 import { stream, streamSimple } from "@mariozechner/pi-ai";
@@ -24,6 +26,19 @@ import { setWorkerApprovalBroker } from "./approval-broker.js";
 import type { ApprovalBroker } from "./approval-broker.js";
 import { createWorkerAgentTool } from "./runtime.js";
 
+const WORKER_DELEGATION_PROMPT = `## Worker Agent Instructions
+
+You are a worker agent spawned by an orchestrator. Follow these rules:
+
+1. **Execute only what was requested** - Focus on the specific task in your instructions.
+2. **Use beads for context** - If given a task ID, run \`bd show <id>\` to get full context.
+3. **Report discoveries, don't fix unrelated issues** - If you discover bugs or issues outside your task scope:
+   - Create a beads task: \`bd create "Description" --type task\`
+   - Do NOT attempt to fix them
+   - Continue with your assigned work
+4. **Add notes for the orchestrator** - Use \`bd update <id> --note "..."\` to communicate findings.
+5. **Only your final message is returned** - Make it a clear summary of what was done.
+`;
 
 function toolOnlyStreamFn(
 	model: Model<Api>,
@@ -89,18 +104,26 @@ function resolveModelPattern(
 	return partial;
 }
 
-export function buildWorkerSystemPrompt(options: {
+export function buildWorkerAppendPrompts(options: {
 	definition: AgentDefinition;
 	resultSchema?: unknown;
-}): string {
-	let systemPrompt = options.definition.systemPrompt;
+}): string[] {
+	const prompts: string[] = [];
+
+	// Always add the worker delegation prompt
+	prompts.push(WORKER_DELEGATION_PROMPT);
+
+	// Add agent-specific system prompt if present
+	if (options.definition.systemPrompt) {
+		prompts.push(options.definition.systemPrompt);
+	}
 
 	// Append structured output instructions if schema provided
 	if (options.resultSchema) {
-		systemPrompt += `\n\n## Structured Output\n- You must call submit_result exactly once with JSON matching the provided schema.\n- Do not respond with free text.\n- Stop immediately after calling submit_result.\n\nSchema:\n\n\`\`\`json\n${JSON.stringify(options.resultSchema, null, 2)}\n\`\`\`\n`;
+		prompts.push(`## Structured Output\n- You must call submit_result exactly once with JSON matching the provided schema.\n- Do not respond with free text.\n- Stop immediately after calling submit_result.\n\nSchema:\n\n\`\`\`json\n${JSON.stringify(options.resultSchema, null, 2)}\n\`\`\``);
 	}
 
-	return systemPrompt;
+	return prompts;
 }
 
 export class AgentWorker implements Agent {
@@ -128,7 +151,7 @@ export class AgentWorker implements Agent {
 			const authStorage = new AuthStorage();
 			const modelRegistry = new ModelRegistry(authStorage);
 
-			const systemPrompt = buildWorkerSystemPrompt({
+			const appendPrompts = buildWorkerAppendPrompts({
 				definition: opts.definition,
 				resultSchema: opts.resultSchema,
 			});
@@ -155,7 +178,7 @@ export class AgentWorker implements Agent {
 			const agentTool = createWorkerAgentTool(agentContext);
 
 			// Build custom tools array
-			const customTools: unknown[] = [agentTool];
+			const customTools: ToolDefinition[] = [agentTool as ToolDefinition];
 
 			// Add submit_result tool if structured output is requested
 			if (opts.resultSchema) {
@@ -179,23 +202,31 @@ export class AgentWorker implements Agent {
 							details: { ok: true },
 						};
 					},
-				});
+				} as ToolDefinition);
 			}
+
+			const settingsManager = SettingsManager.inMemory();
+
+			// Create resource loader that injects worker-specific prompts
+			// This also loads AGENTS.md and skills from pi's discovery
+			const resourceLoader = new DefaultResourceLoader({
+				cwd: opts.cwd,
+				settingsManager,
+				appendSystemPromptOverride: (base) => [...base, ...appendPrompts],
+			});
+			yield* Effect.promise(() => resourceLoader.reload());
 
 			const sessionOpts = {
 				cwd: opts.cwd,
 				authStorage,
 				modelRegistry,
 				sessionManager: SessionManager.inMemory(opts.cwd),
-				settingsManager: SettingsManager.inMemory(),
-				systemPrompt: systemPrompt
-					? (defaultPrompt: string) => `${defaultPrompt}\n\n${systemPrompt}`
-					: undefined,
-				skills: [],
+				settingsManager,
+				resourceLoader,
 				customTools,
 				...(resolvedModel ? { model: resolvedModel } : {}),
 			};
-			const { session } = yield* Effect.promise(() => createAgentSession(sessionOpts as unknown as Parameters<typeof createAgentSession>[0]));
+			const { session } = yield* Effect.promise(() => createAgentSession(sessionOpts));
 
 			// Update context with actual session ID so nested spawns use this worker's ID
 			agentContext.parentSessionId = session.sessionId;

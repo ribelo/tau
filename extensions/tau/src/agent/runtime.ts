@@ -23,7 +23,7 @@ export function initAgentRuntime(pi: ExtensionAPI): void {
 	}
 
 	const AgentConfigLive = Layer.succeed(AgentConfig, AgentConfig.of({
-		maxThreads: 4,
+		maxThreads: 12,
 		maxDepth: 3,
 	}));
 

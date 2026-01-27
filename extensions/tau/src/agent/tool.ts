@@ -2,7 +2,13 @@ import { Type, type Static, type TSchema } from "@sinclair/typebox";
 import { Effect } from "effect";
 import { StringEnum } from "@mariozechner/pi-ai";
 import type { Model, Api } from "@mariozechner/pi-ai";
-import { AgentControl, type ControlSpawnOptions } from "./services.js";
+import {
+	AgentControl,
+	AgentLimitReached,
+	AgentDepthExceeded,
+	AgentNotFound,
+	type ControlSpawnOptions,
+} from "./services.js";
 import { AgentRegistry } from "./agent-registry.js";
 import type { AgentId } from "./types.js";
 import { renderAgentCall, renderAgentResult } from "./render.js";
@@ -183,6 +189,23 @@ export function createAgentToolDef(
 			try {
 				const result = await runEffect(
 					program.pipe(
+						Effect.catchTag("AgentLimitReached", (err) =>
+							Effect.fail(
+								new Error(
+									`Agent limit reached (max: ${err.max}). Wait for existing agents to finish or close them.`,
+								),
+							),
+						),
+						Effect.catchTag("AgentDepthExceeded", (err) =>
+							Effect.fail(
+								new Error(
+									`Agent depth exceeded (max: ${err.max}). Deeply nested agent spawns are restricted.`,
+								),
+							),
+						),
+						Effect.catchTag("AgentNotFound", (err) =>
+							Effect.fail(new Error(`Agent not found: ${err.id}`)),
+						),
 						Effect.catchAll((err) => {
 							const message = err instanceof Error ? err.message : String(err);
 							return Effect.fail(new Error(message));
