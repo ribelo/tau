@@ -70,35 +70,41 @@ export const AgentControlLive = Layer.effect(
 						return statusMap;
 					});
 
-					const anyFinal = (statusMap: Record<string, Status>) =>
-						Object.values(statusMap).some(isFinal);
+					const allFinal = (statusMap: Record<string, Status>) =>
+						Object.values(statusMap).every(isFinal);
 
 					const initialStatusMap = yield* getStatusMap;
-					if (anyFinal(initialStatusMap) || ids.length === 0) {
+					if (allFinal(initialStatusMap) || ids.length === 0) {
 						return { status: initialStatusMap, timedOut: false };
 					}
 
-					const waitAny = Effect.gen(function* () {
-						const streams = [];
-						for (const id of ids) {
-							const agentResult = yield* manager.get(id).pipe(Effect.either);
-							if (agentResult._tag === "Right") {
-								streams.push(
-									agentResult.right.subscribeStatus().pipe(Stream.filter(isFinal)),
-								);
-							}
-						}
-						if (streams.length === 0) return yield* getStatusMap;
+					const waitAll = Effect.gen(function* () {
+						// Poll until all agents reach final state
+						// Using stream subscription for each non-final agent
+						const waitForAgent = (id: AgentId) =>
+							Effect.gen(function* () {
+								const agentResult = yield* manager.get(id).pipe(Effect.either);
+								if (agentResult._tag === "Left") return; // Already handled as failed
+								
+								const currentStatus = yield* agentResult.right.status;
+								if (isFinal(currentStatus)) return; // Already done
+								
+								// Wait for this specific agent to complete
+								yield* agentResult.right
+									.subscribeStatus()
+									.pipe(Stream.filter(isFinal), Stream.take(1), Stream.runDrain);
+							});
 
-						yield* Stream.mergeAll(streams, { concurrency: "unbounded" }).pipe(
-							Stream.take(1),
-							Stream.runDrain,
+						// Wait for all agents concurrently
+						yield* Effect.all(
+							ids.map((id) => waitForAgent(id)),
+							{ concurrency: "unbounded" },
 						);
 
 						return yield* getStatusMap;
 					});
 
-					return yield* waitAny.pipe(
+					return yield* waitAll.pipe(
 						Effect.timeout(timeout),
 						Effect.map((status) => ({ status, timedOut: false })),
 						Effect.catchAll(() =>

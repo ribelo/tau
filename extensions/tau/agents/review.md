@@ -1,15 +1,7 @@
 ---
 name: review
 description: |
-  Review code changes for bugs, security issues, and improvements.
-
-  Usage: Pass a prompt describing WHAT to review. The worker runs git commands to fetch diffs.
-
-  Prompt patterns:
-  - Uncommitted: "Review current code changes (staged, unstaged, untracked) and provide prioritized findings."
-  - Base branch: "Review changes against branch '{branch}'. Run `git diff $(git merge-base HEAD {branch})`. Provide findings."
-  - Commit: "Review changes introduced by commit {sha}. Provide prioritized findings."
-  - Custom: Any review instructions (worker determines how to fetch code).
+  Code review agent (read-only). Reviews diffs for bugs, security issues, improvements. Returns prioritized findings (P0-P3). Prompt patterns: "Review uncommitted changes", "Review changes against main branch", "Review commit {sha}". Don't use for: code changes, general questions. Prompt example: "Review current staged changes for security issues and bugs."
 model: inherit
 thinking: inherit
 sandbox_policy: read-only

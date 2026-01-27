@@ -1,7 +1,7 @@
 ---
 name: painter
 description: |
-  Frontend development specialist with deep knowledge of modern web technologies, UI/UX patterns, and frontend architecture. Use for React, Vue, Svelte components, CSS/Tailwind styling, responsive design, and accessibility improvements.
+  Frontend specialist (workspace-write). Use for: React/Vue/Svelte components, CSS/Tailwind styling, responsive design, accessibility fixes, UI/UX improvements. Follows existing project patterns. Don't use for: backend logic, non-UI tasks. Prompt example: "Add dark mode toggle to the header component, following existing theme patterns."
 model: inherit
 thinking: inherit
 sandbox_policy: workspace-write

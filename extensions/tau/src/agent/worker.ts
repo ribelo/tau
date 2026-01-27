@@ -188,7 +188,9 @@ export class AgentWorker implements Agent {
 				modelRegistry,
 				sessionManager: SessionManager.inMemory(opts.cwd),
 				settingsManager: SettingsManager.inMemory(),
-				systemPrompt: (defaultPrompt: string) => `${defaultPrompt}\n\n${systemPrompt}`,
+				systemPrompt: systemPrompt
+					? (defaultPrompt: string) => `${defaultPrompt}\n\n${systemPrompt}`
+					: undefined,
 				skills: [],
 				customTools,
 				...(resolvedModel ? { model: resolvedModel } : {}),

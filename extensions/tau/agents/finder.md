@@ -1,18 +1,7 @@
 ---
 name: finder
 description: |
-  Fast code search agent. Use when you need to find files by patterns, search code for keywords, or locate relevant code quickly. Optimized for parallel search and minimal output - returns file paths, not essays. Specify thoroughness: "quick", "medium", or "thorough".
-
-  Use for:
-  - Mapping features across the codebase
-  - Tracking capabilities and finding side-effects by concept
-  - Complex multi-step search where you need to chain queries
-  - Finding code based on functionality rather than exact matches
-  
-  Don't use for:
-  - Code changes or design advice
-  - Simple exact text searches (use rg directly)
-
+  Fast code search agent (read-only). Returns file paths with line ranges, not essays. Use for: locating code by concept, mapping features across codebase, multi-step search chains. Don't use for: code changes, design advice, simple grep (use rg directly). Prompt example: "Find all authentication middleware and token validation logic."
 model: inherit
 thinking: inherit
 sandbox_policy: read-only

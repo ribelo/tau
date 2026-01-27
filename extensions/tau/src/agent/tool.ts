@@ -39,7 +39,7 @@ export const AgentParams = Type.Object({
 	// wait
 	ids: Type.Optional(
 		Type.Array(Type.String(), { 
-			description: "Agent IDs to wait for. Returns when ANY agent finishes (completed/failed/shutdown)" 
+			description: "Agent IDs to wait for. Returns when ALL agents finish (completed/failed/shutdown)" 
 		}),
 	),
 	timeout_ms: Type.Optional(

@@ -1,7 +1,7 @@
 ---
 name: librarian
 description: |
-  Codebase understanding agent for deep multi-repository analysis. Use when you need to understand architecture across repos, trace code flow, explain how features work end-to-end, or research library internals. Provides thorough analysis with visual diagrams.
+  Deep codebase analysis agent (read-only). Use for: understanding architecture across repos, tracing code flow end-to-end, explaining how features work, researching library internals. Can produce mermaid diagrams. Don't use for: code changes, quick searches (use finder). Prompt example: "Trace how a user request flows from API endpoint to database in this codebase."
 model: inherit
 thinking: inherit
 sandbox_policy: read-only

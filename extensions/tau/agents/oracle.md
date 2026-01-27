@@ -1,7 +1,7 @@
 ---
 name: oracle
 description: |
-  Expert reasoning agent for complex analysis, planning, and code review. Use when you need deep technical guidance, architectural advice, debugging strategies, or implementation planning. Invoked zero-shot - provide all context in the prompt. Returns comprehensive analysis.
+  Expert reasoning agent for complex analysis (read-only). Use for: architectural advice, debugging strategies, implementation planning, deep technical questions. Invoked zero-shot - provide all context in prompt. Don't use for: code changes (can't write), simple questions. Prompt example: "Given this error trace and code, explain the root cause and suggest fixes: [paste context]."
 model: inherit
 thinking: inherit
 sandbox_policy: read-only
