@@ -57,7 +57,7 @@ Blocks until ALL agents complete. Returns status map with results.
 
 Parameters:
 - `ids`: Array of agent IDs to wait for
-- `timeout_ms`: Max wait time (default 30000, max 300000)
+- `timeout_ms`: Max wait time (default 15 min, max 4 hours)
 
 ### Send (Session Continuation)
 

@@ -53,9 +53,10 @@ export const AgentControlLive = Layer.effect(
 					}
 					return yield* agent.prompt(message);
 				}),
-			wait: (ids: AgentId[], timeoutMs = 30000) =>
+			wait: (ids: AgentId[], timeoutMs = 900000) =>
 				Effect.gen(function* () {
-					const timeout = Math.min(Math.max(timeoutMs, 0), 300000);
+					// Default: 15 min, Max: 4 hours
+					const timeout = Math.min(Math.max(timeoutMs, 0), 14400000);
 
 					const getStatusMap = Effect.gen(function* () {
 						const statusMap: Record<string, Status> = {};

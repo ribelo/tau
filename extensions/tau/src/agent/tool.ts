@@ -51,7 +51,7 @@ export const AgentParams = Type.Object({
 	),
 	timeout_ms: Type.Optional(
 		Type.Number({ 
-			description: "Max wait time in ms. Default 30000, max 300000. Returns timedOut:true if exceeded" 
+			description: "Max wait time in ms. Default 900000 (15 min), max 14400000 (4 hours). Returns timedOut:true if exceeded" 
 		}),
 	),
 });
