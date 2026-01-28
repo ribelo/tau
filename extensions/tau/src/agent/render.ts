@@ -123,8 +123,17 @@ export function renderAgentResult(
 
 	// spawn
 	if (data["agent_id"] && data["status"] === "running") {
+		const idStr = (data["agent_id"] as string).slice(0, 8);
+		const msg = data["message"] as string | undefined;
+		if (options.expanded && msg) {
+			return new Text(
+				`${theme.fg("success", "✔")} ${theme.fg("accent", idStr)} ${theme.fg("dim", "(running)")}\n${theme.fg("dim", "task:")} ${msg}`,
+				0,
+				0,
+			);
+		}
 		return new Text(
-			`${theme.fg("success", "✔")} ${theme.fg("accent", (data["agent_id"] as string).slice(0, 8))} ${theme.fg("dim", "(running)")}`,
+			`${theme.fg("success", "✔")} ${theme.fg("accent", idStr)} ${theme.fg("dim", "(running)")}`,
 			0,
 			0,
 		);

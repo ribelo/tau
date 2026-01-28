@@ -148,6 +148,7 @@ export function createAgentToolDef(
 						return { 
 							agent_id: id, 
 							status: "running",
+							message: p.message,
 							note: "Agent started. Call wait with this id to get result when done.",
 						};
 					}
