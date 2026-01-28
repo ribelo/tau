@@ -48,7 +48,7 @@ export const AgentParams = Type.Object({
 	// wait
 	ids: Type.Optional(
 		Type.Array(Type.String(), { 
-			description: "Agent IDs to wait for. Returns when ALL agents finish (completed/failed/shutdown)" 
+			description: "Agent IDs to wait for. If omitted, waits for ALL active agents. Returns when all finish (completed/failed/shutdown)" 
 		}),
 	),
 	timeout_ms: Type.Optional(
@@ -97,27 +97,34 @@ type ToolResult = {
 
 /**
  * Execute wait action with streaming updates via onUpdate callback.
+ * If no ids provided, waits for all active agents.
  */
 async function executeWaitWithUpdates(
 	runEffect: <A, E>(effect: Effect.Effect<A, E, AgentControl>) => Promise<A>,
 	p: Static<typeof AgentParams>,
 	onUpdate: AgentToolUpdateCallback<object> | undefined,
 ): Promise<ToolResult> {
-	if (!p.ids || p.ids.length === 0) {
-		return {
-			isError: true,
-			content: [{ type: "text", text: "wait requires 'ids'" }],
-			details: { error: "wait requires 'ids'" },
-		};
-	}
-
 	try {
 		let lastResult: WaitResult | null = null;
 
 		// Consume the stream, calling onUpdate for each emission
 		const streamProgram = Effect.gen(function* () {
 			const control = yield* AgentControl;
-			const stream = control.waitStream(p.ids as AgentId[], p.timeout_ms, 1000);
+			
+			// If no ids provided, get all active agent ids
+			let ids = p.ids as AgentId[] | undefined;
+			if (!ids || ids.length === 0) {
+				const agents = yield* control.list;
+				ids = agents.map(a => a.id);
+			}
+			
+			// If still no agents, return empty result immediately
+			if (ids.length === 0) {
+				lastResult = { status: {}, timedOut: false };
+				return;
+			}
+			
+			const stream = control.waitStream(ids, p.timeout_ms, 1000);
 			
 			yield* Stream.runForEach(stream, (result) =>
 				Effect.sync(() => {
