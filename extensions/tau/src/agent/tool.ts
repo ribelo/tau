@@ -1,5 +1,5 @@
 import { Type, type Static, type TSchema } from "@sinclair/typebox";
-import { Effect, Stream } from "effect";
+import { Effect, Stream, Ref, Cause } from "effect";
 import { StringEnum } from "@mariozechner/pi-ai";
 import type { Model, Api } from "@mariozechner/pi-ai";
 import type { AgentToolUpdateCallback } from "@mariozechner/pi-agent-core";
@@ -16,6 +16,27 @@ import { AgentRegistry } from "./agent-registry.js";
 import type { AgentId } from "./types.js";
 import { renderAgentCall, renderAgentResult } from "./render.js";
 import type { ApprovalBroker } from "./approval-broker.js";
+
+/**
+ * Convert an AbortSignal to an Effect that completes when the signal aborts.
+ * Uses Effect.async with the provided AbortSignal for cleanup.
+ */
+function abortSignalEffect(signal: AbortSignal | undefined): Effect.Effect<void> {
+	if (!signal) {
+		return Effect.never; // Never completes if no signal
+	}
+	
+	// If already aborted, complete immediately
+	if (signal.aborted) {
+		return Effect.void;
+	}
+	
+	return Effect.async<void>((resume) => {
+		const onAbort = () => resume(Effect.void);
+		signal.addEventListener("abort", onAbort, { once: true });
+		// Cleanup is handled by the AbortSignal passed to async
+	});
+}
 
 export const AgentParams = Type.Object({
 	action: StringEnum(["spawn", "send", "wait", "close", "list"] as const, {
@@ -98,17 +119,19 @@ type ToolResult = {
 /**
  * Execute wait action with streaming updates via onUpdate callback.
  * If no ids provided, waits for all active agents.
+ * Handles abort signals for interruption.
  */
 async function executeWaitWithUpdates(
 	runEffect: <A, E>(effect: Effect.Effect<A, E, AgentControl>) => Promise<A>,
 	p: Static<typeof AgentParams>,
 	onUpdate: AgentToolUpdateCallback<object> | undefined,
+	signal: AbortSignal | undefined,
 ): Promise<ToolResult> {
 	try {
-		let lastResult: WaitResult | null = null;
+		// Ref to store the latest result for interruption handling
+		const latestResultRef = await runEffect(Ref.make<WaitResult | null>(null));
 
-		// Consume the stream, calling onUpdate for each emission
-		const streamProgram = Effect.gen(function* () {
+		const program = Effect.gen(function* () {
 			const control = yield* AgentControl;
 			
 			// If no ids provided, get all active agent ids
@@ -120,41 +143,71 @@ async function executeWaitWithUpdates(
 			
 			// If still no agents, return informative result immediately
 			if (ids.length === 0) {
-				lastResult = { 
+				const result: WaitResult = { 
 					status: {}, 
 					timedOut: false,
-					note: "No active agents to wait for. Use 'spawn' to create agents first, or 'list' to see existing agents.",
-				} as WaitResult & { note: string };
-				return;
+					agentTypes: {},
+				};
+				yield* Ref.set(latestResultRef, result);
+				return result;
 			}
 			
 			const stream = control.waitStream(ids, p.timeout_ms, 1000);
 			
-			yield* Stream.runForEach(stream, (result) =>
-				Effect.sync(() => {
-					lastResult = result;
-					if (onUpdate) {
-						onUpdate({
-							content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-							details: result,
-						});
-					}
-				})
+			// Create abort effect that completes when signal triggers
+			const abortEffect = abortSignalEffect(signal);
+			
+			// Run the stream with interruption handling
+			const streamRun = stream
+				.pipe(
+					Stream.tap((result) =>
+						Effect.gen(function* () {
+							yield* Ref.set(latestResultRef, result);
+							if (onUpdate) {
+								onUpdate({
+									content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+									details: result,
+								});
+							}
+						})
+					),
+					Stream.runDrain,
+					// Interrupt when abort signal triggers
+					Effect.race(abortEffect)
+				);
+			
+			yield* streamRun;
+			
+			// Return final result from ref
+			return yield* Ref.get(latestResultRef).pipe(
+				Effect.map((r) => r ?? { status: {}, timedOut: false })
 			);
 		});
 
-		await runEffect(
-			streamProgram.pipe(
+		const result = await runEffect(
+			program.pipe(
+				Effect.catchAllCause((cause) =>
+					Effect.gen(function* () {
+						// Check if this was an interruption (from abort signal)
+						if (Cause.isInterrupted(cause)) {
+							const lastResult = yield* Ref.get(latestResultRef);
+							if (lastResult) {
+								return { ...lastResult, interrupted: true };
+							}
+						}
+						// Re-throw real errors
+						return yield* Effect.failCause(cause);
+					})
+				),
 				Effect.catchAll((err: unknown) =>
 					Effect.fail(err instanceof Error ? err : new Error(String(err))),
 				),
 			),
 		);
 
-		const finalResult = lastResult ?? { status: {}, timedOut: false };
 		return {
-			content: [{ type: "text", text: JSON.stringify(finalResult, null, 2) }],
-			details: finalResult,
+			content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+			details: result,
 		};
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
@@ -201,14 +254,14 @@ export function createAgentToolDef(
 		description: buildToolDescription(),
 		parameters: AgentParams,
 
-		async execute(_toolCallId, params, onUpdate, _ctx, _signal) {
+		async execute(_toolCallId, params, onUpdate, _ctx, signal) {
 			const context = getContext();
 			const p = params as Static<typeof AgentParams>;
 			
-			// Special case for wait: use streaming with onUpdate
+			// Special case for wait: use streaming with onUpdate and abort handling
 			if (p.action === "wait") {
 				const typedOnUpdate = onUpdate as AgentToolUpdateCallback<object> | undefined;
-				return executeWaitWithUpdates(runEffect, p, typedOnUpdate);
+				return executeWaitWithUpdates(runEffect, p, typedOnUpdate, signal);
 			}
 			
 			const program: Effect.Effect<object, AgentLimitReached | AgentDepthExceeded | AgentNotFound | AgentError | Error, AgentControl> = Effect.gen(function* () {

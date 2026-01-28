@@ -103,6 +103,8 @@ export interface WaitResult {
 	readonly timedOut: boolean;
 	/** Map of agent id to agent type/name */
 	readonly agentTypes?: Record<AgentId, string>;
+	/** True if wait was interrupted by user */
+	readonly interrupted?: boolean;
 }
 
 export class AgentControl extends Context.Tag("AgentControl")<

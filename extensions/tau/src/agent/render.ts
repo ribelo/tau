@@ -169,12 +169,17 @@ export function renderAgentResult(
 		const agentTypes = data["agentTypes"] as Record<string, string> | undefined;
 		const ids = Object.keys(statusMap);
 		const timedOut = data["timedOut"] as boolean | undefined;
-		const note = data["note"] as string | undefined;
+		const interrupted = data["interrupted"] as boolean | undefined;
 		const lines: string[] = [];
 		
-		// Show note if present (e.g., "no active agents")
-		if (note && ids.length === 0) {
-			return new Text(theme.fg("dim", note), 0, 0);
+		// Show message for no agents
+		if (ids.length === 0) {
+			return new Text(theme.fg("dim", "No active agents to wait for. Use 'spawn' to create agents first, or 'list' to see existing agents."), 0, 0);
+		}
+		
+		// Show interruption warning if applicable
+		if (interrupted) {
+			lines.push(theme.fg("warning", "⚠ Interrupted (agents still running in background)"));
 		}
 		
 		// Show timeout warning if applicable
