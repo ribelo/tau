@@ -167,7 +167,20 @@ export function renderAgentResult(
 	if (data["status"] && typeof data["status"] === "object") {
 		const statusMap = data["status"] as Record<string, Record<string, unknown>>;
 		const ids = Object.keys(statusMap);
-		const lines = [];
+		const timedOut = data["timedOut"] as boolean | undefined;
+		const note = data["note"] as string | undefined;
+		const lines: string[] = [];
+		
+		// Show note if present (e.g., "no active agents")
+		if (note && ids.length === 0) {
+			return new Text(theme.fg("dim", note), 0, 0);
+		}
+		
+		// Show timeout warning if applicable
+		if (timedOut) {
+			lines.push(theme.fg("warning", "⚠ Timed out waiting for agents"));
+		}
+		
 		for (const id of ids) {
 			lines.push(renderAgentLine(id, "", statusMap[id]!, options.expanded));
 		}

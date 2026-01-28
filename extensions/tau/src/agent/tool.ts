@@ -118,9 +118,13 @@ async function executeWaitWithUpdates(
 				ids = agents.map(a => a.id);
 			}
 			
-			// If still no agents, return empty result immediately
+			// If still no agents, return informative result immediately
 			if (ids.length === 0) {
-				lastResult = { status: {}, timedOut: false };
+				lastResult = { 
+					status: {}, 
+					timedOut: false,
+					note: "No active agents to wait for. Use 'spawn' to create agents first, or 'list' to see existing agents.",
+				} as WaitResult & { note: string };
 				return;
 			}
 			
