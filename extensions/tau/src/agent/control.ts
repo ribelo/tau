@@ -120,17 +120,20 @@ export const AgentControlLive = Layer.effect(
 				const timeout = Math.min(Math.max(timeoutMs, 0), 14400000);
 				const pollInterval = Math.max(pollIntervalMs, 250); // Min 250ms
 
-				const getStatusMap = Effect.gen(function* () {
+				const getStatusAndTypes = Effect.gen(function* () {
 					const statusMap: Record<string, Status> = {};
+					const agentTypes: Record<string, string> = {};
 					for (const id of ids) {
 						const agentResult = yield* manager.get(id).pipe(Effect.either);
 						if (agentResult._tag === "Left") {
 							statusMap[id] = { state: "failed", reason: "Not found" };
+							agentTypes[id] = "unknown";
 						} else {
 							statusMap[id] = yield* agentResult.right.status;
+							agentTypes[id] = agentResult.right.type;
 						}
 					}
-					return statusMap;
+					return { statusMap, agentTypes };
 				});
 
 				const allFinal = (statusMap: Record<string, Status>) =>
@@ -138,8 +141,8 @@ export const AgentControlLive = Layer.effect(
 
 				// Create polling effect that emits status
 				const pollEffect = Effect.gen(function* () {
-					const statusMap = yield* getStatusMap;
-					return { status: statusMap, timedOut: false } satisfies WaitResult;
+					const { statusMap, agentTypes } = yield* getStatusAndTypes;
+					return { status: statusMap, timedOut: false, agentTypes } satisfies WaitResult;
 				});
 
 				// Create a polling stream: emit status, wait, repeat until all final
@@ -154,8 +157,12 @@ export const AgentControlLive = Layer.effect(
 					Stream.catchAll(() => 
 						// On timeout, emit final status with timedOut: true
 						Stream.fromEffect(
-							getStatusMap.pipe(
-								Effect.map((status): WaitResult => ({ status, timedOut: true }))
+							getStatusAndTypes.pipe(
+								Effect.map(({ statusMap, agentTypes }): WaitResult => ({ 
+									status: statusMap, 
+									timedOut: true,
+									agentTypes,
+								}))
 							)
 						)
 					),

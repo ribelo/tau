@@ -101,6 +101,8 @@ export interface ControlSpawnOptions {
 export interface WaitResult {
 	readonly status: Record<AgentId, Status>;
 	readonly timedOut: boolean;
+	/** Map of agent id to agent type/name */
+	readonly agentTypes?: Record<AgentId, string>;
 }
 
 export class AgentControl extends Context.Tag("AgentControl")<

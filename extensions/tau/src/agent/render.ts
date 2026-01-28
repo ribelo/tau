@@ -166,6 +166,7 @@ export function renderAgentResult(
 	// wait
 	if (data["status"] && typeof data["status"] === "object") {
 		const statusMap = data["status"] as Record<string, Record<string, unknown>>;
+		const agentTypes = data["agentTypes"] as Record<string, string> | undefined;
 		const ids = Object.keys(statusMap);
 		const timedOut = data["timedOut"] as boolean | undefined;
 		const note = data["note"] as string | undefined;
@@ -182,7 +183,8 @@ export function renderAgentResult(
 		}
 		
 		for (const id of ids) {
-			lines.push(renderAgentLine(id, "", statusMap[id]!, options.expanded));
+			const type = agentTypes?.[id] ?? "";
+			lines.push(renderAgentLine(id, type, statusMap[id]!, options.expanded));
 		}
 		return new Text(lines.join("\n"), 0, 0);
 	}
