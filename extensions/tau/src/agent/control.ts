@@ -1,4 +1,4 @@
-import { Effect, Layer, Stream } from "effect";
+import { Effect, Layer, Stream, Schedule } from "effect";
 import {
 	AgentControl,
 	AgentManager,
@@ -6,6 +6,7 @@ import {
 	type Status,
 	type ControlSpawnOptions,
 	type SpawnOptions,
+	type WaitResult,
 } from "./services.js";
 import { AgentRegistry } from "./agent-registry.js";
 import { isFinal } from "./status.js";
@@ -115,6 +116,51 @@ export const AgentControlLive = Layer.effect(
 						),
 					);
 				}),
+			waitStream: (ids: AgentId[], timeoutMs = 900000, pollIntervalMs = 1000) => {
+				const timeout = Math.min(Math.max(timeoutMs, 0), 14400000);
+				const pollInterval = Math.max(pollIntervalMs, 250); // Min 250ms
+
+				const getStatusMap = Effect.gen(function* () {
+					const statusMap: Record<string, Status> = {};
+					for (const id of ids) {
+						const agentResult = yield* manager.get(id).pipe(Effect.either);
+						if (agentResult._tag === "Left") {
+							statusMap[id] = { state: "failed", reason: "Not found" };
+						} else {
+							statusMap[id] = yield* agentResult.right.status;
+						}
+					}
+					return statusMap;
+				});
+
+				const allFinal = (statusMap: Record<string, Status>) =>
+					Object.values(statusMap).every(isFinal);
+
+				// Create polling effect that emits status
+				const pollEffect = Effect.gen(function* () {
+					const statusMap = yield* getStatusMap;
+					return { status: statusMap, timedOut: false } satisfies WaitResult;
+				});
+
+				// Create a polling stream: emit status, wait, repeat until all final
+				return Stream.repeatEffectWithSchedule(
+					pollEffect,
+					Schedule.spaced(pollInterval),
+				).pipe(
+					// Take until all agents are final (inclusive - emit the final state)
+					Stream.takeUntil((result) => allFinal(result.status) || ids.length === 0),
+					// Apply timeout to the whole stream
+					Stream.timeout(timeout),
+					Stream.catchAll(() => 
+						// On timeout, emit final status with timedOut: true
+						Stream.fromEffect(
+							getStatusMap.pipe(
+								Effect.map((status): WaitResult => ({ status, timedOut: true }))
+							)
+						)
+					),
+				);
+			},
 			close: (id: AgentId) => manager.shutdown(id),
 			closeAll: manager.shutdownAll,
 			list: manager.list,

@@ -97,6 +97,12 @@ export interface ControlSpawnOptions {
 	readonly cwd: string;
 }
 
+/** Result type for wait operations */
+export interface WaitResult {
+	readonly status: Record<AgentId, Status>;
+	readonly timedOut: boolean;
+}
+
 export class AgentControl extends Context.Tag("AgentControl")<
 	AgentControl,
 	{
@@ -114,10 +120,13 @@ export class AgentControl extends Context.Tag("AgentControl")<
 		readonly wait: (
 			ids: AgentId[],
 			timeoutMs?: number,
-		) => Effect.Effect<
-			{ status: Record<AgentId, Status>; timedOut: boolean },
-			unknown
-		>;
+		) => Effect.Effect<WaitResult, unknown>;
+		/** Stream version of wait that emits status updates */
+		readonly waitStream: (
+			ids: AgentId[],
+			timeoutMs?: number,
+			pollIntervalMs?: number,
+		) => Stream.Stream<WaitResult, unknown>;
 		readonly close: (id: AgentId) => Effect.Effect<void, AgentNotFound>;
 		readonly closeAll: Effect.Effect<void>;
 		readonly list: Effect.Effect<AgentInfo[]>;

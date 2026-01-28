@@ -1,7 +1,8 @@
 import { Type, type Static, type TSchema } from "@sinclair/typebox";
-import { Effect } from "effect";
+import { Effect, Stream } from "effect";
 import { StringEnum } from "@mariozechner/pi-ai";
 import type { Model, Api } from "@mariozechner/pi-ai";
+import type { AgentToolUpdateCallback } from "@mariozechner/pi-agent-core";
 import {
 	AgentControl,
 	AgentLimitReached,
@@ -9,6 +10,7 @@ import {
 	AgentNotFound,
 	AgentError,
 	type ControlSpawnOptions,
+	type WaitResult,
 } from "./services.js";
 import { AgentRegistry } from "./agent-registry.js";
 import type { AgentId } from "./types.js";
@@ -87,6 +89,72 @@ export interface AgentToolContext {
 	approvalBroker: ApprovalBroker | undefined;
 }
 
+type ToolResult = {
+	isError?: boolean;
+	content: Array<{ type: "text"; text: string }>;
+	details: object;
+};
+
+/**
+ * Execute wait action with streaming updates via onUpdate callback.
+ */
+async function executeWaitWithUpdates(
+	runEffect: <A, E>(effect: Effect.Effect<A, E, AgentControl>) => Promise<A>,
+	p: Static<typeof AgentParams>,
+	onUpdate: AgentToolUpdateCallback<object> | undefined,
+): Promise<ToolResult> {
+	if (!p.ids || p.ids.length === 0) {
+		return {
+			isError: true,
+			content: [{ type: "text", text: "wait requires 'ids'" }],
+			details: { error: "wait requires 'ids'" },
+		};
+	}
+
+	try {
+		let lastResult: WaitResult | null = null;
+
+		// Consume the stream, calling onUpdate for each emission
+		const streamProgram = Effect.gen(function* () {
+			const control = yield* AgentControl;
+			const stream = control.waitStream(p.ids as AgentId[], p.timeout_ms, 1000);
+			
+			yield* Stream.runForEach(stream, (result) =>
+				Effect.sync(() => {
+					lastResult = result;
+					if (onUpdate) {
+						onUpdate({
+							content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+							details: result,
+						});
+					}
+				})
+			);
+		});
+
+		await runEffect(
+			streamProgram.pipe(
+				Effect.catchAll((err: unknown) =>
+					Effect.fail(err instanceof Error ? err : new Error(String(err))),
+				),
+			),
+		);
+
+		const finalResult = lastResult ?? { status: {}, timedOut: false };
+		return {
+			content: [{ type: "text", text: JSON.stringify(finalResult, null, 2) }],
+			details: finalResult,
+		};
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		return {
+			isError: true,
+			content: [{ type: "text", text: message }],
+			details: { error: message },
+		};
+	}
+}
+
 export interface AgentToolDef {
 	name: string;
 	label: string;
@@ -122,11 +190,18 @@ export function createAgentToolDef(
 		description: buildToolDescription(),
 		parameters: AgentParams,
 
-		async execute(_toolCallId, params, _onUpdate, _ctx, _signal) {
+		async execute(_toolCallId, params, onUpdate, _ctx, _signal) {
 			const context = getContext();
-			const program = Effect.gen(function* () {
+			const p = params as Static<typeof AgentParams>;
+			
+			// Special case for wait: use streaming with onUpdate
+			if (p.action === "wait") {
+				const typedOnUpdate = onUpdate as AgentToolUpdateCallback<object> | undefined;
+				return executeWaitWithUpdates(runEffect, p, typedOnUpdate);
+			}
+			
+			const program: Effect.Effect<object, AgentLimitReached | AgentDepthExceeded | AgentNotFound | AgentError | Error, AgentControl> = Effect.gen(function* () {
 				const control = yield* AgentControl;
-				const p = params as Static<typeof AgentParams>;
 
 				switch (p.action) {
 					case "spawn": {
@@ -164,13 +239,6 @@ export function createAgentToolDef(
 							p.interrupt,
 						);
 						return { submission_id };
-					}
-					case "wait": {
-						if (!p.ids || p.ids.length === 0) {
-							return yield* Effect.fail(new Error("wait requires 'ids'"));
-						}
-						const result = yield* control.wait(p.ids as AgentId[], p.timeout_ms);
-						return result;
 					}
 					case "close": {
 						if (!p.id) {
