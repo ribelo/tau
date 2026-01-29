@@ -6,6 +6,7 @@
 
 		"module": "NodeNext",
 		"moduleResolution": "NodeNext",
+		"moduleDetection": "force",
 		"verbatimModuleSyntax": true,
 		"resolveJsonModule": true,
 
@@ -25,7 +26,15 @@
 
 		"forceConsistentCasingInFileNames": true,
 		"skipLibCheck": true,
-		"noEmit": true
+		"noEmit": true,
+		"incremental": true,
+
+		// Effect Language Service
+		"plugins": [
+			{
+				"name": "@effect/language-service"
+			}
+		]
 	},
 	"include": ["src/**/*.ts", "test/**/*.ts"]
 }

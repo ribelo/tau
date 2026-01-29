@@ -1,46 +1,540 @@
+import { Data, Effect, Schema, Context } from "effect";
+import * as ParseResult from "effect/ParseResult";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Type } from "@sinclair/typebox";
+import type { TauState } from "../shared/state.js";
 import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 import { Markdown, Text } from "@mariozechner/pi-tui";
-import { Type } from "@sinclair/typebox";
 
-import type { TauState } from "../shared/state.js";
+// =============================================================================
+// Errors
+// =============================================================================
 
-type JsonRecord = Record<string, unknown>;
+export class ExaApiError extends Data.TaggedError("ExaApiError")<{
+	readonly message: string;
+	readonly status: number;
+	readonly details: unknown;
+}> {}
 
-type ToolRenderOptions = { expanded: boolean; isPartial: boolean };
+export class ExaConfigError extends Data.TaggedError("ExaConfigError")<{
+	readonly message: string;
+}> {}
 
-type ToolResultLike = {
-	content?: Array<{ type: "text"; text: string } | { type: "json"; json: unknown }>;
-	details?: unknown;
+// =============================================================================
+// Schemas - using plain optional fields for simplicity
+// =============================================================================
+
+export const ExaSearchResult = Schema.Struct({
+	id: Schema.optional(Schema.String),
+	url: Schema.optional(Schema.String),
+	title: Schema.optional(Schema.String),
+	score: Schema.optional(Schema.Number),
+	publishedDate: Schema.optional(Schema.String),
+	author: Schema.optional(Schema.String),
+	text: Schema.optional(Schema.String),
+	highlights: Schema.optional(Schema.Array(Schema.String)),
+});
+export type ExaSearchResult = Schema.Schema.Type<typeof ExaSearchResult>;
+
+export const ExaSearchResponse = Schema.Struct({
+	requestId: Schema.optional(Schema.String),
+	results: Schema.Array(ExaSearchResult),
+	resolvedSearchType: Schema.optional(Schema.String),
+	context: Schema.optional(Schema.String),
+	searchTime: Schema.optional(Schema.Number),
+	costDollars: Schema.optional(Schema.Unknown),
+});
+export type ExaSearchResponse = Schema.Schema.Type<typeof ExaSearchResponse>;
+
+export const ExaContentsResult = Schema.Struct({
+	id: Schema.optional(Schema.String),
+	url: Schema.optional(Schema.String),
+	title: Schema.optional(Schema.String),
+	author: Schema.optional(Schema.String),
+	publishedDate: Schema.optional(Schema.String),
+	text: Schema.optional(Schema.String),
+	highlights: Schema.optional(Schema.Array(Schema.String)),
+	highlightScores: Schema.optional(Schema.Array(Schema.Number)),
+	summary: Schema.optional(Schema.String),
+	subpages: Schema.optional(Schema.Array(Schema.Unknown)),
+	extras: Schema.optional(Schema.Unknown),
+});
+export type ExaContentsResult = Schema.Schema.Type<typeof ExaContentsResult>;
+
+export const ExaContentsResponse = Schema.Struct({
+	requestId: Schema.optional(Schema.String),
+	results: Schema.Array(ExaContentsResult),
+	context: Schema.optional(Schema.String),
+	statuses: Schema.optional(Schema.Array(Schema.Unknown)),
+	costDollars: Schema.optional(Schema.Unknown),
+});
+export type ExaContentsResponse = Schema.Schema.Type<typeof ExaContentsResponse>;
+
+export const ExaContextResponse = Schema.Struct({
+	requestId: Schema.optional(Schema.String),
+	query: Schema.optional(Schema.String),
+	response: Schema.optional(Schema.String),
+	resultsCount: Schema.optional(Schema.Number),
+	costDollars: Schema.optional(Schema.Unknown),
+	searchTime: Schema.optional(Schema.Number),
+	outputTokens: Schema.optional(Schema.Number),
+});
+export type ExaContextResponse = Schema.Schema.Type<typeof ExaContextResponse>;
+
+// =============================================================================
+// Config
+// =============================================================================
+
+export interface ExaConfig {
+	readonly baseUrl: string;
+	readonly apiKey: string;
+}
+
+export const getExaConfig = (): Effect.Effect<ExaConfig, ExaConfigError> =>
+	Effect.gen(function* () {
+		const apiKey = process.env["EXA_API_KEY"]?.trim();
+		if (!apiKey) {
+			return yield* new ExaConfigError({
+				message:
+					"EXA_API_KEY is not set. Set it in your environment before using Exa tools (e.g. export EXA_API_KEY=...).",
+			});
+		}
+		const baseUrl = (process.env["EXA_API_BASE_URL"] ?? "https://api.exa.ai").replace(/\/+$/, "");
+		return { baseUrl, apiKey };
+	});
+
+// =============================================================================
+// API Client
+// =============================================================================
+
+const exaPost = <A, I>(
+	path: string,
+	body: unknown,
+	schema: Schema.Schema<A, I>,
+	signal: AbortSignal | undefined,
+): Effect.Effect<A, ExaApiError | ExaConfigError> =>
+	Effect.gen(function* () {
+		const config = yield* getExaConfig();
+		const url = `${config.baseUrl}${path.startsWith("/") ? "" : "/"}${path}`;
+
+		const res = yield* Effect.tryPromise({
+			try: () =>
+				fetch(url, {
+					method: "POST",
+					headers: {
+						"content-type": "application/json",
+						"x-api-key": config.apiKey,
+						authorization: `Bearer ${config.apiKey}`,
+					},
+					body: JSON.stringify(body),
+					signal: signal ?? null,
+				}),
+			catch: (error): ExaApiError =>
+				new ExaApiError({
+					message: error instanceof Error ? error.message : String(error),
+					status: 0,
+					details: error,
+				}),
+		});
+
+		if (!res.ok) {
+			const text = yield* Effect.tryPromise(() => res.text()).pipe(
+				Effect.orElseSucceed(() => "(could not read response body)"),
+			);
+			return yield* new ExaApiError({
+				message: `Exa API error (${res.status} ${res.statusText}): ${text}`,
+				status: res.status,
+				details: text,
+			});
+		}
+
+		const json = yield* Effect.tryPromise({
+			try: () => res.json(),
+			catch: (error): ExaApiError =>
+				new ExaApiError({
+					message: `Failed to parse JSON response: ${error instanceof Error ? error.message : String(error)}`,
+					status: res.status,
+					details: error,
+				}),
+		});
+
+		return yield* Schema.decodeUnknown(schema)(json).pipe(
+			Effect.mapError((parseError): ExaApiError => {
+				const issues = ParseResult.ArrayFormatter.formatErrorSync(parseError);
+				return new ExaApiError({
+					message: `Failed to decode response: ${JSON.stringify(issues)}`,
+					status: res.status,
+					details: parseError,
+				});
+			}),
+		);
+	});
+
+// =============================================================================
+// Service Interface
+// =============================================================================
+
+export interface ExaService {
+	readonly search: (
+		params: WebSearchParams,
+		signal: AbortSignal | undefined,
+	) => Effect.Effect<ExaSearchResponse, ExaApiError | ExaConfigError>;
+	readonly crawl: (
+		params: CrawlingParams,
+		signal: AbortSignal | undefined,
+	) => Effect.Effect<ExaContentsResponse, ExaApiError | ExaConfigError>;
+	readonly codeContext: (
+		params: CodeContextParams,
+		signal: AbortSignal | undefined,
+	) => Effect.Effect<ExaContextResponse, ExaApiError | ExaConfigError>;
+}
+
+export const ExaService = Context.GenericTag<ExaService>("ExaService");
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+const MAX_TEXT_CHARS = 2000;
+const MAX_HIGHLIGHTS = 5;
+const MAX_HIGHLIGHT_CHARS = 240;
+
+const truncate = (s: string, max: number): string =>
+	s.length <= max ? s : `${s.slice(0, Math.max(0, max - 1))}…`;
+
+const oneLine = (s: string): string => s.replace(/\s+/g, " ").trim();
+
+const compactSearchResults = (results: ReadonlyArray<ExaSearchResult>): Array<ExaSearchResult> =>
+	results.map((r) => ({
+		...r,
+		text: r.text !== undefined ? truncate(r.text, MAX_TEXT_CHARS) : undefined,
+		highlights: r.highlights !== undefined
+			? r.highlights.slice(0, MAX_HIGHLIGHTS).map((h) => truncate(oneLine(h), MAX_HIGHLIGHT_CHARS))
+			: undefined,
+	}));
+
+const compactContentsResults = (results: ReadonlyArray<ExaContentsResult>): Array<ExaContentsResult> =>
+	results.map((r) => ({
+		...r,
+		summary: r.summary !== undefined ? truncate(oneLine(r.summary), 2000) : undefined,
+		text: r.text !== undefined ? truncate(r.text, 6000) : undefined,
+		highlights: r.highlights !== undefined
+			? r.highlights.slice(0, 8).map((h) => truncate(oneLine(h), MAX_HIGHLIGHT_CHARS))
+			: undefined,
+	}));
+
+// =============================================================================
+// Search
+// =============================================================================
+
+export interface WebSearchParams {
+	readonly query: string;
+	readonly type?: "auto" | "neural" | "fast" | "deep";
+	readonly additionalQueries?: ReadonlyArray<string>;
+	readonly category?: string;
+	readonly userLocation?: string;
+	readonly numResults?: number;
+	readonly text?: boolean;
+	readonly context?: boolean;
+	readonly includeDomains?: ReadonlyArray<string>;
+	readonly excludeDomains?: ReadonlyArray<string>;
+	readonly startCrawlDate?: string;
+	readonly endCrawlDate?: string;
+	readonly startPublishedDate?: string;
+	readonly endPublishedDate?: string;
+	readonly includeText?: ReadonlyArray<string>;
+	readonly excludeText?: ReadonlyArray<string>;
+	readonly moderation?: boolean;
+}
+
+const makeSearchBody = (params: WebSearchParams): Record<string, unknown> => {
+	const body: Record<string, unknown> = { query: params.query };
+	if (params.type !== undefined) body["type"] = params.type;
+	if (params.additionalQueries !== undefined && params.additionalQueries.length > 0) body["additionalQueries"] = params.additionalQueries;
+	if (params.category !== undefined) body["category"] = params.category;
+	if (params.userLocation !== undefined) body["userLocation"] = params.userLocation;
+	if (params.numResults !== undefined) body["numResults"] = params.numResults;
+	if (params.text !== undefined) body["text"] = params.text;
+	if (params.context !== undefined) body["context"] = params.context;
+	if (params.includeDomains !== undefined && params.includeDomains.length > 0) body["includeDomains"] = params.includeDomains;
+	if (params.excludeDomains !== undefined && params.excludeDomains.length > 0) body["excludeDomains"] = params.excludeDomains;
+	if (params.startCrawlDate !== undefined) body["startCrawlDate"] = params.startCrawlDate;
+	if (params.endCrawlDate !== undefined) body["endCrawlDate"] = params.endCrawlDate;
+	if (params.startPublishedDate !== undefined) body["startPublishedDate"] = params.startPublishedDate;
+	if (params.endPublishedDate !== undefined) body["endPublishedDate"] = params.endPublishedDate;
+	if (params.includeText !== undefined && params.includeText.length > 0) body["includeText"] = params.includeText;
+	if (params.excludeText !== undefined && params.excludeText.length > 0) body["excludeText"] = params.excludeText;
+	if (params.moderation !== undefined) body["moderation"] = params.moderation;
+	return body;
 };
 
-function truncate(s: string, max: number): string {
-	if (s.length <= max) return s;
-	return `${s.slice(0, Math.max(0, max - 1))}…`;
+// =============================================================================
+// Crawl
+// =============================================================================
+
+export interface CrawlingParams {
+	readonly urls: ReadonlyArray<string>;
+	readonly text?: boolean;
+	readonly highlights?: boolean;
+	readonly summary?: boolean;
+	readonly context?: boolean;
+	readonly livecrawl?: "never" | "fallback" | "preferred" | "always";
+	readonly livecrawlTimeout?: number;
+	readonly subpages?: number;
+	readonly subpageTarget?: ReadonlyArray<string>;
 }
 
-function truncateLines(s: string, maxLines: number): { text: string; truncated: boolean } {
-	const lines = s.split("\n");
-	if (lines.length <= maxLines) return { text: s, truncated: false };
-	return { text: lines.slice(0, maxLines).join("\n"), truncated: true };
+const makeCrawlBody = (params: CrawlingParams): Record<string, unknown> => {
+	const body: Record<string, unknown> = {
+		urls: params.urls,
+		text: params.text ?? true,
+	};
+	if (params.context !== undefined) body["context"] = params.context;
+	if (params.highlights !== undefined) body["highlights"] = params.highlights;
+	if (params.summary !== undefined) body["summary"] = params.summary;
+	if (params.livecrawl !== undefined) body["livecrawl"] = params.livecrawl;
+	if (params.livecrawlTimeout !== undefined) body["livecrawlTimeout"] = params.livecrawlTimeout;
+	if (params.subpages !== undefined) body["subpages"] = params.subpages;
+	if (params.subpageTarget !== undefined && params.subpageTarget.length > 0) body["subpageTarget"] = params.subpageTarget;
+	return body;
+};
+
+// =============================================================================
+// Code Context
+// =============================================================================
+
+export interface CodeContextParams {
+	readonly query: string;
+	readonly tokensNum?: "dynamic" | string;
 }
 
-function oneLine(s: string): string {
-	return s.replace(/\s+/g, " ").trim();
-}
-
-/** Remove properties with undefined values (for exactOptionalPropertyTypes compliance) */
-function omitUndefined<T extends Record<string, unknown>>(obj: T): T {
-	const result = {} as T;
-	for (const key of Object.keys(obj) as Array<keyof T>) {
-		if (obj[key] !== undefined) {
-			result[key] = obj[key];
+const makeCodeContextBody = (params: CodeContextParams): Record<string, unknown> => {
+	const body: Record<string, unknown> = { query: params.query };
+	const tokensNum = params.tokensNum;
+	if (tokensNum === undefined || tokensNum === "dynamic") {
+		body["tokensNum"] = "dynamic";
+	} else if (/^\d+$/.test(tokensNum)) {
+		const n = Number(tokensNum);
+		if (Number.isFinite(n) && n >= 50 && n <= 100000) {
+			body["tokensNum"] = n;
+		} else {
+			body["tokensNum"] = "dynamic";
 		}
+	} else {
+		body["tokensNum"] = "dynamic";
 	}
-	return result;
+	return body;
+};
+
+// =============================================================================
+// Live Implementation
+// =============================================================================
+
+export const ExaServiceLive: ExaService = {
+	search: (params, signal) =>
+		Effect.gen(function* () {
+			const body = makeSearchBody(params);
+			const response = yield* exaPost("/search", body, ExaSearchResponse, signal);
+			return {
+				...response,
+				results: compactSearchResults(response.results),
+			};
+		}),
+
+	crawl: (params, signal) =>
+		Effect.gen(function* () {
+			if (params.urls.length === 0) {
+				return yield* new ExaApiError({
+					message: "crawling_exa requires at least one url",
+					status: 400,
+					details: null,
+				});
+			}
+			const body = makeCrawlBody(params);
+			const response = yield* exaPost("/contents", body, ExaContentsResponse, signal);
+			return {
+				...response,
+				results: compactContentsResults(response.results),
+			};
+		}),
+
+	codeContext: (params, signal) =>
+		Effect.gen(function* () {
+			const body = makeCodeContextBody(params);
+			return yield* exaPost("/context", body, ExaContextResponse, signal);
+		}),
+};
+
+// =============================================================================
+// TypeBox Parameters (for LLM tool interface - SDK requirement)
+// =============================================================================
+
+const WebSearchTypeBox = Type.Object({
+	query: Type.String({
+		description: "The query string for the search.",
+		minLength: 1,
+		maxLength: 2000,
+	}),
+	type: Type.Optional(
+		Type.String({
+			description: "Search type. Options: auto (default), neural, fast, deep.",
+		}),
+	),
+	additionalQueries: Type.Optional(
+		Type.Array(Type.String({ minLength: 1 }), {
+			description: "Additional query variations for deep search (only works with type=deep).",
+		}),
+	),
+	category: Type.Optional(
+		Type.String({
+			description:
+				"Optional category filter. Common options include: company, research paper, news, pdf, github, tweet, personal site, financial report, people.",
+		}),
+	),
+	userLocation: Type.Optional(
+		Type.String({
+			description: "Two-letter ISO country code of the user (e.g. 'US').",
+			minLength: 2,
+			maxLength: 2,
+		}),
+	),
+	numResults: Type.Optional(
+		Type.Integer({
+			minimum: 1,
+			maximum: 100,
+			description: "Number of results to return (default 10; max 100 depending on type).",
+		}),
+	),
+	text: Type.Optional(
+		Type.Boolean({
+			description:
+				"If true, include extracted text snippets in each result (can be large). Best practice: leave off unless needed; use exa.crawl for full text.",
+		}),
+	),
+	context: Type.Optional(
+		Type.Boolean({
+			description: "If true, also return a combined context string for LLM/RAG usage (can be large).",
+		}),
+	),
+	includeDomains: Type.Optional(
+		Type.Array(Type.String({ minLength: 1 }), {
+			description: "Only return results from these domains.",
+		}),
+	),
+	excludeDomains: Type.Optional(
+		Type.Array(Type.String({ minLength: 1 }), {
+			description: "Exclude results from these domains.",
+		}),
+	),
+	startCrawlDate: Type.Optional(
+		Type.String({
+			description:
+				"Only include links crawled after this ISO 8601 date-time (e.g. 2023-01-01T00:00:00.000Z).",
+		}),
+	),
+	endCrawlDate: Type.Optional(
+		Type.String({
+			description: "Only include links crawled before this ISO 8601 date-time.",
+		}),
+	),
+	startPublishedDate: Type.Optional(
+		Type.String({
+			description:
+				"Only include links published after this ISO 8601 date-time (e.g. 2023-01-01T00:00:00.000Z).",
+		}),
+	),
+	endPublishedDate: Type.Optional(
+		Type.String({
+			description: "Only include links published before this ISO 8601 date-time.",
+		}),
+	),
+	includeText: Type.Optional(
+		Type.Array(Type.String({ minLength: 1 }), {
+			description:
+				"Strings that must be present in the result page text (Exa currently supports 1 string of up to ~5 words).",
+		}),
+	),
+	excludeText: Type.Optional(
+		Type.Array(Type.String({ minLength: 1 }), {
+			description:
+				"Strings that must NOT be present in the result page text (Exa currently supports 1 string of up to ~5 words).",
+		}),
+	),
+	moderation: Type.Optional(Type.Boolean({ description: "Enable content moderation to filter unsafe content." })),
+});
+
+const CrawlingTypeBox = Type.Object({
+	urls: Type.Array(Type.String({ minLength: 1 }), {
+		description: "URLs to fetch.",
+		minItems: 1,
+	}),
+	text: Type.Optional(
+		Type.Boolean({
+			description: "If true, return extracted page text (can be large). If false, disable text.",
+		}),
+	),
+	highlights: Type.Optional(
+		Type.Boolean({
+			description: "If true, include default highlights (relevant snippets) for each page.",
+		}),
+	),
+	summary: Type.Optional(Type.Boolean({ description: "If true, include a default summary for each page." })),
+	context: Type.Optional(
+		Type.Boolean({
+			description: "If true, include a combined context string (often useful for RAG, but can be very large).",
+		}),
+	),
+	livecrawl: Type.Optional(
+		Type.String({
+			description:
+				"Livecrawl mode: never (default), fallback, preferred, always. Use 'always' only if you cannot tolerate cached content.",
+		}),
+	),
+	livecrawlTimeout: Type.Optional(
+		Type.Integer({
+			description: "Livecrawl timeout in milliseconds (default 10000).",
+			minimum: 1,
+		}),
+	),
+	subpages: Type.Optional(
+		Type.Integer({
+			description: "Number of subpages to crawl (default 0).",
+			minimum: 0,
+		}),
+	),
+	subpageTarget: Type.Optional(
+		Type.Array(Type.String({ minLength: 1 }), {
+			description:
+				"Keywords to target specific subpages. Exa also accepts a single string; here pass a one-element array.",
+		}),
+	),
+});
+
+const CodeContextTypeBox = Type.Object({
+	query: Type.String({
+		description: "Search query to find relevant code snippets.",
+		minLength: 1,
+		maxLength: 2000,
+	}),
+	tokensNum: Type.Optional(
+		Type.String({
+			description:
+				"Optional. Defaults to 'dynamic' (recommended). Use 'dynamic' or an integer between 50 and 100000 (as a string).",
+		}),
+	),
+});
+
+// =============================================================================
+// Rendering Helpers
+// =============================================================================
+
+interface Theme {
+	fg: (color: string, text: string) => string;
+	bold: (text: string) => string;
+	dim: (text: string) => string;
 }
 
-function fmtValue(v: unknown): string {
+const truncateValue = (v: unknown): string => {
 	if (v === undefined) return "(default)";
 	if (v === null) return "null";
 	if (typeof v === "string") return JSON.stringify(v);
@@ -48,719 +542,354 @@ function fmtValue(v: unknown): string {
 	if (Array.isArray(v)) {
 		return `[${v
 			.slice(0, 4)
-			.map((x) => fmtValue(x))
+			.map((x) => truncateValue(x))
 			.join(", ")}${v.length > 4 ? ", …" : ""}]`;
 	}
 	if (typeof v === "object") return "{…}";
 	return String(v);
-}
+};
 
-function getJsonBlock(result: ToolResultLike): unknown | undefined {
-	const blocks = result.content || [];
-	for (const b of blocks) {
-		if (b.type === "json") return b.json;
+const renderSearchCall = (args: unknown, theme: Theme): string => {
+	const typedArgs = args as WebSearchParams;
+	const query = typedArgs.query ?? "";
+	let out = theme.fg("toolTitle", theme.bold("exa.web_search"));
+	if (query) out += ` ${theme.fg("toolOutput", truncate(oneLine(query), 140))}`;
+
+	const extras: Array<[string, unknown]> = [
+		["type", typedArgs.type],
+		["category", typedArgs.category],
+		["userLocation", typedArgs.userLocation],
+		["numResults", typedArgs.numResults],
+		["text", typedArgs.text],
+		["context", typedArgs.context],
+		["includeDomains", typedArgs.includeDomains],
+		["excludeDomains", typedArgs.excludeDomains],
+		["startCrawlDate", typedArgs.startCrawlDate],
+		["endCrawlDate", typedArgs.endCrawlDate],
+		["startPublishedDate", typedArgs.startPublishedDate],
+		["endPublishedDate", typedArgs.endPublishedDate],
+		["includeText", typedArgs.includeText],
+		["excludeText", typedArgs.excludeText],
+		["moderation", typedArgs.moderation],
+	];
+
+	for (const [k, v] of extras) {
+		if (v === undefined) continue;
+		out += `\n${theme.fg("muted", k + ":")} ${theme.dim(truncateValue(v))}`;
 	}
-	return undefined;
-}
-
-type ExaSearchResult = {
-	id?: string;
-	url?: string;
-	title?: string;
-	score?: number;
-	publishedDate?: string;
-	author?: string;
-	text?: string;
-	highlights?: string[];
+	return out;
 };
 
-type ExaSearchResponse = {
-	requestId?: string;
-	results?: ExaSearchResult[];
-	resolvedSearchType?: string;
-	context?: string;
-	[extra: string]: unknown;
+const renderCrawlCall = (args: unknown, theme: Theme): string => {
+	const typedArgs = args as CrawlingParams;
+	let out = theme.fg("toolTitle", theme.bold("exa.crawl"));
+	const urls = typedArgs.urls ?? [];
+	if (urls.length > 0) out += ` ${theme.dim(truncateValue(urls))}`;
+
+	const extras: Array<[string, unknown]> = [
+		["text", typedArgs.text],
+		["highlights", typedArgs.highlights],
+		["summary", typedArgs.summary],
+		["context", typedArgs.context],
+		["livecrawl", typedArgs.livecrawl],
+		["livecrawlTimeout", typedArgs.livecrawlTimeout],
+		["subpages", typedArgs.subpages],
+		["subpageTarget", typedArgs.subpageTarget],
+	];
+
+	for (const [k, v] of extras) {
+		if (v === undefined) continue;
+		out += `\n${theme.fg("muted", k + ":")} ${theme.dim(truncateValue(v))}`;
+	}
+	return out;
 };
 
-type ExaContentsResult = {
-	id?: string;
-	url?: string;
-	title?: string;
-	author?: string;
-	publishedDate?: string;
-	text?: string;
-	highlights?: string[];
-	highlightScores?: number[];
-	summary?: string;
-	subpages?: unknown[];
-	extras?: unknown;
+const renderCodeContextCall = (args: unknown, theme: Theme): string => {
+	const typedArgs = args as CodeContextParams;
+	let out = theme.fg("toolTitle", theme.bold("exa.code_context"));
+	const query = typedArgs.query ?? "";
+	if (query) out += ` ${theme.fg("toolOutput", truncate(oneLine(query), 140))}`;
+
+	const tokensNum = typedArgs.tokensNum;
+	if (typeof tokensNum === "string" && tokensNum.trim().length > 0) {
+		out += `\n${theme.fg("muted", "tokensNum:")} ${theme.dim(truncateValue(tokensNum.trim()))}`;
+	}
+	return out;
 };
 
-type ExaContentsResponse = {
-	requestId?: string;
-	results?: ExaContentsResult[];
-	context?: string;
-	statuses?: unknown[];
-	costDollars?: unknown;
-	[extra: string]: unknown;
+const formatSearchResultText = (r: ExaSearchResult, index: number): string => {
+	const title = r.title ?? r.url ?? "(no title)";
+	const url = r.url ?? "(no url)";
+	let out = `[${index + 1}] ${title}\nURL: ${url}`;
+
+	if (r.publishedDate !== undefined) out += `\nPublished: ${r.publishedDate}`;
+	if (r.author !== undefined) out += `\nAuthor: ${r.author}`;
+	if (r.text !== undefined) out += `\nSnippet: ${r.text}`;
+	if (r.highlights !== undefined && r.highlights.length > 0) {
+		out += `\nHighlights: ${r.highlights.join(" | ")}`;
+	}
+	return out;
 };
 
-type ExaContextResponse = {
-	requestId?: string;
-	query?: string;
-	response?: string;
-	resultsCount?: number;
-	costDollars?: unknown;
-	searchTime?: number;
-	outputTokens?: number;
-	[extra: string]: unknown;
+const formatCrawlResultText = (r: ExaContentsResult, index: number): string => {
+	const title = r.title ?? r.url ?? "(no title)";
+	const url = r.url ?? "(no url)";
+	let out = `[${index + 1}] ${title}\nURL: ${url}`;
+
+	if (r.summary !== undefined) out += `\nSummary: ${r.summary}`;
+	if (r.text !== undefined) out += `\nContent: ${r.text}`;
+	if (r.highlights !== undefined && r.highlights.length > 0) {
+		out += `\nHighlights: ${r.highlights.join(" | ")}`;
+	}
+	return out;
 };
 
-function getExaConfig(): { baseUrl: string; apiKey: string } {
-	const apiKey = (process.env["EXA_API_KEY"] || "").trim();
-	if (!apiKey) {
-		throw new Error(
-			"EXA_API_KEY is not set. Set it in your environment before using Exa tools (e.g. export EXA_API_KEY=...).",
-		);
+const renderSearchResult = (
+	result: ExaSearchResponse,
+	expanded: boolean,
+	theme: Theme,
+): string => {
+	const results = result.results;
+	const shown = expanded ? results : results.slice(0, 3);
+
+	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+	let out = theme.dim(separator);
+
+	if (result.requestId !== undefined || result.resolvedSearchType !== undefined) {
+		if (result.requestId !== undefined) out += `\n${theme.fg("muted", "requestId:")} ${theme.dim(String(result.requestId))}`;
+		if (result.resolvedSearchType !== undefined)
+			out += `\n${theme.fg("muted", "resolvedSearchType:")} ${theme.dim(String(result.resolvedSearchType))}`;
 	}
 
-	const baseUrl = (process.env["EXA_API_BASE_URL"] || "https://api.exa.ai").replace(/\/+$/, "");
-	return { baseUrl, apiKey };
-}
+	for (let i = 0; i < shown.length; i++) {
+		const r = shown[i]!;
+		const title = r.title ?? r.url ?? "(no title)";
+		out += `\n\n  ${theme.fg("accent", theme.bold(String(i + 1) + "."))} ${theme.fg("toolOutput", truncate(oneLine(title), 160))}`;
 
-async function exaPost<T>(p: string, body: JsonRecord, signal?: AbortSignal): Promise<T> {
-	const { baseUrl, apiKey } = getExaConfig();
-	const url = `${baseUrl}${p.startsWith("/") ? "" : "/"}${p}`;
+		if (r.url !== undefined) out += `\n     ${theme.dim(r.url)}`;
 
-	const fetchOpts = {
-		method: "POST",
-		headers: {
-			"content-type": "application/json",
-			"x-api-key": apiKey,
-			// Some environments use Authorization; harmless to include.
-			authorization: `Bearer ${apiKey}`,
-		},
-		body: JSON.stringify(body),
-		...(signal ? { signal } : {}),
-	};
+		const meta: string[] = [];
+		if (r.author !== undefined) meta.push(r.author);
+		if (r.publishedDate !== undefined) meta.push(r.publishedDate);
+		if (typeof r.score === "number") meta.push(`score ${r.score.toFixed(3)}`);
+		if (meta.length > 0) out += `\n     ${theme.fg("muted", meta.join(" · "))}`;
 
-	const res = await fetch(url, fetchOpts);
-
-	let json: unknown;
-	try {
-		json = await res.json();
-	} catch {
-		json = undefined;
+		const snippetSource = r.text ?? (r.highlights !== undefined ? r.highlights.join(" \n") : "");
+		const snippet = snippetSource ? truncate(oneLine(snippetSource), expanded ? 400 : 200) : "";
+		if (snippet) out += `\n     ${theme.fg("toolOutput", snippet)}`;
 	}
 
-	if (!res.ok) {
-		const details = typeof json === "object" && json !== null ? JSON.stringify(json) : String(json);
-		throw new Error(`Exa API error (${res.status} ${res.statusText}) for ${p}: ${details}`);
+	if (!expanded && results.length > shown.length) {
+		out += `\n\n  ${theme.dim(`… ${results.length - shown.length} more (expand to view)`)}`;
 	}
+	if (shown.length === 0) out += `\n  ${theme.dim("(no results)")}`;
 
-	return json as T;
-}
-
-function compactSearchResults(results: ExaSearchResult[] | undefined) {
-	const MAX_TEXT_CHARS = 2000;
-	const MAX_HIGHLIGHTS = 5;
-	const MAX_HIGHLIGHT_CHARS = 240;
-
-	return (results || []).map((r) => omitUndefined({
-		id: r.id,
-		url: r.url,
-		title: r.title,
-		score: r.score,
-		publishedDate: r.publishedDate,
-		author: r.author,
-		text: typeof r.text === "string" ? truncate(r.text, MAX_TEXT_CHARS) : undefined,
-		highlights: Array.isArray(r.highlights)
-			? r.highlights
-					.slice(0, MAX_HIGHLIGHTS)
-					.map((h) => (typeof h === "string" ? truncate(oneLine(h), MAX_HIGHLIGHT_CHARS) : String(h)))
-			: undefined,
-	}));
-}
-
-function compactContentsResults(results: ExaContentsResult[] | undefined) {
-	const MAX_TEXT_CHARS = 6000;
-	const MAX_SUMMARY_CHARS = 2000;
-	const MAX_HIGHLIGHTS = 8;
-	const MAX_HIGHLIGHT_CHARS = 240;
-
-	return (results || []).map((r) => omitUndefined({
-		id: r.id,
-		url: r.url,
-		title: r.title,
-		author: r.author,
-		publishedDate: r.publishedDate,
-		summary: typeof r.summary === "string" ? truncate(oneLine(r.summary), MAX_SUMMARY_CHARS) : undefined,
-		text: typeof r.text === "string" ? truncate(r.text, MAX_TEXT_CHARS) : undefined,
-		highlights: Array.isArray(r.highlights)
-			? r.highlights
-					.slice(0, MAX_HIGHLIGHTS)
-					.map((h) => (typeof h === "string" ? truncate(oneLine(h), MAX_HIGHLIGHT_CHARS) : String(h)))
-			: undefined,
-	}));
-}
-
-function formatSearchResultsAsText(results: ReturnType<typeof compactSearchResults>): string {
-	if (results.length === 0) return "No results found.";
-	return results
-		.map((r, i) => {
-			let out = `[${i + 1}] ${r.title || r.url || "(no title)"}\nURL: ${r.url || "(no url)"}`;
-			if (r.publishedDate) out += `\nPublished: ${r.publishedDate}`;
-			if (r.author) out += `\nAuthor: ${r.author}`;
-			if (r.text) out += `\nSnippet: ${r.text}`;
-			if (r.highlights && r.highlights.length > 0) {
-				out += `\nHighlights: ${r.highlights.join(" | ")}`;
-			}
-			return out;
-		})
-		.join("\n\n");
-}
-
-function formatContentsResultsAsText(results: ReturnType<typeof compactContentsResults>): string {
-	if (results.length === 0) return "No results found.";
-	return results
-		.map((r, i) => {
-			let out = `[${i + 1}] ${r.title || r.url || "(no title)"}\nURL: ${r.url || "(no url)"}`;
-			if (r.summary) out += `\nSummary: ${r.summary}`;
-			if (r.text) out += `\nContent: ${r.text}`;
-			if (r.highlights && r.highlights.length > 0) {
-				out += `\nHighlights: ${r.highlights.join(" | ")}`;
-			}
-			return out;
-		})
-		.join("\n\n");
-}
-
-type WebSearchArgs = {
-	query: string;
-	type?: string;
-	additionalQueries?: string[];
-	category?: string;
-	userLocation?: string;
-	numResults?: number;
-	text?: boolean;
-	context?: boolean;
-	includeDomains?: string[];
-	excludeDomains?: string[];
-	startCrawlDate?: string;
-	endCrawlDate?: string;
-	startPublishedDate?: string;
-	endPublishedDate?: string;
-	includeText?: string[];
-	excludeText?: string[];
-	moderation?: boolean;
+	return out;
 };
 
-export default function initExa(pi: ExtensionAPI, _state: TauState) {
+const renderCrawlResult = (
+	result: ExaContentsResponse,
+	expanded: boolean,
+	theme: Theme,
+): string => {
+	const results = result.results;
+	const shown = expanded ? results : results.slice(0, 2);
+
+	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+	let out = theme.dim(separator);
+
+	if (result.requestId !== undefined) out += `\n${theme.fg("muted", "requestId:")} ${theme.dim(String(result.requestId))}`;
+
+	for (let i = 0; i < shown.length; i++) {
+		const r = shown[i]!;
+		const title = r.title ?? r.url ?? r.id ?? "(no title)";
+		out += `\n\n  ${theme.fg("accent", theme.bold(String(i + 1) + "."))} ${theme.fg("toolOutput", truncate(oneLine(title), 160))}`;
+
+		if (r.url !== undefined) out += `\n     ${theme.dim(r.url)}`;
+
+		const meta: string[] = [];
+		if (r.author !== undefined) meta.push(r.author);
+		if (r.publishedDate !== undefined) meta.push(r.publishedDate);
+		if (meta.length > 0) out += `\n     ${theme.fg("muted", meta.join(" · "))}`;
+
+		if (typeof r.summary === "string" && r.summary.trim().length > 0) {
+			out += `\n     ${theme.fg("muted", "summary:")} ${theme.fg("toolOutput", truncate(oneLine(r.summary), expanded ? 400 : 200))}`;
+		}
+
+		if (typeof r.text === "string" && r.text.trim().length > 0) {
+			out += `\n     ${theme.fg("muted", "text:")} ${theme.dim(truncate(oneLine(r.text), expanded ? 260 : 120))}`;
+		}
+
+		if (Array.isArray(r.highlights) && r.highlights.length > 0) {
+			out += `\n     ${theme.fg("muted", `highlights: ${r.highlights.length}`)}`;
+		}
+	}
+
+	if (!expanded && results.length > shown.length) {
+		out += `\n\n  ${theme.dim(`… ${results.length - shown.length} more (expand to view)`)}`;
+	}
+	if (shown.length === 0) out += `\n  ${theme.dim("(no results)")}`;
+
+	return out;
+};
+
+const renderCodeContextResult = (
+	result: ExaContextResponse,
+	expanded: boolean,
+	theme: Theme,
+): string => {
+	const responseText = result.response ?? "";
+	if (!responseText) return theme.dim("(no response)");
+
+	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+	if (expanded) {
+		return `${theme.dim(separator)}\n${responseText}`;
+	}
+
+	const lines = responseText.split("\n");
+	const head = lines.slice(0, 20).join("\n");
+	let out = `${theme.dim(separator)}\n${theme.fg("toolOutput", head)}`;
+	if (lines.length > 20) out += `\n\n${theme.dim("… (expand to view full context)")}`;
+	return out;
+};
+
+// =============================================================================
+// Tool Registration
+// =============================================================================
+
+export default function initExa(pi: ExtensionAPI, _state: TauState): void {
+	// Register web_search tool
 	pi.registerTool({
 		name: "web_search_exa",
 		label: "exa.web_search",
 		description:
 			"Search the Exa index (web, papers, GitHub, news, etc.). Use this to find relevant URLs. Best practices: keep numResults small (3-10), use filters (includeDomains/category/date ranges) to narrow results, and only request text when you need snippets.",
-		parameters: Type.Object({
-			query: Type.String({
-				description: "The query string for the search.",
-				minLength: 1,
-				maxLength: 2000,
-			}),
-
-			// Search behavior
-			type: Type.Optional(
-				Type.String({
-					description: "Search type. Options: auto (default), neural, fast, deep.",
-				}),
-			),
-			additionalQueries: Type.Optional(
-				Type.Array(Type.String({ minLength: 1 }), {
-					description: "Additional query variations for deep search (only works with type=deep).",
-				}),
-			),
-
-			// Filters
-			category: Type.Optional(
-				Type.String({
-					description:
-						"Optional category filter. Common options include: company, research paper, news, pdf, github, tweet, personal site, financial report, people.",
-				}),
-			),
-			userLocation: Type.Optional(
-				Type.String({
-					description: "Two-letter ISO country code of the user (e.g. 'US').",
-					minLength: 2,
-					maxLength: 2,
-				}),
-			),
-
-			// Result shaping
-			numResults: Type.Optional(
-				Type.Integer({
-					minimum: 1,
-					maximum: 100,
-					description: "Number of results to return (default 10; max 100 depending on type).",
-				}),
-			),
-			text: Type.Optional(
-				Type.Boolean({
-					description:
-						"If true, include extracted text snippets in each result (can be large). Best practice: leave off unless needed; use exa.crawl for full text.",
-				}),
-			),
-			context: Type.Optional(
-				Type.Boolean({
-					description: "If true, also return a combined context string for LLM/RAG usage (can be large).",
-				}),
-			),
-
-			// Domain + time filters
-			includeDomains: Type.Optional(
-				Type.Array(Type.String({ minLength: 1 }), {
-					description: "Only return results from these domains.",
-				}),
-			),
-			excludeDomains: Type.Optional(
-				Type.Array(Type.String({ minLength: 1 }), {
-					description: "Exclude results from these domains.",
-				}),
-			),
-			startCrawlDate: Type.Optional(
-				Type.String({
-					description:
-						"Only include links crawled after this ISO 8601 date-time (e.g. 2023-01-01T00:00:00.000Z).",
-				}),
-			),
-			endCrawlDate: Type.Optional(
-				Type.String({
-					description: "Only include links crawled before this ISO 8601 date-time.",
-				}),
-			),
-			startPublishedDate: Type.Optional(
-				Type.String({
-					description:
-						"Only include links published after this ISO 8601 date-time (e.g. 2023-01-01T00:00:00.000Z).",
-				}),
-			),
-			endPublishedDate: Type.Optional(
-				Type.String({
-					description: "Only include links published before this ISO 8601 date-time.",
-				}),
-			),
-			includeText: Type.Optional(
-				Type.Array(Type.String({ minLength: 1 }), {
-					description:
-						"Strings that must be present in the result page text (Exa currently supports 1 string of up to ~5 words).",
-				}),
-			),
-			excludeText: Type.Optional(
-				Type.Array(Type.String({ minLength: 1 }), {
-					description:
-						"Strings that must NOT be present in the result page text (Exa currently supports 1 string of up to ~5 words).",
-				}),
-			),
-
-			moderation: Type.Optional(Type.Boolean({ description: "Enable content moderation to filter unsafe content." })),
-		}),
+		parameters: WebSearchTypeBox,
 
 		renderCall(args, theme) {
-			const typedArgs = args as WebSearchArgs;
-			const query = typedArgs.query || "";
-			let out = theme.fg("toolTitle", theme.bold("exa.web_search"));
-			if (query) out += ` ${theme.fg("toolOutput", truncate(oneLine(query), 140))}`;
-
-			const extras: Array<[string, unknown]> = [
-				["type", typedArgs.type],
-				["category", typedArgs.category],
-				["userLocation", typedArgs.userLocation],
-				["numResults", typedArgs.numResults],
-				["text", typedArgs.text],
-				["context", typedArgs.context],
-				["includeDomains", typedArgs.includeDomains],
-				["excludeDomains", typedArgs.excludeDomains],
-				["startCrawlDate", typedArgs.startCrawlDate],
-				["endCrawlDate", typedArgs.endCrawlDate],
-				["startPublishedDate", typedArgs.startPublishedDate],
-				["endPublishedDate", typedArgs.endPublishedDate],
-				["includeText", typedArgs.includeText],
-				["excludeText", typedArgs.excludeText],
-				["moderation", typedArgs.moderation],
-			];
-
-			for (const [k, v] of extras) {
-				if (v === undefined) continue;
-				out += `\n${theme.fg("muted", k + ":")} ${theme.fg("dim", fmtValue(v))}`;
-			}
-
-			return new Text(out, 0, 0);
+			return new Text(renderSearchCall(args, theme as unknown as Theme), 0, 0);
 		},
 
-		renderResult(result, options: ToolRenderOptions, theme) {
+		renderResult(result, options, theme) {
 			if (options.isPartial) {
 				return new Text(theme.fg("warning", "Searching Exa…"), 0, 0);
 			}
 
-			const json = getJsonBlock(result as ToolResultLike) as ExaSearchResponse | undefined;
-			const results: ExaSearchResult[] = Array.isArray(json?.results) ? json.results : [];
-			const shown = options.expanded ? results : results.slice(0, 3);
-
-			const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
-			let out = theme.fg("dim", separator);
-
-			if (json?.requestId || json?.resolvedSearchType) {
-				if (json?.requestId) out += `\n${theme.fg("muted", "requestId:")} ${theme.fg("dim", String(json.requestId))}`;
-				if (json?.resolvedSearchType) out += `\n${theme.fg("muted", "resolvedSearchType:")} ${theme.fg("dim", String(json.resolvedSearchType))}`;
+			// Result comes from details field
+			const details = (result as { details?: ExaSearchResponse }).details;
+			if (!details) {
+				return new Text(theme.fg("dim", "(no results)"), 0, 0);
 			}
 
-			for (let i = 0; i < shown.length; i++) {
-				const r = shown[i]!;
-				const title = r.title || r.url || "(no title)";
-				out += `\n\n  ${theme.fg("accent", theme.bold(String(i + 1) + "."))} ${theme.fg("toolOutput", truncate(oneLine(title), 160))}`;
-				if (r.url) out += `\n     ${theme.fg("dim", r.url)}`;
-
-				const meta: string[] = [];
-				if (r.author) meta.push(r.author);
-				if (r.publishedDate) meta.push(r.publishedDate);
-				if (typeof r.score === "number") meta.push(`score ${r.score.toFixed(3)}`);
-				if (meta.length > 0) out += `\n     ${theme.fg("muted", meta.join(" · "))}`;
-
-				const snippetSource = r.text || (r.highlights ? r.highlights.join(" \n") : "");
-				const snippet = snippetSource ? truncate(oneLine(snippetSource), options.expanded ? 400 : 200) : "";
-				if (snippet) out += `\n     ${theme.fg("toolOutput", snippet)}`;
-			}
-
-			if (!options.expanded && results.length > shown.length) {
-				out += `\n\n  ${theme.fg("dim", `… ${results.length - shown.length} more (expand to view)`)}`;
-			}
-			if (shown.length === 0) out += `\n  ${theme.fg("dim", "(no results)")}`;
-
-			return new Text(out, 0, 0);
+			return new Text(renderSearchResult(details, options.expanded, theme as unknown as Theme), 0, 0);
 		},
 
 		async execute(_toolCallId, params, onUpdate, _ctx, signal) {
 			onUpdate?.({ content: [{ type: "text", text: "Searching Exa…" }], details: {} });
 
-			const typedParams = params as WebSearchArgs;
-			const body: JsonRecord = { query: typedParams.query };
+			const typedParams = params as WebSearchParams;
+			const program = ExaServiceLive.search(typedParams, signal);
 
-			const type = typedParams["type"];
-			if (typeof type === "string" && type.trim().length > 0) body["type"] = type;
-			if (Array.isArray(typedParams["additionalQueries"]) && typedParams["additionalQueries"].length > 0) body["additionalQueries"] = typedParams["additionalQueries"];
-			if (typeof typedParams["category"] === "string" && typedParams["category"].trim().length > 0) body["category"] = typedParams["category"];
-			if (typeof typedParams["userLocation"] === "string" && typedParams["userLocation"].trim().length > 0) body["userLocation"] = typedParams["userLocation"];
+			const result = await Effect.runPromise(program);
 
-			if (typeof typedParams["text"] === "boolean") body["text"] = typedParams["text"];
-			if (typeof typedParams["numResults"] === "number") body["numResults"] = typedParams["numResults"];
-			if (typeof typedParams["context"] === "boolean") body["context"] = typedParams["context"];
-
-			if (typedParams["includeDomains"]?.length) body["includeDomains"] = typedParams["includeDomains"];
-			if (typedParams["excludeDomains"]?.length) body["excludeDomains"] = typedParams["excludeDomains"];
-			if (typeof typedParams["startCrawlDate"] === "string" && typedParams["startCrawlDate"].trim().length > 0) body["startCrawlDate"] = typedParams["startCrawlDate"];
-			if (typeof typedParams["endCrawlDate"] === "string" && typedParams["endCrawlDate"].trim().length > 0) body["endCrawlDate"] = typedParams["endCrawlDate"];
-			if (typedParams["startPublishedDate"]) body["startPublishedDate"] = typedParams["startPublishedDate"];
-			if (typedParams["endPublishedDate"]) body["endPublishedDate"] = typedParams["endPublishedDate"];
-			if (Array.isArray(typedParams["includeText"]) && typedParams["includeText"].length > 0) body["includeText"] = typedParams["includeText"];
-			if (Array.isArray(typedParams["excludeText"]) && typedParams["excludeText"].length > 0) body["excludeText"] = typedParams["excludeText"];
-			if (typeof typedParams["moderation"] === "boolean") body["moderation"] = typedParams["moderation"];
-
-			const response = await exaPost<ExaSearchResponse>("/search", body, signal);
-			const results = compactSearchResults(response.results);
+			// Format text content
+			const textContent = result.results
+				.map((r, i) => formatSearchResultText(r, i))
+				.join("\n\n");
 
 			return {
-				content: [
-					{
-						type: "text",
-						text: formatSearchResultsAsText(results),
-					},
-				],
-				details: {
-					requestId: response.requestId,
-					resolvedSearchType: response.resolvedSearchType,
-					results,
-					context: response.context,
-				},
+				content: [{ type: "text", text: textContent || "No results found." }],
+				details: result,
 			};
 		},
 	});
 
-type CrawlingArgs = {
-	urls: string[];
-	text?: boolean;
-	highlights?: boolean;
-	summary?: boolean;
-	context?: boolean;
-	livecrawl?: string;
-	livecrawlTimeout?: number;
-	subpages?: number;
-	subpageTarget?: string[];
-};
-
+	// Register crawl tool
 	pi.registerTool({
 		name: "crawling_exa",
 		label: "exa.crawl",
 		description:
 			"Fetch page contents via Exa (/contents). Use this when you already have URLs and need text, highlights, or summaries. Best practice: request only what you need (summary/highlights vs full text) to keep tool output small.",
-		parameters: Type.Object({
-			urls: Type.Array(Type.String({ minLength: 1 }), {
-				description: "URLs to fetch.",
-				minItems: 1,
-			}),
-
-			text: Type.Optional(
-				Type.Boolean({
-					description: "If true, return extracted page text (can be large). If false, disable text.",
-				}),
-			),
-			highlights: Type.Optional(
-				Type.Boolean({
-					description: "If true, include default highlights (relevant snippets) for each page.",
-				}),
-			),
-			summary: Type.Optional(Type.Boolean({ description: "If true, include a default summary for each page." })),
-			context: Type.Optional(
-				Type.Boolean({
-					description: "If true, include a combined context string (often useful for RAG, but can be very large).",
-				}),
-			),
-
-			livecrawl: Type.Optional(
-				Type.String({
-					description:
-						"Livecrawl mode: never (default), fallback, preferred, always. Use 'always' only if you cannot tolerate cached content.",
-				}),
-			),
-			livecrawlTimeout: Type.Optional(
-				Type.Integer({
-					description: "Livecrawl timeout in milliseconds (default 10000).",
-					minimum: 1,
-				}),
-			),
-			subpages: Type.Optional(
-				Type.Integer({
-					description: "Number of subpages to crawl (default 0).",
-					minimum: 0,
-				}),
-			),
-			subpageTarget: Type.Optional(
-				Type.Array(Type.String({ minLength: 1 }), {
-					description:
-						"Keywords to target specific subpages. Exa also accepts a single string; here pass a one-element array.",
-				}),
-			),
-		}),
+		parameters: CrawlingTypeBox,
 
 		renderCall(args, theme) {
-			const typedArgs = args as CrawlingArgs;
-			let out = theme.fg("toolTitle", theme.bold("exa.crawl"));
-			const urls = typedArgs.urls || [];
-			if (urls.length > 0) out += ` ${theme.fg("dim", fmtValue(urls))}`;
-
-			const extras: Array<[string, unknown]> = [
-				["text", typedArgs.text],
-				["highlights", typedArgs.highlights],
-				["summary", typedArgs.summary],
-				["context", typedArgs.context],
-				["livecrawl", typedArgs.livecrawl],
-				["livecrawlTimeout", typedArgs.livecrawlTimeout],
-				["subpages", typedArgs.subpages],
-				["subpageTarget", typedArgs.subpageTarget],
-			];
-
-			for (const [k, v] of extras) {
-				if (v === undefined) continue;
-				out += `\n${theme.fg("muted", k + ":")} ${theme.fg("dim", fmtValue(v))}`;
-			}
-			return new Text(out, 0, 0);
+			return new Text(renderCrawlCall(args, theme as unknown as Theme), 0, 0);
 		},
 
-		renderResult(result, options: ToolRenderOptions, theme) {
+		renderResult(result, options, theme) {
 			if (options.isPartial) {
 				return new Text(theme.fg("warning", "Fetching contents from Exa…"), 0, 0);
 			}
 
-			const json = getJsonBlock(result as ToolResultLike) as ExaContentsResponse | undefined;
-			const results: ExaContentsResult[] = Array.isArray(json?.results) ? json.results : [];
-			const shown = options.expanded ? results : results.slice(0, 2);
-
-			const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
-			let out = theme.fg("dim", separator);
-
-			if (json?.requestId) out += `\n${theme.fg("muted", "requestId:")} ${theme.fg("dim", String(json.requestId))}`;
-
-			for (let i = 0; i < shown.length; i++) {
-				const r = shown[i]!;
-				const title = r.title || r.url || r.id || "(no title)";
-				out += `\n\n  ${theme.fg("accent", theme.bold(String(i + 1) + "."))} ${theme.fg("toolOutput", truncate(oneLine(title), 160))}`;
-				if (r.url) out += `\n     ${theme.fg("dim", r.url)}`;
-
-				const meta: string[] = [];
-				if (r.author) meta.push(r.author);
-				if (r.publishedDate) meta.push(r.publishedDate);
-				if (meta.length > 0) out += `\n     ${theme.fg("muted", meta.join(" · "))}`;
-
-				if (typeof r.summary === "string" && r.summary.trim().length > 0) {
-					out += `\n     ${theme.fg("muted", "summary:")} ${theme.fg("toolOutput", truncate(oneLine(r.summary), options.expanded ? 400 : 200))}`;
-				}
-
-				if (typeof r.text === "string" && r.text.trim().length > 0) {
-					out += `\n     ${theme.fg("muted", "text:")} ${theme.fg("dim", truncate(oneLine(r.text), options.expanded ? 260 : 120))}`;
-				}
-
-				if (Array.isArray(r.highlights) && r.highlights.length > 0) {
-					out += `\n     ${theme.fg("muted", `highlights: ${r.highlights.length}`)}`;
-				}
+			const details = (result as { details?: ExaContentsResponse }).details;
+			if (!details) {
+				return new Text(theme.fg("dim", "(no results)"), 0, 0);
 			}
 
-			if (!options.expanded && results.length > shown.length) {
-				out += `\n\n  ${theme.fg("dim", `… ${results.length - shown.length} more (expand to view)`)}`;
-			}
-			if (shown.length === 0) out += `\n  ${theme.fg("dim", "(no results)")}`;
-			return new Text(out, 0, 0);
+			return new Text(renderCrawlResult(details, options.expanded, theme as unknown as Theme), 0, 0);
 		},
 
 		async execute(_toolCallId, params, onUpdate, _ctx, signal) {
 			onUpdate?.({ content: [{ type: "text", text: "Fetching contents from Exa…" }], details: {} });
 
-			const typedParams = params as CrawlingArgs;
-			const urls = (typedParams["urls"] || []).filter(Boolean);
-			if (urls.length === 0) throw new Error("crawling_exa requires at least one url");
+			const typedParams = params as CrawlingParams;
+			const program = ExaServiceLive.crawl(typedParams, signal);
 
-			const body: JsonRecord = {
-				text: typedParams["text"] ?? true,
-				urls,
-			};
-			if (typeof typedParams["context"] === "boolean") body["context"] = typedParams["context"];
-			if (typeof typedParams["highlights"] === "boolean") body["highlights"] = typedParams["highlights"];
-			if (typeof typedParams["summary"] === "boolean") body["summary"] = typedParams["summary"];
-			if (typedParams["livecrawl"]) body["livecrawl"] = typedParams["livecrawl"];
-			if (typeof typedParams["livecrawlTimeout"] === "number") body["livecrawlTimeout"] = typedParams["livecrawlTimeout"];
-			if (typeof typedParams["subpages"] === "number") body["subpages"] = typedParams["subpages"];
-			if (typedParams["subpageTarget"]?.length) body["subpageTarget"] = typedParams["subpageTarget"];
+			const result = await Effect.runPromise(program);
 
-			const response = await exaPost<ExaContentsResponse>("/contents", body, signal);
-			const results = compactContentsResults(response.results);
+			const textContent = result.results
+				.map((r, i) => formatCrawlResultText(r, i))
+				.join("\n\n");
 
 			return {
-				content: [
-					{
-						type: "text",
-						text: formatContentsResultsAsText(results),
-					},
-				],
-				details: {
-					requestId: response.requestId,
-					results,
-					statuses: response.statuses,
-					context: response.context,
-					costDollars: response.costDollars,
-				},
+				content: [{ type: "text", text: textContent || "No results found." }],
+				details: result,
 			};
 		},
 	});
 
-type CodeContextArgs = {
-	query: string;
-	tokensNum?: string;
-};
-
+	// Register code_context tool
 	pi.registerTool({
 		name: "get_code_context_exa",
 		label: "exa.code_context",
 		description:
 			"Get relevant code snippets and examples via Exa Context API (Exa Code). Best practice: start with tokensNum omitted (defaults to 'dynamic') for token-efficient results; use '5000' (or '10000' if needed) when you want a fixed size.",
-		parameters: Type.Object({
-			query: Type.String({
-				description: "Search query to find relevant code snippets.",
-				minLength: 1,
-				maxLength: 2000,
-			}),
-			tokensNum: Type.Optional(
-				Type.String({
-					description:
-						"Optional. Defaults to 'dynamic' (recommended). Use 'dynamic' or an integer between 50 and 100000 (as a string).",
-				}),
-			),
-		}),
+		parameters: CodeContextTypeBox,
 
 		renderCall(args, theme) {
-			const typedArgs = args as CodeContextArgs;
-			let out = theme.fg("toolTitle", theme.bold("exa.code_context"));
-			const query = typedArgs.query || "";
-			if (query) out += ` ${theme.fg("toolOutput", truncate(oneLine(query), 140))}`;
-
-			const tokensNum = typedArgs.tokensNum;
-			if (typeof tokensNum === "string" && tokensNum.trim().length > 0) {
-				out += `\n${theme.fg("muted", "tokensNum:")} ${theme.fg("dim", fmtValue(tokensNum.trim()))}`;
-			}
-
-			return new Text(out, 0, 0);
+			return new Text(renderCodeContextCall(args, theme as unknown as Theme), 0, 0);
 		},
 
-		renderResult(result, options: ToolRenderOptions, theme) {
+		renderResult(result, options, theme) {
 			if (options.isPartial) {
 				return new Text(theme.fg("warning", "Getting code context from Exa…"), 0, 0);
 			}
 
-			const json = getJsonBlock(result as ToolResultLike) as ExaContextResponse | undefined;
-			const responseText = typeof json?.response === "string" ? json.response : "";
-			if (!responseText) return new Text(theme.fg("dim", "(no response)"), 0, 0);
+			const details = (result as { details?: ExaContextResponse }).details;
+			if (!details) {
+				return new Text(theme.fg("dim", "(no response)"), 0, 0);
+			}
 
-			const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
-			const sepLine = theme.fg("dim", separator);
+			const out = renderCodeContextResult(details, options.expanded, theme as unknown as Theme);
 
 			if (options.expanded) {
 				const mdTheme = getMarkdownTheme();
-				return new Markdown(`${sepLine}\n${responseText}`, 0, 0, mdTheme);
+				return new Markdown(out, 0, 0, mdTheme);
 			}
-
-			const head = truncateLines(responseText, 20);
-			let out = `${sepLine}\n${theme.fg("toolOutput", head.text)}`;
-			if (head.truncated) out += `\n\n${theme.fg("dim", "… (expand to view full context)")}`;
-			return new Text(out.trim(), 0, 0);
+			return new Text(out, 0, 0);
 		},
 
 		async execute(_toolCallId, params, onUpdate, _ctx, signal) {
 			onUpdate?.({ content: [{ type: "text", text: "Getting code context from Exa…" }], details: {} });
 
-			const typedParams = params as CodeContextArgs;
-			const body: JsonRecord = { query: typedParams.query };
+			const typedParams = params as CodeContextParams;
+			const program = ExaServiceLive.codeContext(typedParams, signal);
 
-			const rawTokensNum = typeof typedParams["tokensNum"] === "string" ? typedParams["tokensNum"].trim() : "";
-			if (rawTokensNum.length === 0) {
-				body["tokensNum"] = "dynamic";
-			} else if (/^\d+$/.test(rawTokensNum)) {
-				const n = Number(rawTokensNum);
-				if (!Number.isFinite(n) || n < 50 || n > 100000) {
-					throw new Error("tokensNum must be between 50 and 100000 (or the literal 'dynamic')");
-				}
-				body["tokensNum"] = n;
-			} else {
-				const mode = rawTokensNum.toLowerCase();
-				if (mode !== "dynamic") {
-					throw new Error("tokensNum must be between 50 and 100000 (or the literal 'dynamic')");
-				}
-				body["tokensNum"] = "dynamic";
-			}
-
-			const response = await exaPost<ExaContextResponse>("/context", body, signal);
+			const result = await Effect.runPromise(program);
 
 			return {
-				content: [
-					{
-						type: "text",
-						text: response.response || "(no response)",
-					},
-				],
-				details: {
-					requestId: response.requestId,
-					query: response.query,
-					response: response.response,
-					resultsCount: response.resultsCount,
-					costDollars: response.costDollars,
-					searchTime: response.searchTime,
-					outputTokens: response.outputTokens,
-				},
+				content: [{ type: "text", text: result.response ?? "(no response)" }],
+				details: result,
 			};
 		},
 	});

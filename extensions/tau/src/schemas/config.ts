@@ -1,4 +1,4 @@
-import { Schema } from "@effect/schema";
+import { Schema } from "effect";
 
 export const FilesystemMode = Schema.Literal("read-only", "workspace-write", "danger-full-access");
 export type FilesystemMode = Schema.Schema.Type<typeof FilesystemMode>;
@@ -14,6 +14,7 @@ export const SandboxConfig = Schema.Struct({
 	networkMode: Schema.optional(NetworkMode),
 	approvalPolicy: Schema.optional(ApprovalPolicy),
 	approvalTimeoutSeconds: Schema.optional(Schema.Number),
+	subagent: Schema.optional(Schema.Boolean),
 });
 export type SandboxConfig = Schema.Schema.Type<typeof SandboxConfig>;
 
@@ -22,5 +23,6 @@ export const SandboxConfigRequired = Schema.Struct({
 	networkMode: NetworkMode,
 	approvalPolicy: ApprovalPolicy,
 	approvalTimeoutSeconds: Schema.Number,
+	subagent: Schema.Boolean,
 });
 export type SandboxConfigRequired = Schema.Schema.Type<typeof SandboxConfigRequired>;
