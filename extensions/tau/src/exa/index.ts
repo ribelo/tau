@@ -24,60 +24,67 @@ export class ExaConfigError extends Data.TaggedError("ExaConfigError")<{
 // Schemas - using plain optional fields for simplicity
 // =============================================================================
 
+// Helper to handle API returning null or undefined for optional fields
+// Accepts string | null | undefined - treat null as undefined at usage
+const OptionalString = Schema.optional(Schema.Union(Schema.String, Schema.Null));
+const OptionalNumber = Schema.optional(Schema.Union(Schema.Number, Schema.Null));
+const OptionalArray = <A, I>(schema: Schema.Schema<A, I>) =>
+	Schema.optional(Schema.Union(Schema.Array(schema), Schema.Null));
+
 export const ExaSearchResult = Schema.Struct({
-	id: Schema.optional(Schema.String),
-	url: Schema.optional(Schema.String),
-	title: Schema.optional(Schema.String),
-	score: Schema.optional(Schema.Number),
-	publishedDate: Schema.optional(Schema.String),
-	author: Schema.optional(Schema.String),
-	text: Schema.optional(Schema.String),
-	highlights: Schema.optional(Schema.Array(Schema.String)),
+	id: OptionalString,
+	url: OptionalString,
+	title: OptionalString,
+	score: OptionalNumber,
+	publishedDate: OptionalString,
+	author: OptionalString,
+	text: OptionalString,
+	highlights: OptionalArray(Schema.String),
 });
 export type ExaSearchResult = Schema.Schema.Type<typeof ExaSearchResult>;
 
 export const ExaSearchResponse = Schema.Struct({
-	requestId: Schema.optional(Schema.String),
+	requestId: OptionalString,
 	results: Schema.Array(ExaSearchResult),
-	resolvedSearchType: Schema.optional(Schema.String),
-	context: Schema.optional(Schema.String),
-	searchTime: Schema.optional(Schema.Number),
+	resolvedSearchType: OptionalString,
+	context: OptionalString,
+	searchTime: OptionalNumber,
 	costDollars: Schema.optional(Schema.Unknown),
 });
 export type ExaSearchResponse = Schema.Schema.Type<typeof ExaSearchResponse>;
 
 export const ExaContentsResult = Schema.Struct({
-	id: Schema.optional(Schema.String),
-	url: Schema.optional(Schema.String),
-	title: Schema.optional(Schema.String),
-	author: Schema.optional(Schema.String),
-	publishedDate: Schema.optional(Schema.String),
-	text: Schema.optional(Schema.String),
-	highlights: Schema.optional(Schema.Array(Schema.String)),
-	highlightScores: Schema.optional(Schema.Array(Schema.Number)),
-	summary: Schema.optional(Schema.String),
-	subpages: Schema.optional(Schema.Array(Schema.Unknown)),
+	id: OptionalString,
+	url: OptionalString,
+	title: OptionalString,
+	author: OptionalString,
+	publishedDate: OptionalString,
+	text: OptionalString,
+	highlights: OptionalArray(Schema.String),
+	highlightScores: OptionalArray(Schema.Number),
+	summary: OptionalString,
+	subpages: OptionalArray(Schema.Unknown),
 	extras: Schema.optional(Schema.Unknown),
 });
 export type ExaContentsResult = Schema.Schema.Type<typeof ExaContentsResult>;
 
 export const ExaContentsResponse = Schema.Struct({
-	requestId: Schema.optional(Schema.String),
+	requestId: OptionalString,
 	results: Schema.Array(ExaContentsResult),
-	context: Schema.optional(Schema.String),
-	statuses: Schema.optional(Schema.Array(Schema.Unknown)),
+	context: OptionalString,
+	statuses: OptionalArray(Schema.Unknown),
 	costDollars: Schema.optional(Schema.Unknown),
 });
 export type ExaContentsResponse = Schema.Schema.Type<typeof ExaContentsResponse>;
 
 export const ExaContextResponse = Schema.Struct({
-	requestId: Schema.optional(Schema.String),
-	query: Schema.optional(Schema.String),
-	response: Schema.optional(Schema.String),
-	resultsCount: Schema.optional(Schema.Number),
+	requestId: OptionalString,
+	query: OptionalString,
+	response: OptionalString,
+	resultsCount: OptionalNumber,
 	costDollars: Schema.optional(Schema.Unknown),
-	searchTime: Schema.optional(Schema.Number),
-	outputTokens: Schema.optional(Schema.Number),
+	searchTime: OptionalNumber,
+	outputTokens: OptionalNumber,
 });
 export type ExaContextResponse = Schema.Schema.Type<typeof ExaContextResponse>;
 
@@ -207,8 +214,8 @@ const oneLine = (s: string): string => s.replace(/\s+/g, " ").trim();
 const compactSearchResults = (results: ReadonlyArray<ExaSearchResult>): Array<ExaSearchResult> =>
 	results.map((r) => ({
 		...r,
-		text: r.text !== undefined ? truncate(r.text, MAX_TEXT_CHARS) : undefined,
-		highlights: r.highlights !== undefined
+		text: r.text != null ? truncate(r.text, MAX_TEXT_CHARS) : undefined,
+		highlights: r.highlights != null
 			? r.highlights.slice(0, MAX_HIGHLIGHTS).map((h) => truncate(oneLine(h), MAX_HIGHLIGHT_CHARS))
 			: undefined,
 	}));
@@ -216,9 +223,9 @@ const compactSearchResults = (results: ReadonlyArray<ExaSearchResult>): Array<Ex
 const compactContentsResults = (results: ReadonlyArray<ExaContentsResult>): Array<ExaContentsResult> =>
 	results.map((r) => ({
 		...r,
-		summary: r.summary !== undefined ? truncate(oneLine(r.summary), 2000) : undefined,
-		text: r.text !== undefined ? truncate(r.text, 6000) : undefined,
-		highlights: r.highlights !== undefined
+		summary: r.summary != null ? truncate(oneLine(r.summary), 2000) : undefined,
+		text: r.text != null ? truncate(r.text, 6000) : undefined,
+		highlights: r.highlights != null
 			? r.highlights.slice(0, 8).map((h) => truncate(oneLine(h), MAX_HIGHLIGHT_CHARS))
 			: undefined,
 	}));
@@ -622,10 +629,10 @@ const formatSearchResultText = (r: ExaSearchResult, index: number): string => {
 	const url = r.url ?? "(no url)";
 	let out = `[${index + 1}] ${title}\nURL: ${url}`;
 
-	if (r.publishedDate !== undefined) out += `\nPublished: ${r.publishedDate}`;
-	if (r.author !== undefined) out += `\nAuthor: ${r.author}`;
-	if (r.text !== undefined) out += `\nSnippet: ${r.text}`;
-	if (r.highlights !== undefined && r.highlights.length > 0) {
+	if (r.publishedDate != null) out += `\nPublished: ${r.publishedDate}`;
+	if (r.author != null) out += `\nAuthor: ${r.author}`;
+	if (r.text != null) out += `\nSnippet: ${r.text}`;
+	if (r.highlights != null && r.highlights.length > 0) {
 		out += `\nHighlights: ${r.highlights.join(" | ")}`;
 	}
 	return out;
@@ -636,9 +643,9 @@ const formatCrawlResultText = (r: ExaContentsResult, index: number): string => {
 	const url = r.url ?? "(no url)";
 	let out = `[${index + 1}] ${title}\nURL: ${url}`;
 
-	if (r.summary !== undefined) out += `\nSummary: ${r.summary}`;
-	if (r.text !== undefined) out += `\nContent: ${r.text}`;
-	if (r.highlights !== undefined && r.highlights.length > 0) {
+	if (r.summary != null) out += `\nSummary: ${r.summary}`;
+	if (r.text != null) out += `\nContent: ${r.text}`;
+	if (r.highlights != null && r.highlights.length > 0) {
 		out += `\nHighlights: ${r.highlights.join(" | ")}`;
 	}
 	return out;
@@ -655,9 +662,9 @@ const renderSearchResult = (
 	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
 	let out = theme.fg("dim", separator);
 
-	if (result.requestId !== undefined || result.resolvedSearchType !== undefined) {
-		if (result.requestId !== undefined) out += `\n${theme.fg("muted", "requestId:")} ${theme.fg("dim", String(result.requestId))}`;
-		if (result.resolvedSearchType !== undefined)
+	if (result.requestId != null || result.resolvedSearchType != null) {
+		if (result.requestId != null) out += `\n${theme.fg("muted", "requestId:")} ${theme.fg("dim", String(result.requestId))}`;
+		if (result.resolvedSearchType != null)
 			out += `\n${theme.fg("muted", "resolvedSearchType:")} ${theme.fg("dim", String(result.resolvedSearchType))}`;
 	}
 
@@ -666,15 +673,15 @@ const renderSearchResult = (
 		const title = r.title ?? r.url ?? "(no title)";
 		out += `\n\n  ${theme.fg("accent", theme.bold(String(i + 1) + "."))} ${theme.fg("toolOutput", truncate(oneLine(title), 160))}`;
 
-		if (r.url !== undefined) out += `\n     ${theme.fg("dim", r.url)}`;
+		if (r.url != null) out += `\n     ${theme.fg("dim", r.url)}`;
 
 		const meta: string[] = [];
-		if (r.author !== undefined) meta.push(r.author);
-		if (r.publishedDate !== undefined) meta.push(r.publishedDate);
+		if (r.author != null) meta.push(r.author);
+		if (r.publishedDate != null) meta.push(r.publishedDate);
 		if (typeof r.score === "number") meta.push(`score ${r.score.toFixed(3)}`);
 		if (meta.length > 0) out += `\n     ${theme.fg("muted", meta.join(" · "))}`;
 
-		const snippetSource = r.text ?? (r.highlights !== undefined ? r.highlights.join(" \n") : "");
+		const snippetSource = r.text ?? (r.highlights != null ? r.highlights.join(" \n") : "");
 		const snippet = snippetSource ? truncate(oneLine(snippetSource), expanded ? 400 : 200) : "";
 		if (snippet) out += `\n     ${theme.fg("toolOutput", snippet)}`;
 	}
@@ -698,18 +705,18 @@ const renderCrawlResult = (
 	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
 	let out = theme.fg("dim", separator);
 
-	if (result.requestId !== undefined) out += `\n${theme.fg("muted", "requestId:")} ${theme.fg("dim", String(result.requestId))}`;
+	if (result.requestId != null) out += `\n${theme.fg("muted", "requestId:")} ${theme.fg("dim", String(result.requestId))}`;
 
 	for (let i = 0; i < shown.length; i++) {
 		const r = shown[i]!;
 		const title = r.title ?? r.url ?? r.id ?? "(no title)";
 		out += `\n\n  ${theme.fg("accent", theme.bold(String(i + 1) + "."))} ${theme.fg("toolOutput", truncate(oneLine(title), 160))}`;
 
-		if (r.url !== undefined) out += `\n     ${theme.fg("dim", r.url)}`;
+		if (r.url != null) out += `\n     ${theme.fg("dim", r.url)}`;
 
 		const meta: string[] = [];
-		if (r.author !== undefined) meta.push(r.author);
-		if (r.publishedDate !== undefined) meta.push(r.publishedDate);
+		if (r.author != null) meta.push(r.author);
+		if (r.publishedDate != null) meta.push(r.publishedDate);
 		if (meta.length > 0) out += `\n     ${theme.fg("muted", meta.join(" · "))}`;
 
 		if (typeof r.summary === "string" && r.summary.trim().length > 0) {
@@ -720,7 +727,7 @@ const renderCrawlResult = (
 			out += `\n     ${theme.fg("muted", "text:")} ${theme.fg("dim", truncate(oneLine(r.text), expanded ? 260 : 120))}`;
 		}
 
-		if (Array.isArray(r.highlights) && r.highlights.length > 0) {
+		if (r.highlights != null && r.highlights.length > 0) {
 			out += `\n     ${theme.fg("muted", `highlights: ${r.highlights.length}`)}`;
 		}
 	}
