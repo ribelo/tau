@@ -575,7 +575,7 @@ const renderSearchCall = (args: unknown, theme: Theme): string => {
 
 	for (const [k, v] of extras) {
 		if (v === undefined) continue;
-		out += `\n${theme.fg("muted", k + ":")} ${theme.dim(truncateValue(v))}`;
+		out += `\n${theme.fg("muted", k + ":")} ${theme.fg("dim", truncateValue(v))}`;
 	}
 	return out;
 };
@@ -584,7 +584,7 @@ const renderCrawlCall = (args: unknown, theme: Theme): string => {
 	const typedArgs = args as CrawlingParams;
 	let out = theme.fg("toolTitle", theme.bold("exa.crawl"));
 	const urls = typedArgs.urls ?? [];
-	if (urls.length > 0) out += ` ${theme.dim(truncateValue(urls))}`;
+	if (urls.length > 0) out += ` ${theme.fg("dim", truncateValue(urls))}`;
 
 	const extras: Array<[string, unknown]> = [
 		["text", typedArgs.text],
@@ -599,7 +599,7 @@ const renderCrawlCall = (args: unknown, theme: Theme): string => {
 
 	for (const [k, v] of extras) {
 		if (v === undefined) continue;
-		out += `\n${theme.fg("muted", k + ":")} ${theme.dim(truncateValue(v))}`;
+		out += `\n${theme.fg("muted", k + ":")} ${theme.fg("dim", truncateValue(v))}`;
 	}
 	return out;
 };
@@ -612,7 +612,7 @@ const renderCodeContextCall = (args: unknown, theme: Theme): string => {
 
 	const tokensNum = typedArgs.tokensNum;
 	if (typeof tokensNum === "string" && tokensNum.trim().length > 0) {
-		out += `\n${theme.fg("muted", "tokensNum:")} ${theme.dim(truncateValue(tokensNum.trim()))}`;
+		out += `\n${theme.fg("muted", "tokensNum:")} ${theme.fg("dim", truncateValue(tokensNum.trim()))}`;
 	}
 	return out;
 };
@@ -653,12 +653,12 @@ const renderSearchResult = (
 	const shown = expanded ? results : results.slice(0, 3);
 
 	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
-	let out = theme.dim(separator);
+	let out = theme.fg("dim", separator);
 
 	if (result.requestId !== undefined || result.resolvedSearchType !== undefined) {
-		if (result.requestId !== undefined) out += `\n${theme.fg("muted", "requestId:")} ${theme.dim(String(result.requestId))}`;
+		if (result.requestId !== undefined) out += `\n${theme.fg("muted", "requestId:")} ${theme.fg("dim", String(result.requestId))}`;
 		if (result.resolvedSearchType !== undefined)
-			out += `\n${theme.fg("muted", "resolvedSearchType:")} ${theme.dim(String(result.resolvedSearchType))}`;
+			out += `\n${theme.fg("muted", "resolvedSearchType:")} ${theme.fg("dim", String(result.resolvedSearchType))}`;
 	}
 
 	for (let i = 0; i < shown.length; i++) {
@@ -666,7 +666,7 @@ const renderSearchResult = (
 		const title = r.title ?? r.url ?? "(no title)";
 		out += `\n\n  ${theme.fg("accent", theme.bold(String(i + 1) + "."))} ${theme.fg("toolOutput", truncate(oneLine(title), 160))}`;
 
-		if (r.url !== undefined) out += `\n     ${theme.dim(r.url)}`;
+		if (r.url !== undefined) out += `\n     ${theme.fg("dim", r.url)}`;
 
 		const meta: string[] = [];
 		if (r.author !== undefined) meta.push(r.author);
@@ -680,9 +680,9 @@ const renderSearchResult = (
 	}
 
 	if (!expanded && results.length > shown.length) {
-		out += `\n\n  ${theme.dim(`… ${results.length - shown.length} more (expand to view)`)}`;
+		out += `\n\n  ${theme.fg("dim", `… ${results.length - shown.length} more (expand to view)`)}`;
 	}
-	if (shown.length === 0) out += `\n  ${theme.dim("(no results)")}`;
+	if (shown.length === 0) out += `\n  ${theme.fg("dim", "(no results)")}`;
 
 	return out;
 };
@@ -696,16 +696,16 @@ const renderCrawlResult = (
 	const shown = expanded ? results : results.slice(0, 2);
 
 	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
-	let out = theme.dim(separator);
+	let out = theme.fg("dim", separator);
 
-	if (result.requestId !== undefined) out += `\n${theme.fg("muted", "requestId:")} ${theme.dim(String(result.requestId))}`;
+	if (result.requestId !== undefined) out += `\n${theme.fg("muted", "requestId:")} ${theme.fg("dim", String(result.requestId))}`;
 
 	for (let i = 0; i < shown.length; i++) {
 		const r = shown[i]!;
 		const title = r.title ?? r.url ?? r.id ?? "(no title)";
 		out += `\n\n  ${theme.fg("accent", theme.bold(String(i + 1) + "."))} ${theme.fg("toolOutput", truncate(oneLine(title), 160))}`;
 
-		if (r.url !== undefined) out += `\n     ${theme.dim(r.url)}`;
+		if (r.url !== undefined) out += `\n     ${theme.fg("dim", r.url)}`;
 
 		const meta: string[] = [];
 		if (r.author !== undefined) meta.push(r.author);
@@ -717,7 +717,7 @@ const renderCrawlResult = (
 		}
 
 		if (typeof r.text === "string" && r.text.trim().length > 0) {
-			out += `\n     ${theme.fg("muted", "text:")} ${theme.dim(truncate(oneLine(r.text), expanded ? 260 : 120))}`;
+			out += `\n     ${theme.fg("muted", "text:")} ${theme.fg("dim", truncate(oneLine(r.text), expanded ? 260 : 120))}`;
 		}
 
 		if (Array.isArray(r.highlights) && r.highlights.length > 0) {
@@ -726,9 +726,9 @@ const renderCrawlResult = (
 	}
 
 	if (!expanded && results.length > shown.length) {
-		out += `\n\n  ${theme.dim(`… ${results.length - shown.length} more (expand to view)`)}`;
+		out += `\n\n  ${theme.fg("dim", `… ${results.length - shown.length} more (expand to view)`)}`;
 	}
-	if (shown.length === 0) out += `\n  ${theme.dim("(no results)")}`;
+	if (shown.length === 0) out += `\n  ${theme.fg("dim", "(no results)")}`;
 
 	return out;
 };
@@ -739,17 +739,17 @@ const renderCodeContextResult = (
 	theme: Theme,
 ): string => {
 	const responseText = result.response ?? "";
-	if (!responseText) return theme.dim("(no response)");
+	if (!responseText) return theme.fg("dim", "(no response)");
 
 	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
 	if (expanded) {
-		return `${theme.dim(separator)}\n${responseText}`;
+		return `${theme.fg("dim", separator)}\n${responseText}`;
 	}
 
 	const lines = responseText.split("\n");
 	const head = lines.slice(0, 20).join("\n");
-	let out = `${theme.dim(separator)}\n${theme.fg("toolOutput", head)}`;
-	if (lines.length > 20) out += `\n\n${theme.dim("… (expand to view full context)")}`;
+	let out = `${theme.fg("dim", separator)}\n${theme.fg("toolOutput", head)}`;
+	if (lines.length > 20) out += `\n\n${theme.fg("dim", "… (expand to view full context)")}`;
 	return out;
 };
 
