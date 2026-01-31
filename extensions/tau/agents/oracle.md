@@ -4,8 +4,10 @@ description: |
   Expert reasoning agent for complex analysis (read-only). Use for: architectural advice, debugging strategies, implementation planning, deep technical questions. Invoked zero-shot - provide all context in prompt. Don't use for: code changes (can't write), simple questions. Prompt example: "Given this error trace and code, explain the root cause and suggest fixes: [paste context]."
 model: inherit
 thinking: inherit
-sandbox_policy: read-only
+sandbox_fs: read-only
+sandbox_net: allow-all
 approval_policy: never
+approval_timeout: 60
 ---
 
 You are the Oracle - an expert AI advisor with advanced reasoning capabilities.

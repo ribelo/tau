@@ -10,9 +10,11 @@ describe("agent-parser", () => {
 name: oracle
 description: The oracle agent
 model: claude-3-5-sonnet-latest
-thinking: 1000
-sandbox_policy: workspace-write
+thinking: high
+sandbox_fs: workspace-write
+sandbox_net: allow-all
 approval_policy: on-failure
+approval_timeout: 45
 ---
 You are the oracle.`;
 
@@ -20,9 +22,11 @@ You are the oracle.`;
 		expect(def.name).toBe("oracle");
 		expect(def.description).toBe("The oracle agent");
 		expect(def.model).toBe("claude-3-5-sonnet-latest");
-		expect(def.thinking).toBe(1000);
+		expect(def.thinking).toBe("high");
 		expect(def.sandbox.filesystemMode).toBe("workspace-write");
+		expect(def.sandbox.networkMode).toBe("allow-all");
 		expect(def.sandbox.approvalPolicy).toBe("on-failure");
+		expect(def.sandbox.approvalTimeoutSeconds).toBe(45);
 		expect(def.systemPrompt).toBe("You are the oracle.");
 	});
 
@@ -31,7 +35,11 @@ You are the oracle.`;
 name: finder
 description: Finder agent
 model: inherit
-sandbox_policy: read-only
+thinking: medium
+sandbox_fs: read-only
+sandbox_net: deny
+approval_policy: never
+approval_timeout: 60
 ---
 Find stuff.`;
 
@@ -39,17 +47,19 @@ Find stuff.`;
 		expect(def.model).toBe("inherit");
 	});
 
-	it("should use reasoning_effort as fallback for thinking", () => {
+	it("should throw on missing thinking", () => {
 		const content = `---
 name: oracle
 description: The oracle agent
-reasoning_effort: high
-sandbox_policy: workspace-write
+model: inherit
+sandbox_fs: workspace-write
+sandbox_net: allow-all
+approval_policy: on-failure
+approval_timeout: 60
 ---
 Prompt`;
 
-		const def = parseAgentDefinition(content);
-		expect(def.thinking).toBe("high");
+		expect(() => parseAgentDefinition(content)).toThrow("'thinking' is required");
 	});
 
 	it("should throw on missing frontmatter", () => {
@@ -82,7 +92,12 @@ Prompt`;
 			fs.writeFileSync(path.join(agentsDir, "test-agent.md"), `---
 name: test-agent
 description: A test agent
-sandbox_policy: read-only
+model: inherit
+thinking: low
+sandbox_fs: read-only
+sandbox_net: deny
+approval_policy: never
+approval_timeout: 60
 ---
 Test prompt`);
 		});

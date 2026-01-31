@@ -3,6 +3,14 @@
   "module": "index.ts",
   "type": "module",
   "private": true,
+  "scripts": {
+    "check": "tsgo --noEmit",
+    "lint": "oxlint .",
+    "lint:fix": "oxlint . --fix",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
+    "gate": "bun run check && bun run lint && bun run format:check"
+  },
   "devDependencies": {
     "@types/bun": "latest"
   },

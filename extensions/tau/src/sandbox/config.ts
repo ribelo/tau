@@ -6,8 +6,8 @@ import {
 	type ApprovalPolicy,
 	type FilesystemMode,
 	type NetworkMode,
-	migrateApprovalPolicy,
-	migrateNetworkMode,
+	APPROVAL_POLICIES,
+	NETWORK_MODES,
 } from "../shared/policy.js";
 
 export type { ApprovalPolicy, FilesystemMode, NetworkMode };
@@ -17,6 +17,8 @@ export type SandboxConfig = {
 	networkMode?: NetworkMode;
 	approvalPolicy?: ApprovalPolicy;
 	approvalTimeoutSeconds?: number;
+	/** If true, agent is running in subagent mode (blocks git, restricted operations) */
+	subagent?: boolean;
 };
 
 export const DEFAULT_SANDBOX_CONFIG: Required<SandboxConfig> = {
@@ -24,14 +26,25 @@ export const DEFAULT_SANDBOX_CONFIG: Required<SandboxConfig> = {
 	networkMode: "allow-all",
 	approvalPolicy: "on-failure",
 	approvalTimeoutSeconds: 60,
+	subagent: false,
 };
 
 export function applyDefaults(cfg: SandboxConfig | undefined): Required<SandboxConfig> {
+	const networkMode =
+		cfg?.networkMode && NETWORK_MODES.includes(cfg.networkMode)
+			? cfg.networkMode
+			: DEFAULT_SANDBOX_CONFIG.networkMode;
+	const approvalPolicy =
+		cfg?.approvalPolicy && APPROVAL_POLICIES.includes(cfg.approvalPolicy)
+			? cfg.approvalPolicy
+			: DEFAULT_SANDBOX_CONFIG.approvalPolicy;
+
 	return {
 		filesystemMode: cfg?.filesystemMode ?? DEFAULT_SANDBOX_CONFIG.filesystemMode,
-		networkMode: migrateNetworkMode(cfg?.networkMode) ?? DEFAULT_SANDBOX_CONFIG.networkMode,
-		approvalPolicy: migrateApprovalPolicy(cfg?.approvalPolicy) ?? DEFAULT_SANDBOX_CONFIG.approvalPolicy,
+		networkMode,
+		approvalPolicy,
 		approvalTimeoutSeconds: cfg?.approvalTimeoutSeconds ?? DEFAULT_SANDBOX_CONFIG.approvalTimeoutSeconds,
+		subagent: cfg?.subagent ?? DEFAULT_SANDBOX_CONFIG.subagent,
 	};
 }
 

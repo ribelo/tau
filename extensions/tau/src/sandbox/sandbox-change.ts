@@ -16,6 +16,7 @@ export function computeSandboxConfigHash(cfg: Required<SandboxConfig>): string {
 		`net=${cfg.networkMode}`,
 		`approval=${cfg.approvalPolicy}`,
 		`timeout=${cfg.approvalTimeoutSeconds}`,
+		`subagent=${cfg.subagent}`,
 	].join(";");
 }
 
@@ -26,6 +27,7 @@ function buildSandboxNotice(prefix: "SANDBOX_STATE:" | "SANDBOX_CHANGE:", cfg: R
 		`fs=${cfg.filesystemMode}`,
 		`net=${cfg.networkMode}`,
 		`approval=${cfg.approvalPolicy}`,
+		`subagent=${cfg.subagent}`,
 	].join(" ");
 }
 

@@ -8,9 +8,10 @@ import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import type { SandboxConfig } from "../sandbox/config.js";
 import {
 	type FilesystemMode,
+	type NetworkMode,
+	APPROVAL_POLICIES,
 	FILESYSTEM_MODES,
-	migrateApprovalPolicy,
-	migrateNetworkMode,
+	NETWORK_MODES,
 } from "../shared/policy.js";
 
 import { isRecord } from "../shared/json.js";
@@ -21,6 +22,8 @@ const EXTENSION_AGENTS_DIR = path.resolve(
 	"..",
 	"agents",
 );
+
+const THINKING_LEVELS = ["low", "medium", "high"] as const;
 
 export function parseAgentDefinition(content: string): AgentDefinition {
 	const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
@@ -45,9 +48,8 @@ export function parseAgentDefinition(content: string): AgentDefinition {
 	const description = frontmatter["description"];
 	const model = frontmatter["model"];
 	const thinking = frontmatter["thinking"];
-	const reasoning_effort = frontmatter["reasoning_effort"];
-	const sandbox_policy = frontmatter["sandbox_policy"];
-	const network_mode = frontmatter["network_mode"];
+	const sandbox_fs = frontmatter["sandbox_fs"];
+	const sandbox_net = frontmatter["sandbox_net"];
 	const approval_policy = frontmatter["approval_policy"];
 	const approval_timeout = frontmatter["approval_timeout"];
 
@@ -58,27 +60,47 @@ export function parseAgentDefinition(content: string): AgentDefinition {
 		throw new Error("Invalid agent definition: 'description' is required and must be a string");
 	}
 
-	const sandbox: SandboxConfig = {};
-	if (typeof sandbox_policy === "string" && FILESYSTEM_MODES.includes(sandbox_policy as FilesystemMode)) {
-		sandbox.filesystemMode = sandbox_policy as FilesystemMode;
+	if (typeof model !== "string") {
+		throw new Error("Invalid agent definition: 'model' is required and must be a string");
 	}
-	if (typeof network_mode === "string") {
-		const nm = migrateNetworkMode(network_mode);
-		if (nm) sandbox.networkMode = nm;
+	if (typeof thinking !== "string") {
+		throw new Error("Invalid agent definition: 'thinking' is required and must be a string");
 	}
-	if (typeof approval_policy === "string") {
-		const ap = migrateApprovalPolicy(approval_policy);
-		if (ap) sandbox.approvalPolicy = ap;
+	if (thinking !== "inherit" && !THINKING_LEVELS.includes(thinking as (typeof THINKING_LEVELS)[number])) {
+		throw new Error("Invalid agent definition: 'thinking' must be one of low, medium, high, inherit");
 	}
-	if (typeof approval_timeout === "number") {
-		sandbox.approvalTimeoutSeconds = approval_timeout;
+	if (typeof sandbox_fs !== "string" || !FILESYSTEM_MODES.includes(sandbox_fs as FilesystemMode)) {
+		throw new Error(
+			"Invalid agent definition: 'sandbox_fs' is required and must be one of read-only, workspace-write, danger-full-access",
+		);
 	}
+	if (typeof sandbox_net !== "string" || !NETWORK_MODES.includes(sandbox_net as NetworkMode)) {
+		throw new Error("Invalid agent definition: 'sandbox_net' is required and must be one of deny, allow-all");
+	}
+	if (
+		typeof approval_policy !== "string" ||
+		!APPROVAL_POLICIES.includes(approval_policy as (typeof APPROVAL_POLICIES)[number])
+	) {
+		throw new Error(
+			"Invalid agent definition: 'approval_policy' is required and must be one of never, on-failure, on-request, unless-trusted",
+		);
+	}
+	if (typeof approval_timeout !== "number" || Number.isNaN(approval_timeout)) {
+		throw new Error("Invalid agent definition: 'approval_timeout' is required and must be a number");
+	}
+
+	const sandbox: SandboxConfig = {
+		filesystemMode: sandbox_fs as FilesystemMode,
+		networkMode: sandbox_net as NetworkMode,
+		approvalPolicy: approval_policy as (typeof APPROVAL_POLICIES)[number],
+		approvalTimeoutSeconds: approval_timeout,
+	};
 
 	return {
 		name,
 		description,
-		model: model === "inherit" ? "inherit" : typeof model === "string" ? model : undefined,
-		thinking: (thinking ?? reasoning_effort) as ThinkingLevel | undefined,
+		model: model === "inherit" ? "inherit" : model,
+		thinking: thinking === "inherit" ? "inherit" : (thinking as ThinkingLevel),
 		sandbox,
 		systemPrompt,
 	};

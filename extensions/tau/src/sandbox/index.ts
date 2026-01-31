@@ -303,6 +303,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
       `Network: ${effectiveConfig.networkMode}`,
       `Approval: ${effectiveConfig.approvalPolicy}`,
       `Timeout: ${effectiveConfig.approvalTimeoutSeconds}s`,
+      `Subagent: ${effectiveConfig.subagent}`,
     ];
     return lines.join("\n");
   }
@@ -469,6 +470,12 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
         const trimmedCmd = command.trim();
         const isGitCommand = /^git\s/.test(trimmedCmd) || /;\s*git\s/.test(trimmedCmd) || /&&\s*git\s/.test(trimmedCmd);
         if (isGitCommand) {
+          // Subagent mode: git commands are blocked (orchestrator owns git)
+          if (effectiveConfig.subagent) {
+            const errorMsg = "[sandbox] Git commands are blocked in subagent mode. The orchestrator handles all git operations.\n";
+            onData(Buffer.from(errorMsg));
+            return { exitCode: 1 };
+          }
           return runCommandDirect(
             command,
             cwd,
@@ -1048,6 +1055,11 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
       "Authoritative current sandbox state is injected into the start of the user message as content[0]:\n" +
       "  - SANDBOX_STATE: ... (initial)\n" +
       "  - SANDBOX_CHANGE: ... (when settings change mid-session)\n" +
+      "\n" +
+      "Subagent mode:\n" +
+      "  - When subagent=true: you are a worker agent spawned by an orchestrator\n" +
+      "  - Git commands are BLOCKED in subagent mode - the orchestrator handles all git operations\n" +
+      "  - Do not attempt to run git commit, git push, git checkout, git reset, or similar\n" +
       "\n" +
       "On sandbox failures, output may include: SANDBOX_DIAGNOSTIC=<json> (machine-readable).\n" +
       "</permissions instructions>";

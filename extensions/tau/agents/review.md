@@ -4,8 +4,10 @@ description: |
   Code review agent (read-only). Reviews diffs for bugs, security issues, improvements. Returns prioritized findings (P0-P3). Prompt patterns: "Review uncommitted changes", "Review changes against main branch", "Review commit {sha}". Don't use for: code changes, general questions. Prompt example: "Review current staged changes for security issues and bugs."
 model: inherit
 thinking: inherit
-sandbox_policy: read-only
+sandbox_fs: read-only
+sandbox_net: allow-all
 approval_policy: never
+approval_timeout: 60
 ---
 
 # Review guidelines:

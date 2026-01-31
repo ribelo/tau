@@ -37,6 +37,7 @@ export function computeClampedWorkerSandboxConfig(options: {
 		networkMode: options.requested?.networkMode ?? options.parent.networkMode,
 		approvalPolicy: options.requested?.approvalPolicy ?? options.parent.approvalPolicy,
 		approvalTimeoutSeconds: options.requested?.approvalTimeoutSeconds ?? options.parent.approvalTimeoutSeconds,
+		subagent: options.requested?.subagent ?? options.parent.subagent,
 	};
 
 	const filesystemMode = minByRank(requested.filesystemMode, options.parent.filesystemMode, FILESYSTEM_RANK);
@@ -44,11 +45,16 @@ export function computeClampedWorkerSandboxConfig(options: {
 	const approvalPolicy = minByRank(requested.approvalPolicy, options.parent.approvalPolicy, APPROVAL_RANK);
 	const approvalTimeoutSeconds = Math.min(requested.approvalTimeoutSeconds, options.parent.approvalTimeoutSeconds);
 
+	// Subagent mode: if parent is subagent, worker must be subagent.
+	// Otherwise worker defaults to subagent mode unless explicitly disabled.
+	const subagent = options.parent.subagent || (options.requested?.subagent ?? true);
+
 	return {
 		filesystemMode,
 		networkMode,
 		approvalPolicy,
 		approvalTimeoutSeconds,
+		subagent,
 	};
 }
 

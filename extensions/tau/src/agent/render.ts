@@ -156,8 +156,15 @@ export function renderAgentResult(
 	// list
 	if (Array.isArray(data["agents"])) {
 		const agents = data["agents"] as Array<{ id: string; type: string; status: Record<string, unknown> }>;
+		// Sort: running agents at the bottom, then by id for stability
+		const sortedAgents = [...agents].sort((a, b) => {
+			const aRunning = a.status["state"] === "running" ? 1 : 0;
+			const bRunning = b.status["state"] === "running" ? 1 : 0;
+			if (aRunning !== bRunning) return aRunning - bRunning;
+			return a.id.localeCompare(b.id);
+		});
 		const lines = [];
-		for (const a of agents) {
+		for (const a of sortedAgents) {
 			lines.push(renderAgentLine(a.id, a.type, a.status, options.expanded));
 		}
 		return new Text(lines.join("\n"), 0, 0);
@@ -187,7 +194,15 @@ export function renderAgentResult(
 			lines.push(theme.fg("warning", "⚠ Timed out waiting for agents"));
 		}
 		
-		for (const id of ids) {
+		// Sort: running agents at the bottom, then by id for stability
+		const sortedIds = [...ids].sort((a, b) => {
+			const aRunning = statusMap[a]!["state"] === "running" ? 1 : 0;
+			const bRunning = statusMap[b]!["state"] === "running" ? 1 : 0;
+			if (aRunning !== bRunning) return aRunning - bRunning;
+			return a.localeCompare(b);
+		});
+		
+		for (const id of sortedIds) {
 			const type = agentTypes?.[id] ?? "";
 			lines.push(renderAgentLine(id, type, statusMap[id]!, options.expanded));
 		}

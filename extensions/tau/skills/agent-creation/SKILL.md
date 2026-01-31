@@ -27,8 +27,10 @@ description: |
   what it does, and what it should NOT be used for.
 model: inherit
 thinking: medium
-sandbox_policy: workspace-write
+sandbox_fs: workspace-write
+sandbox_net: allow-all
 approval_policy: never
+approval_timeout: 60
 ---
 
 Optional system prompt content here. This is appended to the default
@@ -43,13 +45,19 @@ pi system prompt. If empty, only the default prompt is used.
 |-------|-------------|
 | `name` | Agent identifier (used in `spawn <name>`) |
 | `description` | When/how to use this agent. Shown in tool description. |
+| `model` | Model ID or `inherit` to use the parent model. |
+| `thinking` | Thinking level (`low`, `medium`, `high`, or `inherit`). |
+| `sandbox_fs` | Filesystem access level for the agent sandbox. |
+| `sandbox_net` | Network access for the agent sandbox. |
+| `approval_policy` | When to prompt for approval. |
+| `approval_timeout` | Timeout in seconds before auto-deny. |
 
 ### Model Configuration
 
 | Field | Values | Description |
 |-------|--------|-------------|
 | `model` | `inherit`, `provider/model-id` | Which model to use. `inherit` uses parent's model. |
-| `thinking` | `off`, `minimal`, `low`, `medium`, `high` | Extended thinking level. |
+| `thinking` | `low`, `medium`, `high`, `inherit` | Extended thinking level. |
 
 Examples:
 - `model: inherit` - use whatever model the parent agent uses
@@ -60,12 +68,12 @@ Examples:
 
 | Field | Values | Description |
 |-------|--------|-------------|
-| `sandbox_policy` | `read-only`, `workspace-write`, `danger-full-access` | Filesystem access level |
-| `network_mode` | `deny`, `allow-all` | Network access |
+| `sandbox_fs` | `read-only`, `workspace-write`, `danger-full-access` | Filesystem access level |
+| `sandbox_net` | `deny`, `allow-all` | Network access |
 | `approval_policy` | `never`, `on-failure`, `on-request`, `unless-trusted` | When to ask for approval |
 | `approval_timeout` | number (seconds) | Auto-deny after timeout |
 
-**Sandbox policy meanings**:
+**Sandbox filesystem meanings**:
 - `read-only`: Can read files, cannot modify anything
 - `workspace-write`: Can read/write within project directory
 - `danger-full-access`: Full filesystem access (use with caution)
@@ -97,8 +105,10 @@ description: |
   for security vulnerabilities."
 model: inherit
 thinking: high
-sandbox_policy: read-only
+sandbox_fs: read-only
+sandbox_net: deny
 approval_policy: never
+approval_timeout: 60
 ---
 
 Analyze code for security vulnerabilities. Focus on:
@@ -124,8 +134,10 @@ description: |
   Rust code. Don't use for: other languages, architecture decisions.
 model: inherit
 thinking: medium
-sandbox_policy: workspace-write
+sandbox_fs: workspace-write
+sandbox_net: allow-all
 approval_policy: never
+approval_timeout: 60
 ---
 
 Follow these project conventions:
@@ -148,8 +160,10 @@ description: |
   instructions.
 model: inherit
 thinking: inherit
-sandbox_policy: workspace-write
-approval_policy: inherit
+sandbox_fs: workspace-write
+sandbox_net: allow-all
+approval_policy: never
+approval_timeout: 60
 ---
 ```
 

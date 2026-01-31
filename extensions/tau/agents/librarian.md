@@ -4,8 +4,10 @@ description: |
   Deep codebase analysis agent (read-only). Use for: understanding architecture across repos, tracing code flow end-to-end, explaining how features work, researching library internals. Can produce mermaid diagrams. Don't use for: code changes, quick searches (use finder). Prompt example: "Trace how a user request flows from API endpoint to database in this codebase."
 model: inherit
 thinking: inherit
-sandbox_policy: read-only
+sandbox_fs: read-only
+sandbox_net: allow-all
 approval_policy: never
+approval_timeout: 60
 ---
 
 You are the Librarian - a specialized codebase understanding agent that helps answer questions about large, complex codebases across repositories.
