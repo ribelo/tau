@@ -43,6 +43,7 @@ type RenderKind =
 	| "show"
 	| "dep_tree"
 	| "dep_list"
+	| "dep_show"
 	| "dep_add"
 	| "dep_remove"
 	| "dep_cycles"
@@ -312,6 +313,76 @@ function renderDepBlock(json: unknown, theme: Theme): Text {
 	return new Text(out, 0, 0);
 }
 
+type DepShowItem = {
+	id?: string;
+	title?: string;
+	status?: string;
+	priority?: number | string;
+	issue_type?: string;
+	dependency_type?: string;
+};
+
+function renderDepShowBlock(json: unknown, theme: Theme, _issueId?: string): Text {
+	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+	let out = theme.fg("dim", separator);
+
+	// If it's an array, render as list of issues grouped by dependency type
+	if (Array.isArray(json)) {
+		const items = json as DepShowItem[];
+		if (items.length === 0) {
+			out += `\n${theme.fg("muted", "No dependencies found")}`;
+			return new Text(out, 0, 0);
+		}
+
+		// Group by dependency_type
+		const grouped = new Map<string, DepShowItem[]>();
+		for (const item of items) {
+			const type = item.dependency_type || "dependency";
+			if (!grouped.has(type)) grouped.set(type, []);
+			grouped.get(type)!.push(item);
+		}
+
+		for (const [type, deps] of grouped) {
+			out += `\n${theme.fg("toolTitle", theme.bold(`${type}:`))}`;
+			for (const dep of deps) {
+				const id = dep.id || "(no-id)";
+				const title = dep.title || "(no title)";
+				const prio = dep.priority !== undefined ? `P${dep.priority}` : "P?";
+				out += `\n  ${theme.fg("accent", id)} [${theme.fg("muted", prio)}] ${theme.fg("toolOutput", title)}`;
+			}
+		}
+		return new Text(out, 0, 0);
+	}
+
+	// If it's an object with blocks/depends_on fields, render accordingly
+	if (json && typeof json === "object") {
+		const obj = json as Record<string, unknown>;
+
+		// Handle simple string/string[] properties like "blocks: issue-id"
+		for (const [key, value] of Object.entries(obj)) {
+			if (key === "id" || key === "title") continue;
+			const label = theme.fg("toolTitle", theme.bold(`${key}:`));
+			if (Array.isArray(value)) {
+				if (value.length === 0) {
+					out += `\n${label} ${theme.fg("muted", "(none)")}`;
+				} else {
+					out += `\n${label}`;
+					for (const v of value) {
+						out += `\n  ${theme.fg("accent", String(v))}`;
+					}
+				}
+			} else if (value) {
+				out += `\n${label} ${theme.fg("accent", String(value))}`;
+			}
+		}
+		return new Text(out, 0, 0);
+	}
+
+	// Fallback: just show the raw JSON
+	out += `\n${theme.fg("dim", JSON.stringify(json, null, 2))}`;
+	return new Text(out, 0, 0);
+}
+
 function stripLeadingPrompt(s: string): string {
 	const t = s.trim();
 	if (t.startsWith("$ ")) return t.slice(2).trim();
@@ -415,6 +486,10 @@ function commandKind(args: string[]): RenderKind {
 		if (nonFlags[1] === "add") return "dep_add";
 		if (nonFlags[1] === "remove") return "dep_remove";
 		if (nonFlags[1] === "cycles") return "dep_cycles";
+		// If only an issue ID is provided (no subcommand), treat as dep_show
+		if (nonFlags[1] && !["list", "tree", "add", "remove", "cycles", "relate", "unrelate"].includes(nonFlags[1])) {
+			return "dep_show";
+		}
 	}
 	if (first === "init") return "init";
 	if (first === "onboard") return "onboard";
@@ -448,6 +523,7 @@ function ensureJsonFlag(args: string[], kind: RenderKind): string[] {
 		"show",
 		"dep_tree",
 		"dep_list",
+		"dep_show",
 		"dep_add",
 		"dep_remove",
 		"dep_cycles",
@@ -487,6 +563,7 @@ function withQuietFlag(args: string[], kind: RenderKind): string[] {
 		"show",
 		"dep_tree",
 		"dep_list",
+		"dep_show",
 		"dep_add",
 		"dep_remove",
 		"dep_cycles",
@@ -641,6 +718,7 @@ function renderBd(details: BdToolDetails, options: { expanded: boolean }, theme:
 	if (details.kind === "status") return renderStatusBlock(json, theme);
 	if (details.kind === "comment" || details.kind === "comments") return renderCommentsBlock(json, theme);
 	if (details.kind === "dep_add" || details.kind === "dep_remove" || details.kind === "dep_cycles") return renderDepBlock(json, theme);
+	if (details.kind === "dep_show") return renderDepShowBlock(json, theme);
 	if (details.kind === "delete") return renderDeleteBlock(json, theme);
 
 	const issues = normalizeIssues(json);
