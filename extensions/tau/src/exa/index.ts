@@ -791,7 +791,7 @@ export default function initExa(pi: ExtensionAPI, _state: TauState): void {
 			return new Text(renderSearchResult(details, options.expanded, theme as unknown as Theme), 0, 0);
 		},
 
-		async execute(_toolCallId, params, onUpdate, _ctx, signal) {
+		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
 			onUpdate?.({ content: [{ type: "text", text: "Searching Exa…" }], details: {} });
 
 			const typedParams = params as WebSearchParams;
@@ -836,7 +836,7 @@ export default function initExa(pi: ExtensionAPI, _state: TauState): void {
 			return new Text(renderCrawlResult(details, options.expanded, theme as unknown as Theme), 0, 0);
 		},
 
-		async execute(_toolCallId, params, onUpdate, _ctx, signal) {
+		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
 			onUpdate?.({ content: [{ type: "text", text: "Fetching contents from Exa…" }], details: {} });
 
 			const typedParams = params as CrawlingParams;
@@ -886,7 +886,7 @@ export default function initExa(pi: ExtensionAPI, _state: TauState): void {
 			return new Text(out, 0, 0);
 		},
 
-		async execute(_toolCallId, params, onUpdate, _ctx, signal) {
+		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
 			onUpdate?.({ content: [{ type: "text", text: "Getting code context from Exa…" }], details: {} });
 
 			const typedParams = params as CodeContextParams;

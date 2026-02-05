@@ -132,7 +132,7 @@ ${COMMIT_FORMAT_GUIDE}`,
 			),
 		}),
 
-		async execute(_toolCallId, params, _onUpdate, ctx, signal?: AbortSignal) {
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const execOpts = signal ? { signal } : {};
 			if (!ctx.hasUI) {
 				return {

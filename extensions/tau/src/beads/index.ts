@@ -853,7 +853,7 @@ export default function initBeads(pi: ExtensionAPI, _state: TauState) {
 			"Wrapper around the `bd` (Beads) CLI created mainly to render output nicely for the user. Provide `command` and omit the leading `bd` (it will be stripped if present).\n\nCommon examples:\n- List all issues: `list`\n- List ready work (unblocked): `ready`\n- List blocked work: `blocked`\n- Show issue: `show tau-xxxx`\n- Create task: `create \"Title\" --type task --priority 2 --description \"...\"`\n- Create epic: `create \"Epic title\" --type epic --priority 1 --description \"...\"`\n- Update status: `update tau-xxxx --status in_progress`\n- Close issue: `close tau-xxxx --reason \"Done\"`\n- Init: `init`\n- Onboard: `onboard`\n- Sync: `sync`\n- Help: `help` (forwarded to `bd --help`) or `help show`",
 		parameters: bdParams,
 
-		async execute(_toolCallId, params, _onUpdate, _ctx, signal) {
+		async execute(_toolCallId, params, signal, _onUpdate, _ctx) {
 			const details = await runBd(pi, params.command, signal, params.cwd);
 
 			if (details.code && details.code !== 0) {

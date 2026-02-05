@@ -19,7 +19,7 @@ export default function initAgent(pi: ExtensionAPI) {
 		description: buildToolDescription(),
 		parameters: AgentParams,
 
-		async execute(_toolCallId, params, _onUpdate, ctx, _signal) {
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const approvalBroker =
 				ctx.hasUI && ctx.ui && typeof ctx.ui.confirm === "function"
 					? createUiApprovalBroker(ctx.ui)
@@ -36,7 +36,7 @@ export default function initAgent(pi: ExtensionAPI) {
 				}),
 			);
 
-			return toolDef.execute(_toolCallId, params, _onUpdate, ctx, _signal);
+			return toolDef.execute(toolCallId, params, signal, onUpdate, ctx);
 		},
 
 		renderCall(args, theme) {

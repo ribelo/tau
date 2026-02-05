@@ -822,44 +822,44 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
       });
     });
   }
-  pi.registerTool({
-    ...baseBashTool,
-    label: "bash",
-    // Extend schema to add escalate parameter
-    parameters: Type.Object({
-      command: Type.String({ description: "Bash command to execute" }),
-      timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional)" })),
-      escalate: Type.Optional(Type.Boolean({
-        description: "Request to run without sandbox restrictions. Only use when sandbox is blocking necessary operations."
-      })),
-    }),
-    async execute(toolCallId, params, onUpdate, ctx, signal) {
-      refreshConfig(ctx);
+    pi.registerTool({
+      ...baseBashTool,
+      label: "bash",
+      // Extend schema to add escalate parameter
+      parameters: Type.Object({
+        command: Type.String({ description: "Bash command to execute" }),
+        timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional)" })),
+        escalate: Type.Optional(Type.Boolean({
+          description: "Request to run without sandbox restrictions. Only use when sandbox is blocking necessary operations."
+        })),
+      }),
+      async execute(toolCallId, params, signal, onUpdate, ctx) {
+        refreshConfig(ctx);
 
-      const typedParams = params as { command: string; timeout?: number; escalate?: boolean };
-      const escalate = typedParams.escalate ?? false;
+        const typedParams = params as { command: string; timeout?: number; escalate?: boolean };
+        const escalate = typedParams.escalate ?? false;
 
       // Create tool with operations that capture ctx in closure (no global state)
       const tool = createBashTool(ctx.cwd, {
         operations: createSandboxedBashOperationsInternal(ctx, escalate),
       });
 
-      // Pass params without escalate to inner tool
-      const innerParams: { command: string; timeout?: number } = { command: typedParams.command };
-      if (typedParams.timeout !== undefined) innerParams.timeout = typedParams.timeout;
-      return await tool.execute(toolCallId, innerParams, signal, onUpdate);
-    },
-  });
+        // Pass params without escalate to inner tool
+        const innerParams: { command: string; timeout?: number } = { command: typedParams.command };
+        if (typedParams.timeout !== undefined) innerParams.timeout = typedParams.timeout;
+        return await tool.execute(toolCallId, innerParams, signal, onUpdate);
+      },
+    });
 
-  pi.registerTool({
-    ...baseEditTool,
-    label: "edit",
-    async execute(toolCallId, params, _onUpdate, ctx, signal) {
-      refreshConfig(ctx);
-      const targetPath = (params as { path?: string }).path;
-      if (targetPath) {
-        const check = checkWriteAllowed({
-          targetPath,
+    pi.registerTool({
+      ...baseEditTool,
+      label: "edit",
+      async execute(toolCallId, params, signal, _onUpdate, ctx) {
+        refreshConfig(ctx);
+        const targetPath = (params as { path?: string }).path;
+        if (targetPath) {
+          const check = checkWriteAllowed({
+            targetPath,
           workspaceRoot,
           filesystemMode: effectiveConfig.filesystemMode,
         });
@@ -883,21 +883,21 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 
          ctx.ui.notify(`Approved: edit ${targetPath}`, "info");
         }
-      }
-      const tool = createEditTool(ctx.cwd);
-      return tool.execute(toolCallId, params, signal);
-    },
-  });
+        }
+        const tool = createEditTool(ctx.cwd);
+        return tool.execute(toolCallId, params, signal);
+      },
+    });
 
-  pi.registerTool({
-    ...baseWriteTool,
-    label: "write",
-    async execute(toolCallId, params, _onUpdate, ctx, signal) {
-      refreshConfig(ctx);
-      const targetPath = (params as { path?: string }).path;
-      if (targetPath) {
-        const check = checkWriteAllowed({
-          targetPath,
+    pi.registerTool({
+      ...baseWriteTool,
+      label: "write",
+      async execute(toolCallId, params, signal, _onUpdate, ctx) {
+        refreshConfig(ctx);
+        const targetPath = (params as { path?: string }).path;
+        if (targetPath) {
+          const check = checkWriteAllowed({
+            targetPath,
           workspaceRoot,
           filesystemMode: effectiveConfig.filesystemMode,
         });
@@ -921,11 +921,11 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 
          ctx.ui.notify(`Approved: write ${targetPath}`, "info");
         }
-      }
-      const tool = createWriteTool(ctx.cwd);
-      return tool.execute(toolCallId, params, signal);
-    },
-  });
+        }
+        const tool = createWriteTool(ctx.cwd);
+        return tool.execute(toolCallId, params, signal);
+      },
+    });
 
   pi.on("session_start", async (_event, ctx) => {
     // Check for --no-sandbox escape hatch first

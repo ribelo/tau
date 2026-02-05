@@ -202,13 +202,7 @@ export class AgentWorker implements Agent {
 					label: "submit_result",
 					description: "Submit structured result for the task",
 					parameters: Type.Unsafe(opts.resultSchema as object),
-					async execute(
-						_toolCallId: string,
-						params: unknown,
-						_onUpdate: unknown,
-						_ctx: unknown,
-						signal?: AbortSignal,
-					) {
+					async execute(_toolCallId: string, params: unknown, signal: AbortSignal | undefined, _onUpdate, _ctx) {
 						if (signal?.aborted) throw new Error("Aborted");
 						agent.structuredOutput = params;
 						agent.session.abort().catch(() => undefined);

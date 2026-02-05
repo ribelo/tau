@@ -17,3 +17,9 @@ yarn-error.log*
 
 # codex cli artifacts
 .codex/
+
+# build caches
+*.tsbuildinfo
+
+# pi local artifacts
+.pi/

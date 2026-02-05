@@ -227,9 +227,9 @@ export interface AgentToolDef {
 	execute: (
 		toolCallId: string,
 		params: unknown,
+		signal: AbortSignal | undefined,
 		onUpdate: unknown,
 		ctx: unknown,
-		signal?: AbortSignal,
 	) => Promise<{
 		isError?: boolean;
 		content: Array<{ type: "text"; text: string }>;
@@ -254,7 +254,7 @@ export function createAgentToolDef(
 		description: buildToolDescription(),
 		parameters: AgentParams,
 
-		async execute(_toolCallId, params, onUpdate, _ctx, signal) {
+		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
 			const context = getContext();
 			const p = params as Static<typeof AgentParams>;
 			
