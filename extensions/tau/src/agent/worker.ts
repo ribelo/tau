@@ -31,6 +31,29 @@ function truncateStr(s: string, max: number): string {
 	return s.slice(0, max - 3) + "...";
 }
 
+// Extract human-readable args for tool display
+function formatToolArgs(toolName: string, args: unknown): string {
+	if (!args || typeof args !== "object") return "";
+	const a = args as Record<string, unknown>;
+
+	switch (toolName) {
+		case "bash":
+			return typeof a["command"] === "string" ? a["command"] : "";
+		case "read":
+			return typeof a["path"] === "string" ? a["path"] : "";
+		case "write":
+			return typeof a["path"] === "string" ? `${a["path"]} (create)` : "";
+		case "edit":
+			return typeof a["path"] === "string" ? `${a["path"]} (edit)` : "";
+		default:
+			// For unknown tools, try to find a meaningful field
+			if (typeof a["path"] === "string") return a["path"];
+			if (typeof a["command"] === "string") return a["command"];
+			if (typeof a["query"] === "string") return a["query"];
+			return "";
+	}
+}
+
 const WORKER_DELEGATION_PROMPT = `## Worker Agent Instructions
 
 You are a worker agent spawned by an orchestrator. Follow these rules:
@@ -300,7 +323,7 @@ export class AgentWorker implements Agent {
 					}));
 				} else if (event.type === "tool_execution_start") {
 					agent.toolCalls++;
-					const argsPreview = truncateStr(JSON.stringify(event.args), 100);
+					const argsPreview = truncateStr(formatToolArgs(event.toolName, event.args), 100);
 					agent.pendingTools.set(event.toolCallId, { 
 						name: event.toolName, 
 						args: argsPreview,

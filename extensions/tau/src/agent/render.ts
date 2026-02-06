@@ -93,26 +93,7 @@ export function renderAgentResult(
 		const lines = tools.map(t => {
 			const mark = t.isError ? theme.fg("error", "✘") : theme.fg("dim", "·");
 			const name = theme.fg("accent", t.name);
-
-			let argsStr = t.args || "";
-			if (t.args) {
-				try {
-					const parsed = JSON.parse(t.args);
-					if (t.name === "bash" && parsed.command) {
-						argsStr = parsed.command;
-					} else if (t.name === "read" && parsed.path) {
-						argsStr = parsed.path;
-					} else if (t.name === "write" && parsed.path) {
-						argsStr = `${parsed.path} (create)`;
-					} else if (t.name === "edit" && parsed.path) {
-						argsStr = `${parsed.path} (edit)`;
-					}
-				} catch {
-					// Fall back to raw args if not valid JSON
-				}
-			}
-
-			const args = argsStr ? theme.fg("dim", ` ${truncate(argsStr, 80)}`) : "";
+			const args = t.args ? theme.fg("dim", ` ${truncate(t.args, 80)}`) : "";
 			return `      ${mark} ${name}${args}`;
 		});
 		return "\n" + lines.join("\n");
@@ -234,4 +215,3 @@ export function renderAgentResult(
 
 	return new Text(JSON.stringify(data, null, 2), 0, 0);
 }
-
