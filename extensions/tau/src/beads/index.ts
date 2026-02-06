@@ -728,16 +728,16 @@ function renderBd(details: BdToolDetails, options: { expanded: boolean }, theme:
 	if (details.kind === "blocked") return renderIssuesBlock(issues, options, theme);
 	if (details.kind === "search") return renderIssuesBlock(issues, options, theme);
 	if (details.kind === "stale") return renderIssuesBlock(issues, options, theme);
-	if (details.kind === "show") return renderIssuesBlock(issues, { expanded: true }, theme);
+	if (details.kind === "show") return renderIssuesBlock(issues, options, theme);
 	if (details.kind === "dep_tree") return renderTreeBlock(issues as BdTreeNode[], options, theme);
-	if (details.kind === "create") return renderIssuesBlock(issues, { expanded: true }, theme);
-	if (details.kind === "update") return renderIssuesBlock(issues, { expanded: true }, theme);
-	if (details.kind === "close") return renderIssuesBlock(issues, { expanded: true }, theme);
-	if (details.kind === "reopen") return renderIssuesBlock(issues, { expanded: true }, theme);
-	if (details.kind === "defer") return renderIssuesBlock(issues, { expanded: true }, theme);
-	if (details.kind === "undefer") return renderIssuesBlock(issues, { expanded: true }, theme);
-	if (details.kind === "pin") return renderIssuesBlock(issues, { expanded: true }, theme);
-	if (details.kind === "unpin") return renderIssuesBlock(issues, { expanded: true }, theme);
+	if (details.kind === "create") return renderIssuesBlock(issues, options, theme);
+	if (details.kind === "update") return renderIssuesBlock(issues, options, theme);
+	if (details.kind === "close") return renderIssuesBlock(issues, options, theme);
+	if (details.kind === "reopen") return renderIssuesBlock(issues, options, theme);
+	if (details.kind === "defer") return renderIssuesBlock(issues, options, theme);
+	if (details.kind === "undefer") return renderIssuesBlock(issues, options, theme);
+	if (details.kind === "pin") return renderIssuesBlock(issues, options, theme);
+	if (details.kind === "unpin") return renderIssuesBlock(issues, options, theme);
 
 	return renderFallback("unknown", JSON.stringify(json, null, 2), theme);
 }

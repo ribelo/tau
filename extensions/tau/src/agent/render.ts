@@ -37,11 +37,13 @@ export function renderAgentCall(args: unknown, theme: Theme) {
 		}
 		case "wait": {
 			const ids = params["ids"] as string[] || [];
-			const idList = ids.length <= 3
-				? ids.map(id => id.slice(0, 8)).join(", ")
-				: `${ids.slice(0, 2).map(id => id.slice(0, 8)).join(", ")} +${ids.length - 2} more`;
+			const header = ids.length === 0
+				? "waiting"
+				: ids.length === 1
+					? "waiting for 1 agent"
+					: `waiting for ${ids.length} agents`;
 			return new Text(
-				`${theme.fg("dim", "◷")} ${theme.fg("accent", `wait:[${idList}]`)}`,
+				`${theme.fg("dim", "◷")} ${theme.fg("accent", header)}`,
 				0, 0,
 			);
 		}
@@ -91,7 +93,26 @@ export function renderAgentResult(
 		const lines = tools.map(t => {
 			const mark = t.isError ? theme.fg("error", "✘") : theme.fg("dim", "·");
 			const name = theme.fg("accent", t.name);
-			const args = t.args ? theme.fg("dim", ` ${truncate(t.args, 50)}`) : "";
+
+			let argsStr = t.args || "";
+			if (t.args) {
+				try {
+					const parsed = JSON.parse(t.args);
+					if (t.name === "bash" && parsed.command) {
+						argsStr = parsed.command;
+					} else if (t.name === "read" && parsed.path) {
+						argsStr = parsed.path;
+					} else if (t.name === "write" && parsed.path) {
+						argsStr = `${parsed.path} (create)`;
+					} else if (t.name === "edit" && parsed.path) {
+						argsStr = `${parsed.path} (edit)`;
+					}
+				} catch {
+					// Fall back to raw args if not valid JSON
+				}
+			}
+
+			const args = argsStr ? theme.fg("dim", ` ${truncate(argsStr, 80)}`) : "";
 			return `      ${mark} ${name}${args}`;
 		});
 		return "\n" + lines.join("\n");
@@ -103,11 +124,13 @@ export function renderAgentResult(
 		const workedMs = status["workedMs"] as number | undefined;
 		const tools = status["tools"] as Array<{ name: string; args?: string; result?: string; isError?: boolean }> | undefined;
 		const idStr = id.slice(0, 8);
-		const typeStr = type ? ` (${type})` : "";
-		const workedStr = workedMs !== undefined && workedMs > 0 
-			? theme.fg("dim", ` (worked ${formatDuration(workedMs)})`)
+		const typeStr = type ? `  ${theme.fg("accent", type)}` : "";
+		const workedStr = workedMs !== undefined && workedMs > 0
+			? `  ${theme.fg("accent", "●")} ${theme.fg("dim", formatDuration(workedMs))}`
 			: "";
-		let line = `  ${statusMark(state, theme)} ${theme.fg("accent", idStr)}${theme.fg("dim", typeStr)} ${theme.fg("dim", state)}${workedStr}`;
+
+		let line = `  ${statusMark(state, theme)} ${theme.fg("accent", idStr)}${typeStr}${workedStr}`;
+
 		if (status["message"]) {
 			line += `\n    ${theme.fg("dim", "↩ ")}${theme.fg("toolOutput", truncate(oneLine(status["message"] as string), 140))}`;
 		}
@@ -116,7 +139,7 @@ export function renderAgentResult(
 		}
 		// Show tool history when expanded
 		if (expanded && tools && tools.length > 0) {
-			line += `\n    ${theme.fg("dim", `tools (${tools.length}):`)}${renderTools(tools)}`;
+			line += `\n    ${theme.fg("dim", `${tools.length} tools:`)}${renderTools(tools)}`;
 		}
 		return line;
 	};
