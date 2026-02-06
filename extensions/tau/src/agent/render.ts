@@ -131,7 +131,7 @@ export function renderAgentResult(
 
 		let line = `  ${statusMark(state, theme)} ${theme.fg("accent", idStr)}${typeStr}${workedStr}`;
 
-		if (status["message"]) {
+		if (expanded && status["message"]) {
 			line += `\n    ${theme.fg("dim", "↩ ")}${theme.fg("toolOutput", truncate(oneLine(status["message"] as string), 140))}`;
 		}
 		if (status["reason"]) {
