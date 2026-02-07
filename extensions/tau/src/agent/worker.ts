@@ -452,9 +452,18 @@ export class AgentWorker implements Agent {
 	}
 
 	prompt(message: string): Effect.Effect<string, AgentError> {
-		return Effect.sync(() => {
-			// For now, we'll just return a dummy or use session ID as base for submission
+		return Effect.gen(this, function* () {
 			const submissionId = `sub-${crypto.randomUUID()}`;
+
+			// Transition to "running" immediately so callers see progress
+			// (session events will continue updating from here)
+			yield* SubscriptionRef.set(this.statusRef, {
+				state: "running",
+				turns: this.turns,
+				toolCalls: this.toolCalls,
+				workedMs: this.workedMs,
+				tools: this.tools,
+			});
 
 			Effect.runFork(
 				Effect.promise(() =>
