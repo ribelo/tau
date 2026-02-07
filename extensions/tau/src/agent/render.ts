@@ -93,7 +93,7 @@ export function renderAgentResult(
 		const lines = tools.map(t => {
 			const mark = t.isError ? theme.fg("error", "✘") : theme.fg("dim", "·");
 			const name = theme.fg("accent", t.name);
-			const args = t.args ? theme.fg("dim", ` ${truncate(t.args, 80)}`) : "";
+			const args = t.args ? theme.fg("dim", ` ${truncate(t.args, 80).replace(/ /g, "\u00A0")}`) : "";
 			return `      ${mark} ${name}${args}`;
 		});
 		return "\n" + lines.join("\n");
