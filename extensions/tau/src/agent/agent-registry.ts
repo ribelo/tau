@@ -10,12 +10,18 @@
  * ```json
  * {
  *   "agents": {
- *     "oracle": {
- *       "model": "anthropic/claude-sonnet-4-20250514",
- *       "thinking": "high",
+ *     "rush": {
+ *       "models": [
+ *         { "model": "google-gemini-cli/gemini-3-flash-preview", "thinking": "high" },
+ *         { "model": "groq/llama-4-scout", "thinking": "medium" }
+ *       ],
  *       "complexity": {
- *         "low": { "model": "anthropic/claude-haiku" },
- *         "high": { "model": "anthropic/claude-sonnet-4-20250514", "thinking": "high" }
+ *         "low": {
+ *           "models": [
+ *             { "model": "groq/llama-4-scout" },
+ *             { "model": "anthropic/claude-haiku-4-5" }
+ *           ]
+ *         }
  *       }
  *     }
  *   }
@@ -28,7 +34,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
-import type { AgentDefinition, Complexity } from "./types.js";
+import type { AgentDefinition, ModelSpec, Complexity } from "./types.js";
 import { parseAgentDefinition } from "./parser.js";
 import { readJsonFile } from "../shared/fs.js";
 import { isRecord } from "../shared/json.js";
@@ -75,7 +81,7 @@ function discoverAgentFiles(dir: string): Map<string, string> {
 		const files = fs.readdirSync(dir);
 		for (const file of files) {
 			if (!file.endsWith(".md")) continue;
-			const name = file.slice(0, -3); // Remove .md extension
+			const name = file.slice(0, -3);
 			const filePath = path.join(dir, file);
 			if (isFile(filePath)) {
 				result.set(name, filePath);
@@ -88,16 +94,31 @@ function discoverAgentFiles(dir: string): Map<string, string> {
 	return result;
 }
 
-/** Per-complexity model/thinking override */
+function parseModelsArray(arr: unknown): ModelSpec[] | undefined {
+	if (!Array.isArray(arr)) return undefined;
+	const result: ModelSpec[] = [];
+	for (const entry of arr) {
+		if (!isRecord(entry)) continue;
+		const model = entry["model"];
+		if (typeof model !== "string") continue;
+		const spec: ModelSpec = { model };
+		const thinking = entry["thinking"];
+		if (typeof thinking === "string") {
+			(spec as { thinking?: string }).thinking = thinking as ThinkingLevel;
+		}
+		result.push(spec);
+	}
+	return result.length > 0 ? result : undefined;
+}
+
+/** Per-complexity override */
 interface ComplexityConfig {
-	model?: string;
-	thinking?: ThinkingLevel;
+	models?: readonly ModelSpec[];
 }
 
 /** Settings override for an agent */
 interface AgentSettingsOverride {
-	model?: string;
-	thinking?: ThinkingLevel;
+	models?: readonly ModelSpec[];
 	complexity?: {
 		low?: ComplexityConfig;
 		medium?: ComplexityConfig;
@@ -130,11 +151,9 @@ function loadAgentSettings(cwd: string): Map<string, AgentSettingsOverride> {
 			
 			const override: AgentSettingsOverride = {};
 			
-			if (typeof config["model"] === "string") {
-				override.model = config["model"];
-			}
-			if (typeof config["thinking"] === "string") {
-				override.thinking = config["thinking"] as ThinkingLevel;
+			const models = parseModelsArray(config["models"]);
+			if (models) {
+				override.models = models;
 			}
 			
 			const complexity = config["complexity"];
@@ -143,17 +162,16 @@ function loadAgentSettings(cwd: string): Map<string, AgentSettingsOverride> {
 				for (const level of ["low", "medium", "high"] as const) {
 					const levelConfig = complexity[level];
 					if (isRecord(levelConfig)) {
-						const cfg: ComplexityConfig = {};
-						if (typeof levelConfig["model"] === "string") cfg.model = levelConfig["model"];
-						if (typeof levelConfig["thinking"] === "string") cfg.thinking = levelConfig["thinking"] as ThinkingLevel;
-						if (Object.keys(cfg).length > 0) override.complexity[level] = cfg;
+						const levelModels = parseModelsArray(levelConfig["models"]);
+						if (levelModels) {
+							override.complexity[level] = { models: levelModels };
+						}
 					}
 				}
 				if (Object.keys(override.complexity).length === 0) delete override.complexity;
 			}
 			
 			if (Object.keys(override).length > 0) {
-				// Merge with existing (project settings override global)
 				const existing = result.get(name);
 				result.set(name, existing ? { ...existing, ...override } : override);
 			}
@@ -177,11 +195,8 @@ export interface AgentSummary {
 }
 
 export class AgentRegistry {
-	// Map of agent name -> file path (priority-resolved)
 	private readonly agentPaths: Map<string, string>;
-	// Settings overrides from settings.json
 	private readonly settingsOverrides: Map<string, AgentSettingsOverride>;
-	// Cache of loaded definitions
 	private readonly cache: Map<string, AgentDefinition>;
 
 	private constructor(
@@ -193,14 +208,10 @@ export class AgentRegistry {
 		this.cache = new Map();
 	}
 
-	/**
-	 * Create an AgentRegistry that discovers agents from all search paths.
-	 * Later paths have lower priority (project > user > extension).
-	 */
 	static load(cwd: string): AgentRegistry {
 		const merged = new Map<string, string>();
 
-		// 1. Extension agents (lowest priority - loaded first, can be overridden)
+		// 1. Extension agents (lowest priority)
 		for (const [name, filePath] of discoverAgentFiles(EXTENSION_AGENTS_DIR)) {
 			merged.set(name, filePath);
 		}
@@ -220,22 +231,14 @@ export class AgentRegistry {
 			}
 		}
 
-		// Load settings overrides
 		const settingsOverrides = loadAgentSettings(cwd);
-
 		return new AgentRegistry(merged, settingsOverrides);
 	}
 
-	/**
-	 * Get an agent definition by name.
-	 * Returns undefined if the agent doesn't exist.
-	 */
 	get(name: string): AgentDefinition | undefined {
-		// Check cache first
 		const cached = this.cache.get(name);
 		if (cached) return cached;
 
-		// Find and load
 		const filePath = this.agentPaths.get(name);
 		if (!filePath) return undefined;
 
@@ -250,23 +253,14 @@ export class AgentRegistry {
 		}
 	}
 
-	/**
-	 * Check if an agent exists by name.
-	 */
 	has(name: string): boolean {
 		return this.agentPaths.has(name);
 	}
 
-	/**
-	 * List all available agent names.
-	 */
 	names(): string[] {
 		return Array.from(this.agentPaths.keys()).sort();
 	}
 
-	/**
-	 * List all agents with summary info (lazy-loads definitions).
-	 */
 	list(): AgentSummary[] {
 		return this.names().map((name) => {
 			const def = this.get(name);
@@ -279,11 +273,10 @@ export class AgentRegistry {
 
 	/**
 	 * Resolve an agent for spawning with complexity-based model routing.
-	 * Returns the full definition with resolved model/thinking settings.
 	 * 
 	 * Priority (highest to lowest):
-	 * 1. settings.json complexity-specific override (e.g., agents.oracle.complexity.high.model)
-	 * 2. settings.json agent-level override (e.g., agents.oracle.model)
+	 * 1. settings.json complexity-specific override
+	 * 2. settings.json agent-level override
 	 * 3. Agent .md file definition
 	 */
 	resolve(name: string, complexity: Complexity): AgentDefinition | undefined {
@@ -293,26 +286,18 @@ export class AgentRegistry {
 		const override = this.settingsOverrides.get(name);
 		if (!override) return def;
 
-		// Start with base definition values
-		let model = def.model;
-		let thinking = def.thinking;
+		// Start with base definition
+		let models = def.models;
 
-		// Apply agent-level overrides from settings
-		if (override.model) model = override.model;
-		if (override.thinking) thinking = override.thinking;
+		// Apply agent-level override
+		if (override.models) models = override.models;
 
-		// Apply complexity-specific overrides (highest priority)
+		// Apply complexity-specific override (highest priority)
 		const complexityConfig = override.complexity?.[complexity];
-		if (complexityConfig) {
-			if (complexityConfig.model) model = complexityConfig.model;
-			if (complexityConfig.thinking) thinking = complexityConfig.thinking;
+		if (complexityConfig?.models) {
+			models = complexityConfig.models;
 		}
 
-		// Return merged definition
-		return {
-			...def,
-			model,
-			thinking,
-		};
+		return { ...def, models };
 	}
 }

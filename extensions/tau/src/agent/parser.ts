@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
-import type { AgentDefinition } from "./types.js";
+import type { AgentDefinition, ModelSpec } from "./types.js";
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import type { SandboxConfig } from "../sandbox/config.js";
 import {
@@ -23,7 +23,28 @@ const EXTENSION_AGENTS_DIR = path.resolve(
 	"agents",
 );
 
-const THINKING_LEVELS = ["low", "medium", "high"] as const;
+const THINKING_LEVELS: readonly string[] = ["low", "medium", "high", "inherit"];
+
+function parseModelSpec(entry: unknown): ModelSpec {
+	if (!isRecord(entry)) {
+		throw new Error("Invalid models entry: each entry must be an object with 'model' field");
+	}
+	const model = entry["model"];
+	if (typeof model !== "string") {
+		throw new Error("Invalid models entry: 'model' must be a string");
+	}
+	const thinking = entry["thinking"];
+	if (thinking !== undefined && typeof thinking !== "string") {
+		throw new Error("Invalid models entry: 'thinking' must be a string");
+	}
+	if (thinking !== undefined && !THINKING_LEVELS.includes(thinking)) {
+		throw new Error(`Invalid models entry: 'thinking' must be one of ${THINKING_LEVELS.join(", ")}`);
+	}
+	return {
+		model,
+		...(thinking !== undefined ? { thinking: thinking as ThinkingLevel | "inherit" } : {}),
+	};
+}
 
 export function parseAgentDefinition(content: string): AgentDefinition {
 	const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
@@ -46,8 +67,7 @@ export function parseAgentDefinition(content: string): AgentDefinition {
 
 	const name = frontmatter["name"];
 	const description = frontmatter["description"];
-	const model = frontmatter["model"];
-	const thinking = frontmatter["thinking"];
+	const modelsRaw = frontmatter["models"];
 	const sandbox_fs = frontmatter["sandbox_fs"];
 	const sandbox_net = frontmatter["sandbox_net"];
 	const approval_policy = frontmatter["approval_policy"];
@@ -60,15 +80,12 @@ export function parseAgentDefinition(content: string): AgentDefinition {
 		throw new Error("Invalid agent definition: 'description' is required and must be a string");
 	}
 
-	if (typeof model !== "string") {
-		throw new Error("Invalid agent definition: 'model' is required and must be a string");
+	// Parse models array
+	if (!Array.isArray(modelsRaw) || modelsRaw.length === 0) {
+		throw new Error("Invalid agent definition: 'models' is required and must be a non-empty array");
 	}
-	if (typeof thinking !== "string") {
-		throw new Error("Invalid agent definition: 'thinking' is required and must be a string");
-	}
-	if (thinking !== "inherit" && !THINKING_LEVELS.includes(thinking as (typeof THINKING_LEVELS)[number])) {
-		throw new Error("Invalid agent definition: 'thinking' must be one of low, medium, high, inherit");
-	}
+	const models: ModelSpec[] = modelsRaw.map((entry: unknown) => parseModelSpec(entry));
+
 	if (typeof sandbox_fs !== "string" || !FILESYSTEM_MODES.includes(sandbox_fs as FilesystemMode)) {
 		throw new Error(
 			"Invalid agent definition: 'sandbox_fs' is required and must be one of read-only, workspace-write, danger-full-access",
@@ -99,8 +116,7 @@ export function parseAgentDefinition(content: string): AgentDefinition {
 	return {
 		name,
 		description,
-		model: model === "inherit" ? "inherit" : model,
-		thinking: thinking === "inherit" ? "inherit" : (thinking as ThinkingLevel),
+		models,
 		sandbox,
 		systemPrompt,
 	};

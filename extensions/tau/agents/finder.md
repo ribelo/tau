@@ -2,8 +2,9 @@
 name: finder
 description: |
   Fast code search agent (read-only). Returns file paths with line ranges, not essays. Use for: locating code by concept, mapping features across codebase, multi-step search chains. Don't use for: code changes, design advice, simple grep (use rg directly). Prompt example: "Find all authentication middleware and token validation logic."
-model: inherit
-thinking: inherit
+models:
+  - model: inherit
+    thinking: inherit
 sandbox_fs: read-only
 sandbox_net: allow-all
 approval_policy: never

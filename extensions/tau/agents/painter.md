@@ -2,8 +2,9 @@
 name: painter
 description: |
   Frontend specialist (workspace-write). Use for: React/Vue/Svelte components, CSS/Tailwind styling, responsive design, accessibility fixes, UI/UX improvements. Follows existing project patterns. Don't use for: backend logic, non-UI tasks. Prompt example: "Add dark mode toggle to the header component, following existing theme patterns."
-model: inherit
-thinking: inherit
+models:
+  - model: inherit
+    thinking: inherit
 sandbox_fs: workspace-write
 sandbox_net: allow-all
 approval_policy: never

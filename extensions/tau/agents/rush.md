@@ -2,8 +2,9 @@
 name: rush
 description: |
   Fast, cheap agent for small well-defined tasks (workspace-write). Use for: typo fixes, simple bugs, minor UI changes, small features with known file paths. Don't use for: complex refactors, tasks needing exploration, architectural decisions. Prompt example: "In src/utils.ts, rename function `foo` to `bar` and update all call sites."
-model: inherit
-thinking: inherit
+models:
+  - model: inherit
+    thinking: inherit
 sandbox_fs: workspace-write
 sandbox_net: allow-all
 approval_policy: never

@@ -5,19 +5,15 @@ export type AgentId = string;
 
 export type Complexity = "low" | "medium" | "high";
 
+export interface ModelSpec {
+	readonly model: string; // "provider/model-id" or "inherit"
+	readonly thinking?: ThinkingLevel | "inherit" | undefined;
+}
+
 export interface AgentDefinition {
 	readonly name: string;
 	readonly description: string;
-	/**
-	 * Default model to use.
-	 * - undefined or "inherit": use parent model
-	 */
-	readonly model?: string | "inherit" | undefined;
-	/**
-	 * Thinking level for the agent.
-	 * - undefined or "inherit": use parent thinking level
-	 */
-	readonly thinking?: ThinkingLevel | "inherit" | undefined;
+	readonly models: readonly ModelSpec[];
 	readonly sandbox: SandboxConfig;
 	readonly systemPrompt: string;
 }

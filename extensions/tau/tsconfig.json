@@ -29,12 +29,7 @@
 		"noEmit": true,
 		"incremental": true,
 
-		// Effect Language Service
-		"plugins": [
-			{
-				"name": "@effect/language-service"
-			}
-		]
+		"plugins": []
 	},
 	"include": ["src/**/*.ts", "test/**/*.ts"]
 }
