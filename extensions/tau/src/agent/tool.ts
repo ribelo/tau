@@ -325,7 +325,7 @@ export function createAgentToolDef(
 					program.pipe(
 						Effect.catchTags({
 							AgentLimitReached: (err: AgentLimitReached) =>
-								Effect.fail(new Error(`Agent limit reached (max: ${err.max}). Wait for existing agents to finish or close them.`)),
+								Effect.fail(new Error(`Agent limit reached (max: ${err.max}). Close completed agents (agent close <id>) or wait for running agents to finish.`)),
 							AgentDepthExceeded: (err: AgentDepthExceeded) =>
 								Effect.fail(new Error(`Agent depth exceeded (max: ${err.max}). Deeply nested agent spawns are restricted.`)),
 							AgentNotFound: (err: AgentNotFound) =>
