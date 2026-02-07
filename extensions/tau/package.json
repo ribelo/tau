@@ -14,7 +14,7 @@
 		"yaml": "^2.7.0"
 	},
 	"devDependencies": {
-		"@effect/language-service": "^0.5.0",
+		"@effect/language-service": "^0.71.0",
 		"@mariozechner/pi-agent-core": "^0.51.6",
 		"@mariozechner/pi-ai": "^0.51.6",
 		"@mariozechner/pi-coding-agent": "^0.51.6",
@@ -28,9 +28,11 @@
 		"vitest": "^3.2.4"
 	},
 	"scripts": {
+		"prepare": "effect-language-service patch",
 		"test": "vitest --run --passWithNoTests",
 		"typecheck": "tsc --noEmit",
 		"lint": "eslint src",
+		"effect:diagnostics": "npx effect-language-service diagnostics --project tsconfig.json --format pretty --progress",
 		"gate": "npm run typecheck && npm run lint && npm run test"
 	}
 }
