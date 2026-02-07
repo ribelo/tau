@@ -23,6 +23,7 @@ import {
 } from "../shared/state.js";
 import { withWorkerSandboxOverride } from "./worker-sandbox.js";
 import { setWorkerApprovalBroker } from "./approval-broker.js";
+
 import type { ApprovalBroker } from "./approval-broker.js";
 import { createWorkerAgentTool } from "./runtime.js";
 
@@ -466,9 +467,10 @@ export class AgentWorker implements Agent {
 			});
 
 			Effect.runFork(
-				Effect.promise(() =>
-					this.session.prompt(message, { source: "extension" }),
-				).pipe(
+				Effect.tryPromise({
+					try: () => this.session.prompt(message, { source: "extension" }),
+					catch: (err) => err,
+				}).pipe(
 					Effect.catchAll((err: unknown) => {
 						const reason = err instanceof Error ? err.message : String(err);
 						return SubscriptionRef.set(this.statusRef, {
