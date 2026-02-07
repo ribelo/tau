@@ -57,7 +57,7 @@ export const AgentControlLive = Layer.effect(
 			wait: (ids: AgentId[], timeoutMs = 900000) =>
 				Effect.gen(function* () {
 					// Default: 15 min, Max: 4 hours
-					const timeout = Math.min(Math.max(timeoutMs, 0), 14400000);
+					const timeout = `${Math.min(Math.max(timeoutMs, 0), 14400000)} millis` as const;
 
 					const getStatusMap = Effect.gen(function* () {
 						const statusMap: Record<string, Status> = {};
@@ -117,7 +117,7 @@ export const AgentControlLive = Layer.effect(
 					);
 				}),
 			waitStream: (ids: AgentId[], timeoutMs = 900000, pollIntervalMs = 1000) => {
-				const timeout = Math.min(Math.max(timeoutMs, 0), 14400000);
+				const timeout = `${Math.min(Math.max(timeoutMs, 0), 14400000)} millis` as const;
 				const pollInterval = Math.max(pollIntervalMs, 250); // Min 250ms
 
 				const getStatusAndTypes = Effect.gen(function* () {
