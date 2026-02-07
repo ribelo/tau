@@ -364,25 +364,86 @@ export class AgentWorker implements Agent {
 					}
 					
 					const lastMsg = event.messages[event.messages.length - 1];
-					const message =
-						lastMsg?.role === "assistant" && "content" in lastMsg
-							? lastMsg.content
-									.filter((p): p is { type: "text"; text: string } => typeof p === "object" && p !== null && "type" in p && p["type"] === "text")
-									.map((p) => p.text)
-									.join("\n")
-							: undefined;
 
-					Effect.runFork(
-						SubscriptionRef.set(statusRef, {
-							state: "completed",
-							message,
-							structured_output: agent.structuredOutput,
-							turns: agent.turns,
-							toolCalls: agent.toolCalls,
-							workedMs: agent.workedMs,
-							tools: agent.tools,
-						}),
-					);
+					// Check if the last assistant message ended with an error
+					// (HTTP 500, rate limit exhausted, overloaded, etc.)
+					const assistantMsg = lastMsg?.role === "assistant" ? lastMsg as {
+						role: "assistant";
+						content: Array<{ type: string; text?: string }>;
+						stopReason?: string;
+						errorMessage?: string;
+					} : undefined;
+
+					if (assistantMsg?.stopReason === "error") {
+						const reason = assistantMsg.errorMessage
+							|| assistantMsg.content
+								.filter((p): p is { type: "text"; text: string } => p.type === "text" && typeof p.text === "string")
+								.map((p) => p.text)
+								.join("\n")
+							|| "Agent ended with error (no details provided)";
+
+						Effect.runFork(
+							SubscriptionRef.set(statusRef, {
+								state: "failed",
+								reason,
+								turns: agent.turns,
+								toolCalls: agent.toolCalls,
+								workedMs: agent.workedMs,
+								tools: agent.tools,
+							}),
+						);
+					} else if (assistantMsg?.stopReason === "aborted" && agent.structuredOutput === undefined) {
+						// Aborted without producing structured output or text
+						const textContent = assistantMsg.content
+							.filter((p): p is { type: "text"; text: string } => p.type === "text" && typeof p.text === "string")
+							.map((p) => p.text)
+							.join("\n");
+
+						if (!textContent) {
+							Effect.runFork(
+								SubscriptionRef.set(statusRef, {
+									state: "failed",
+									reason: "Agent was aborted before producing a response",
+									turns: agent.turns,
+									toolCalls: agent.toolCalls,
+									workedMs: agent.workedMs,
+									tools: agent.tools,
+								}),
+							);
+						} else {
+							Effect.runFork(
+								SubscriptionRef.set(statusRef, {
+									state: "completed",
+									message: textContent,
+									structured_output: agent.structuredOutput,
+									turns: agent.turns,
+									toolCalls: agent.toolCalls,
+									workedMs: agent.workedMs,
+									tools: agent.tools,
+								}),
+							);
+						}
+					} else {
+						const message =
+							assistantMsg
+								? assistantMsg.content
+										.filter((p): p is { type: "text"; text: string } => p.type === "text" && typeof p.text === "string")
+										.map((p) => p.text)
+										.join("\n")
+								: undefined;
+
+						Effect.runFork(
+							SubscriptionRef.set(statusRef, {
+								state: "completed",
+								message,
+								structured_output: agent.structuredOutput,
+								turns: agent.turns,
+								toolCalls: agent.toolCalls,
+								workedMs: agent.workedMs,
+								tools: agent.tools,
+							}),
+						);
+					}
 				}
 			});
 
@@ -400,11 +461,14 @@ export class AgentWorker implements Agent {
 					this.session.prompt(message, { source: "extension" }),
 				).pipe(
 					Effect.catchAll((err: unknown) => {
-						// Log error but don't fail the prompt return as it's fire-and-forget-ish
 						const reason = err instanceof Error ? err.message : String(err);
 						return SubscriptionRef.set(this.statusRef, {
 							state: "failed",
 							reason,
+							turns: this.turns,
+							toolCalls: this.toolCalls,
+							workedMs: this.workedMs,
+							tools: this.tools,
 						});
 					}),
 				),
