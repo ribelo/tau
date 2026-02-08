@@ -607,9 +607,11 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
             const hint =
               classification.kind === "network"
                 ? "Network sandboxing can surface as DNS/connectivity failures. If network is required, use /sandbox to switch to allow-all, or re-run with escalate=true."
-                : classification.kind === "filesystem"
-                  ? "Filesystem sandboxing can surface as permission errors. If a write is required, use /sandbox to switch to workspace-write/danger-full-access, or re-run with escalate=true."
-                  : "";
+                : classification.kind === "filesystem" && classification.subtype === "read"
+                  ? "In read-only sandbox mode, /tmp is an ephemeral tmpfs mount. Files written in one tool call do not persist to the next. Switch to workspace-write mode (/sandbox) to get a persistent /tmp, or re-run with escalate=true."
+                  : classification.kind === "filesystem"
+                    ? "Filesystem sandboxing can surface as permission errors. If a write is required, use /sandbox to switch to workspace-write/danger-full-access, or re-run with escalate=true."
+                    : "";
 
             onData(
               Buffer.from(
@@ -1037,8 +1039,8 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
       "Assume all tool calls execute under bubblewrap sandbox restrictions. Do not attempt to bypass restrictions by using other tools.\n" +
       "\n" +
       "Filesystem modes:\n" +
-      "  - read-only: writes only to temp dirs (e.g. /tmp, $TMPDIR)\n" +
-      "  - workspace-write: writes to workspace + temp dirs; .git/hooks blocked\n" +
+      "  - read-only: writes only to temp dirs (e.g. /tmp, $TMPDIR); /tmp is ephemeral (fresh tmpfs per tool call, files do NOT persist between calls)\n" +
+      "  - workspace-write: writes to workspace + temp dirs; .git/hooks blocked; /tmp is persistent (bind-mounted from host, files persist between calls)\n" +
       "  - danger-full-access: unrestricted\n" +
       "  Reads always allowed everywhere.\n" +
       "\n" +

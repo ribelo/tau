@@ -76,6 +76,25 @@ export function classifySandboxFailure(output: string): SandboxFailure {
 		}
 	}
 
+	// Filesystem: ENOENT on temp paths (medium confidence) - files created in /tmp
+	// during a previous tool call may not exist if /tmp is an ephemeral tmpfs mount
+	// (read-only sandbox mode). This manifests as "No such file or directory" for
+	// paths under /tmp.
+	{
+		const enoentPattern = /no such file or directory[^]*?\/tmp\//i;
+		const enoentPattern2 = /\/tmp\/[^\s'"]+[^]*?no such file or directory/i;
+		const enoentPattern3 = /\bENOENT\b[^]*?\/tmp\//i;
+		const hit = matchFirst(text, [enoentPattern, enoentPattern2, enoentPattern3]);
+		if (hit) {
+			return {
+				kind: "filesystem",
+				subtype: "read",
+				confidence: "medium",
+				evidence: hit.evidence,
+			};
+		}
+	}
+
 	// Network: DNS failures (medium confidence)
 	{
 		const hit = matchFirst(text, [

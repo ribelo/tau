@@ -127,9 +127,34 @@ export async function wrapCommandWithSandbox(opts: {
 	args.push(
 		"--dev-bind", "/dev", "/dev",
 		"--proc", "/proc",
-		"--tmpfs", "/tmp",
-		"--tmpfs", "/run",
 	);
+
+	// /tmp handling: In workspace-write mode, bind the host /tmp so files persist
+	// across tool calls. In read-only mode, use ephemeral tmpfs (writable scratch
+	// space within a single call, but lost between calls).
+	if (filesystemMode === "workspace-write") {
+		// Bind all known temp directories writable so files persist between calls.
+		const tmpBinds = new Set<string>();
+		tmpBinds.add("/tmp");
+		try { tmpBinds.add(fs.realpathSync("/tmp")); } catch { /* ignore */ }
+		const osTmp = os.tmpdir();
+		tmpBinds.add(osTmp);
+		try { tmpBinds.add(fs.realpathSync(osTmp)); } catch { /* ignore */ }
+		const envTmpDir = process.env["TMPDIR"];
+		if (envTmpDir) {
+			tmpBinds.add(envTmpDir);
+			try { tmpBinds.add(fs.realpathSync(envTmpDir)); } catch { /* ignore */ }
+		}
+		for (const tmp of tmpBinds) {
+			if (exists(tmp)) {
+				args.push("--bind", tmp, tmp);
+			}
+		}
+	} else {
+		args.push("--tmpfs", "/tmp");
+	}
+
+	args.push("--tmpfs", "/run");
 
 	// NixOS and other systems
 	const bindPaths = ["/nix", "/bin", "/sbin", "/etc", "/run/current-system", "/lib64", "/usr", "/lib"];
