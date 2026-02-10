@@ -533,6 +533,39 @@ export class AgentWorker implements Agent {
 							worker.subscribeToSession(newSession);
 						}
 
+						// Preflight auth for this provider.
+						// This avoids starting the agent loop when credentials are missing/expired,
+						// allowing us to fall back to the next model/provider instead of crashing.
+						const sessionModel = worker.session.model;
+						if (sessionModel) {
+							type Preflight =
+								| { readonly _tag: "key"; readonly key: string | undefined }
+								| { readonly _tag: "error"; readonly reason: string };
+
+							const preflight: Preflight = yield* Effect.tryPromise({
+								try: () => worker.infra.modelRegistry.getApiKeyForProvider(sessionModel.provider),
+								catch: (err) => err,
+							}).pipe(
+								Effect.map((key): Preflight => ({ _tag: "key", key })),
+								Effect.catchAll((err: unknown) => {
+									const reason = err instanceof Error ? err.message : String(err);
+									return Effect.succeed<Preflight>({ _tag: "error", reason });
+								}),
+							);
+
+							if (preflight._tag === "error") {
+								errors.push(`${spec.model}: ${preflight.reason}`);
+								continue;
+							}
+
+							if (typeof preflight.key !== "string" || preflight.key.length === 0) {
+								errors.push(
+									`${spec.model}: Authentication failed for "${sessionModel.provider}". Run '/login ${sessionModel.provider}' to re-authenticate.`,
+								);
+								continue;
+							}
+						}
+
 						// Try prompting with this model's session
 						const promptResult = yield* Effect.tryPromise({
 							try: () => worker.session.prompt(message, { source: "extension" }),
