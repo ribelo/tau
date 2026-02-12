@@ -336,11 +336,12 @@ export class AgentWorker implements Agent {
 			if (event.type === "turn_start") {
 				agent.turns++;
 				agent.turnStartTime = Date.now();
-				Effect.runFork(SubscriptionRef.set(statusRef, { 
+				Effect.runFork(SubscriptionRef.set(statusRef, {
 					state: "running",
 					turns: agent.turns,
 					toolCalls: agent.toolCalls,
 					workedMs: agent.workedMs,
+					...(agent.turnStartTime !== undefined ? { activeTurnStartedAtMs: agent.turnStartTime } : {}),
 					tools: agent.tools,
 				}));
 			} else if (event.type === "turn_end") {
@@ -348,25 +349,27 @@ export class AgentWorker implements Agent {
 					agent.workedMs += Date.now() - agent.turnStartTime;
 					agent.turnStartTime = undefined;
 				}
-				Effect.runFork(SubscriptionRef.set(statusRef, { 
+				Effect.runFork(SubscriptionRef.set(statusRef, {
 					state: "running",
 					turns: agent.turns,
 					toolCalls: agent.toolCalls,
 					workedMs: agent.workedMs,
+					...(agent.turnStartTime !== undefined ? { activeTurnStartedAtMs: agent.turnStartTime } : {}),
 					tools: agent.tools,
 				}));
 			} else if (event.type === "tool_execution_start") {
 				agent.toolCalls++;
 				const argsPreview = truncateStr(formatToolArgs(event.toolName, event.args), 100);
-				agent.pendingTools.set(event.toolCallId, { 
-					name: event.toolName, 
+				agent.pendingTools.set(event.toolCallId, {
+					name: event.toolName,
 					args: argsPreview,
 				});
-				Effect.runFork(SubscriptionRef.set(statusRef, { 
+				Effect.runFork(SubscriptionRef.set(statusRef, {
 					state: "running",
 					turns: agent.turns,
 					toolCalls: agent.toolCalls,
 					workedMs: agent.workedMs,
+					...(agent.turnStartTime !== undefined ? { activeTurnStartedAtMs: agent.turnStartTime } : {}),
 					tools: agent.tools,
 				}));
 			} else if (event.type === "tool_execution_end") {
@@ -374,8 +377,8 @@ export class AgentWorker implements Agent {
 				if (pending) {
 					agent.pendingTools.delete(event.toolCallId);
 					const resultPreview = truncateStr(
-						typeof event.result === "string" ? event.result : JSON.stringify(event.result), 
-						100
+						typeof event.result === "string" ? event.result : JSON.stringify(event.result),
+						100,
 					);
 					agent.tools.push({
 						...pending,
@@ -383,11 +386,12 @@ export class AgentWorker implements Agent {
 						isError: event.isError,
 					});
 				}
-				Effect.runFork(SubscriptionRef.set(statusRef, { 
+				Effect.runFork(SubscriptionRef.set(statusRef, {
 					state: "running",
 					turns: agent.turns,
 					toolCalls: agent.toolCalls,
 					workedMs: agent.workedMs,
+					...(agent.turnStartTime !== undefined ? { activeTurnStartedAtMs: agent.turnStartTime } : {}),
 					tools: agent.tools,
 				}));
 			} else if (event.type === "agent_end") {
@@ -487,6 +491,7 @@ export class AgentWorker implements Agent {
 				turns: this.turns,
 				toolCalls: this.toolCalls,
 				workedMs: this.workedMs,
+				...(this.turnStartTime !== undefined ? { activeTurnStartedAtMs: this.turnStartTime } : {}),
 				tools: this.tools,
 			});
 

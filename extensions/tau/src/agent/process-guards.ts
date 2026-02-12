@@ -2,8 +2,25 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 import { closeAllAgents } from "./runtime.js";
 
-let installed = false;
-let lastReportedAt = 0;
+interface ProcessGuardsState {
+	installed: boolean;
+	pi: ExtensionAPI | undefined;
+	lastReportedAt: number;
+	unhandledRejectionHandler?: (reason: unknown) => void;
+	uncaughtExceptionHandler?: (error: Error) => void;
+}
+
+const globalWithTauGuards = globalThis as typeof globalThis & {
+	__tauProcessGuards?: ProcessGuardsState;
+};
+
+const guardsState: ProcessGuardsState = globalWithTauGuards.__tauProcessGuards ?? {
+	installed: false,
+	pi: undefined,
+	lastReportedAt: 0,
+};
+
+globalWithTauGuards.__tauProcessGuards = guardsState;
 
 function toErrorString(reason: unknown): string {
 	if (reason instanceof Error) {
@@ -37,8 +54,8 @@ function extractAuthHint(message: string): string | undefined {
 function shouldThrottle(now: number): boolean {
 	// Prevent a flood of notifications if multiple workers crash at once.
 	// 1s is enough to keep the UI readable.
-	if (now - lastReportedAt < 1000) return true;
-	lastReportedAt = now;
+	if (now - guardsState.lastReportedAt < 1000) return true;
+	guardsState.lastReportedAt = now;
 	return false;
 }
 
@@ -85,14 +102,24 @@ async function handleFatalLikeError(pi: ExtensionAPI, kind: string, reason: unkn
 }
 
 export function installAgentProcessGuards(pi: ExtensionAPI): void {
-	if (installed) return;
-	installed = true;
+	// Always refresh the active PI API reference (extension can be reloaded).
+	guardsState.pi = pi;
 
-	process.on("unhandledRejection", (reason) => {
-		void handleFatalLikeError(pi, "unhandledRejection", reason);
-	});
+	if (guardsState.installed) return;
+	guardsState.installed = true;
 
-	process.on("uncaughtException", (error) => {
-		void handleFatalLikeError(pi, "uncaughtException", error);
-	});
+	guardsState.unhandledRejectionHandler = (reason) => {
+		const activePi = guardsState.pi;
+		if (!activePi) return;
+		void handleFatalLikeError(activePi, "unhandledRejection", reason);
+	};
+
+	guardsState.uncaughtExceptionHandler = (error) => {
+		const activePi = guardsState.pi;
+		if (!activePi) return;
+		void handleFatalLikeError(activePi, "uncaughtException", error);
+	};
+
+	process.on("unhandledRejection", guardsState.unhandledRejectionHandler);
+	process.on("uncaughtException", guardsState.uncaughtExceptionHandler);
 }

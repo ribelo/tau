@@ -16,6 +16,7 @@ export const Status = Schema.Union(
 		turns: Schema.optional(Schema.Number),
 		toolCalls: Schema.optional(Schema.Number),
 		workedMs: Schema.optional(Schema.Number),
+		activeTurnStartedAtMs: Schema.optional(Schema.Number),
 		tools: Schema.optional(Schema.Array(ToolRecord)),
 	}),
 	Schema.Struct({

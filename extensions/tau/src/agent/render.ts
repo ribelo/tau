@@ -103,14 +103,23 @@ export function renderAgentResult(
 	const renderAgentLine = (id: string, type: string, status: Record<string, unknown>, expanded: boolean) => {
 		const state = (status["state"] as string) || "unknown";
 		const workedMs = status["workedMs"] as number | undefined;
+		const activeTurnStartedAtMs = status["activeTurnStartedAtMs"] as number | undefined;
+		const turns = status["turns"] as number | undefined;
+		const toolCalls = status["toolCalls"] as number | undefined;
 		const tools = status["tools"] as Array<{ name: string; args?: string; result?: string; isError?: boolean }> | undefined;
 		const idStr = id.slice(0, 8);
 		const typeStr = type ? `  ${theme.fg("accent", type)}` : "";
-		const workedStr = workedMs !== undefined && workedMs > 0
-			? `  ${theme.fg("accent", "●")} ${theme.fg("dim", formatDuration(workedMs))}`
+		const now = Date.now();
+		const liveWorkedMs = (workedMs || 0)
+			+ (state === "running" && activeTurnStartedAtMs !== undefined
+				? Math.max(0, now - activeTurnStartedAtMs)
+				: 0);
+		const workedStr = liveWorkedMs > 0
+			? `  ${theme.fg("accent", "●")} ${theme.fg("dim", formatDuration(liveWorkedMs))}`
 			: "";
+		const countsStr = `  ${theme.fg("dim", `t:${turns ?? 0} • c:${toolCalls ?? 0}`)}`;
 
-		let line = `  ${statusMark(state, theme)} ${theme.fg("accent", idStr)}${typeStr}${workedStr}`;
+		let line = `  ${statusMark(state, theme)} ${theme.fg("accent", idStr)}${typeStr}${countsStr}${workedStr}`;
 
 		if (expanded && status["message"]) {
 			line += `\n    ${theme.fg("dim", "↩ ")}${theme.fg("toolOutput", truncate(oneLine(status["message"] as string), 140))}`;
