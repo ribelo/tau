@@ -533,12 +533,38 @@ export class AgentWorker implements Agent {
 							worker.subscribeToSession(newSession);
 						}
 
+						// If this worker is already streaming, send as steer message.
+						// Main-agent -> subagent traffic should interrupt/redirect current work.
+						if (worker.session.isStreaming) {
+							const queued = yield* Effect.tryPromise({
+								try: () => worker.session.prompt(message, {
+									source: "extension",
+									streamingBehavior: "steer",
+								}),
+								catch: (err) => err,
+							}).pipe(
+								Effect.catchAll((err: unknown) => {
+									const reason = err instanceof Error ? err.message : String(err);
+									errors.push(`${spec.model}: ${reason}`);
+									return Effect.succeed("failed" as const);
+								}),
+							);
+
+							if (queued !== "failed") {
+								return;
+							}
+							continue;
+						}
+
 						// Try prompting with this model's session.
 						// Important: session.prompt() may resolve successfully even if the underlying
 						// assistant message ended with stopReason === "error". We treat that as a
 						// failed attempt and transparently fall back to the next model/provider.
 						const promptResult = yield* Effect.tryPromise({
-							try: () => worker.session.prompt(message, { source: "extension" }),
+							try: () => worker.session.prompt(message, {
+								source: "extension",
+								streamingBehavior: "steer",
+							}),
 							catch: (err) => err,
 						}).pipe(
 							Effect.catchAll((err: unknown) => {
