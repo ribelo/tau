@@ -1,11 +1,12 @@
 import { Effect, Layer } from "effect";
 
-import { PiAPILive, PiAPI } from "./effect/pi.js";
+import { PiAPILive } from "./effect/pi.js";
 import { PiLoggerLive } from "./effect/logger.js";
 import { Sandbox, SandboxLive } from "./services/sandbox.js";
 import { SandboxStateLive } from "./services/state.js";
 import { Beads, BeadsLive } from "./services/beads.js";
 import { Footer, FooterLive } from "./services/footer.js";
+import { PromptModes, PromptModesLive } from "./services/prompt-modes.js";
 import { Persistence, PersistenceLive } from "./services/persistence.js";
 import { Exa, ExaLive } from "./services/exa.js";
 import { TerminalPrompt, TerminalPromptLive } from "./services/terminal-prompt.js";
@@ -21,6 +22,7 @@ const MainLayer = Layer.mergeAll(
 	SandboxLive,
 	BeadsLive,
 	FooterLive,
+	PromptModesLive,
 	ExaLive,
 	TerminalPromptLive,
 	WorkedForLive,
@@ -41,6 +43,7 @@ export const runTau = (pi: ExtensionAPI) => {
 		const sandbox = yield* Sandbox;
 		const beads = yield* Beads;
 		const footer = yield* Footer;
+		const promptModes = yield* PromptModes;
 		const exa = yield* Exa;
 		const terminalPrompt = yield* TerminalPrompt;
 		const workedFor = yield* WorkedFor;
@@ -56,6 +59,7 @@ export const runTau = (pi: ExtensionAPI) => {
 				sandbox.setup,
 				beads.setup,
 				footer.setup,
+				promptModes.setup,
 				exa.setup,
 				terminalPrompt.setup,
 				workedFor.setup,

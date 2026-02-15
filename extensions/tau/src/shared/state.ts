@@ -7,6 +7,7 @@ export type TauPersistedState = {
 	terminalPrompt?: { enabled?: boolean };
 	workedFor?: { enabled?: boolean; toolsEnabled?: boolean };
 	status?: { fetchedAt: number; values: Record<string, { percentLeft: number }> };
+	promptModes?: { activeMode?: "smart" | "deep" | "rush" };
 	sandbox?: Record<string, unknown>;
 	agentAwareness?: {
 		instructionsInjected?: boolean;

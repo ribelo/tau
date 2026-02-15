@@ -1,12 +1,16 @@
-import { Context, Effect, Layer, Stream, SubscriptionRef } from "effect";
+import { Context, Effect, Layer, SubscriptionRef } from "effect";
+
+import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@mariozechner/pi-coding-agent";
+import type { TUI } from "@mariozechner/pi-tui";
+import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { spawnSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 import { PiAPI } from "../effect/pi.js";
+import { isRecord } from "../shared/json.js";
+import { Persistence } from "./persistence.js";
 import { SandboxState } from "./state.js";
-import { truncateToWidth, visibleWidth, type TUI } from "@mariozechner/pi-tui";
-import { basename } from "node:path";
-import type { AssistantMessage } from "@mariozechner/pi-ai";
-import type { SandboxConfigRequired } from "../schemas/config.js";
-import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@mariozechner/pi-coding-agent";
 
 export interface Footer {
 	readonly setup: Effect.Effect<void>;
@@ -14,132 +18,350 @@ export interface Footer {
 
 export const Footer = Context.GenericTag<Footer>("Footer");
 
-function formatTokens(count: number): string {
-	if (count < 1000) return count.toString();
-	if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-	if (count < 1000000) return `${Math.round(count / 1000)}k`;
-	if (count < 10000000) return `${(count / 1000000).toFixed(1)}M`;
-	return `${Math.round(count / 1000000)}M`;
-}
+type GitLineDelta = { readonly added: number; readonly removed: number };
+
+type FooterHygiene = {
+	readonly gitLineDelta: GitLineDelta;
+	readonly inProgressCount: number;
+};
+
+const FOOTER_PROVIDER_ALIASES: Record<string, string> = {
+	"google-gemini-cli": "gemini-cli",
+	"openai-codex": "codex",
+};
+
+const resolveFooterProviderLabel = (provider: string | null): string | null => {
+	if (!provider) return null;
+	return FOOTER_PROVIDER_ALIASES[provider] ?? provider;
+};
+
+const formatTokenWindow = (tokens: number): string => {
+	if (tokens < 1000) {
+		return `${tokens}`;
+	}
+	if (tokens % 1000 === 0) {
+		return `${tokens / 1000}k`;
+	}
+	return `${(tokens / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+};
+
+const truncateMiddle = (text: string, width: number): string => {
+	if (width <= 0) {
+		return "";
+	}
+	if (visibleWidth(text) <= width) {
+		return text;
+	}
+	if (width <= 3) {
+		return truncateToWidth(text, width);
+	}
+	const keep = Math.floor((width - 3) / 2);
+	const start = text.slice(0, keep);
+	const end = text.slice(text.length - (width - 3 - keep));
+	return `${start}...${end}`;
+};
+
+const parseGitNumstat = (output: string): GitLineDelta => {
+	let added = 0;
+	let removed = 0;
+
+	for (const line of output.split("\n")) {
+		const trimmed = line.trim();
+		if (!trimmed) continue;
+		const [rawAdded, rawRemoved] = trimmed.split("\t");
+		if (!rawAdded || !rawRemoved || rawAdded === "-" || rawRemoved === "-") continue;
+		const parsedAdded = Number(rawAdded);
+		const parsedRemoved = Number(rawRemoved);
+		if (!Number.isFinite(parsedAdded) || !Number.isFinite(parsedRemoved)) continue;
+		added += parsedAdded;
+		removed += parsedRemoved;
+	}
+
+	return { added, removed };
+};
+
+const collectGitLineDelta = (cwd: string): GitLineDelta => {
+	const runNumstat = (args: string[]): GitLineDelta => {
+		try {
+			const result = spawnSync("git", args, {
+				cwd,
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "ignore"],
+			});
+			if (result.status !== 0) {
+				return { added: 0, removed: 0 };
+			}
+			return parseGitNumstat(result.stdout ?? "");
+		} catch {
+			return { added: 0, removed: 0 };
+		}
+	};
+
+	const unstaged = runNumstat(["diff", "--numstat", "--no-ext-diff"]);
+	const staged = runNumstat(["diff", "--cached", "--numstat", "--no-ext-diff"]);
+
+	return {
+		added: unstaged.added + staged.added,
+		removed: unstaged.removed + staged.removed,
+	};
+};
+
+const findBeadsJsonlPath = (startDir: string): string | null => {
+	let current = startDir;
+	for (;;) {
+		const candidate = path.join(current, ".beads", "beads.left.jsonl");
+		if (fs.existsSync(candidate)) {
+			return candidate;
+		}
+		const parent = path.dirname(current);
+		if (parent === current) {
+			return null;
+		}
+		current = parent;
+	}
+};
+
+const countInProgressIssuesFromJsonl = (content: string): number => {
+	let count = 0;
+	for (const line of content.split("\n")) {
+		const trimmed = line.trim();
+		if (!trimmed) continue;
+		try {
+			const parsed: unknown = JSON.parse(trimmed);
+			if (!isRecord(parsed)) continue;
+			const status = parsed["status"];
+			if (status === "in_progress" || status === "in-progress") {
+				count += 1;
+			}
+		} catch {
+			continue;
+		}
+	}
+	return count;
+};
+
+const computeTotalCost = (ctx: ExtensionContext): number => {
+	let totalCost = 0;
+	for (const entry of ctx.sessionManager.getBranch()) {
+		if (!isRecord(entry)) continue;
+		if (entry["type"] !== "message") continue;
+		const message = entry["message"];
+		if (!isRecord(message)) continue;
+		if (message["role"] !== "assistant") continue;
+		const usage = message["usage"];
+		if (!isRecord(usage)) continue;
+		const cost = usage["cost"];
+		if (!isRecord(cost)) continue;
+		const total = cost["total"];
+		if (typeof total !== "number" || !Number.isFinite(total)) continue;
+		totalCost += total;
+	}
+	return totalCost;
+};
 
 export const FooterLive = Layer.effect(
 	Footer,
 	Effect.gen(function* () {
 		const pi = yield* PiAPI;
-		const state = yield* SandboxState;
+		const sandboxState = yield* SandboxState;
+		const persistence = yield* Persistence;
+
+		const hygieneRef = yield* SubscriptionRef.make<FooterHygiene>({
+			gitLineDelta: { added: 0, removed: 0 },
+			inProgressCount: 0,
+		});
+		const totalCostRef = yield* SubscriptionRef.make<number>(0);
+
+		const emitFooterChanged = () => pi.events.emit("tau:footer:changed", null);
+
+		const refreshFooterHygieneOnce = Effect.gen(function* () {
+			const cwd = process.cwd();
+			const gitLineDelta = collectGitLineDelta(cwd);
+
+			const issuesPath = findBeadsJsonlPath(cwd);
+			let inProgressCount = 0;
+			if (issuesPath) {
+				try {
+					const issuesJsonl = fs.readFileSync(issuesPath, "utf8");
+					inProgressCount = countInProgressIssuesFromJsonl(issuesJsonl);
+				} catch {
+					inProgressCount = 0;
+				}
+			}
+
+			const current = yield* SubscriptionRef.get(hygieneRef);
+			if (
+				current.gitLineDelta.added === gitLineDelta.added &&
+				current.gitLineDelta.removed === gitLineDelta.removed &&
+				current.inProgressCount === inProgressCount
+			) {
+				return;
+			}
+
+			yield* SubscriptionRef.set(hygieneRef, { gitLineDelta, inProgressCount });
+			yield* Effect.sync(() => emitFooterChanged());
+		});
+
+		const refreshFooterHygieneLoop = refreshFooterHygieneOnce.pipe(
+			Effect.catchAll(() => Effect.void),
+			Effect.zipRight(
+				Effect.forever(
+					Effect.sleep("5 seconds").pipe(
+						Effect.zipRight(refreshFooterHygieneOnce.pipe(Effect.catchAll(() => Effect.void))),
+					),
+				),
+			),
+		);
 
 		return Footer.of({
 			setup: Effect.gen(function* () {
+				// Start hygiene refresh loop (git diff + beads in-progress count)
+				yield* Effect.forkDaemon(refreshFooterHygieneLoop);
+
 				yield* Effect.sync(() => {
 					pi.on("session_start", (_event: unknown, ctx: ExtensionContext) => {
+						Effect.runSync(SubscriptionRef.set(totalCostRef, computeTotalCost(ctx)));
+						emitFooterChanged();
+
 						ctx.ui.setFooter((tui: TUI, theme: Theme, footerData: ReadonlyFooterDataProvider) => {
 							const unsubBranch = footerData.onBranchChange(() => tui.requestRender());
-							const unsubSandbox = pi.events.on("tau:sandbox:changed", () => {
-								tui.requestRender();
-							});
+							const unsubSandbox = pi.events.on("tau:sandbox:changed", () => tui.requestRender());
+							const unsubFooter = pi.events.on("tau:footer:changed", () => tui.requestRender());
+							const unsubMode = pi.events.on("tau:mode:changed", () => tui.requestRender());
 
 							return {
 								dispose() {
 									unsubBranch();
 									unsubSandbox();
+									unsubFooter();
+									unsubMode();
 								},
 								invalidate() {},
 								render(width: number): string[] {
-									// We can't use yield* here, so we'll use SubscriptionRef.getSync if available
-									// or just get it from the event or a local cache.
-									// For now, let's use the SubscriptionRef value.
-									const config = SubscriptionRef.get(state).pipe(Effect.runSync);
+									const sandboxConfig = SubscriptionRef.get(sandboxState).pipe(Effect.runSync);
+									const hygiene = SubscriptionRef.get(hygieneRef).pipe(Effect.runSync);
+									const totalCost = SubscriptionRef.get(totalCostRef).pipe(Effect.runSync);
+									const persisted = SubscriptionRef.get(persistence.state).pipe(Effect.runSync);
+									const modeLabel = persisted.promptModes?.activeMode ?? "smart";
 
-									// 1. Sandbox Dots (Hardcoded ANSI for high contrast in Alacritty)
-									const green = "\x1b[32m";
-									const yellow = "\x1b[33m";
-									const red = "\x1b[31m";
-									const reset = "\x1b[39m";
+									// Status dots
+									const dots: string[] = [];
 
-									const fsDotRaw =
-										config.filesystemMode === "read-only"
-											? green
-											: config.filesystemMode === "workspace-write"
-												? yellow
-												: red;
-									const fsDot = `${fsDotRaw}•${reset}`;
+									// FS Dot
+									const fsMode = sandboxConfig.filesystemMode ?? "read-only";
+									const fsColor =
+										fsMode === "danger-full-access"
+											? ("error" as const)
+											: fsMode === "workspace-write"
+												? ("warning" as const)
+												: ("success" as const);
+									dots.push(theme.fg(fsColor, "•"));
 
-									const netDotRaw = config.networkMode === "deny" ? green : red;
-									const netDot = `${netDotRaw}•${reset}`;
+									// Net Dot
+									const netMode = sandboxConfig.networkMode ?? "deny";
+									const netColor = netMode === "allow-all" ? ("error" as const) : ("success" as const);
+									dots.push(theme.fg(netColor, "•"));
 
-									const appDotRaw =
-										config.approvalPolicy === "never"
-											? green
-											: config.approvalPolicy === "on-failure"
-												? yellow
-												: red;
-									const appDot = `${appDotRaw}•${reset}`;
+									// App Dot (running)
+									dots.push(theme.fg("success", "•"));
 
-									// 2. Subscription Dot
-									const usingSubscription = ctx.model ? ctx.modelRegistry.isUsingOAuth(ctx.model) : false;
-									const subDot = usingSubscription ? theme.fg("success", "•") : theme.fg("dim", "•");
-
-									const dots = `${fsDot} ${netDot} ${appDot} ${subDot}`;
-
-									// 3. Repo & Git
-									const repoName = basename(ctx.cwd);
+									const repoName = path.basename(ctx.cwd);
 									const branch = footerData.getGitBranch();
-									const branchStr = branch ? ` (${branch})` : "";
-									const repoGit = theme.fg("dim", `${repoName}${branchStr}`);
+									const repoLine = branch ? `${repoName}:${branch}` : repoName;
 
-									// 4. Model Info
-									const provider = ctx.model?.provider || "unknown";
-									const modelId = ctx.model?.id || "no-model";
-									const thinking = pi.getThinkingLevel() || "off";
-									const modelInfo = theme.fg(
-										"dim",
-										`${provider} • ${modelId}${thinking !== "off" ? ` • ${thinking}` : ""}`,
-									);
+									const gitLineDeltaText = `Δ+${hygiene.gitLineDelta.added}/-${hygiene.gitLineDelta.removed}`;
+									const gitLineDeltaPart = theme.fg("dim", gitLineDeltaText);
 
-									// 5. Usage & Context
-									let totalCost = 0;
-									for (const entry of ctx.sessionManager.getBranch()) {
-										if (entry.type === "message" && entry.message.role === "assistant") {
-											const m = entry.message as AssistantMessage;
-											totalCost += m.usage.cost.total;
-										}
-									}
+									const inProgressText = `ρ${hygiene.inProgressCount}`;
+									const inProgressPart = theme.fg("dim", inProgressText);
+
+									const left =
+										dots.join(" ") +
+										"  " +
+										theme.fg("dim", repoLine) +
+										" " +
+										gitLineDeltaPart +
+										" " +
+										inProgressPart;
+
+									const providerLabel = resolveFooterProviderLabel(ctx.model?.provider ?? null);
+									const model = ctx.model?.id ?? "no-model";
+									const thinkingLabel = pi.getThinkingLevel() ?? "off";
+									const thinkingStr = ` • ${thinkingLabel}`;
+									const modeStr = ` • ${modeLabel}`;
+									const modelAndMetaRaw = `${model}${thinkingStr}${modeStr}`;
+									const middleRaw = providerLabel ? `${providerLabel} • ${modelAndMetaRaw}` : modelAndMetaRaw;
+									const middle = theme.fg("dim", middleRaw);
+
+									const costStr = `$${totalCost.toFixed(3)}`;
 
 									const usage = ctx.getContextUsage();
-									const contextTokens = usage ? usage.tokens : 0;
-									const contextWindow = usage ? usage.contextWindow : ctx.model?.contextWindow || 0;
-									const contextPercentValue =
-										contextWindow > 0 ? (contextTokens / contextWindow) * 100 : 0;
-									const contextPercent = contextPercentValue.toFixed(1);
+									const contextWindow = usage?.contextWindow;
+									const contextStr =
+										typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0
+											? `${Math.round(usage?.percent ?? 0)}%/${formatTokenWindow(contextWindow)}`
+											: null;
 
-									const costStr = theme.fg("dim", `$${totalCost.toFixed(3)}`);
-
-									let contextPercentStr: string;
-									const contextDisplay = `${contextPercent}%/${formatTokens(contextWindow)}`;
-									if (contextPercentValue > 90) {
-										contextPercentStr = theme.fg("error", contextDisplay);
-									} else if (contextPercentValue > 70) {
-										contextPercentStr = theme.fg("warning", contextDisplay);
-									} else {
-										contextPercentStr = theme.fg("dim", contextDisplay);
-									}
-
-									const leftParts = [dots, repoGit, modelInfo];
-
-									const left = leftParts.join(" ");
-									const right = `${costStr} ${contextPercentStr}`;
+									const rightParts = [costStr, contextStr].filter(
+										(part): part is string => typeof part === "string" && part.length > 0,
+									);
+									const right = theme.fg("dim", rightParts.join(" "));
 
 									const leftWidth = visibleWidth(left);
+									const middleWidth = visibleWidth(middleRaw);
 									const rightWidth = visibleWidth(right);
 
-									const padding = " ".repeat(Math.max(1, width - leftWidth - rightWidth));
-									const content = left + padding + right;
+									let statsLine = left;
+									if (Number.isFinite(width) && width > 0) {
+										const minGap = 2;
+										const fullRequired = leftWidth + middleWidth + rightWidth + minGap * 2;
 
-									return [truncateToWidth(content, width)];
+										if (fullRequired <= width) {
+											const free = width - fullRequired;
+											const leftGap = minGap + Math.floor(free / 2);
+											const rightGap = minGap + Math.ceil(free / 2);
+											statsLine = `${left}${" ".repeat(leftGap)}${middle}${" ".repeat(rightGap)}${right}`;
+										} else {
+											const middleBudget = width - leftWidth - rightWidth - minGap * 2;
+											if (middleBudget > 0) {
+												const compactMiddleRaw = modelAndMetaRaw;
+												const preferredMiddleRaw =
+													providerLabel && visibleWidth(compactMiddleRaw) <= middleBudget
+														? compactMiddleRaw
+														: middleRaw;
+												const renderedMiddleRaw =
+													visibleWidth(preferredMiddleRaw) <= middleBudget
+														? preferredMiddleRaw
+														: truncateMiddle(preferredMiddleRaw, middleBudget);
+												const renderedMiddle = theme.fg("dim", renderedMiddleRaw);
+												const consumed =
+													leftWidth + visibleWidth(renderedMiddleRaw) + rightWidth + minGap * 2;
+												const free = Math.max(0, width - consumed);
+												const leftGap = minGap + Math.floor(free / 2);
+												const rightGap = minGap + Math.ceil(free / 2);
+												statsLine = `${left}${" ".repeat(leftGap)}${renderedMiddle}${" ".repeat(rightGap)}${right}`;
+											} else {
+												const padding = " ".repeat(Math.max(1, width - leftWidth - rightWidth));
+												statsLine = `${left}${padding}${right}`;
+											}
+										}
+									} else {
+										statsLine = `${left}  ${middle}  ${right}`;
+									}
+
+									return [truncateToWidth(statsLine, width)];
 								},
 							};
 						});
 					});
+
+					pi.on("turn_end", (_event: unknown, ctx: ExtensionContext) => {
+						Effect.runSync(SubscriptionRef.set(totalCostRef, computeTotalCost(ctx)));
+						emitFooterChanged();
+					});
+					pi.on("session_tree", () => emitFooterChanged());
+					pi.on("session_fork", () => emitFooterChanged());
+					pi.on("model_select", () => emitFooterChanged());
 				});
 			}),
 		});
