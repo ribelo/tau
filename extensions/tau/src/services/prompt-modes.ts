@@ -12,9 +12,33 @@ export interface PromptModes {
 
 export const PromptModes = Context.GenericTag<PromptModes>("PromptModes");
 
-function resolveActiveMode(state: { promptModes?: { activeMode?: PromptModeName } } | undefined): PromptModeName {
+function resolvePersistedMode(state: { promptModes?: { activeMode?: PromptModeName } } | undefined): PromptModeName {
 	const active = state?.promptModes?.activeMode;
 	return active ?? "smart";
+}
+
+function inferModeFromSelection(selection: {
+	readonly modelId: string | null;
+	readonly thinking: string | null;
+}): PromptModeName | null {
+	if (!selection.modelId || !selection.thinking) return null;
+	const thinking = selection.thinking;
+	for (const mode of ["smart", "deep", "rush"] as const) {
+		const preset = DEFAULT_PROMPT_MODE_PRESETS[mode];
+		if (preset.model === selection.modelId && preset.thinking === thinking) {
+			return mode;
+		}
+	}
+	return null;
+}
+
+function getSelection(ctx: ExtensionCommandContext, pi: ExtensionAPI): {
+	readonly modelId: string | null;
+	readonly thinking: string | null;
+} {
+	const modelId = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null;
+	const thinking = pi.getThinkingLevel ? String(pi.getThinkingLevel()) : null;
+	return { modelId, thinking };
 }
 
 function parseProviderModelOrThrow(model: string): { readonly provider: string; readonly modelId: string } {
@@ -71,7 +95,7 @@ export const PromptModesLive = Layer.effect(
 								if (!ctx.hasUI) {
 									const state = SubscriptionRef.get(persistence.state).pipe(Effect.runSync);
 									ctx.ui.notify(
-										`Mode: ${resolveActiveMode(state)}. Usage: /mode smart|deep|rush|list`,
+										`Mode: ${resolvePersistedMode(state)}. Usage: /mode smart|deep|rush|list`,
 										"info",
 									);
 									return;
@@ -109,13 +133,34 @@ export const PromptModesLive = Layer.effect(
 						},
 					});
 
-					pi.on("before_agent_start", (event) => {
+					const syncModeFromSelection = (ctx: ExtensionCommandContext) => {
+						const selection = getSelection(ctx, pi);
+						const inferred = inferModeFromSelection(selection);
+						if (!inferred) return;
+
 						const state = SubscriptionRef.get(persistence.state).pipe(Effect.runSync);
-						const mode = resolveActiveMode(state);
+						const current = state.promptModes?.activeMode;
+						if (current === inferred) return;
+
+						Effect.runSync(persistence.update({ promptModes: { activeMode: inferred } }));
+						pi.events.emit("tau:mode:changed", { mode: inferred, source: "infer" });
+					};
+
+					pi.on("session_start", (_event, ctx) => {
+						syncModeFromSelection(ctx as unknown as ExtensionCommandContext);
+					});
+
+					pi.on("model_select", (_event, ctx) => {
+						syncModeFromSelection(ctx as unknown as ExtensionCommandContext);
+					});
+
+					pi.on("before_agent_start", (event, ctx) => {
+						// Prefer inferred mode (based on current model+thinking) to keep prompt consistent.
+						syncModeFromSelection(ctx as unknown as ExtensionCommandContext);
+						const state = SubscriptionRef.get(persistence.state).pipe(Effect.runSync);
+						const mode = resolvePersistedMode(state);
 						const preset = DEFAULT_PROMPT_MODE_PRESETS[mode];
-						return {
-							systemPrompt: `${event.systemPrompt}\n\n${preset.systemPrompt}`,
-						};
+						return { systemPrompt: `${event.systemPrompt}\n\n${preset.systemPrompt}` };
 					});
 				});
 			}),
