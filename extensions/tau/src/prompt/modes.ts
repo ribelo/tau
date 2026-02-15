@@ -30,7 +30,7 @@ export const DEFAULT_PROMPT_MODE_PRESETS: Record<PromptModeName, PromptModePrese
 		systemPrompt: SMART_MODE_SYSTEM_PROMPT,
 	},
 	deep: {
-		model: "openai-codex/gpt-5.2-codex",
+		model: "openai-codex/gpt-5.3-codex",
 		thinking: "high",
 		systemPrompt: DEEP_MODE_SYSTEM_PROMPT,
 	},
