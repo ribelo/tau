@@ -36,12 +36,13 @@ import {
   injectSandboxNoticeIntoMessages,
 } from "./sandbox-change.js";
 import type { ApprovalPolicy, FilesystemMode, NetworkMode, SandboxConfig } from "./config.js";
-import { computeEffectiveConfig, ensureUserDefaults, persistProjectConfigPatch } from "./config.js";
+import { computeEffectiveConfig, ensureUserDefaults } from "./config.js";
 import { checkWriteAllowed } from "./fs-policy.js";
 import { wrapCommandWithSandbox, isAsrtAvailable, getAsrtLoadError } from "./bash.js";
 import { detectMissingSandboxDeps, formatMissingDepsMessage } from "./sandbox-prereqs.js";
 import { discoverWorkspaceRoot } from "./workspace-root.js";
 
+import { isRecord } from "../shared/json.js";
 import type { TauState } from "../shared/state.js";
 import { loadPersistedState, updatePersistedState } from "../shared/state.js";
 import { type ApprovalBroker, getWorkerApprovalBroker } from "../agent/approval-broker.js";
@@ -113,6 +114,12 @@ type SessionState = {
   sandboxUnavailableDecision?: "allow" | "deny" | undefined;
 
   /**
+   * Session-local sandbox overrides set via the sandbox settings UI.
+   * These are stored in the session history (tau:state) and do not touch project files.
+   */
+  sessionOverride?: SandboxConfig | undefined;
+
+  /**
    * True once we have injected sandbox *semantics* into the system prompt
    * on the first model turn.
    */
@@ -137,18 +144,24 @@ function loadSessionState(state: TauState): SessionState | undefined {
       ? undefined
       : pendingNotice;
 
-  // Defensive copy - only include defined properties
+  // Defensive copy
   const result: SessionState = { ...last };
+
+  if (result.sessionOverride !== undefined && !isRecord(result.sessionOverride)) {
+    delete result.sessionOverride;
+  }
+
   if (cleanPending) {
     result.pendingSandboxNotice = { ...cleanPending };
   } else {
     delete result.pendingSandboxNotice;
   }
+
   return result;
 }
 
 function buildSourceHint(): string {
-  return "saved to project .pi/settings.json";
+  return "applies to this session";
 }
 
 export default function initSandbox(pi: ExtensionAPI, state: TauState) {
@@ -192,10 +205,16 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
     state.persisted = loadPersistedState(ctxWithSession);
     sessionState = loadSessionState(state) ?? {};
 
-    // Only CLI flags can override file-based settings now
-    const opts: { workspaceRoot: string; sessionOverride?: SandboxConfig } = { workspaceRoot };
-    if (cliOverride) opts.sessionOverride = cliOverride;
-    effectiveConfig = computeEffectiveConfig(opts);
+    // Session overrides come from tau:state; CLI flags override both session and file-based settings.
+    const mergedOverride: SandboxConfig = {
+      ...(sessionState.sessionOverride ?? {}),
+      ...(cliOverride ?? {}),
+    };
+
+    effectiveConfig = computeEffectiveConfig({
+      workspaceRoot,
+      sessionOverride: mergedOverride,
+    });
 
     const sessionId = (ctx as unknown as { sessionManager?: { getSessionId?: () => string } }).sessionManager?.getSessionId?.() ?? "";
 
@@ -258,15 +277,20 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
   ) {
     const prevHash = computeSandboxConfigHash(effectiveConfig);
 
-    // Persist to project .pi/settings.json
-    if (value !== undefined) {
-      persistProjectConfigPatch(workspaceRoot, { [key]: value } as SandboxConfig);
+    const prevOverride = sessionState.sessionOverride ?? {};
+    const nextOverride: SandboxConfig = { ...prevOverride };
+
+    if (value === undefined) {
+      delete nextOverride[key];
+    } else {
+      nextOverride[key] = value;
     }
 
-    // Recompute effective config from files
-    const opts: { workspaceRoot: string; sessionOverride?: SandboxConfig } = { workspaceRoot };
-    if (cliOverride) opts.sessionOverride = cliOverride;
-    effectiveConfig = computeEffectiveConfig(opts);
+    sessionState.sessionOverride = nextOverride;
+    persistState();
+
+    const mergedOverride: SandboxConfig = { ...nextOverride, ...(cliOverride ?? {}) };
+    effectiveConfig = computeEffectiveConfig({ workspaceRoot, sessionOverride: mergedOverride });
 
     const nextHash = computeSandboxConfigHash(effectiveConfig);
     queueSandboxChangeNotice(prevHash, nextHash);
@@ -371,7 +395,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
             updateTimeoutFromSelect(newValue, ctx);
           }
 
-          // Descriptions stay the same - all settings saved to project .pi/settings.json
+          // Descriptions stay the same - changes apply to this session.
 
           settingsList.updateValue(
             "filesystemMode",
