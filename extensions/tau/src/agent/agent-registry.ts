@@ -1,50 +1,60 @@
 /**
- * AgentRegistry - discovers and loads agent definitions from .md files
- * 
+ * AgentRegistry - discovers and loads agent definitions from .md files.
+ *
  * Search paths (in priority order):
  * 1. Project: .pi/agents/*.md
  * 2. User: ~/.pi/agent/agents/*.md
  * 3. Extension: extensions/tau/agents/*.md (bundled)
- * 
- * Settings overrides (in .pi/settings.json or ~/.pi/agent/settings.json):
- * ```json
- * {
- *   "agents": {
- *     "rush": {
- *       "models": [
- *         { "model": "google-gemini-cli/gemini-3-flash-preview", "thinking": "high" },
- *         { "model": "groq/llama-4-scout", "thinking": "medium" }
- *       ],
- *       "complexity": {
- *         "low": {
- *           "models": [
- *             { "model": "groq/llama-4-scout" },
- *             { "model": "anthropic/claude-haiku-4-5" }
- *           ]
- *         }
- *       }
- *     }
- *   }
- * }
- * ```
+ *
+ * NOTE: Mode agents (smart/deep/rush) are virtual and derive model+thinking from
+ * prompt mode settings (global/project). They are not loadable/overridable via
+ * agent frontmatter.
  */
 
 import * as fs from "node:fs";
-import * as path from "node:path";
 import * as os from "node:os";
+import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
-import type { AgentDefinition, ModelSpec, Complexity } from "./types.js";
-import { parseAgentDefinition } from "./parser.js";
+
 import { readJsonFile } from "../shared/fs.js";
 import { isRecord } from "../shared/json.js";
+import { resolvePromptModePresets, type PromptModeName, isPromptModeName } from "../prompt/modes.js";
+import type { SandboxConfig } from "../sandbox/config.js";
+import { parseAgentDefinition } from "./parser.js";
+import type { AgentDefinition, Complexity, ModelSpec } from "./types.js";
 
-const EXTENSION_AGENTS_DIR = path.resolve(
-	path.dirname(fileURLToPath(import.meta.url)),
-	"..",
-	"..",
-	"agents",
-);
+const EXTENSION_AGENTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "agents");
+
+const MODE_AGENT_SANDBOX: SandboxConfig = {
+	filesystemMode: "workspace-write",
+	networkMode: "allow-all",
+	approvalPolicy: "never",
+	approvalTimeoutSeconds: 60,
+};
+
+function buildModeAgentDefinition(mode: PromptModeName, cwd: string): AgentDefinition {
+	const presets = resolvePromptModePresets(cwd);
+	const preset = presets[mode];
+
+	const model: ModelSpec = { model: preset.model, thinking: preset.thinking as ThinkingLevel };
+
+	const description =
+		mode === "smart"
+			? "Smart agent. Uses the smart mode system prompt and preset model selection."
+			: mode === "deep"
+				? "Deep agent. Uses the deep mode system prompt and preset model selection."
+				: "Rush agent. Uses the rush mode system prompt and preset model selection.";
+
+	return {
+		name: mode,
+		description,
+		models: [model],
+		sandbox: MODE_AGENT_SANDBOX,
+		systemPrompt: preset.systemPrompt,
+	};
+}
 
 function isDirectory(p: string): boolean {
 	try {
@@ -64,7 +74,7 @@ function isFile(p: string): boolean {
 
 function findNearestProjectPiDir(cwd: string): string | null {
 	let current = cwd;
-	while (true) {
+	for (;;) {
 		const candidate = path.join(current, ".pi");
 		if (isDirectory(candidate)) return candidate;
 		const parent = path.dirname(current);
@@ -82,17 +92,21 @@ function discoverAgentFiles(dir: string): Map<string, string> {
 		for (const file of files) {
 			if (!file.endsWith(".md")) continue;
 			const name = file.slice(0, -3);
-			const filePath = path.join(dir, file);
-			if (isFile(filePath)) {
-				result.set(name, filePath);
+			if (isPromptModeName(name)) {
+				// Mode agents are virtual; ignore any .md override.
+				continue;
 			}
+			const filePath = path.join(dir, file);
+			if (isFile(filePath)) result.set(name, filePath);
 		}
 	} catch {
-		// Ignore read errors
+		// ignore
 	}
 
 	return result;
 }
+
+const THINKING_LEVELS = new Set<ThinkingLevel | "inherit">(["low", "medium", "high", "inherit"]);
 
 function parseModelsArray(arr: unknown): ModelSpec[] | undefined {
 	if (!Array.isArray(arr)) return undefined;
@@ -103,20 +117,18 @@ function parseModelsArray(arr: unknown): ModelSpec[] | undefined {
 		if (typeof model !== "string") continue;
 		const spec: ModelSpec = { model };
 		const thinking = entry["thinking"];
-		if (typeof thinking === "string") {
-			(spec as { thinking?: string }).thinking = thinking as ThinkingLevel;
+		if (typeof thinking === "string" && THINKING_LEVELS.has(thinking as ThinkingLevel | "inherit")) {
+			(spec as { thinking?: string }).thinking = thinking;
 		}
 		result.push(spec);
 	}
 	return result.length > 0 ? result : undefined;
 }
 
-/** Per-complexity override */
 interface ComplexityConfig {
 	models?: readonly ModelSpec[];
 }
 
-/** Settings override for an agent */
 interface AgentSettingsOverride {
 	models?: readonly ModelSpec[];
 	complexity?: {
@@ -128,7 +140,7 @@ interface AgentSettingsOverride {
 
 function findNearestProjectSettings(cwd: string): string | null {
 	let current = cwd;
-	while (true) {
+	for (;;) {
 		const candidate = path.join(current, ".pi", "settings.json");
 		if (isFile(candidate)) return candidate;
 		const parent = path.dirname(current);
@@ -147,30 +159,30 @@ function loadAgentSettings(cwd: string): Map<string, AgentSettingsOverride> {
 		if (!isRecord(agents)) return;
 
 		for (const [name, config] of Object.entries(agents)) {
-			if (!isRecord(config)) continue;
-			
-			const override: AgentSettingsOverride = {};
-			
-			const models = parseModelsArray(config["models"]);
-			if (models) {
-				override.models = models;
+			if (isPromptModeName(name)) {
+				// Mode agents are configured via promptModes settings, not agents settings.
+				continue;
 			}
-			
+			if (!isRecord(config)) continue;
+
+			const override: AgentSettingsOverride = {};
+			const models = parseModelsArray(config["models"]);
+			if (models) override.models = models;
+
 			const complexity = config["complexity"];
 			if (isRecord(complexity)) {
 				override.complexity = {};
 				for (const level of ["low", "medium", "high"] as const) {
 					const levelConfig = complexity[level];
-					if (isRecord(levelConfig)) {
-						const levelModels = parseModelsArray(levelConfig["models"]);
-						if (levelModels) {
-							override.complexity[level] = { models: levelModels };
-						}
+					if (!isRecord(levelConfig)) continue;
+					const levelModels = parseModelsArray(levelConfig["models"]);
+					if (levelModels) {
+						override.complexity[level] = { models: levelModels };
 					}
 				}
 				if (Object.keys(override.complexity).length === 0) delete override.complexity;
 			}
-			
+
 			if (Object.keys(override).length > 0) {
 				const existing = result.get(name);
 				result.set(name, existing ? { ...existing, ...override } : override);
@@ -178,11 +190,9 @@ function loadAgentSettings(cwd: string): Map<string, AgentSettingsOverride> {
 		}
 	};
 
-	// Global settings first (lower priority)
 	const globalSettings = path.join(os.homedir(), ".pi", "agent", "settings.json");
 	if (isFile(globalSettings)) applySettings(globalSettings);
 
-	// Project settings last (higher priority)
 	const projectSettings = findNearestProjectSettings(cwd);
 	if (projectSettings) applySettings(projectSettings);
 
@@ -198,31 +208,34 @@ export class AgentRegistry {
 	private readonly agentPaths: Map<string, string>;
 	private readonly settingsOverrides: Map<string, AgentSettingsOverride>;
 	private readonly cache: Map<string, AgentDefinition>;
+	private readonly modeAgents: Map<PromptModeName, AgentDefinition>;
+	private readonly cwd: string;
 
-	private constructor(
-		agentPaths: Map<string, string>,
-		settingsOverrides: Map<string, AgentSettingsOverride>,
-	) {
-		this.agentPaths = agentPaths;
-		this.settingsOverrides = settingsOverrides;
+	private constructor(args: {
+		agentPaths: Map<string, string>;
+		settingsOverrides: Map<string, AgentSettingsOverride>;
+		modeAgents: Map<PromptModeName, AgentDefinition>;
+		cwd: string;
+	}) {
+		this.agentPaths = args.agentPaths;
+		this.settingsOverrides = args.settingsOverrides;
+		this.modeAgents = args.modeAgents;
+		this.cwd = args.cwd;
 		this.cache = new Map();
 	}
 
 	static load(cwd: string): AgentRegistry {
 		const merged = new Map<string, string>();
 
-		// 1. Extension agents (lowest priority)
 		for (const [name, filePath] of discoverAgentFiles(EXTENSION_AGENTS_DIR)) {
 			merged.set(name, filePath);
 		}
 
-		// 2. User agents (medium priority)
 		const userAgentsDir = path.join(os.homedir(), ".pi", "agent", "agents");
 		for (const [name, filePath] of discoverAgentFiles(userAgentsDir)) {
 			merged.set(name, filePath);
 		}
 
-		// 3. Project agents (highest priority)
 		const projectPi = findNearestProjectPiDir(cwd);
 		if (projectPi) {
 			const projectAgentsDir = path.join(projectPi, "agents");
@@ -231,11 +244,24 @@ export class AgentRegistry {
 			}
 		}
 
-		const settingsOverrides = loadAgentSettings(cwd);
-		return new AgentRegistry(merged, settingsOverrides);
+		const modeAgents = new Map<PromptModeName, AgentDefinition>();
+		for (const mode of ["smart", "deep", "rush"] as const) {
+			modeAgents.set(mode, buildModeAgentDefinition(mode, cwd));
+		}
+
+		return new AgentRegistry({
+			agentPaths: merged,
+			settingsOverrides: loadAgentSettings(cwd),
+			modeAgents,
+			cwd,
+		});
 	}
 
 	get(name: string): AgentDefinition | undefined {
+		if (isPromptModeName(name)) {
+			return this.modeAgents.get(name);
+		}
+
 		const cached = this.cache.get(name);
 		if (cached) return cached;
 
@@ -247,52 +273,42 @@ export class AgentRegistry {
 			const definition = parseAgentDefinition(content);
 			this.cache.set(name, definition);
 			return definition;
-		} catch (err) {
-			console.error(`Failed to load agent "${name}" from ${filePath}:`, err);
+		} catch {
 			return undefined;
 		}
 	}
 
 	has(name: string): boolean {
-		return this.agentPaths.has(name);
+		return isPromptModeName(name) ? this.modeAgents.has(name) : this.agentPaths.has(name);
 	}
 
 	names(): string[] {
-		return Array.from(this.agentPaths.keys()).sort();
+		const names = new Set<string>([...this.agentPaths.keys(), ...this.modeAgents.keys()]);
+		return Array.from(names).sort();
 	}
 
 	list(): AgentSummary[] {
 		return this.names().map((name) => {
 			const def = this.get(name);
-			return {
-				name,
-				description: def?.description ?? "",
-			};
+			return { name, description: def?.description ?? "" };
 		});
 	}
 
-	/**
-	 * Resolve an agent for spawning with complexity-based model routing.
-	 * 
-	 * Priority (highest to lowest):
-	 * 1. settings.json complexity-specific override
-	 * 2. settings.json agent-level override
-	 * 3. Agent .md file definition
-	 */
 	resolve(name: string, complexity: Complexity): AgentDefinition | undefined {
+		if (isPromptModeName(name)) {
+			// Mode agents ignore agent-level overrides; use prompt mode settings.
+			return buildModeAgentDefinition(name, this.cwd);
+		}
+
 		const def = this.get(name);
 		if (!def) return undefined;
 
 		const override = this.settingsOverrides.get(name);
 		if (!override) return def;
 
-		// Start with base definition
 		let models = def.models;
-
-		// Apply agent-level override
 		if (override.models) models = override.models;
 
-		// Apply complexity-specific override (highest priority)
 		const complexityConfig = override.complexity?.[complexity];
 		if (complexityConfig?.models) {
 			models = complexityConfig.models;

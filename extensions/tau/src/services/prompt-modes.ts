@@ -3,7 +3,7 @@ import { Context, Effect, Layer, SubscriptionRef } from "effect";
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 
 import { PiAPI } from "../effect/pi.js";
-import { DEFAULT_PROMPT_MODE_PRESETS, isPromptModeName, type PromptModeName } from "../prompt/modes.js";
+import { isPromptModeName, resolvePromptModePresets, type PromptModeName } from "../prompt/modes.js";
 import type { TauPersistedState } from "../shared/state.js";
 import { Persistence } from "./persistence.js";
 
@@ -34,7 +34,8 @@ async function applyMode(
 	mode: PromptModeName,
 	ctx: ExtensionCommandContext,
 ): Promise<void> {
-	const preset = DEFAULT_PROMPT_MODE_PRESETS[mode];
+	const presets = resolvePromptModePresets(ctx.cwd);
+	const preset = presets[mode];
 	const { provider, modelId } = parseProviderModelOrThrow(preset.model);
 	const model = ctx.modelRegistry.find(provider, modelId);
 	if (!model) {
@@ -92,11 +93,12 @@ export const PromptModesLive = Layer.effect(
 							if (trimmed === "list") {
 								const state = SubscriptionRef.get(persistence.state).pipe(Effect.runSync);
 								const active = resolvePersistedMode(state);
+								const presets = resolvePromptModePresets(ctx.cwd);
 								const lines = [
 									"Modes:",
-									`- smart${active === "smart" ? " [active]" : ""}: ${DEFAULT_PROMPT_MODE_PRESETS.smart.model} (${DEFAULT_PROMPT_MODE_PRESETS.smart.thinking})`,
-									`- deep${active === "deep" ? " [active]" : ""}: ${DEFAULT_PROMPT_MODE_PRESETS.deep.model} (${DEFAULT_PROMPT_MODE_PRESETS.deep.thinking})`,
-									`- rush${active === "rush" ? " [active]" : ""}: ${DEFAULT_PROMPT_MODE_PRESETS.rush.model} (${DEFAULT_PROMPT_MODE_PRESETS.rush.thinking})`,
+									`- smart${active === "smart" ? " [active]" : ""}: ${presets.smart.model} (${presets.smart.thinking})`,
+									`- deep${active === "deep" ? " [active]" : ""}: ${presets.deep.model} (${presets.deep.thinking})`,
+									`- rush${active === "rush" ? " [active]" : ""}: ${presets.rush.model} (${presets.rush.thinking})`,
 								];
 								ctx.ui.notify(lines.join("\n"), "info");
 								return;
@@ -112,10 +114,11 @@ export const PromptModesLive = Layer.effect(
 						},
 					});
 
-					pi.on("before_agent_start", (event) => {
+					pi.on("before_agent_start", (event, ctx) => {
 						const state = SubscriptionRef.get(persistence.state).pipe(Effect.runSync);
 						const mode = resolvePersistedMode(state);
-						const preset = DEFAULT_PROMPT_MODE_PRESETS[mode];
+						const presets = resolvePromptModePresets(ctx.cwd);
+						const preset = presets[mode];
 						return { systemPrompt: `${event.systemPrompt}\n\n${preset.systemPrompt}` };
 					});
 				});

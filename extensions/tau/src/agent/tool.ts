@@ -44,7 +44,7 @@ export const AgentParams = Type.Object({
 	}),
 	// spawn
 	agent: Type.Optional(Type.String({ 
-		description: "Agent name to spawn (e.g., oracle, finder, rush, smart, deep, review, painter, librarian)" 
+		description: "Agent name to spawn (e.g., oracle, finder, smart, deep, rush, review, painter, librarian)" 
 	})),
 	message: Type.Optional(
 		Type.String({ description: "Task instructions for the agent" }),
