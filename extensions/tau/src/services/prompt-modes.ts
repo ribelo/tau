@@ -64,6 +64,8 @@ export const PromptModesLive = Layer.effect(
 		return PromptModes.of({
 			setup: Effect.gen(function* () {
 				yield* Effect.sync(() => {
+					let baseSystemPrompt: string | undefined = undefined;
+
 					pi.registerCommand("mode", {
 						description: "Prompt mode: /mode [smart|deep|rush|list]",
 						handler: async (args, ctx) => {
@@ -115,11 +117,15 @@ export const PromptModesLive = Layer.effect(
 					});
 
 					pi.on("before_agent_start", (event, ctx) => {
+						// pi may call before_agent_start multiple times (e.g. model switches). Always rebuild
+						// from the original base prompt so the mode prompt is injected exactly once.
+						if (baseSystemPrompt === undefined) baseSystemPrompt = event.systemPrompt;
+
 						const state = SubscriptionRef.get(persistence.state).pipe(Effect.runSync);
 						const mode = resolvePersistedMode(state);
 						const presets = resolvePromptModePresets(ctx.cwd);
 						const preset = presets[mode];
-						return { systemPrompt: `${event.systemPrompt}\n\n${preset.systemPrompt}` };
+						return { systemPrompt: `${baseSystemPrompt}\n\n${preset.systemPrompt}` };
 					});
 				});
 			}),

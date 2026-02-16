@@ -52,7 +52,8 @@ function buildModeAgentDefinition(mode: PromptModeName, cwd: string): AgentDefin
 		description,
 		models: [model],
 		sandbox: MODE_AGENT_SANDBOX,
-		systemPrompt: "",
+		// Keep mode agents aligned with /mode behavior: use the same mode prompt markdown.
+		systemPrompt: preset.systemPrompt,
 	};
 }
 
