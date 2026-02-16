@@ -116,6 +116,18 @@ export const PromptModesLive = Layer.effect(
 						},
 					});
 
+					pi.on("session_start", async (_event, ctx) => {
+						const state = SubscriptionRef.get(persistence.state).pipe(Effect.runSync);
+						const mode = resolvePersistedMode(state);
+						const presets = resolvePromptModePresets(ctx.cwd);
+						const preset = presets[mode];
+						const { provider, modelId } = parseProviderModelOrThrow(preset.model);
+						const model = ctx.modelRegistry.find(provider, modelId);
+						if (!model) return;
+						await pi.setModel(model);
+						pi.setThinkingLevel(preset.thinking);
+					});
+
 					pi.on("before_agent_start", (event, ctx) => {
 						// pi may call before_agent_start multiple times (e.g. model switches). Always rebuild
 						// from the original base prompt so the mode prompt is injected exactly once.
