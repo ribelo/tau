@@ -52,7 +52,7 @@ function buildModeAgentDefinition(mode: PromptModeName, cwd: string): AgentDefin
 		description,
 		models: [model],
 		sandbox: MODE_AGENT_SANDBOX,
-		systemPrompt: preset.systemPrompt,
+		systemPrompt: "",
 	};
 }
 
