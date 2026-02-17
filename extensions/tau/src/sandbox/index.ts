@@ -872,7 +872,14 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 
         // Pass params without escalate to inner tool
         const innerParams: { command: string; timeout?: number } = { command: typedParams.command };
-        if (typedParams.timeout !== undefined) innerParams.timeout = typedParams.timeout;
+        if (typedParams.timeout !== undefined) {
+          // Heuristic: models RL-trained on codex-rs pass timeout in milliseconds
+          // (codex-rs uses timeout_ms) but tau expects seconds. Values above 1200
+          // (20 min) are almost certainly milliseconds, so auto-convert.
+          innerParams.timeout = typedParams.timeout > 1200
+            ? Math.round(typedParams.timeout / 1000)
+            : typedParams.timeout;
+        }
         return await tool.execute(toolCallId, innerParams, signal, onUpdate);
       },
     });
