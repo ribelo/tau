@@ -221,7 +221,9 @@ export class AgentWorker implements Agent {
 
 			const statusRef = yield* SubscriptionRef.make<Status>({ state: "pending" });
 
-			const models = opts.definition.models;
+			const models = opts.definition.models.some((m) => m.model === "inherit")
+				? opts.definition.models
+				: [...opts.definition.models, { model: "inherit" as const }];
 
 			// Stable agent ID (survives session recreation on model fallback)
 			const agentId = crypto.randomUUID() as AgentId;

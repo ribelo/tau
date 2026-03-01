@@ -5,6 +5,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-cod
 import { PiAPI } from "../effect/pi.js";
 import { isPromptModeName, resolvePromptModePresets, type PromptModeName } from "../prompt/modes.js";
 import type { TauPersistedState } from "../shared/state.js";
+import { loadPersistedState } from "../shared/state.js";
 import { Persistence } from "./persistence.js";
 
 export interface PromptModes {
@@ -117,6 +118,13 @@ export const PromptModesLive = Layer.effect(
 					});
 
 					pi.on("session_start", async (_event, ctx) => {
+						if (!ctx.hasUI) return;
+
+						const sessionState = loadPersistedState(ctx);
+						if (sessionState.promptModes) {
+							await Effect.runPromise(persistence.update({ promptModes: sessionState.promptModes }));
+						}
+
 						const state = SubscriptionRef.get(persistence.state).pipe(Effect.runSync);
 						const mode = resolvePersistedMode(state);
 						const presets = resolvePromptModePresets(ctx.cwd);
@@ -126,6 +134,8 @@ export const PromptModesLive = Layer.effect(
 						if (!model) return;
 						await pi.setModel(model);
 						pi.setThinkingLevel(preset.thinking);
+						await Effect.runPromise(persistence.update({ promptModes: { activeMode: mode } }));
+						pi.events.emit("tau:mode:changed", { mode });
 					});
 
 					pi.on("before_agent_start", (event, ctx) => {
