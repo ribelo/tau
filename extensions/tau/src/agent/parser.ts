@@ -1,20 +1,16 @@
+import { Schema } from "effect";
 import { parse } from "yaml";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 import type { AgentDefinition, ModelSpec } from "./types.js";
-import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import type { SandboxConfig } from "../sandbox/config.js";
 import {
-	type FilesystemMode,
-	type NetworkMode,
 	APPROVAL_POLICIES,
 	FILESYSTEM_MODES,
 	NETWORK_MODES,
 } from "../shared/policy.js";
-
-import { isRecord } from "../shared/json.js";
 
 const EXTENSION_AGENTS_DIR = path.resolve(
 	path.dirname(fileURLToPath(import.meta.url)),
@@ -23,26 +19,41 @@ const EXTENSION_AGENTS_DIR = path.resolve(
 	"agents",
 );
 
-const THINKING_LEVELS: readonly string[] = ["low", "medium", "high", "inherit"];
+const THINKING_LEVELS = ["low", "medium", "high", "inherit"] as const;
+
+const ThinkingLevelSchema = Schema.Literal(...THINKING_LEVELS);
+
+const FilesystemModeSchema = Schema.Literal(...FILESYSTEM_MODES);
+
+const NetworkModeSchema = Schema.Literal(...NETWORK_MODES);
+
+const ApprovalPolicySchema = Schema.Literal(...APPROVAL_POLICIES);
+
+const ApprovalTimeoutSchema = Schema.Number.pipe(Schema.filter((value) => !Number.isNaN(value)));
+
+const ModelSpecSchema = Schema.Struct({
+	model: Schema.String,
+	thinking: Schema.optional(ThinkingLevelSchema),
+});
+
+const AgentDefinitionFrontmatterSchema = Schema.Struct({
+	name: Schema.String,
+	description: Schema.String,
+	models: Schema.NonEmptyArray(ModelSpecSchema),
+	sandbox_fs: FilesystemModeSchema,
+	sandbox_net: NetworkModeSchema,
+	approval_policy: ApprovalPolicySchema,
+	approval_timeout: ApprovalTimeoutSchema,
+});
+
+const decodeModelSpec = Schema.decodeUnknownSync(ModelSpecSchema);
+const decodeAgentDefinitionFrontmatter = Schema.decodeUnknownSync(AgentDefinitionFrontmatterSchema);
 
 function parseModelSpec(entry: unknown): ModelSpec {
-	if (!isRecord(entry)) {
-		throw new Error("Invalid models entry: each entry must be an object with 'model' field");
-	}
-	const model = entry["model"];
-	if (typeof model !== "string") {
-		throw new Error("Invalid models entry: 'model' must be a string");
-	}
-	const thinking = entry["thinking"];
-	if (thinking !== undefined && typeof thinking !== "string") {
-		throw new Error("Invalid models entry: 'thinking' must be a string");
-	}
-	if (thinking !== undefined && !THINKING_LEVELS.includes(thinking)) {
-		throw new Error(`Invalid models entry: 'thinking' must be one of ${THINKING_LEVELS.join(", ")}`);
-	}
+	const modelSpec = decodeModelSpec(entry);
 	return {
-		model,
-		...(thinking !== undefined ? { thinking: thinking as ThinkingLevel | "inherit" } : {}),
+		model: modelSpec.model,
+		...(modelSpec.thinking === undefined ? {} : { thinking: modelSpec.thinking }),
 	};
 }
 
@@ -60,62 +71,20 @@ export function parseAgentDefinition(content: string): AgentDefinition {
 
 	const frontmatter = parse(frontmatterRaw);
 	const systemPrompt = systemPromptRaw.trim();
+	const parsedFrontmatter = decodeAgentDefinitionFrontmatter(frontmatter);
 
-	if (!isRecord(frontmatter)) {
-		throw new Error("Invalid agent definition: Frontmatter is not an object");
-	}
-
-	const name = frontmatter["name"];
-	const description = frontmatter["description"];
-	const modelsRaw = frontmatter["models"];
-	const sandbox_fs = frontmatter["sandbox_fs"];
-	const sandbox_net = frontmatter["sandbox_net"];
-	const approval_policy = frontmatter["approval_policy"];
-	const approval_timeout = frontmatter["approval_timeout"];
-
-	if (typeof name !== "string") {
-		throw new Error("Invalid agent definition: 'name' is required and must be a string");
-	}
-	if (typeof description !== "string") {
-		throw new Error("Invalid agent definition: 'description' is required and must be a string");
-	}
-
-	// Parse models array
-	if (!Array.isArray(modelsRaw) || modelsRaw.length === 0) {
-		throw new Error("Invalid agent definition: 'models' is required and must be a non-empty array");
-	}
-	const models: ModelSpec[] = modelsRaw.map((entry: unknown) => parseModelSpec(entry));
-
-	if (typeof sandbox_fs !== "string" || !FILESYSTEM_MODES.includes(sandbox_fs as FilesystemMode)) {
-		throw new Error(
-			"Invalid agent definition: 'sandbox_fs' is required and must be one of read-only, workspace-write, danger-full-access",
-		);
-	}
-	if (typeof sandbox_net !== "string" || !NETWORK_MODES.includes(sandbox_net as NetworkMode)) {
-		throw new Error("Invalid agent definition: 'sandbox_net' is required and must be one of deny, allow-all");
-	}
-	if (
-		typeof approval_policy !== "string" ||
-		!APPROVAL_POLICIES.includes(approval_policy as (typeof APPROVAL_POLICIES)[number])
-	) {
-		throw new Error(
-			"Invalid agent definition: 'approval_policy' is required and must be one of never, on-failure, on-request, unless-trusted",
-		);
-	}
-	if (typeof approval_timeout !== "number" || Number.isNaN(approval_timeout)) {
-		throw new Error("Invalid agent definition: 'approval_timeout' is required and must be a number");
-	}
+	const models: ModelSpec[] = parsedFrontmatter.models.map((entry) => parseModelSpec(entry));
 
 	const sandbox: SandboxConfig = {
-		filesystemMode: sandbox_fs as FilesystemMode,
-		networkMode: sandbox_net as NetworkMode,
-		approvalPolicy: approval_policy as (typeof APPROVAL_POLICIES)[number],
-		approvalTimeoutSeconds: approval_timeout,
+		filesystemMode: parsedFrontmatter.sandbox_fs,
+		networkMode: parsedFrontmatter.sandbox_net,
+		approvalPolicy: parsedFrontmatter.approval_policy,
+		approvalTimeoutSeconds: parsedFrontmatter.approval_timeout,
 	};
 
 	return {
-		name,
-		description,
+		name: parsedFrontmatter.name,
+		description: parsedFrontmatter.description,
 		models,
 		sandbox,
 		systemPrompt,

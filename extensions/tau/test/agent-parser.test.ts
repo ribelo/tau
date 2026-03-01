@@ -84,7 +84,7 @@ approval_timeout: 60
 ---
 Prompt`;
 
-		expect(() => parseAgentDefinition(content)).toThrow("'models' is required");
+		expect(() => parseAgentDefinition(content)).toThrow(/\["models"\]/);
 	});
 
 	it("should throw on empty models array", () => {
@@ -99,7 +99,7 @@ approval_timeout: 60
 ---
 Prompt`;
 
-		expect(() => parseAgentDefinition(content)).toThrow("'models' is required and must be a non-empty array");
+		expect(() => parseAgentDefinition(content)).toThrow(/\["models"\]/);
 	});
 
 	it("should throw on missing frontmatter", () => {
@@ -120,7 +120,7 @@ Prompt`;
 name: only-name
 ---
 Prompt`;
-		expect(() => parseAgentDefinition(content)).toThrow("'description' is required");
+		expect(() => parseAgentDefinition(content)).toThrow(/\["description"\]/);
 	});
 
 	describe("loadAgentDefinition", () => {
