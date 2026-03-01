@@ -1094,6 +1094,10 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
       "  - SANDBOX_CHANGE: ... (when settings change mid-session)\n" +
       "\n" +
       "Subagent mode:\n" +
+      "  - When subagent=false: you are the orchestrator (main) agent\n" +
+      "  - As orchestrator, YOU are responsible for all git operations (commit, push, checkout, reset, etc.)\n" +
+      "  - Subagents you spawn cannot perform git operations - you must handle git yourself\n" +
+      "  - You coordinate work by spawning subagents, waiting for their results, and consolidating\n" +
       "  - When subagent=true: you are a worker agent spawned by an orchestrator\n" +
       "  - Git commands are BLOCKED in subagent mode - the orchestrator handles all git operations\n" +
       "  - Do not attempt to run git commit, git push, git checkout, git reset, or similar\n" +
@@ -1116,33 +1120,20 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
     );
 
     const currentHash = computeSandboxConfigHash(effectiveConfig);
+    const previousHash = sessionState.lastCommunicatedHash;
+    const hasChangedSinceLastCommunication = Boolean(previousHash && previousHash !== currentHash);
 
-    // Initial state: even on the first message, inject SANDBOX_STATE as content[0].
-    if (!sessionState.lastCommunicatedHash) {
-      const nextMessages = injectSandboxNoticeIntoMessages(
-        filtered,
-        buildSandboxStateNoticeText(effectiveConfig),
-      );
+    const noticeText = hasChangedSinceLastCommunication
+      ? buildSandboxChangeNoticeText(effectiveConfig)
+      : buildSandboxStateNoticeText(effectiveConfig);
+
+    const nextMessages = injectSandboxNoticeIntoMessages(filtered, noticeText);
+
+    if (previousHash !== currentHash || sessionState.pendingSandboxNotice) {
       sessionState.lastCommunicatedHash = currentHash;
       sessionState.pendingSandboxNotice = undefined;
       persistState();
-      return { messages: nextMessages };
     }
-
-    const pending = sessionState.pendingSandboxNotice;
-    if (!pending) {
-      if (filtered.length !== event.messages.length) {
-        return { messages: filtered };
-      }
-      return;
-    }
-
-    const nextMessages = injectSandboxNoticeIntoMessages(filtered, pending.text);
-
-    // Mark as communicated and clear pending.
-    sessionState.lastCommunicatedHash = pending.hash;
-    sessionState.pendingSandboxNotice = undefined;
-    persistState();
 
     return { messages: nextMessages };
   });

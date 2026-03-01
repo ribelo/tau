@@ -10,6 +10,8 @@ export type PendingSandboxNotice = {
 	text: string;
 };
 
+const SANDBOX_NOTICE_PREFIX = /^\s*SANDBOX_(?:STATE|CHANGE):[^\n]*(?:\n\n)?/;
+
 export function computeSandboxConfigHash(cfg: Required<SandboxConfig>): string {
 	return [
 		`fs=${cfg.filesystemMode}`,
@@ -20,7 +22,6 @@ export function computeSandboxConfigHash(cfg: Required<SandboxConfig>): string {
 	].join(";");
 }
 
-// This is the clean version of the notice builder. No allowlist here!
 function buildSandboxNotice(prefix: "SANDBOX_STATE:" | "SANDBOX_CHANGE:", cfg: Required<SandboxConfig>): string {
 	return [
 		prefix,
@@ -48,6 +49,29 @@ function asContentArray(
 	return [];
 }
 
+function isTextContent(content: TextContent | ImageContent | undefined): content is TextContent {
+	return Boolean(content && content.type === "text");
+}
+
+function stripSandboxNoticePrefix(text: string): string {
+	return text.replace(SANDBOX_NOTICE_PREFIX, "");
+}
+
+function stripLeadingSandboxNotice(
+	content: (TextContent | ImageContent)[],
+): (TextContent | ImageContent)[] {
+	if (content.length === 0) return content;
+
+	const first = content[0];
+	if (!isTextContent(first)) return content;
+
+	const strippedText = stripSandboxNoticePrefix(first.text);
+	if (strippedText === first.text) return content;
+	if (strippedText.length === 0) return content.slice(1);
+
+	return [{ ...first, text: strippedText }, ...content.slice(1)];
+}
+
 /**
  * Prepend injected notice text as content[0] on the last user message.
  * Returns a new messages array (does not mutate input).
@@ -61,16 +85,7 @@ export function injectSandboxNoticeIntoMessages<T extends MessageLike>(
 	for (let i = out.length - 1; i >= 0; i--) {
 		const msg = out[i];
 		if (msg && msg.role === "user") {
-			const contentArr = asContentArray(msg.content);
-			const firstText =
-				contentArr[0] && contentArr[0].type === "text" ? (contentArr[0] as TextContent).text : "";
-			if (
-				firstText.trimStart().startsWith("SANDBOX_CHANGE:") ||
-				firstText.trimStart().startsWith("SANDBOX_STATE:")
-			) {
-				return out;
-			}
-
+			const contentArr = stripLeadingSandboxNotice(asContentArray(msg.content));
 			const injected: TextContent = { type: "text", text: `${noticeText}\n\n` };
 			out[i] = {
 				...msg,
