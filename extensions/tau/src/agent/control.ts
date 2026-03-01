@@ -43,6 +43,7 @@ export const AgentControlLive = Layer.effect(
 						parentSandboxConfig,
 						parentModel: opts.parentModel,
 						approvalBroker: opts.approvalBroker,
+						modelRegistry: opts.modelRegistry,
 						resultSchema: opts.result_schema,
 					} satisfies SpawnOptions as SpawnOptions);
 				}),

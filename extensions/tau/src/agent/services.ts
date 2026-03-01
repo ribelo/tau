@@ -1,5 +1,6 @@
 import { Context, Data, Effect, Stream } from "effect";
 import type { Model, Api } from "@mariozechner/pi-ai";
+import type { ModelRegistry } from "@mariozechner/pi-coding-agent";
 import type { AgentId, AgentDefinition } from "./types.js";
 import type { Status } from "./status.js";
 export type { Status };
@@ -66,6 +67,7 @@ export interface SpawnOptions {
 	readonly parentSandboxConfig: Required<SandboxConfig>;
 	readonly parentModel?: Model<Api> | undefined;
 	readonly approvalBroker?: ApprovalBroker | undefined;
+	readonly modelRegistry?: ModelRegistry | undefined;
 	readonly resultSchema?: unknown;
 }
 
@@ -94,6 +96,7 @@ export interface ControlSpawnOptions {
 	readonly approvalBroker?: ApprovalBroker | undefined;
 	readonly parentSessionId: string;
 	readonly parentModel?: Model<Api> | undefined;
+	readonly modelRegistry?: ModelRegistry | undefined;
 	readonly cwd: string;
 }
 

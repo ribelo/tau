@@ -34,6 +34,7 @@ export default function initAgent(pi: ExtensionAPI) {
 				() => ({
 					parentSessionId: ctx.sessionManager.getSessionId(),
 					parentModel: ctx.model,
+					modelRegistry: ctx.modelRegistry,
 					cwd: ctx.cwd,
 					approvalBroker,
 				}),

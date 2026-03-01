@@ -105,7 +105,7 @@ function toolOnlyStreamFn(
 	}
 }
 
-function resolveModelPattern(
+export function resolveModelPattern(
 	pattern: string,
 	models: Model<Api>[],
 ): Model<Api> | undefined {
@@ -114,14 +114,31 @@ function resolveModelPattern(
 
 	const slashIndex = trimmed.indexOf("/");
 	if (slashIndex !== -1) {
-		const provider = trimmed.slice(0, slashIndex).toLowerCase();
-		const modelId = trimmed.slice(slashIndex + 1).toLowerCase();
+		const providerInput = trimmed.slice(0, slashIndex).trim();
+		const modelIdInput = trimmed.slice(slashIndex + 1).trim();
+		if (!providerInput || !modelIdInput) return undefined;
+
+		const provider = providerInput.toLowerCase();
+		const modelId = modelIdInput.toLowerCase();
 		const match = models.find(
 			(m) =>
 				m.provider.toLowerCase() === provider &&
 				m.id.toLowerCase() === modelId,
 		);
 		if (match) return match;
+
+		const providerTemplate = models.find(
+			(m) => m.provider.toLowerCase() === provider,
+		);
+		if (providerTemplate) {
+			return {
+				...providerTemplate,
+				id: modelIdInput,
+				name: modelIdInput,
+			};
+		}
+
+		return undefined;
 	}
 
 	const exact = models.find((m) => m.id.toLowerCase() === trimmed.toLowerCase());
@@ -195,6 +212,7 @@ export class AgentWorker implements Agent {
 		private readonly agentContext: {
 			parentSessionId: string;
 			parentModel: Model<Api> | undefined;
+			modelRegistry: ModelRegistry;
 			cwd: string;
 			approvalBroker: ApprovalBroker | undefined;
 		},
@@ -208,11 +226,14 @@ export class AgentWorker implements Agent {
 		parentSandboxConfig: Required<SandboxConfig>;
 		parentModel: Model<Api> | undefined;
 		approvalBroker: ApprovalBroker | undefined;
+		modelRegistry?: ModelRegistry | undefined;
 		resultSchema?: unknown;
 	}) {
 		return Effect.gen(function* () {
-			const authStorage = new AuthStorage();
-			const modelRegistry = new ModelRegistry(authStorage);
+			const modelRegistry = opts.modelRegistry
+				? opts.modelRegistry
+				: new ModelRegistry(new AuthStorage());
+			const authStorage = modelRegistry.authStorage;
 
 			const appendPrompts = buildWorkerAppendPrompts({
 				definition: opts.definition,
@@ -221,9 +242,7 @@ export class AgentWorker implements Agent {
 
 			const statusRef = yield* SubscriptionRef.make<Status>({ state: "pending" });
 
-			const models = opts.definition.models.some((m) => m.model === "inherit")
-				? opts.definition.models
-				: [...opts.definition.models, { model: "inherit" as const }];
+			const models = opts.definition.models;
 
 			// Stable agent ID (survives session recreation on model fallback)
 			const agentId = crypto.randomUUID() as AgentId;
@@ -232,6 +251,7 @@ export class AgentWorker implements Agent {
 			const agentContext = {
 				parentSessionId: opts.parentSessionId,
 				parentModel: opts.parentModel,
+				modelRegistry,
 				cwd: opts.cwd,
 				approvalBroker: opts.approvalBroker,
 			};

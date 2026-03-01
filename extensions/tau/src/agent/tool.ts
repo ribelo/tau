@@ -2,6 +2,7 @@ import { Type, type Static, type TSchema } from "@sinclair/typebox";
 import { Effect, Stream, Ref, Cause } from "effect";
 import { StringEnum } from "@mariozechner/pi-ai";
 import type { Model, Api } from "@mariozechner/pi-ai";
+import type { ModelRegistry } from "@mariozechner/pi-coding-agent";
 import type { AgentToolUpdateCallback } from "@mariozechner/pi-agent-core";
 import {
 	AgentControl,
@@ -106,6 +107,7 @@ export function buildToolDescription(cwd?: string): string {
 export interface AgentToolContext {
 	parentSessionId: string;
 	parentModel: Model<Api> | undefined;
+	modelRegistry: ModelRegistry;
 	cwd: string;
 	approvalBroker: ApprovalBroker | undefined;
 }
@@ -282,6 +284,7 @@ export function createAgentToolDef(
 							approvalBroker: context.approvalBroker,
 							parentSessionId: context.parentSessionId,
 							parentModel: context.parentModel,
+							modelRegistry: context.modelRegistry,
 							cwd: context.cwd,
 						} satisfies ControlSpawnOptions as ControlSpawnOptions);
 						return { 

@@ -49,6 +49,7 @@ export const AgentManagerLive = Layer.effect(
 						parentSandboxConfig: opts.parentSandboxConfig,
 						parentModel: opts.parentModel,
 						approvalBroker: opts.approvalBroker,
+						modelRegistry: opts.modelRegistry,
 						resultSchema: opts.resultSchema,
 					});
 

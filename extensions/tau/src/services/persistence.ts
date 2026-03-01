@@ -1,7 +1,12 @@
 import { Context, Effect, Layer, SubscriptionRef } from "effect";
 
 import { PiAPI } from "../effect/pi.js";
-import { TAU_PERSISTED_STATE_TYPE, loadPersistedState, type TauPersistedState } from "../shared/state.js";
+import {
+	TAU_PERSISTED_STATE_TYPE,
+	loadPersistedState,
+	mergePersistedState,
+	type TauPersistedState,
+} from "../shared/state.js";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 
 export class Persistence extends Context.Tag("Persistence")<
@@ -34,7 +39,7 @@ export const PersistenceLive = Layer.effect(
 				yield* Effect.sync(() => {
 					pi.on("session_start", (_event: unknown, ctx: ExtensionContext) => {
 						const persisted = loadPersistedState(ctx);
-						Effect.runSync(SubscriptionRef.set(state, persisted));
+						Effect.runSync(SubscriptionRef.update(state, (current) => mergePersistedState(current, persisted)));
 					});
 				});
 			}),
