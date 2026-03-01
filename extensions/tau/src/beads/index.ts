@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 import { Markdown, Text, type AutocompleteItem } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
+import { Schema } from "effect";
 
 import type { TauState } from "../shared/state.js";
 
@@ -80,6 +81,11 @@ type BdToolDetails = {
 };
 
 type BdMessageDetails = BdToolDetails & { command: string };
+
+const BdCliJsonOutputSchema = Schema.Union(
+	Schema.Array(Schema.Unknown),
+	Schema.Record({ key: Schema.String, value: Schema.Unknown }),
+);
 
 const BD_MESSAGE_TYPE = "bd";
 
@@ -621,7 +627,8 @@ async function runBd(pi: ExtensionAPI, command: string, signal?: AbortSignal, cw
 
 	const tryParse = (s: string) => {
 		try {
-			parsedJson = JSON.parse(s);
+			const parsed = JSON.parse(s);
+			parsedJson = Schema.decodeUnknownSync(BdCliJsonOutputSchema)(parsed);
 			isJson = true;
 			return true;
 		} catch {

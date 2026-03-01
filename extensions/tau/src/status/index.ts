@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ThemeColor } from "@mariozechner/pi-coding-agent";
 import { Theme } from "@mariozechner/pi-coding-agent";
 import { Text, visibleWidth, type Component } from "@mariozechner/pi-tui";
+import { Schema } from "effect";
 import https from "node:https";
 
 import type { TauState } from "../shared/state.js";
@@ -42,63 +43,169 @@ function buildStatusRow(data: {
 }
 
 type OpenAiUsagePayload = {
-	plan_type?: string;
+	plan_type?: string | undefined;
 	rate_limit?: {
-		allowed?: boolean;
-		limit_reached?: boolean;
-		primary_window?: RateLimitWindowSnapshot | null;
-		secondary_window?: RateLimitWindowSnapshot | null;
-	} | null;
+		allowed?: boolean | undefined;
+		limit_reached?: boolean | undefined;
+		primary_window?: RateLimitWindowSnapshot | null | undefined;
+		secondary_window?: RateLimitWindowSnapshot | null | undefined;
+	} | null | undefined;
 	credits?: {
-		has_credits?: boolean;
-		unlimited?: boolean;
-		balance?: string | null;
-	} | null;
+		has_credits?: boolean | undefined;
+		unlimited?: boolean | undefined;
+		balance?: string | null | undefined;
+	} | null | undefined;
 };
 
 type RateLimitWindowSnapshot = {
-	used_percent?: number;
-	limit_window_seconds?: number;
-	reset_at?: number;
-	reset_after_seconds?: number;
+	used_percent?: number | undefined;
+	limit_window_seconds?: number | undefined;
+	reset_at?: number | undefined;
+	reset_after_seconds?: number | undefined;
 };
 
 type GeminiQuotaResponse = {
-	buckets?: Array<{
-		remainingAmount?: string;
-		remainingFraction?: number;
-		resetTime?: string;
-		tokenType?: string;
-		modelId?: string;
-	}>;
+	buckets?: ReadonlyArray<{
+		remainingAmount?: string | undefined;
+		remainingFraction?: number | undefined;
+		resetTime?: string | undefined;
+		tokenType?: string | undefined;
+		modelId?: string | undefined;
+	}> | undefined;
 };
 
 type AntigravityUserStatus = {
 	userStatus?: {
-		name?: string;
-		email?: string;
-		userTier?: { name?: string };
+		name?: string | undefined;
+		email?: string | undefined;
+		userTier?: { name?: string | undefined } | undefined;
 		planStatus?: {
-			availablePromptCredits?: number;
-			availableFlowCredits?: number;
+			availablePromptCredits?: number | undefined;
+			availableFlowCredits?: number | undefined;
 			planInfo?: {
-				planName?: string;
-				monthlyPromptCredits?: number;
-				monthlyFlowCredits?: number;
-			};
-		};
+				planName?: string | undefined;
+				monthlyPromptCredits?: number | undefined;
+				monthlyFlowCredits?: number | undefined;
+			} | undefined;
+		} | undefined;
 		cascadeModelConfigData?: {
-			clientModelConfigs?: Array<{
-				label?: string;
-				modelOrAlias?: { model?: string };
+			clientModelConfigs?: ReadonlyArray<{
+				label?: string | undefined;
+				modelOrAlias?: { model?: string | undefined } | undefined;
 				quotaInfo?: {
-					remainingFraction?: number;
-					resetTime?: string;
-				};
-			}>;
-		};
-	};
+					remainingFraction?: number | undefined;
+					resetTime?: string | undefined;
+				} | undefined;
+			}> | undefined;
+		} | undefined;
+	} | undefined;
 };
+
+const OptionalString = Schema.optional(Schema.String);
+const OptionalNumber = Schema.optional(Schema.Number);
+const OptionalBoolean = Schema.optional(Schema.Boolean);
+
+const GoogleProjectTokenSchema = Schema.Struct({
+	token: OptionalString,
+	projectId: OptionalString,
+});
+
+const JwtPayloadSchema = Schema.Record({ key: Schema.String, value: Schema.Unknown });
+
+const RateLimitWindowSnapshotSchema = Schema.Struct({
+	used_percent: OptionalNumber,
+	limit_window_seconds: OptionalNumber,
+	reset_at: OptionalNumber,
+	reset_after_seconds: OptionalNumber,
+});
+
+const OpenAiUsagePayloadSchema = Schema.Struct({
+	plan_type: OptionalString,
+	rate_limit: Schema.optional(
+		Schema.Union(
+			Schema.Struct({
+				allowed: OptionalBoolean,
+				limit_reached: OptionalBoolean,
+				primary_window: Schema.optional(Schema.Union(RateLimitWindowSnapshotSchema, Schema.Null)),
+				secondary_window: Schema.optional(Schema.Union(RateLimitWindowSnapshotSchema, Schema.Null)),
+			}),
+			Schema.Null,
+		),
+	),
+	credits: Schema.optional(
+		Schema.Union(
+			Schema.Struct({
+				has_credits: OptionalBoolean,
+				unlimited: OptionalBoolean,
+				balance: Schema.optional(Schema.Union(Schema.String, Schema.Null)),
+			}),
+			Schema.Null,
+		),
+	),
+});
+
+const GeminiQuotaResponseSchema = Schema.Struct({
+	buckets: Schema.optional(
+		Schema.Array(
+			Schema.Struct({
+				remainingAmount: OptionalString,
+				remainingFraction: OptionalNumber,
+				resetTime: OptionalString,
+				tokenType: OptionalString,
+				modelId: OptionalString,
+			}),
+		),
+	),
+});
+
+const AntigravityUserStatusSchema = Schema.Struct({
+	userStatus: Schema.optional(
+		Schema.Struct({
+			name: OptionalString,
+			email: OptionalString,
+			userTier: Schema.optional(
+				Schema.Struct({
+					name: OptionalString,
+				}),
+			),
+			planStatus: Schema.optional(
+				Schema.Struct({
+					availablePromptCredits: OptionalNumber,
+					availableFlowCredits: OptionalNumber,
+					planInfo: Schema.optional(
+						Schema.Struct({
+							planName: OptionalString,
+							monthlyPromptCredits: OptionalNumber,
+							monthlyFlowCredits: OptionalNumber,
+						}),
+					),
+				}),
+			),
+			cascadeModelConfigData: Schema.optional(
+				Schema.Struct({
+					clientModelConfigs: Schema.optional(
+						Schema.Array(
+							Schema.Struct({
+								label: OptionalString,
+								modelOrAlias: Schema.optional(
+									Schema.Struct({
+										model: OptionalString,
+									}),
+								),
+								quotaInfo: Schema.optional(
+									Schema.Struct({
+										remainingFraction: OptionalNumber,
+										resetTime: OptionalString,
+									}),
+								),
+							}),
+						),
+					),
+				}),
+			),
+		}),
+	),
+});
 
 type StatusRow = {
 	label: string;
@@ -374,7 +481,7 @@ class StatusCard implements Component {
 
 function parseGoogleProjectToken(apiKey: string): { token: string; projectId: string } | null {
 	try {
-		const parsed = JSON.parse(apiKey) as { token?: string; projectId?: string };
+		const parsed = Schema.decodeUnknownSync(GoogleProjectTokenSchema)(JSON.parse(apiKey));
 		if (!parsed.token || !parsed.projectId) return null;
 		return { token: parsed.token, projectId: parsed.projectId };
 	} catch {
@@ -401,7 +508,7 @@ async function fetchGeminiQuota(token: string, projectId: string): Promise<Gemin
 		throw new Error(`HTTP ${res.status}${text ? `: ${text}` : ""}`);
 	}
 
-	return (await res.json()) as GeminiQuotaResponse;
+	return Schema.decodeUnknownSync(GeminiQuotaResponseSchema)(await res.json());
 }
 
 type ExecSpec = { command: string; args: string[] };
@@ -636,7 +743,7 @@ async function fetchAntigravityUserStatus(
 					const text = Buffer.concat(chunks).toString("utf-8");
 					if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
 						try {
-							resolve(JSON.parse(text) as AntigravityUserStatus);
+							resolve(Schema.decodeUnknownSync(AntigravityUserStatusSchema)(JSON.parse(text)));
 						} catch (err) {
 							reject(new Error(`Invalid JSON response: ${String(err)}`));
 						}
@@ -687,7 +794,7 @@ async function fetchOpenAiUsage(
 		const text = await res.text().catch(() => "");
 		throw new Error(`HTTP ${res.status}${text ? `: ${text}` : ""}`);
 	}
-	return (await res.json()) as OpenAiUsagePayload;
+	return Schema.decodeUnknownSync(OpenAiUsagePayloadSchema)(await res.json());
 }
 
 function decodeJwtPayload(token: string): Record<string, unknown> | null {
@@ -696,7 +803,7 @@ function decodeJwtPayload(token: string): Record<string, unknown> | null {
 		if (parts.length !== 3) return null;
 		const payload = parts[1] ?? "";
 		const decoded = Buffer.from(payload, "base64").toString("utf-8");
-		return JSON.parse(decoded) as Record<string, unknown>;
+		return Schema.decodeUnknownSync(JwtPayloadSchema)(JSON.parse(decoded));
 	} catch {
 		return null;
 	}
