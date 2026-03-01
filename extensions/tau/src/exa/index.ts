@@ -1,8 +1,7 @@
 import { Data, Effect, Schema, Context } from "effect";
 import * as ParseResult from "effect/ParseResult";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { getMarkdownTheme, type ExtensionAPI, type Theme } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 import { Markdown, Text } from "@mariozechner/pi-tui";
 
 // =============================================================================
@@ -534,12 +533,6 @@ const CodeContextTypeBox = Type.Object({
 // Rendering Helpers
 // =============================================================================
 
-interface Theme {
-	fg: (color: string, text: string) => string;
-	bold: (text: string) => string;
-	dim: (text: string) => string;
-}
-
 const truncateValue = (v: unknown): string => {
 	if (v === undefined) return "(default)";
 	if (v === null) return "null";
@@ -773,7 +766,7 @@ export default function initExa(pi: ExtensionAPI): void {
 		parameters: WebSearchTypeBox,
 
 		renderCall(args, theme) {
-			return new Text(renderSearchCall(args, theme as unknown as Theme), 0, 0);
+			return new Text(renderSearchCall(args, theme), 0, 0);
 		},
 
 		renderResult(result, options, theme) {
@@ -787,7 +780,7 @@ export default function initExa(pi: ExtensionAPI): void {
 				return new Text(theme.fg("dim", "(no results)"), 0, 0);
 			}
 
-			return new Text(renderSearchResult(details, options.expanded, theme as unknown as Theme), 0, 0);
+			return new Text(renderSearchResult(details, options.expanded, theme), 0, 0);
 		},
 
 		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
@@ -819,7 +812,7 @@ export default function initExa(pi: ExtensionAPI): void {
 		parameters: CrawlingTypeBox,
 
 		renderCall(args, theme) {
-			return new Text(renderCrawlCall(args, theme as unknown as Theme), 0, 0);
+			return new Text(renderCrawlCall(args, theme), 0, 0);
 		},
 
 		renderResult(result, options, theme) {
@@ -832,7 +825,7 @@ export default function initExa(pi: ExtensionAPI): void {
 				return new Text(theme.fg("dim", "(no results)"), 0, 0);
 			}
 
-			return new Text(renderCrawlResult(details, options.expanded, theme as unknown as Theme), 0, 0);
+			return new Text(renderCrawlResult(details, options.expanded, theme), 0, 0);
 		},
 
 		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
@@ -863,7 +856,7 @@ export default function initExa(pi: ExtensionAPI): void {
 		parameters: CodeContextTypeBox,
 
 		renderCall(args, theme) {
-			return new Text(renderCodeContextCall(args, theme as unknown as Theme), 0, 0);
+			return new Text(renderCodeContextCall(args, theme), 0, 0);
 		},
 
 		renderResult(result, options, theme) {
@@ -876,7 +869,7 @@ export default function initExa(pi: ExtensionAPI): void {
 				return new Text(theme.fg("dim", "(no response)"), 0, 0);
 			}
 
-			const out = renderCodeContextResult(details, options.expanded, theme as unknown as Theme);
+			const out = renderCodeContextResult(details, options.expanded, theme);
 
 			if (options.expanded) {
 				const mdTheme = getMarkdownTheme();
