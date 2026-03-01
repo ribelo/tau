@@ -11,7 +11,7 @@
         "yaml": "^2.7.0",
       },
       "devDependencies": {
-        "@effect/language-service": "^0.5.0",
+        "@effect/language-service": "^0.77.0",
         "@mariozechner/pi-agent-core": "^0.51.6",
         "@mariozechner/pi-ai": "^0.51.6",
         "@mariozechner/pi-coding-agent": "^0.51.6",
@@ -21,7 +21,7 @@
         "@typescript-eslint/eslint-plugin": "^8.20.0",
         "@typescript-eslint/parser": "^8.20.0",
         "eslint": "^9.18.0",
-        "typescript": "^5.7.3",
+        "typescript": "^5.9.3",
         "vitest": "^3.2.4",
       },
     },
@@ -101,7 +101,7 @@
 
     "@borewit/text-codec": ["@borewit/text-codec@0.2.1", "", {}, "sha512-k7vvKPbf7J2fZ5klGRD9AeKfUvojuZIQ3BT5u7Jfv+puwXkUBUT5PVyMDfJZpy30CBDXGMgw7fguK/lpOMBvgw=="],
 
-    "@effect/language-service": ["@effect/language-service@0.5.1", "", {}, "sha512-pS1dcAoPwd8PFWQ3w1cMe7ZXuLVJHc7MadCjpdrGvlq8OkZwVZhPxbyA8IkycZZXHyZ0R15Li6Ik0Uxfevn6sw=="],
+    "@effect/language-service": ["@effect/language-service@0.77.0", "", { "bin": { "effect-language-service": "cli.js" } }, "sha512-QP2bri8DdcK7Eo+SqFS2yNeD0Ch9kKHYxq2jeE9CaPpBknevCNFb3+hT6qSsPt2P6yOkhNP83KMy5Uk7DGBXlg=="],
 
     "@esbuild/linux-x64": ["@esbuild/linux-x64@0.27.2", "", { "os": "linux", "cpu": "x64" }, ""],
 

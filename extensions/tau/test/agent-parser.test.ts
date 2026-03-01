@@ -107,10 +107,40 @@ Prompt`;
 		expect(() => parseAgentDefinition(content)).toThrow("Missing YAML frontmatter");
 	});
 
+	it("should throw on non-positive approval_timeout", () => {
+		const content = `---
+name: oracle
+description: The oracle agent
+models:
+  - model: claude-3-5-sonnet-latest
+sandbox_fs: workspace-write
+sandbox_net: allow-all
+approval_policy: on-failure
+approval_timeout: 0
+---
+Prompt`;
+		expect(() => parseAgentDefinition(content)).toThrow();
+	});
+
+	it("should throw on fractional approval_timeout", () => {
+		const content = `---
+name: oracle
+description: The oracle agent
+models:
+  - model: claude-3-5-sonnet-latest
+sandbox_fs: workspace-write
+sandbox_net: allow-all
+approval_policy: on-failure
+approval_timeout: 1.5
+---
+Prompt`;
+		expect(() => parseAgentDefinition(content)).toThrow();
+	});
+
 	it("should throw on invalid frontmatter", () => {
 		const content = `---
 invalid
----
+--- 
 Prompt`;
 		expect(() => parseAgentDefinition(content)).toThrow();
 	});

@@ -12,6 +12,7 @@
     "gate": "bun run check && bun run lint && bun run format:check"
   },
   "devDependencies": {
+    "@effect/language-service": "^0.77.0",
     "@types/bun": "latest"
   },
   "peerDependencies": {

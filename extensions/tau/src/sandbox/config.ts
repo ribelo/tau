@@ -1,13 +1,13 @@
+import { Schema } from "effect";
 import * as os from "node:os";
 import * as path from "node:path";
-import { readJsonFile, writeJsonFile } from "../shared/fs.js";
-import { deepMerge, isRecord } from "../shared/json.js";
+import { SandboxConfig as SandboxConfigSchema } from "../schemas/config.js";
+import { readJsonFileDetailed, writeJsonFile } from "../shared/fs.js";
+import { deepMerge, isRecord, type AnyRecord } from "../shared/json.js";
 import {
 	type ApprovalPolicy,
 	type FilesystemMode,
 	type NetworkMode,
-	APPROVAL_POLICIES,
-	NETWORK_MODES,
 } from "../shared/policy.js";
 
 export type { ApprovalPolicy, FilesystemMode, NetworkMode };
@@ -29,36 +29,55 @@ export const DEFAULT_SANDBOX_CONFIG: Required<SandboxConfig> = {
 	subagent: false,
 };
 
-export function applyDefaults(cfg: SandboxConfig | undefined): Required<SandboxConfig> {
-	const networkMode =
-		cfg?.networkMode && NETWORK_MODES.includes(cfg.networkMode)
-			? cfg.networkMode
-			: DEFAULT_SANDBOX_CONFIG.networkMode;
-	const approvalPolicy =
-		cfg?.approvalPolicy && APPROVAL_POLICIES.includes(cfg.approvalPolicy)
-			? cfg.approvalPolicy
-			: DEFAULT_SANDBOX_CONFIG.approvalPolicy;
+const decodeSandboxConfig = Schema.decodeUnknownSync(SandboxConfigSchema);
 
+function decodeSandboxConfigOrThrow(value: unknown, source: string): SandboxConfig {
+	try {
+		const decoded = decodeSandboxConfig(value);
+		const normalized: SandboxConfig = {};
+		if (decoded.filesystemMode !== undefined) normalized.filesystemMode = decoded.filesystemMode;
+		if (decoded.networkMode !== undefined) normalized.networkMode = decoded.networkMode;
+		if (decoded.approvalPolicy !== undefined) normalized.approvalPolicy = decoded.approvalPolicy;
+		if (decoded.approvalTimeoutSeconds !== undefined) normalized.approvalTimeoutSeconds = decoded.approvalTimeoutSeconds;
+		if (decoded.subagent !== undefined) normalized.subagent = decoded.subagent;
+		return normalized;
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
+		throw new Error(`Invalid sandbox config at ${source}: ${reason}`);
+	}
+}
+
+export function applyDefaults(cfg: SandboxConfig | undefined): Required<SandboxConfig> {
 	return {
 		filesystemMode: cfg?.filesystemMode ?? DEFAULT_SANDBOX_CONFIG.filesystemMode,
-		networkMode,
-		approvalPolicy,
+		networkMode: cfg?.networkMode ?? DEFAULT_SANDBOX_CONFIG.networkMode,
+		approvalPolicy: cfg?.approvalPolicy ?? DEFAULT_SANDBOX_CONFIG.approvalPolicy,
 		approvalTimeoutSeconds: cfg?.approvalTimeoutSeconds ?? DEFAULT_SANDBOX_CONFIG.approvalTimeoutSeconds,
 		subagent: cfg?.subagent ?? DEFAULT_SANDBOX_CONFIG.subagent,
 	};
 }
 
-function readSandboxNamespace(settings: unknown): SandboxConfig {
-	if (!isRecord(settings)) return {};
+function readSandboxNamespace(settings: AnyRecord, settingsPath: string): SandboxConfig {
 	// New namespace: settings.tau.sandbox
 	const tau = settings["tau"];
 	const tauSandbox = isRecord(tau) ? tau["sandbox"] : undefined;
-	if (isRecord(tauSandbox)) return tauSandbox as SandboxConfig;
+	if (tauSandbox !== undefined) {
+		return decodeSandboxConfigOrThrow(tauSandbox, `${settingsPath}: tau.sandbox`);
+	}
 
 	// Back-compat: settings.sandbox
 	const legacy = settings["sandbox"];
-	if (isRecord(legacy)) return legacy as SandboxConfig;
+	if (legacy !== undefined) {
+		return decodeSandboxConfigOrThrow(legacy, `${settingsPath}: sandbox`);
+	}
 	return {};
+}
+
+function readSettingsFileOrThrow(settingsPath: string): AnyRecord {
+	const result = readJsonFileDetailed(settingsPath);
+	if (result._tag === "missing") return {};
+	if (result._tag === "ok") return result.data;
+	throw new Error(`Invalid settings JSON at ${settingsPath}: ${result.reason}`);
 }
 
 export function getUserSettingsPath(): string {
@@ -80,8 +99,8 @@ export function getProjectSettingsPath(workspaceRoot: string): string {
  */
 export function ensureUserDefaults(): void {
 	const settingsPath = getUserSettingsPath();
-	const current = readJsonFile(settingsPath) ?? {};
-	const existing = readSandboxNamespace(current);
+	const current = readSettingsFileOrThrow(settingsPath);
+	const existing = readSandboxNamespace(current, settingsPath);
 	const withDefaults = applyDefaults(existing);
 
 	const currentTau = isRecord(current["tau"]) ? current["tau"] : undefined;
@@ -101,22 +120,30 @@ export function computeEffectiveConfig(opts: {
 	workspaceRoot: string;
 	sessionOverride?: SandboxConfig;
 }): Required<SandboxConfig> {
-	const userSettings = readJsonFile(getUserSettingsPath()) ?? {};
-	const projectSettings = readJsonFile(getProjectSettingsPath(opts.workspaceRoot)) ?? {};
+	const userSettingsPath = getUserSettingsPath();
+	const projectSettingsPath = getProjectSettingsPath(opts.workspaceRoot);
+	const userSettings = readSettingsFileOrThrow(userSettingsPath);
+	const projectSettings = readSettingsFileOrThrow(projectSettingsPath);
 
-	const userSandbox = readSandboxNamespace(userSettings);
-	const projectSandbox = readSandboxNamespace(projectSettings);
+	const userSandbox = readSandboxNamespace(userSettings, userSettingsPath);
+	const projectSandbox = readSandboxNamespace(projectSettings, projectSettingsPath);
 
 	// precedence: session > project > user
-	const merged = deepMerge(deepMerge(userSandbox, projectSandbox), opts.sessionOverride ?? {});
+	const merged = decodeSandboxConfigOrThrow(
+		deepMerge(deepMerge(userSandbox, projectSandbox), opts.sessionOverride ?? {}),
+		"effective sandbox config",
+	);
 	return applyDefaults(merged);
 }
 
 export function persistUserConfigPatch(patch: SandboxConfig): void {
 	const settingsPath = getUserSettingsPath();
-	const current = readJsonFile(settingsPath) ?? {};
-	const existing = readSandboxNamespace(current);
-	const nextSandbox = deepMerge(existing, patch);
+	const current = readSettingsFileOrThrow(settingsPath);
+	const existing = readSandboxNamespace(current, settingsPath);
+	const nextSandbox = decodeSandboxConfigOrThrow(
+		deepMerge(existing, decodeSandboxConfigOrThrow(patch, "user sandbox patch")),
+		"user sandbox config",
+	);
 	const currentTau = isRecord(current["tau"]) ? current["tau"] : {};
 	const merged = deepMerge(current, { tau: { ...currentTau, sandbox: nextSandbox } });
 	writeJsonFile(settingsPath, merged);
@@ -124,9 +151,12 @@ export function persistUserConfigPatch(patch: SandboxConfig): void {
 
 export function persistProjectConfigPatch(workspaceRoot: string, patch: SandboxConfig): void {
 	const settingsPath = getProjectSettingsPath(workspaceRoot);
-	const current = readJsonFile(settingsPath) ?? {};
-	const existing = readSandboxNamespace(current);
-	const nextSandbox = deepMerge(existing, patch);
+	const current = readSettingsFileOrThrow(settingsPath);
+	const existing = readSandboxNamespace(current, settingsPath);
+	const nextSandbox = decodeSandboxConfigOrThrow(
+		deepMerge(existing, decodeSandboxConfigOrThrow(patch, "project sandbox patch")),
+		"project sandbox config",
+	);
 	const currentTau = isRecord(current["tau"]) ? current["tau"] : {};
 	const merged = deepMerge(current, { tau: { ...currentTau, sandbox: nextSandbox } });
 	writeJsonFile(settingsPath, merged);

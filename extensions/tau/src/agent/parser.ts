@@ -6,6 +6,7 @@ import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 import type { AgentDefinition, ModelSpec } from "./types.js";
 import type { SandboxConfig } from "../sandbox/config.js";
+import { ApprovalTimeoutSeconds } from "../schemas/config.js";
 import {
 	APPROVAL_POLICIES,
 	FILESYSTEM_MODES,
@@ -29,8 +30,6 @@ const NetworkModeSchema = Schema.Literal(...NETWORK_MODES);
 
 const ApprovalPolicySchema = Schema.Literal(...APPROVAL_POLICIES);
 
-const ApprovalTimeoutSchema = Schema.Number.pipe(Schema.filter((value) => !Number.isNaN(value)));
-
 const ModelSpecSchema = Schema.Struct({
 	model: Schema.String,
 	thinking: Schema.optional(ThinkingLevelSchema),
@@ -43,7 +42,7 @@ const AgentDefinitionFrontmatterSchema = Schema.Struct({
 	sandbox_fs: FilesystemModeSchema,
 	sandbox_net: NetworkModeSchema,
 	approval_policy: ApprovalPolicySchema,
-	approval_timeout: ApprovalTimeoutSchema,
+	approval_timeout: ApprovalTimeoutSeconds,
 });
 
 const decodeModelSpec = Schema.decodeUnknownSync(ModelSpecSchema);
