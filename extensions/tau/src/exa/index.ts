@@ -2,7 +2,6 @@ import { Data, Effect, Schema, Context } from "effect";
 import * as ParseResult from "effect/ParseResult";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import type { TauState } from "../shared/state.js";
 import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 import { Markdown, Text } from "@mariozechner/pi-tui";
 
@@ -764,7 +763,7 @@ const renderCodeContextResult = (
 // Tool Registration
 // =============================================================================
 
-export default function initExa(pi: ExtensionAPI, _state: TauState): void {
+export default function initExa(pi: ExtensionAPI): void {
 	// Register web_search tool
 	pi.registerTool({
 		name: "web_search_exa",

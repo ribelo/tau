@@ -1,4 +1,3 @@
-import type { TauState } from "../shared/state.js";
 import { Context, Effect, Layer } from "effect";
 
 import { PiAPI } from "../effect/pi.js";
@@ -21,7 +20,7 @@ export const CommitLive = Layer.effect(
 		return Commit.of({
 			setup: Effect.gen(function* () {
 				yield* Effect.sync(() => {
-					initCommitLegacy(pi, {} as unknown as TauState);
+					initCommitLegacy(pi);
 				});
 			}),
 		});

@@ -14,7 +14,6 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 
-import type { TauState } from "../shared/state.js";
 
 const COMMIT_FORMAT_GUIDE = `
 Commit message format guidelines:
@@ -28,7 +27,7 @@ Commit message format guidelines:
 - Clarity and usefulness matter more than strict conformance
 `.trim();
 
-export default function initCommit(pi: ExtensionAPI, _state: TauState) {
+export default function initCommit(pi: ExtensionAPI) {
 	// Command: /commit
 	pi.registerCommand("commit", {
 		description: "Draft and create a git commit with LLM assistance",
