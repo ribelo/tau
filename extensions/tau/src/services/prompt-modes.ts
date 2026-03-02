@@ -1,6 +1,6 @@
 import { Context, Effect, Layer, SubscriptionRef } from "effect";
 
-import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
 
 import { PiAPI } from "../effect/pi.js";
 import { isPromptModeName, resolvePromptModePresets, type PromptModeName } from "../prompt/modes.js";
@@ -13,6 +13,11 @@ export interface PromptModes {
 }
 
 export const PromptModes = Context.GenericTag<PromptModes>("PromptModes");
+
+type PromptModePersistence = {
+	readonly state: SubscriptionRef.SubscriptionRef<TauPersistedState>;
+	readonly update: (patch: Partial<TauPersistedState>) => Effect.Effect<void>;
+};
 
 function resolvePersistedMode(state: { promptModes?: { activeMode?: PromptModeName } } | undefined): PromptModeName {
 	const active = state?.promptModes?.activeMode;
@@ -29,31 +34,119 @@ function parseProviderModelOrThrow(model: string): { readonly provider: string; 
 	return { provider: model.slice(0, idx), modelId: model.slice(idx + 1) };
 }
 
+function resolveModeModelCandidates(
+	state: TauPersistedState,
+	mode: PromptModeName,
+	presetModel: string,
+): readonly string[] {
+	const assigned = state.promptModes?.modelsByMode?.[mode];
+	if (!assigned || assigned === presetModel) return [presetModel];
+	return [assigned, presetModel];
+}
+
+async function persistModeState(
+	persistence: PromptModePersistence,
+	mode: PromptModeName,
+	selectedModel: string,
+): Promise<void> {
+	const current = SubscriptionRef.get(persistence.state).pipe(Effect.runSync);
+	const modelsByMode: Partial<Record<PromptModeName, string>> = {
+		...(current.promptModes?.modelsByMode ?? {}),
+		[mode]: selectedModel,
+	};
+
+	await Effect.runPromise(
+		persistence.update({
+			promptModes: {
+				activeMode: mode,
+				modelsByMode,
+			},
+		}),
+	);
+}
+
+async function applyModeSelection(
+	pi: ExtensionAPI,
+	persistence: PromptModePersistence,
+	mode: PromptModeName,
+	ctx: Pick<ExtensionContext, "cwd" | "modelRegistry" | "ui">,
+	options: { readonly notifyOnSuccess: boolean },
+): Promise<void> {
+	const state = SubscriptionRef.get(persistence.state).pipe(Effect.runSync);
+	const presets = resolvePromptModePresets(ctx.cwd);
+	const preset = presets[mode];
+	const candidates = resolveModeModelCandidates(state, mode, preset.model);
+
+	let selectedModelId: string | undefined = undefined;
+
+	for (const candidate of candidates) {
+		let provider: string;
+		let modelId: string;
+		try {
+			({ provider, modelId } = parseProviderModelOrThrow(candidate));
+		} catch {
+			ctx.ui.notify(`Mode ${mode}: invalid model id: ${candidate}`, "error");
+			continue;
+		}
+
+		const model = ctx.modelRegistry.find(provider, modelId);
+		if (!model) {
+			if (candidate !== preset.model) {
+				ctx.ui.notify(`Mode ${mode}: assigned model not found, using preset (${preset.model})`, "warning");
+			} else {
+				ctx.ui.notify(`Mode ${mode}: model not found: ${candidate}`, "error");
+			}
+			continue;
+		}
+
+		const ok = await pi.setModel(model);
+		if (!ok) {
+			if (candidate !== preset.model) {
+				ctx.ui.notify(`Mode ${mode}: no auth for assigned model, using preset (${preset.model})`, "warning");
+				continue;
+			}
+			ctx.ui.notify(`Mode ${mode}: no auth available for ${candidate}`, "error");
+			continue;
+		}
+
+		selectedModelId = `${provider}/${modelId}`;
+		break;
+	}
+
+	if (!selectedModelId) return;
+
+	pi.setThinkingLevel(preset.thinking);
+	await persistModeState(persistence, mode, selectedModelId);
+	pi.events.emit("tau:mode:changed", { mode });
+	if (options.notifyOnSuccess) {
+		ctx.ui.notify(`Mode: ${mode}`, "info");
+	}
+}
+
 async function applyMode(
 	pi: ExtensionAPI,
-	persistence: { readonly update: (patch: Partial<TauPersistedState>) => Effect.Effect<void> },
+	persistence: PromptModePersistence,
 	mode: PromptModeName,
 	ctx: ExtensionCommandContext,
 ): Promise<void> {
-	const presets = resolvePromptModePresets(ctx.cwd);
-	const preset = presets[mode];
-	const { provider, modelId } = parseProviderModelOrThrow(preset.model);
-	const model = ctx.modelRegistry.find(provider, modelId);
-	if (!model) {
-		ctx.ui.notify(`Mode ${mode}: model not found: ${preset.model}`, "error");
-		return;
+	await applyModeSelection(pi, persistence, mode, ctx, { notifyOnSuccess: true });
+}
+
+async function syncModeForSessionContext(
+	pi: ExtensionAPI,
+	persistence: PromptModePersistence,
+	ctx: ExtensionContext,
+): Promise<void> {
+	if (!ctx.hasUI) return;
+
+	const sessionState = loadPersistedState(ctx);
+	if (sessionState.promptModes) {
+		await Effect.runPromise(persistence.update({ promptModes: sessionState.promptModes }));
 	}
 
-	const ok = await pi.setModel(model);
-	if (!ok) {
-		ctx.ui.notify(`Mode ${mode}: no auth available for ${preset.model}`, "error");
-		return;
-	}
-
-	pi.setThinkingLevel(preset.thinking);
-	await Effect.runPromise(persistence.update({ promptModes: { activeMode: mode } }));
-	pi.events.emit("tau:mode:changed", { mode });
-	ctx.ui.notify(`Mode: ${mode}`, "info");
+	const state = SubscriptionRef.get(persistence.state).pipe(Effect.runSync);
+	const mode = resolvePersistedMode(state);
+	await applyModeSelection(pi, persistence, mode, ctx, { notifyOnSuccess: false });
 }
 
 export const PromptModesLive = Layer.effect(
@@ -99,9 +192,9 @@ export const PromptModesLive = Layer.effect(
 								const presets = resolvePromptModePresets(ctx.cwd);
 								const lines = [
 									"Modes:",
-									`- smart${active === "smart" ? " [active]" : ""}: ${presets.smart.model} (${presets.smart.thinking})`,
-									`- deep${active === "deep" ? " [active]" : ""}: ${presets.deep.model} (${presets.deep.thinking})`,
-									`- rush${active === "rush" ? " [active]" : ""}: ${presets.rush.model} (${presets.rush.thinking})`,
+									`- smart${active === "smart" ? " [active]" : ""}: ${state.promptModes?.modelsByMode?.smart ?? presets.smart.model} (${presets.smart.thinking})`,
+									`- deep${active === "deep" ? " [active]" : ""}: ${state.promptModes?.modelsByMode?.deep ?? presets.deep.model} (${presets.deep.thinking})`,
+									`- rush${active === "rush" ? " [active]" : ""}: ${state.promptModes?.modelsByMode?.rush ?? presets.rush.model} (${presets.rush.thinking})`,
 								];
 								ctx.ui.notify(lines.join("\n"), "info");
 								return;
@@ -118,24 +211,19 @@ export const PromptModesLive = Layer.effect(
 					});
 
 					pi.on("session_start", async (_event, ctx) => {
-						if (!ctx.hasUI) return;
+						await syncModeForSessionContext(pi, persistence, ctx);
+					});
 
-						const sessionState = loadPersistedState(ctx);
-						if (sessionState.promptModes) {
-							await Effect.runPromise(persistence.update({ promptModes: sessionState.promptModes }));
-						}
+					pi.on("session_switch", async (_event, ctx) => {
+						await syncModeForSessionContext(pi, persistence, ctx);
+					});
 
-						const state = SubscriptionRef.get(persistence.state).pipe(Effect.runSync);
-						const mode = resolvePersistedMode(state);
-						const presets = resolvePromptModePresets(ctx.cwd);
-						const preset = presets[mode];
-						const { provider, modelId } = parseProviderModelOrThrow(preset.model);
-						const model = ctx.modelRegistry.find(provider, modelId);
-						if (!model) return;
-						await pi.setModel(model);
-						pi.setThinkingLevel(preset.thinking);
-						await Effect.runPromise(persistence.update({ promptModes: { activeMode: mode } }));
-						pi.events.emit("tau:mode:changed", { mode });
+					pi.on("model_select", async (event, ctx) => {
+						const persistedSessionState = loadPersistedState(ctx);
+						const inMemoryState = SubscriptionRef.get(persistence.state).pipe(Effect.runSync);
+						const mode = persistedSessionState.promptModes?.activeMode ?? resolvePersistedMode(inMemoryState);
+						const selectedModel = `${event.model.provider}/${event.model.id}`;
+						await persistModeState(persistence, mode, selectedModel);
 					});
 
 					pi.on("before_agent_start", (event, ctx) => {
