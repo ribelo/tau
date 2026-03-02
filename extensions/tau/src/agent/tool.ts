@@ -70,7 +70,7 @@ export const AgentParams = Type.Object({
 	// wait
 	ids: Type.Optional(
 		Type.Array(Type.String(), { 
-			description: "Agent IDs to wait for. If omitted, waits for ALL active agents. Returns when all finish (completed/failed/shutdown)" 
+			description: "Agent IDs to wait for (required for wait action). Returns when all finish (completed/failed/shutdown)" 
 		}),
 	),
 	timeout_ms: Type.Optional(
@@ -136,22 +136,11 @@ async function executeWaitWithUpdates(
 		const program = Effect.gen(function* () {
 			const control = yield* AgentControl;
 			
-			// If no ids provided, get all active agent ids
-			let ids = p.ids as AgentId[] | undefined;
+			const ids = p.ids as AgentId[] | undefined;
 			if (!ids || ids.length === 0) {
-				const agents = yield* control.list;
-				ids = agents.map(a => a.id);
-			}
-			
-			// If still no agents, return informative result immediately
-			if (ids.length === 0) {
-				const result: WaitResult = { 
-					status: {}, 
-					timedOut: false,
-					agentTypes: {},
-				};
-				yield* Ref.set(latestResultRef, result);
-				return result;
+				return yield* Effect.fail(
+					new Error("wait requires 'ids' with at least one agent ID"),
+				);
 			}
 			
 			const stream = control.waitStream(ids, p.timeout_ms, 1000);
@@ -316,7 +305,17 @@ export function createAgentToolDef(
 					}
 					case "list": {
 						const agents = yield* control.list;
-						return { agents };
+						const summary = agents.map(a => {
+							const { state } = a.status;
+							const base: Record<string, unknown> = { id: a.id, type: a.type, state };
+							const s = a.status as Record<string, unknown>;
+							if ("turns" in s && s["turns"] !== undefined) base["turns"] = s["turns"];
+							if ("toolCalls" in s && s["toolCalls"] !== undefined) base["toolCalls"] = s["toolCalls"];
+							if ("workedMs" in s && s["workedMs"] !== undefined) base["workedMs"] = s["workedMs"];
+							if (state === "failed" && "reason" in s) base["reason"] = s["reason"];
+							return base;
+						});
+						return { agents: summary };
 					}
 					default:
 						return yield* Effect.fail(new Error(`Unknown action: ${p.action}`));
