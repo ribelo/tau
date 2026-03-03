@@ -3,6 +3,7 @@ import {
 	AgentControl,
 	AgentManager,
 	AgentError,
+	AgentAccessDenied,
 	type Status,
 	type ControlSpawnOptions,
 	type SpawnOptions,
@@ -48,9 +49,27 @@ export const AgentControlLive = Layer.effect(
 						resultSchema: opts.result_schema,
 					} satisfies SpawnOptions as SpawnOptions);
 				}),
-			send: (id: AgentId, message: string, interrupt?: boolean) =>
+			send: (
+				id: AgentId,
+				message: string,
+				interrupt?: boolean,
+				requesterAgentId?: AgentId,
+			) =>
 				Effect.gen(function* () {
 					const agent = yield* manager.get(id);
+					const canRequesterMutate = yield* manager.canMutate(id, requesterAgentId);
+					if (!canRequesterMutate && requesterAgentId !== undefined) {
+						const agents = yield* manager.list;
+						const target = agents.find((info) => info.id === id);
+						const parentId = target?.parentAgentId ?? "orchestrator";
+						return yield* Effect.fail(
+							new AgentAccessDenied({
+								id,
+								requesterId: requesterAgentId,
+								parentId,
+							}),
+						);
+					}
 					if (interrupt) {
 						yield* agent.interrupt();
 					}
@@ -170,7 +189,8 @@ export const AgentControlLive = Layer.effect(
 					),
 				);
 			},
-			close: (id: AgentId) => manager.shutdown(id),
+			close: (id: AgentId, requesterAgentId?: AgentId) =>
+				manager.shutdown(id, requesterAgentId),
 			closeAll: manager.shutdownAll,
 			list: manager.list,
 		});

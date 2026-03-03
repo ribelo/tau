@@ -7,9 +7,26 @@ import {
 	AgentLimitReached,
 	AgentDepthExceeded,
 	AgentNotFound,
+	AgentAccessDenied,
 } from "./services.js";
 import type { AgentId } from "./types.js";
 import { AgentWorker } from "./worker.js";
+
+const ORCHESTRATOR_PARENT = "orchestrator" as AgentId;
+
+const canMutate = (
+	parentMapRef: Ref.Ref<HashMap.HashMap<AgentId, AgentId>>,
+	targetId: AgentId,
+	requesterAgentId?: AgentId,
+): Effect.Effect<boolean> =>
+	Effect.gen(function* () {
+		if (requesterAgentId === undefined) {
+			return true;
+		}
+		const parentMap = yield* Ref.get(parentMapRef);
+		const parentId = Option.getOrElse(HashMap.get(parentMap, targetId), () => ORCHESTRATOR_PARENT);
+		return parentId === requesterAgentId;
+	});
 
 export const AgentManagerLive = Layer.effect(
 	AgentManager,
@@ -97,7 +114,7 @@ export const AgentManagerLive = Layer.effect(
 					return infos;
 				}),
 			),
-			shutdown: (id) =>
+			canMutate: (id, requesterAgentId) =>
 				withGate(
 					Effect.gen(function* () {
 						const agents = yield* Ref.get(agentsRef);
@@ -105,6 +122,27 @@ export const AgentManagerLive = Layer.effect(
 						if (Option.isNone(agent)) {
 							return yield* Effect.fail(new AgentNotFound({ id }));
 						}
+						return yield* canMutate(parentMapRef, id, requesterAgentId);
+					}),
+				),
+			shutdown: (id, requesterAgentId) =>
+				withGate(
+					Effect.gen(function* () {
+						const agents = yield* Ref.get(agentsRef);
+						const agent = HashMap.get(agents, id);
+						if (Option.isNone(agent)) {
+							return yield* Effect.fail(new AgentNotFound({ id }));
+						}
+
+						const parentMap = yield* Ref.get(parentMapRef);
+						const parentId = Option.getOrElse(HashMap.get(parentMap, id), () => ORCHESTRATOR_PARENT);
+						const allowed = yield* canMutate(parentMapRef, id, requesterAgentId);
+						if (!allowed && requesterAgentId !== undefined) {
+							return yield* Effect.fail(
+								new AgentAccessDenied({ id, requesterId: requesterAgentId, parentId }),
+							);
+						}
+
 						yield* agent.value.shutdown();
 						yield* Ref.update(agentsRef, (map) => HashMap.remove(map, id));
 						yield* Ref.update(depthMapRef, (map) => HashMap.remove(map, id));

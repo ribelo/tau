@@ -11,6 +11,11 @@ import type { ApprovalBroker } from "./approval-broker.js";
 export class AgentNotFound extends Data.TaggedError("AgentNotFound")<{
 	readonly id: AgentId;
 }> {}
+export class AgentAccessDenied extends Data.TaggedError("AgentAccessDenied")<{
+	readonly id: AgentId;
+	readonly requesterId: AgentId;
+	readonly parentId: AgentId;
+}> {}
 export class AgentLimitReached extends Data.TaggedError("AgentLimitReached")<{
 	readonly max: number;
 }> {}
@@ -84,7 +89,14 @@ export class AgentManager extends Context.Tag("AgentManager")<
 		>;
 		readonly get: (id: AgentId) => Effect.Effect<Agent, AgentNotFound>;
 		readonly list: Effect.Effect<AgentInfo[]>;
-		readonly shutdown: (id: AgentId) => Effect.Effect<void, AgentNotFound>;
+		readonly canMutate: (
+			id: AgentId,
+			requesterAgentId?: AgentId,
+		) => Effect.Effect<boolean, AgentNotFound>;
+		readonly shutdown: (
+			id: AgentId,
+			requesterAgentId?: AgentId,
+		) => Effect.Effect<void, AgentNotFound | AgentAccessDenied>;
 		readonly shutdownAll: Effect.Effect<void>;
 	}
 >() {}
@@ -126,7 +138,8 @@ export class AgentControl extends Context.Tag("AgentControl")<
 			id: AgentId,
 			message: string,
 			interrupt?: boolean,
-		) => Effect.Effect<string, AgentNotFound | AgentError>;
+			requesterAgentId?: AgentId,
+		) => Effect.Effect<string, AgentNotFound | AgentAccessDenied | AgentError>;
 		readonly wait: (
 			ids: AgentId[],
 			timeoutMs?: number,
@@ -137,7 +150,10 @@ export class AgentControl extends Context.Tag("AgentControl")<
 			timeoutMs?: number,
 			pollIntervalMs?: number,
 		) => Stream.Stream<WaitResult, unknown>;
-		readonly close: (id: AgentId) => Effect.Effect<void, AgentNotFound>;
+		readonly close: (
+			id: AgentId,
+			requesterAgentId?: AgentId,
+		) => Effect.Effect<void, AgentNotFound | AgentAccessDenied>;
 		readonly closeAll: Effect.Effect<void>;
 		readonly list: Effect.Effect<AgentInfo[]>;
 	}

@@ -9,6 +9,7 @@ import {
 	AgentLimitReached,
 	AgentDepthExceeded,
 	AgentNotFound,
+	AgentAccessDenied,
 	AgentError,
 	type ControlSpawnOptions,
 	type WaitResult,
@@ -256,7 +257,7 @@ export function createAgentToolDef(
 				return executeWaitWithUpdates(runEffect, p, typedOnUpdate, signal);
 			}
 			
-			const program: Effect.Effect<object, AgentLimitReached | AgentDepthExceeded | AgentNotFound | AgentError | Error, AgentControl> = Effect.gen(function* () {
+			const program: Effect.Effect<object, AgentLimitReached | AgentDepthExceeded | AgentNotFound | AgentAccessDenied | AgentError | Error, AgentControl> = Effect.gen(function* () {
 				const control = yield* AgentControl;
 
 				switch (p.action) {
@@ -295,6 +296,7 @@ export function createAgentToolDef(
 							p.id as AgentId,
 							p.message,
 							p.interrupt,
+							context.parentAgentId,
 						);
 						return { submission_id };
 					}
@@ -302,7 +304,7 @@ export function createAgentToolDef(
 						if (!p.id) {
 							return yield* Effect.fail(new Error("close requires 'id'"));
 						}
-						yield* control.close(p.id as AgentId);
+						yield* control.close(p.id as AgentId, context.parentAgentId);
 						return { status: "closed" };
 					}
 					case "list": {
@@ -335,6 +337,12 @@ export function createAgentToolDef(
 								Effect.fail(new Error(`Agent depth exceeded (max: ${err.max}). Deeply nested agent spawns are restricted.`)),
 							AgentNotFound: (err: AgentNotFound) =>
 								Effect.fail(new Error(`Agent not found: ${err.id}`)),
+							AgentAccessDenied: (err: AgentAccessDenied) =>
+								Effect.fail(
+									new Error(
+										`Access denied for agent ${err.requesterId}: cannot mutate ${err.id} (parent: ${err.parentId}).`,
+									),
+								),
 							AgentError: (err: AgentError) =>
 								Effect.fail(new Error(err.message)),
 						}),
