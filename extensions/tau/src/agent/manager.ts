@@ -79,7 +79,7 @@ export const AgentManagerLive = Layer.effect(
 		const agentsRef = yield* Ref.make(HashMap.empty<AgentId, Agent>());
 		const depthMapRef = yield* Ref.make(HashMap.empty<AgentId, number>());
 		const parentMapRef = yield* Ref.make(HashMap.empty<AgentId, AgentId>());
-		const createdAtRef = yield* Ref.make(HashMap.empty<AgentId, number>());
+		const lastActivityRef = yield* Ref.make(HashMap.empty<AgentId, number>());
 		const operationGate = yield* Effect.makeSemaphore(1);
 		const withGate = operationGate.withPermits(1);
 
@@ -88,13 +88,13 @@ export const AgentManagerLive = Layer.effect(
 				yield* Ref.update(agentsRef, (map) => HashMap.remove(map, id));
 				yield* Ref.update(depthMapRef, (map) => HashMap.remove(map, id));
 				yield* Ref.update(parentMapRef, (map) => removeParentLinks(map, id));
-				yield* Ref.update(createdAtRef, (map) => HashMap.remove(map, id));
+				yield* Ref.update(lastActivityRef, (map) => HashMap.remove(map, id));
 			});
 
 		const gcImpl = Effect.gen(function* () {
 			const agents = yield* Ref.get(agentsRef);
 			const parentMap = yield* Ref.get(parentMapRef);
-			const createdAtMap = yield* Ref.get(createdAtRef);
+			const lastActivityMap = yield* Ref.get(lastActivityRef);
 			const now = Date.now();
 
 			const parentsWithActiveChildren = new Set<AgentId>();
@@ -109,7 +109,7 @@ export const AgentManagerLive = Layer.effect(
 				}
 			}
 
-			const idleAgents: Array<{ id: AgentId; createdAt: number }> = [];
+			const idleAgents: Array<{ id: AgentId; lastActivity: number }> = [];
 			for (const agent of HashMap.values(agents)) {
 				const status = yield* agent.status;
 				if (!isFinal(status)) {
@@ -118,13 +118,13 @@ export const AgentManagerLive = Layer.effect(
 				if (parentsWithActiveChildren.has(agent.id)) {
 					continue;
 				}
-				const createdAt = Option.getOrElse(HashMap.get(createdAtMap, agent.id), () => now);
-				idleAgents.push({ id: agent.id, createdAt });
+				const lastActivity = Option.getOrElse(HashMap.get(lastActivityMap, agent.id), () => now);
+				idleAgents.push({ id: agent.id, lastActivity });
 			}
 
 			const toEvict = new Set<AgentId>();
 			for (const idleAgent of idleAgents) {
-				if (now - idleAgent.createdAt >= config.idleTtlMs) {
+				if (now - idleAgent.lastActivity >= config.idleTtlMs) {
 					toEvict.add(idleAgent.id);
 				}
 			}
@@ -134,7 +134,7 @@ export const AgentManagerLive = Layer.effect(
 				const extra = remainingCount - config.maxAgents;
 				const oldestIdle = idleAgents
 					.filter((candidate) => !toEvict.has(candidate.id))
-					.sort((a, b) => a.createdAt - b.createdAt);
+					.sort((a, b) => a.lastActivity - b.lastActivity);
 				for (let i = 0; i < extra && i < oldestIdle.length; i += 1) {
 					const candidate = oldestIdle[i];
 					if (candidate !== undefined) {
@@ -156,15 +156,70 @@ export const AgentManagerLive = Layer.effect(
 			return evicted;
 		});
 
+		const evictLru = Effect.gen(function* () {
+			const agents = yield* Ref.get(agentsRef);
+			const parentMap = yield* Ref.get(parentMapRef);
+			const lastActivityMap = yield* Ref.get(lastActivityRef);
+
+			const parentsWithActiveChildren = new Set<AgentId>();
+			for (const [childId, parentId] of parentMap) {
+				const child = HashMap.get(agents, childId);
+				if (Option.isSome(child)) {
+					const status = yield* child.value.status;
+					if (!isFinal(status)) {
+						parentsWithActiveChildren.add(parentId);
+					}
+				}
+			}
+
+			const candidates: Array<{ id: AgentId; lastUsed: number }> = [];
+			for (const agent of HashMap.values(agents)) {
+				const status = yield* agent.status;
+				if (!isFinal(status)) {
+					continue;
+				}
+				if (parentsWithActiveChildren.has(agent.id)) {
+					continue;
+				}
+				const lastUsed = Option.getOrElse(HashMap.get(lastActivityMap, agent.id), () => 0);
+				candidates.push({ id: agent.id, lastUsed });
+			}
+
+			if (candidates.length === 0) {
+				return false;
+			}
+
+			candidates.sort((a, b) => a.lastUsed - b.lastUsed);
+			const victim = candidates[0];
+			if (victim === undefined) {
+				return false;
+			}
+
+			const idsToClose = collectDescendants(parentMap, victim.id);
+			for (const closedId of idsToClose) {
+				const currentAgents = yield* Ref.get(agentsRef);
+				const agent = HashMap.get(currentAgents, closedId);
+				if (Option.isSome(agent)) {
+					yield* agent.value.shutdown().pipe(Effect.ignore);
+				}
+				yield* removeAgentState(closedId);
+			}
+
+			return true;
+		});
+
 		return AgentManager.of({
 			spawn: (opts) =>
 				withGate(
 					Effect.gen(function* () {
 						const agents = yield* Ref.get(agentsRef);
 						if (HashMap.size(agents) >= config.maxThreads) {
-							return yield* Effect.fail(
-								new AgentLimitReached({ max: config.maxThreads }),
-							);
+							const evicted = yield* evictLru;
+							if (!evicted) {
+								return yield* Effect.fail(
+									new AgentLimitReached({ max: config.maxThreads }),
+								);
+							}
 						}
 
 						const depthMap = yield* Ref.get(depthMapRef);
@@ -195,14 +250,14 @@ export const AgentManagerLive = Layer.effect(
 						const parentAgentId = opts.parentAgentId;
 						yield* Ref.update(agentsRef, (map) => HashMap.set(map, id, agent));
 						yield* Ref.update(depthMapRef, (map) => HashMap.set(map, id, depth));
-						yield* Ref.update(createdAtRef, (map) => HashMap.set(map, id, Date.now()));
+						yield* Ref.update(lastActivityRef, (map) => HashMap.set(map, id, Date.now()));
 						if (parentAgentId !== undefined) {
 							yield* Ref.update(parentMapRef, (map) => HashMap.set(map, id, parentAgentId));
 						}
 
 						// Initial prompt
 						yield* agent.prompt(opts.message);
-						yield* Ref.update(createdAtRef, (map) => HashMap.set(map, id, Date.now()));
+						yield* Ref.update(lastActivityRef, (map) => HashMap.set(map, id, Date.now()));
 						yield* gcImpl;
 
 						return id;
@@ -216,6 +271,13 @@ export const AgentManagerLive = Layer.effect(
 						return yield* Effect.fail(new AgentNotFound({ id }));
 					}
 					return agent.value;
+				}),
+			touch: (id) =>
+				Ref.update(lastActivityRef, (map) => {
+					if (Option.isNone(HashMap.get(map, id))) {
+						return map;
+					}
+					return HashMap.set(map, id, Date.now());
 				}),
 			list: withGate(
 				Effect.gen(function* () {
@@ -287,7 +349,7 @@ export const AgentManagerLive = Layer.effect(
 					yield* Ref.set(agentsRef, HashMap.empty());
 					yield* Ref.set(depthMapRef, HashMap.empty());
 					yield* Ref.set(parentMapRef, HashMap.empty());
-					yield* Ref.set(createdAtRef, HashMap.empty());
+					yield* Ref.set(lastActivityRef, HashMap.empty());
 				}),
 			),
 		});

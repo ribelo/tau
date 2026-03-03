@@ -90,6 +90,7 @@ export class AgentManager extends Context.Tag("AgentManager")<
 			AgentLimitReached | AgentDepthExceeded | AgentError
 		>;
 		readonly get: (id: AgentId) => Effect.Effect<Agent, AgentNotFound>;
+		readonly touch: (id: AgentId) => Effect.Effect<void>;
 		readonly list: Effect.Effect<AgentInfo[]>;
 		readonly canMutate: (
 			id: AgentId,

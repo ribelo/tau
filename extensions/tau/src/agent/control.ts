@@ -20,6 +20,8 @@ export const AgentControlLive = Layer.effect(
 		const manager = yield* AgentManager;
 		const sandbox = yield* Sandbox;
 		const runGc = manager.gc.pipe(Effect.ignore);
+		const touchIds = (ids: ReadonlyArray<AgentId>) =>
+			Effect.forEach(ids, (id) => manager.touch(id), { discard: true }).pipe(Effect.ignore);
 
 		return AgentControl.of({
 			spawn: (opts: ControlSpawnOptions) =>
@@ -74,7 +76,9 @@ export const AgentControlLive = Layer.effect(
 					if (interrupt) {
 						yield* agent.interrupt();
 					}
-					return yield* agent.prompt(message);
+					const submissionId = yield* agent.prompt(message);
+					yield* manager.touch(id);
+					return submissionId;
 				}),
 			wait: (ids: AgentId[], timeoutMs = 900000) =>
 				Effect.gen(function* () {
@@ -137,7 +141,14 @@ export const AgentControlLive = Layer.effect(
 							),
 						),
 					);
-				}).pipe(Effect.ensuring(runGc)),
+				}).pipe(
+					Effect.ensuring(
+						Effect.gen(function* () {
+							yield* touchIds(ids);
+							yield* runGc;
+						}),
+					),
+				),
 			waitStream: (ids: AgentId[], timeoutMs = 900000, pollIntervalMs = 1000) => {
 				const timeout = `${Math.min(Math.max(timeoutMs, 0), 14400000)} millis` as const;
 				const pollInterval = Math.max(pollIntervalMs, 250); // Min 250ms
@@ -188,7 +199,12 @@ export const AgentControlLive = Layer.effect(
 							)
 						)
 					),
-					Stream.ensuring(runGc),
+					Stream.ensuring(
+						Effect.gen(function* () {
+							yield* touchIds(ids);
+							yield* runGc;
+						}),
+					),
 				);
 			},
 			close: (id: AgentId, requesterAgentId?: AgentId) =>
