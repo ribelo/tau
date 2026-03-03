@@ -1,6 +1,6 @@
 import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { AgentControl, AgentConfig } from "./services.js";
+import { AgentControl, AgentConfig, type AgentConfigService } from "./services.js";
 import { AgentControlLive } from "./control.js";
 import { AgentManagerLive } from "./manager.js";
 import { PiAPILive } from "../effect/pi.js";
@@ -13,19 +13,18 @@ import { createAgentToolDef, type AgentToolContext, type AgentToolDef } from "./
 // Module-level runtime - initialized once, shared across all tool calls and workers
 let sharedRuntime: ManagedRuntime.ManagedRuntime<AgentControl, never> | null = null;
 
+export type AgentRuntimeConfig = AgentConfigService;
+
 /**
  * Initialize the shared agent runtime.
  * Must be called once at extension startup.
  */
-export function initAgentRuntime(pi: ExtensionAPI): void {
+export function initAgentRuntime(pi: ExtensionAPI, config: AgentRuntimeConfig): void {
 	if (sharedRuntime) {
 		return; // Already initialized
 	}
 
-	const AgentConfigLive = Layer.succeed(AgentConfig, AgentConfig.of({
-		maxThreads: 12,
-		maxDepth: 3,
-	}));
+	const AgentConfigLive = Layer.succeed(AgentConfig, AgentConfig.of(config));
 
 	const MainLayer = AgentControlLive.pipe(
 		Layer.provide(AgentManagerLive),

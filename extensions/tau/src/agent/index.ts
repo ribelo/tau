@@ -1,13 +1,25 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { renderAgentCall, renderAgentResult } from "./render.js";
 import { createUiApprovalBroker } from "./approval-broker.js";
-import { initAgentRuntime, getAgentRuntime, closeAllAgents } from "./runtime.js";
+import {
+	initAgentRuntime,
+	getAgentRuntime,
+	closeAllAgents,
+	type AgentRuntimeConfig,
+} from "./runtime.js";
 import { installAgentProcessGuards } from "./process-guards.js";
 import { AgentParams, buildToolDescription, createAgentToolDef } from "./tool.js";
 
+const defaultAgentConfig: AgentRuntimeConfig = {
+	maxThreads: 12,
+	maxDepth: 3,
+	maxAgents: 20,
+	idleTtlMs: 5 * 60 * 1000,
+};
+
 export default function initAgent(pi: ExtensionAPI) {
 	// Initialize the shared runtime
-	initAgentRuntime(pi);
+	initAgentRuntime(pi, defaultAgentConfig);
 	// Guard against unhandled errors inside background agent loops (e.g., auth expiration)
 	installAgentProcessGuards(pi);
 

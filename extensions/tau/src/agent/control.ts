@@ -19,6 +19,7 @@ export const AgentControlLive = Layer.effect(
 	Effect.gen(function* () {
 		const manager = yield* AgentManager;
 		const sandbox = yield* Sandbox;
+		const runGc = manager.gc.pipe(Effect.ignore);
 
 		return AgentControl.of({
 			spawn: (opts: ControlSpawnOptions) =>
@@ -136,7 +137,7 @@ export const AgentControlLive = Layer.effect(
 							),
 						),
 					);
-				}),
+				}).pipe(Effect.ensuring(runGc)),
 			waitStream: (ids: AgentId[], timeoutMs = 900000, pollIntervalMs = 1000) => {
 				const timeout = `${Math.min(Math.max(timeoutMs, 0), 14400000)} millis` as const;
 				const pollInterval = Math.max(pollIntervalMs, 250); // Min 250ms
@@ -187,12 +188,14 @@ export const AgentControlLive = Layer.effect(
 							)
 						)
 					),
+					Stream.ensuring(runGc),
 				);
 			},
 			close: (id: AgentId, requesterAgentId?: AgentId) =>
 				Effect.gen(function* () {
 					return yield* manager.shutdown(id, requesterAgentId);
 				}),
+			gc: manager.gc,
 			closeAll: manager.shutdownAll,
 			list: manager.list,
 		});
