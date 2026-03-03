@@ -17,51 +17,55 @@ export const AgentManagerLive = Layer.effect(
 		const config = yield* AgentConfig;
 		const agentsRef = yield* Ref.make(HashMap.empty<AgentId, Agent>());
 		const depthMapRef = yield* Ref.make(HashMap.empty<string, number>());
+		const operationGate = yield* Effect.makeSemaphore(1);
+		const withGate = operationGate.withPermits(1);
 
 		return AgentManager.of({
 			spawn: (opts) =>
-				Effect.gen(function* () {
-					const agents = yield* Ref.get(agentsRef);
-					if (HashMap.size(agents) >= config.maxThreads) {
-						return yield* Effect.fail(
-							new AgentLimitReached({ max: config.maxThreads }),
+				withGate(
+					Effect.gen(function* () {
+						const agents = yield* Ref.get(agentsRef);
+						if (HashMap.size(agents) >= config.maxThreads) {
+							return yield* Effect.fail(
+								new AgentLimitReached({ max: config.maxThreads }),
+							);
+						}
+
+						const depthMap = yield* Ref.get(depthMapRef);
+						const parentDepth = Option.getOrElse(
+							HashMap.get(depthMap, opts.parentSessionId),
+							() => 0,
 						);
-					}
+						const depth = parentDepth + 1;
 
-					const depthMap = yield* Ref.get(depthMapRef);
-					const parentDepth = Option.getOrElse(
-						HashMap.get(depthMap, opts.parentSessionId),
-						() => 0,
-					);
-					const depth = parentDepth + 1;
+						if (depth > config.maxDepth) {
+							return yield* Effect.fail(
+								new AgentDepthExceeded({ max: config.maxDepth }),
+							);
+						}
 
-					if (depth > config.maxDepth) {
-						return yield* Effect.fail(
-							new AgentDepthExceeded({ max: config.maxDepth }),
-						);
-					}
+						const agent = yield* AgentWorker.make({
+							definition: opts.definition,
+							depth: depth,
+							cwd: opts.cwd,
+							parentSessionId: opts.parentSessionId,
+							parentSandboxConfig: opts.parentSandboxConfig,
+							parentModel: opts.parentModel,
+							approvalBroker: opts.approvalBroker,
+							modelRegistry: opts.modelRegistry,
+							resultSchema: opts.resultSchema,
+						});
 
-					const agent = yield* AgentWorker.make({
-						definition: opts.definition,
-						depth: depth,
-						cwd: opts.cwd,
-						parentSessionId: opts.parentSessionId,
-						parentSandboxConfig: opts.parentSandboxConfig,
-						parentModel: opts.parentModel,
-						approvalBroker: opts.approvalBroker,
-						modelRegistry: opts.modelRegistry,
-						resultSchema: opts.resultSchema,
-					});
+						const id = agent.id;
+						yield* Ref.update(agentsRef, (map) => HashMap.set(map, id, agent));
+						yield* Ref.update(depthMapRef, (map) => HashMap.set(map, id, depth));
 
-					const id = agent.id;
-					yield* Ref.update(agentsRef, (map) => HashMap.set(map, id, agent));
-					yield* Ref.update(depthMapRef, (map) => HashMap.set(map, id, depth));
+						// Initial prompt
+						yield* agent.prompt(opts.message);
 
-					// Initial prompt
-					yield* agent.prompt(opts.message);
-
-					return id;
-				}),
+						return id;
+					}),
+				),
 			get: (id) =>
 				Effect.gen(function* () {
 					const agents = yield* Ref.get(agentsRef);
@@ -71,38 +75,44 @@ export const AgentManagerLive = Layer.effect(
 					}
 					return agent.value;
 				}),
-			list: Effect.gen(function* () {
-				const agents = yield* Ref.get(agentsRef);
-				const infos: AgentInfo[] = [];
-				for (const agent of HashMap.values(agents)) {
-					const status = yield* agent.status;
-					infos.push({
-						id: agent.id,
-						type: agent.type,
-						status,
-					});
-				}
-				return infos;
-			}),
-			shutdown: (id) =>
+			list: withGate(
 				Effect.gen(function* () {
 					const agents = yield* Ref.get(agentsRef);
-					const agent = HashMap.get(agents, id);
-					if (Option.isNone(agent)) {
-						return yield* Effect.fail(new AgentNotFound({ id }));
+					const infos: AgentInfo[] = [];
+					for (const agent of HashMap.values(agents)) {
+						const status = yield* agent.status;
+						infos.push({
+							id: agent.id,
+							type: agent.type,
+							status,
+						});
 					}
-					yield* agent.value.shutdown();
-					yield* Ref.update(agentsRef, (map) => HashMap.remove(map, id));
-					yield* Ref.update(depthMapRef, (map) => HashMap.remove(map, id));
+					return infos;
 				}),
-			shutdownAll: Effect.gen(function* () {
-				const agents = yield* Ref.get(agentsRef);
-				for (const agent of HashMap.values(agents)) {
-					yield* agent.shutdown().pipe(Effect.ignore);
-				}
-				yield* Ref.set(agentsRef, HashMap.empty());
-				yield* Ref.set(depthMapRef, HashMap.empty());
-			}),
+			),
+			shutdown: (id) =>
+				withGate(
+					Effect.gen(function* () {
+						const agents = yield* Ref.get(agentsRef);
+						const agent = HashMap.get(agents, id);
+						if (Option.isNone(agent)) {
+							return yield* Effect.fail(new AgentNotFound({ id }));
+						}
+						yield* agent.value.shutdown();
+						yield* Ref.update(agentsRef, (map) => HashMap.remove(map, id));
+						yield* Ref.update(depthMapRef, (map) => HashMap.remove(map, id));
+					}),
+				),
+			shutdownAll: withGate(
+				Effect.gen(function* () {
+					const agents = yield* Ref.get(agentsRef);
+					for (const agent of HashMap.values(agents)) {
+						yield* agent.shutdown().pipe(Effect.ignore);
+					}
+					yield* Ref.set(agentsRef, HashMap.empty());
+					yield* Ref.set(depthMapRef, HashMap.empty());
+				}),
+			),
 		});
 	}),
 );
