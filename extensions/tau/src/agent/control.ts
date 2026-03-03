@@ -190,7 +190,9 @@ export const AgentControlLive = Layer.effect(
 				);
 			},
 			close: (id: AgentId, requesterAgentId?: AgentId) =>
-				manager.shutdown(id, requesterAgentId),
+				Effect.gen(function* () {
+					return yield* manager.shutdown(id, requesterAgentId);
+				}),
 			closeAll: manager.shutdownAll,
 			list: manager.list,
 		});

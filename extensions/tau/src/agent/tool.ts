@@ -304,8 +304,8 @@ export function createAgentToolDef(
 						if (!p.id) {
 							return yield* Effect.fail(new Error("close requires 'id'"));
 						}
-						yield* control.close(p.id as AgentId, context.parentAgentId);
-						return { status: "closed" };
+						const ids = yield* control.close(p.id as AgentId, context.parentAgentId);
+						return { status: "closed", closedIds: ids };
 					}
 					case "list": {
 						const agents = yield* control.list;

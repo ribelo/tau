@@ -28,6 +28,36 @@ const canMutate = (
 		return parentId === requesterAgentId;
 	});
 
+const collectDescendants = (
+	parentMap: HashMap.HashMap<AgentId, AgentId>,
+	rootId: AgentId,
+): AgentId[] => {
+	const childrenByParent = new Map<AgentId, AgentId[]>();
+	for (const [child, parent] of parentMap) {
+		const list = childrenByParent.get(parent) ?? [];
+		list.push(child);
+		childrenByParent.set(parent, list);
+	}
+
+	const result: AgentId[] = [];
+	const stack: AgentId[] = [rootId];
+	const seen = new Set<AgentId>();
+	while (stack.length > 0) {
+		const current = stack.pop();
+		if (current === undefined || seen.has(current)) {
+			continue;
+		}
+		seen.add(current);
+		result.push(current);
+		const children = childrenByParent.get(current) ?? [];
+		for (const child of children) {
+			stack.push(child);
+		}
+	}
+
+	return result;
+};
+
 export const AgentManagerLive = Layer.effect(
 	AgentManager,
 	Effect.gen(function* () {
@@ -143,10 +173,19 @@ export const AgentManagerLive = Layer.effect(
 							);
 						}
 
-						yield* agent.value.shutdown();
-						yield* Ref.update(agentsRef, (map) => HashMap.remove(map, id));
-						yield* Ref.update(depthMapRef, (map) => HashMap.remove(map, id));
-						yield* Ref.update(parentMapRef, (map) => HashMap.remove(map, id));
+						const idsToClose = collectDescendants(parentMap, id);
+						for (const closedId of idsToClose) {
+							const currentAgents = yield* Ref.get(agentsRef);
+							const currentAgent = HashMap.get(currentAgents, closedId);
+							if (Option.isSome(currentAgent)) {
+								yield* currentAgent.value.shutdown();
+							}
+							yield* Ref.update(agentsRef, (map) => HashMap.remove(map, closedId));
+							yield* Ref.update(depthMapRef, (map) => HashMap.remove(map, closedId));
+							yield* Ref.update(parentMapRef, (map) => HashMap.remove(map, closedId));
+						}
+
+						return idsToClose;
 					}),
 				),
 			shutdownAll: withGate(
