@@ -43,6 +43,7 @@ export interface AgentInfo {
 	readonly id: AgentId;
 	readonly type: string;
 	readonly status: Status;
+	readonly parentAgentId?: AgentId | undefined;
 }
 
 // Agent Worker Interface
@@ -64,6 +65,7 @@ export interface SpawnOptions {
 	readonly depth: number;
 	readonly cwd: string;
 	readonly parentSessionId: string;
+	readonly parentAgentId?: AgentId | undefined;
 	readonly parentSandboxConfig: Required<SandboxConfig>;
 	readonly parentModel?: Model<Api> | undefined;
 	readonly approvalBroker?: ApprovalBroker | undefined;
@@ -95,6 +97,7 @@ export interface ControlSpawnOptions {
 	readonly result_schema?: unknown;
 	readonly approvalBroker?: ApprovalBroker | undefined;
 	readonly parentSessionId: string;
+	readonly parentAgentId?: AgentId | undefined;
 	readonly parentModel?: Model<Api> | undefined;
 	readonly modelRegistry?: ModelRegistry | undefined;
 	readonly cwd: string;

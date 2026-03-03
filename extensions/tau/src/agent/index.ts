@@ -33,6 +33,7 @@ export default function initAgent(pi: ExtensionAPI) {
 				(effect) => runtime.runPromise(effect),
 				() => ({
 					parentSessionId: ctx.sessionManager.getSessionId(),
+					parentAgentId: undefined,
 					parentModel: ctx.model,
 					modelRegistry: ctx.modelRegistry,
 					cwd: ctx.cwd,

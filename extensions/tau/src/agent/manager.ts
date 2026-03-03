@@ -17,6 +17,7 @@ export const AgentManagerLive = Layer.effect(
 		const config = yield* AgentConfig;
 		const agentsRef = yield* Ref.make(HashMap.empty<AgentId, Agent>());
 		const depthMapRef = yield* Ref.make(HashMap.empty<string, number>());
+		const parentMapRef = yield* Ref.make(HashMap.empty<AgentId, AgentId>());
 		const operationGate = yield* Effect.makeSemaphore(1);
 		const withGate = operationGate.withPermits(1);
 
@@ -32,10 +33,9 @@ export const AgentManagerLive = Layer.effect(
 						}
 
 						const depthMap = yield* Ref.get(depthMapRef);
-						const parentDepth = Option.getOrElse(
-							HashMap.get(depthMap, opts.parentSessionId),
-							() => 0,
-						);
+						const parentDepth = opts.parentAgentId !== undefined
+							? Option.getOrElse(HashMap.get(depthMap, opts.parentAgentId), () => 0)
+							: 0;
 						const depth = parentDepth + 1;
 
 						if (depth > config.maxDepth) {
@@ -57,8 +57,12 @@ export const AgentManagerLive = Layer.effect(
 						});
 
 						const id = agent.id;
+						const parentAgentId = opts.parentAgentId;
 						yield* Ref.update(agentsRef, (map) => HashMap.set(map, id, agent));
 						yield* Ref.update(depthMapRef, (map) => HashMap.set(map, id, depth));
+						if (parentAgentId !== undefined) {
+							yield* Ref.update(parentMapRef, (map) => HashMap.set(map, id, parentAgentId));
+						}
 
 						// Initial prompt
 						yield* agent.prompt(opts.message);
@@ -78,13 +82,16 @@ export const AgentManagerLive = Layer.effect(
 			list: withGate(
 				Effect.gen(function* () {
 					const agents = yield* Ref.get(agentsRef);
+					const parentMap = yield* Ref.get(parentMapRef);
 					const infos: AgentInfo[] = [];
 					for (const agent of HashMap.values(agents)) {
 						const status = yield* agent.status;
+						const parentAgentId = Option.getOrUndefined(HashMap.get(parentMap, agent.id));
 						infos.push({
 							id: agent.id,
 							type: agent.type,
 							status,
+							parentAgentId,
 						});
 					}
 					return infos;
@@ -101,6 +108,7 @@ export const AgentManagerLive = Layer.effect(
 						yield* agent.value.shutdown();
 						yield* Ref.update(agentsRef, (map) => HashMap.remove(map, id));
 						yield* Ref.update(depthMapRef, (map) => HashMap.remove(map, id));
+						yield* Ref.update(parentMapRef, (map) => HashMap.remove(map, id));
 					}),
 				),
 			shutdownAll: withGate(
@@ -111,6 +119,7 @@ export const AgentManagerLive = Layer.effect(
 					}
 					yield* Ref.set(agentsRef, HashMap.empty());
 					yield* Ref.set(depthMapRef, HashMap.empty());
+					yield* Ref.set(parentMapRef, HashMap.empty());
 				}),
 			),
 		});

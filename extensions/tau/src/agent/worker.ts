@@ -211,6 +211,7 @@ export class AgentWorker implements Agent {
 		private readonly parentModel: Model<Api> | undefined,
 		private readonly agentContext: {
 			parentSessionId: string;
+			parentAgentId?: AgentId | undefined;
 			parentModel: Model<Api> | undefined;
 			modelRegistry: ModelRegistry;
 			cwd: string;
@@ -250,6 +251,7 @@ export class AgentWorker implements Agent {
 			// Mutable context for nested agent tool
 			const agentContext = {
 				parentSessionId: opts.parentSessionId,
+				parentAgentId: agentId,
 				parentModel: opts.parentModel,
 				modelRegistry,
 				cwd: opts.cwd,

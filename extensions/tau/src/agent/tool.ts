@@ -106,6 +106,7 @@ export function buildToolDescription(cwd?: string): string {
 
 export interface AgentToolContext {
 	parentSessionId: string;
+	parentAgentId?: AgentId | undefined;
 	parentModel: Model<Api> | undefined;
 	modelRegistry: ModelRegistry;
 	cwd: string;
@@ -272,6 +273,7 @@ export function createAgentToolDef(
 							result_schema: p.result_schema,
 							approvalBroker: context.approvalBroker,
 							parentSessionId: context.parentSessionId,
+							parentAgentId: context.parentAgentId,
 							parentModel: context.parentModel,
 							modelRegistry: context.modelRegistry,
 							cwd: context.cwd,
@@ -309,6 +311,7 @@ export function createAgentToolDef(
 							const { state } = a.status;
 							const base: Record<string, unknown> = { id: a.id, type: a.type, state };
 							const s = a.status as Record<string, unknown>;
+							if (a.parentAgentId !== undefined) base["parentAgentId"] = a.parentAgentId;
 							if ("turns" in s && s["turns"] !== undefined) base["turns"] = s["turns"];
 							if ("toolCalls" in s && s["toolCalls"] !== undefined) base["toolCalls"] = s["toolCalls"];
 							if ("workedMs" in s && s["workedMs"] !== undefined) base["workedMs"] = s["workedMs"];

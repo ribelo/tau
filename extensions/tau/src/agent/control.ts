@@ -40,6 +40,7 @@ export const AgentControlLive = Layer.effect(
 						depth: 0, // Depth is handled by manager now
 						cwd: opts.cwd,
 						parentSessionId: opts.parentSessionId,
+						parentAgentId: opts.parentAgentId,
 						parentSandboxConfig,
 						parentModel: opts.parentModel,
 						approvalBroker: opts.approvalBroker,
