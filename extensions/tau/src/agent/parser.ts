@@ -20,7 +20,7 @@ const EXTENSION_AGENTS_DIR = path.resolve(
 	"agents",
 );
 
-const THINKING_LEVELS = ["low", "medium", "high", "inherit"] as const;
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "inherit"] as const;
 
 const ThinkingLevelSchema = Schema.Literal(...THINKING_LEVELS);
 
