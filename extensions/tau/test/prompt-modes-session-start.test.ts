@@ -26,6 +26,11 @@ type PiMock = {
 	readonly modeChangedEvents: PromptModeName[];
 };
 
+type PiMockOptions = {
+	readonly emitModelSelectOnSet?: boolean;
+	readonly getSetModelContext?: () => ExtensionContext | undefined;
+};
+
 async function withTempDir<A>(fn: (dir: string) => Promise<A>): Promise<A> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tau-test-"));
 	try {
@@ -43,12 +48,13 @@ function parseProviderModel(model: string): { readonly provider: string; readonl
 	return { provider: model.slice(0, idx), id: model.slice(idx + 1) };
 }
 
-function makePiMock(): PiMock {
+function makePiMock(options?: PiMockOptions): PiMock {
 	const handlers = new Map<string, SessionStartHandler[]>();
 	const shortcuts = new Map<string, ShortcutHandler>();
 	const setModelCalls: Array<{ readonly provider: string; readonly id: string }> = [];
 	const thinkingCalls: string[] = [];
 	const modeChangedEvents: PromptModeName[] = [];
+	let currentModel: { readonly provider: string; readonly id: string } | undefined = undefined;
 
 	const pi = {
 		on: (event: string, handler: unknown) => {
@@ -73,10 +79,33 @@ function makePiMock(): PiMock {
 				typeof (model as { provider?: unknown }).provider === "string" &&
 				typeof (model as { id?: unknown }).id === "string"
 			) {
-				setModelCalls.push({
+				const selectedModel = {
 					provider: (model as { provider: string }).provider,
 					id: (model as { id: string }).id,
-				});
+				};
+				setModelCalls.push(selectedModel);
+
+				if (options?.emitModelSelectOnSet) {
+					const ctx = options.getSetModelContext?.();
+					if (ctx) {
+						const modelSelectHandlers = handlers.get("model_select") ?? [];
+						for (const handler of modelSelectHandlers) {
+							await Promise.resolve(
+								handler(
+									{
+										type: "model_select",
+										model: selectedModel,
+										previousModel: currentModel,
+										source: "set",
+									},
+									ctx,
+								),
+							);
+						}
+					}
+				}
+
+				currentModel = selectedModel;
 			}
 			return true;
 		},
@@ -471,6 +500,35 @@ describe("prompt-modes session_start", () => {
 
 			const persisted = Effect.runSync(SubscriptionRef.get(stateRef));
 			expect(persisted.promptModes?.activeMode).toBe("deep");
+		});
+	});
+
+	it("keeps mode-to-model assignments stable when tab switching emits model_select", async () => {
+		await withTempDir(async (cwd) => {
+			const stateRef = await Effect.runPromise(
+				SubscriptionRef.make<TauPersistedState>({ promptModes: { activeMode: "smart" } }),
+			);
+			let currentCtx: ExtensionContext | undefined = undefined;
+			const mock = makePiMock({
+				emitModelSelectOnSet: true,
+				getSetModelContext: () => currentCtx,
+			});
+			await setupPromptModes(stateRef, mock.pi);
+
+			const tabShortcut = mock.shortcuts.get("tab");
+			expect(tabShortcut).toBeTypeOf("function");
+
+			currentCtx = makeSessionStartContext(cwd, [], true, { editorText: "" });
+			await Promise.resolve(tabShortcut?.(currentCtx));
+			await Promise.resolve(tabShortcut?.(currentCtx));
+			await Promise.resolve(tabShortcut?.(currentCtx));
+
+			const presets = resolvePromptModePresets(cwd);
+			const persisted = Effect.runSync(SubscriptionRef.get(stateRef));
+			expect(persisted.promptModes?.activeMode).toBe("smart");
+			expect(persisted.promptModes?.modelsByMode?.smart).toBe(presets.smart.model);
+			expect(persisted.promptModes?.modelsByMode?.deep).toBe(presets.deep.model);
+			expect(persisted.promptModes?.modelsByMode?.rush).toBe(presets.rush.model);
 		});
 	});
 
