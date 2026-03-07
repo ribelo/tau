@@ -15,10 +15,12 @@ import { PromptModes, PromptModesLive } from "../src/services/prompt-modes.js";
 import { mergePersistedState, TAU_PERSISTED_STATE_TYPE, type TauPersistedState } from "../src/shared/state.js";
 
 type SessionStartHandler = (event: unknown, ctx: ExtensionContext) => unknown;
+type ShortcutHandler = (ctx: ExtensionContext) => Promise<void> | void;
 
 type PiMock = {
 	readonly pi: ExtensionAPI;
 	readonly handlers: Map<string, SessionStartHandler[]>;
+	readonly shortcuts: Map<string, ShortcutHandler>;
 	readonly setModelCalls: Array<{ readonly provider: string; readonly id: string }>;
 	readonly thinkingCalls: string[];
 	readonly modeChangedEvents: PromptModeName[];
@@ -43,6 +45,7 @@ function parseProviderModel(model: string): { readonly provider: string; readonl
 
 function makePiMock(): PiMock {
 	const handlers = new Map<string, SessionStartHandler[]>();
+	const shortcuts = new Map<string, ShortcutHandler>();
 	const setModelCalls: Array<{ readonly provider: string; readonly id: string }> = [];
 	const thinkingCalls: string[] = [];
 	const modeChangedEvents: PromptModeName[] = [];
@@ -54,6 +57,15 @@ function makePiMock(): PiMock {
 			handlers.set(event, current);
 		},
 		registerCommand: () => undefined,
+		registerShortcut: (shortcut: string, options: unknown) => {
+			if (
+				typeof options === "object" &&
+				options !== null &&
+				typeof (options as { handler?: unknown }).handler === "function"
+			) {
+				shortcuts.set(shortcut, (options as { handler: ShortcutHandler }).handler);
+			}
+		},
 		setModel: async (model: unknown) => {
 			if (
 				typeof model === "object" &&
@@ -91,10 +103,23 @@ function makePiMock(): PiMock {
 		},
 	} as unknown as ExtensionAPI;
 
-	return { pi, handlers, setModelCalls, thinkingCalls, modeChangedEvents };
+	return { pi, handlers, shortcuts, setModelCalls, thinkingCalls, modeChangedEvents };
 }
 
-function makeSessionStartContext(cwd: string, entries: unknown[], hasUI = true): ExtensionContext {
+function makeSessionStartContext(
+	cwd: string,
+	entries: unknown[],
+	hasUI = true,
+	options?: {
+		readonly editorText?: string;
+		readonly isIdle?: boolean;
+		readonly hasPendingMessages?: boolean;
+	},
+): ExtensionContext {
+	const editorText = options?.editorText ?? "";
+	const isIdle = options?.isIdle ?? true;
+	const hasPendingMessages = options?.hasPendingMessages ?? false;
+
 	return {
 		cwd,
 		hasUI,
@@ -104,8 +129,16 @@ function makeSessionStartContext(cwd: string, entries: unknown[], hasUI = true):
 		sessionManager: {
 			getEntries: () => entries,
 		},
+		isIdle: () => isIdle,
+		hasPendingMessages: () => hasPendingMessages,
+		abort: () => undefined,
+		shutdown: () => undefined,
+		getContextUsage: () => undefined,
+		compact: () => undefined,
+		getSystemPrompt: () => "",
 		ui: {
 			notify: () => undefined,
+			getEditorText: () => editorText,
 		},
 	} as unknown as ExtensionContext;
 }
@@ -415,6 +448,53 @@ describe("prompt-modes session_start", () => {
 				provider: "openai-codex",
 				id: "gpt-5.3-codex",
 			});
+		});
+	});
+
+	it("cycles mode with tab shortcut when editor is empty", async () => {
+		await withTempDir(async (cwd) => {
+			const stateRef = await Effect.runPromise(
+				SubscriptionRef.make<TauPersistedState>({ promptModes: { activeMode: "smart" } }),
+			);
+			const mock = makePiMock();
+			await setupPromptModes(stateRef, mock.pi);
+
+			const tabShortcut = mock.shortcuts.get("tab");
+			expect(tabShortcut).toBeTypeOf("function");
+
+			await Promise.resolve(tabShortcut?.(makeSessionStartContext(cwd, [], true, { editorText: "" })));
+
+			const deepPreset = resolvePromptModePresets(cwd).deep;
+			expect(mock.setModelCalls.at(-1)).toEqual(parseProviderModel(deepPreset.model));
+			expect(mock.thinkingCalls.at(-1)).toBe(deepPreset.thinking);
+			expect(mock.modeChangedEvents.at(-1)).toBe("deep");
+
+			const persisted = Effect.runSync(SubscriptionRef.get(stateRef));
+			expect(persisted.promptModes?.activeMode).toBe("deep");
+		});
+	});
+
+	it("ignores tab shortcut when editor contains text", async () => {
+		await withTempDir(async (cwd) => {
+			const stateRef = await Effect.runPromise(
+				SubscriptionRef.make<TauPersistedState>({ promptModes: { activeMode: "smart" } }),
+			);
+			const mock = makePiMock();
+			await setupPromptModes(stateRef, mock.pi);
+
+			const tabShortcut = mock.shortcuts.get("tab");
+			expect(tabShortcut).toBeTypeOf("function");
+
+			await Promise.resolve(
+				tabShortcut?.(makeSessionStartContext(cwd, [], true, { editorText: "draft message" })),
+			);
+
+			expect(mock.setModelCalls).toHaveLength(0);
+			expect(mock.thinkingCalls).toHaveLength(0);
+			expect(mock.modeChangedEvents).toHaveLength(0);
+
+			const persisted = Effect.runSync(SubscriptionRef.get(stateRef));
+			expect(persisted.promptModes?.activeMode).toBe("smart");
 		});
 	});
 

@@ -90,6 +90,7 @@ describe("AGENTS.md availability", () => {
 					}
 				},
 				registerCommand: () => undefined,
+				registerShortcut: () => undefined,
 				// The rest of ExtensionAPI is not exercised by this test.
 			} as unknown as ExtensionAPI;
 

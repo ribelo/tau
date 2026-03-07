@@ -24,6 +24,16 @@ function resolvePersistedMode(state: { promptModes?: { activeMode?: PromptModeNa
 	return active ?? "smart";
 }
 
+function nextPromptMode(mode: PromptModeName): PromptModeName {
+	if (mode === "smart") {
+		return "deep";
+	}
+	if (mode === "deep") {
+		return "rush";
+	}
+	return "smart";
+}
+
 function parseProviderModel(model: string): { readonly provider: string; readonly modelId: string } | undefined {
 	const idx = model.indexOf("/");
 	if (idx <= 0 || idx >= model.length - 1) {
@@ -199,6 +209,25 @@ export const PromptModesLive = Layer.effect(
 							}
 
 							await applyMode(pi, persistence, lower, ctx);
+						},
+					});
+
+					pi.registerShortcut("tab", {
+						description: "Cycle mode (smart → deep → rush)",
+						handler: async (ctx) => {
+							if (!ctx.hasUI) {
+								return;
+							}
+							if (!ctx.isIdle() || ctx.hasPendingMessages()) {
+								return;
+							}
+							if (ctx.ui.getEditorText().trim().length > 0) {
+								return;
+							}
+
+							const currentMode = resolvePersistedMode(persistence.getSnapshot());
+							const nextMode = nextPromptMode(currentMode);
+							await applyModeSelection(pi, persistence, nextMode, ctx, { notifyOnSuccess: true });
 						},
 					});
 
