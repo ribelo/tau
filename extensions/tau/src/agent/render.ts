@@ -153,8 +153,21 @@ export function renderAgentResult(
 
 	// send
 	if (data["submission_id"]) {
+		const submissionId = data["submission_id"] as string;
+		const agentId = typeof data["agent_id"] === "string" ? (data["agent_id"] as string) : undefined;
+		const message = typeof data["message"] === "string" ? (data["message"] as string) : undefined;
+		if (options.expanded && message) {
+			const targetLine = agentId
+				? `\n${theme.fg("dim", "to:")} ${theme.fg("accent", agentId.slice(0, 8))}`
+				: "";
+			return new Text(
+				`${theme.fg("success", "✔")} submission: ${theme.fg("dim", submissionId.slice(0, 8))}${targetLine}\n${theme.fg("dim", "message:")} ${theme.fg("toolOutput", message)}`,
+				0,
+				0,
+			);
+		}
 		return new Text(
-			`${theme.fg("success", "✔")} submission: ${theme.fg("dim", (data["submission_id"] as string).slice(0, 8))}`,
+			`${theme.fg("success", "✔")} submission: ${theme.fg("dim", submissionId.slice(0, 8))}`,
 			0,
 			0,
 		);

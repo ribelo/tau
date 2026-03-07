@@ -295,7 +295,11 @@ export function createAgentToolDef(
 							p.interrupt,
 							context.parentAgentId,
 						);
-						return { submission_id };
+						return {
+							submission_id,
+							agent_id: p.id,
+							message: p.message,
+						};
 					}
 					case "close": {
 						if (!p.id) {
