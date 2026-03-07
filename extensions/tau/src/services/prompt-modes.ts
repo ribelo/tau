@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, SubscriptionRef } from "effect";
+import { Context, Effect, Layer } from "effect";
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
 
@@ -15,8 +15,8 @@ export interface PromptModes {
 export const PromptModes = Context.GenericTag<PromptModes>("PromptModes");
 
 type PromptModePersistence = {
-	readonly state: SubscriptionRef.SubscriptionRef<TauPersistedState>;
-	readonly update: (patch: Partial<TauPersistedState>) => Effect.Effect<void>;
+	readonly getSnapshot: () => TauPersistedState;
+	readonly update: (patch: Partial<TauPersistedState>) => void;
 };
 
 function resolvePersistedMode(state: { promptModes?: { activeMode?: PromptModeName } } | undefined): PromptModeName {
@@ -24,12 +24,10 @@ function resolvePersistedMode(state: { promptModes?: { activeMode?: PromptModeNa
 	return active ?? "smart";
 }
 
-function parseProviderModelOrThrow(model: string): { readonly provider: string; readonly modelId: string } {
+function parseProviderModel(model: string): { readonly provider: string; readonly modelId: string } | undefined {
 	const idx = model.indexOf("/");
 	if (idx <= 0 || idx >= model.length - 1) {
-		throw new Error(
-			`Invalid model id: "${model}" - must be "provider/model-id" (e.g. "openai-codex/gpt-5.3-codex")`,
-		);
+		return undefined;
 	}
 	return { provider: model.slice(0, idx), modelId: model.slice(idx + 1) };
 }
@@ -44,25 +42,23 @@ function resolveModeModelCandidates(
 	return [assigned, presetModel];
 }
 
-async function persistModeState(
+function persistModeState(
 	persistence: PromptModePersistence,
 	mode: PromptModeName,
 	selectedModel: string,
-): Promise<void> {
-	const current = SubscriptionRef.get(persistence.state).pipe(Effect.runSync);
+): void {
+	const current = persistence.getSnapshot();
 	const modelsByMode: Partial<Record<PromptModeName, string>> = {
 		...(current.promptModes?.modelsByMode ?? {}),
 		[mode]: selectedModel,
 	};
 
-	await Effect.runPromise(
-		persistence.update({
-			promptModes: {
-				activeMode: mode,
-				modelsByMode,
-			},
-		}),
-	);
+	persistence.update({
+		promptModes: {
+			activeMode: mode,
+			modelsByMode,
+		},
+	});
 }
 
 async function applyModeSelection(
@@ -72,7 +68,7 @@ async function applyModeSelection(
 	ctx: Pick<ExtensionContext, "cwd" | "modelRegistry" | "ui">,
 	options: { readonly notifyOnSuccess: boolean },
 ): Promise<void> {
-	const state = SubscriptionRef.get(persistence.state).pipe(Effect.runSync);
+	const state = persistence.getSnapshot();
 	const presets = resolvePromptModePresets(ctx.cwd);
 	const preset = presets[mode];
 	const candidates = resolveModeModelCandidates(state, mode, preset.model);
@@ -80,16 +76,13 @@ async function applyModeSelection(
 	let selectedModelId: string | undefined = undefined;
 
 	for (const candidate of candidates) {
-		let provider: string;
-		let modelId: string;
-		try {
-			({ provider, modelId } = parseProviderModelOrThrow(candidate));
-		} catch {
+		const parsed = parseProviderModel(candidate);
+		if (!parsed) {
 			ctx.ui.notify(`Mode ${mode}: invalid model id: ${candidate}`, "error");
 			continue;
 		}
 
-		const model = ctx.modelRegistry.find(provider, modelId);
+		const model = ctx.modelRegistry.find(parsed.provider, parsed.modelId);
 		if (!model) {
 			if (candidate !== preset.model) {
 				ctx.ui.notify(`Mode ${mode}: assigned model not found, using preset (${preset.model})`, "warning");
@@ -109,14 +102,14 @@ async function applyModeSelection(
 			continue;
 		}
 
-		selectedModelId = `${provider}/${modelId}`;
+		selectedModelId = `${parsed.provider}/${parsed.modelId}`;
 		break;
 	}
 
 	if (!selectedModelId) return;
 
 	pi.setThinkingLevel(preset.thinking);
-	await persistModeState(persistence, mode, selectedModelId);
+	persistModeState(persistence, mode, selectedModelId);
 	pi.events.emit("tau:mode:changed", { mode });
 	if (options.notifyOnSuccess) {
 		ctx.ui.notify(`Mode: ${mode}`, "info");
@@ -141,11 +134,10 @@ async function syncModeForSessionContext(
 
 	const sessionState = loadPersistedState(ctx);
 	if (sessionState.promptModes) {
-		await Effect.runPromise(persistence.update({ promptModes: sessionState.promptModes }));
+		persistence.update({ promptModes: sessionState.promptModes });
 	}
 
-	const state = SubscriptionRef.get(persistence.state).pipe(Effect.runSync);
-	const mode = resolvePersistedMode(state);
+	const mode = resolvePersistedMode(persistence.getSnapshot());
 	await applyModeSelection(pi, persistence, mode, ctx, { notifyOnSuccess: false });
 }
 
@@ -167,7 +159,7 @@ export const PromptModesLive = Layer.effect(
 
 							if (!trimmed) {
 								if (!ctx.hasUI) {
-									const state = SubscriptionRef.get(persistence.state).pipe(Effect.runSync);
+									const state = persistence.getSnapshot();
 									ctx.ui.notify(
 										`Mode: ${resolvePersistedMode(state)}. Usage: /mode smart|deep|rush|list`,
 										"info",
@@ -187,7 +179,7 @@ export const PromptModesLive = Layer.effect(
 							}
 
 							if (trimmed === "list") {
-								const state = SubscriptionRef.get(persistence.state).pipe(Effect.runSync);
+								const state = persistence.getSnapshot();
 								const active = resolvePersistedMode(state);
 								const presets = resolvePromptModePresets(ctx.cwd);
 								const lines = [
@@ -220,10 +212,10 @@ export const PromptModesLive = Layer.effect(
 
 					pi.on("model_select", async (event, ctx) => {
 						const persistedSessionState = loadPersistedState(ctx);
-						const inMemoryState = SubscriptionRef.get(persistence.state).pipe(Effect.runSync);
+						const inMemoryState = persistence.getSnapshot();
 						const mode = persistedSessionState.promptModes?.activeMode ?? resolvePersistedMode(inMemoryState);
 						const selectedModel = `${event.model.provider}/${event.model.id}`;
-						await persistModeState(persistence, mode, selectedModel);
+						persistModeState(persistence, mode, selectedModel);
 					});
 
 					pi.on("before_agent_start", (event, ctx) => {
@@ -231,7 +223,7 @@ export const PromptModesLive = Layer.effect(
 						// from the original base prompt so the mode prompt is injected exactly once.
 						if (baseSystemPrompt === undefined) baseSystemPrompt = event.systemPrompt;
 
-						const state = SubscriptionRef.get(persistence.state).pipe(Effect.runSync);
+						const state = persistence.getSnapshot();
 						const mode = resolvePersistedMode(state);
 						const presets = resolvePromptModePresets(ctx.cwd);
 						const preset = presets[mode];

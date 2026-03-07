@@ -4,7 +4,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { Effect, Layer, SubscriptionRef } from "effect";
+import { Effect, Layer } from "effect";
 
 import type {
 	BeforeAgentStartEvent,
@@ -23,7 +23,7 @@ import {
 import { PiAPILive } from "../src/effect/pi.js";
 import { PromptModes, PromptModesLive } from "../src/services/prompt-modes.js";
 import { Persistence } from "../src/services/persistence.js";
-import type { TauPersistedState } from "../src/shared/state.js";
+import { mergePersistedState, type TauPersistedState } from "../src/shared/state.js";
 
 async function withTempDir<A>(fn: (dir: string) => Promise<A>): Promise<A> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tau-test-"));
@@ -93,13 +93,16 @@ describe("AGENTS.md availability", () => {
 				// The rest of ExtensionAPI is not exercised by this test.
 			} as unknown as ExtensionAPI;
 
-			const stateRef = await Effect.runPromise(
-				SubscriptionRef.make<TauPersistedState>({ promptModes: { activeMode: "smart" } }),
-			);
+			let persisted: TauPersistedState = { promptModes: { activeMode: "smart" } };
 
 			const persistenceLayer = Layer.succeed(Persistence, {
-				state: stateRef,
-				update: () => Effect.void,
+				getSnapshot: () => persisted,
+				setSnapshot: (next) => {
+					persisted = next;
+				},
+				update: (patch) => {
+					persisted = mergePersistedState(persisted, patch);
+				},
 				setup: Effect.void,
 			});
 

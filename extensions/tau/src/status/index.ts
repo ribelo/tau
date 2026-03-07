@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ThemeColor } from "@mariozechner/pi-coding-agent";
 import { Theme } from "@mariozechner/pi-coding-agent";
 import { Text, visibleWidth, type Component } from "@mariozechner/pi-tui";
-import { Schema } from "effect";
+import { Data, Either, Schema } from "effect";
 import https from "node:https";
 
 import type { TauState } from "../shared/state.js";
@@ -19,6 +19,36 @@ type BurnInfo = {
 	exhaustsAt?: number | undefined;
 	exhaustsBeforeReset?: boolean | undefined;
 };
+
+class StatusBoundaryError extends Data.TaggedError("StatusBoundaryError")<{
+	readonly message: string;
+	readonly cause?: unknown;
+}> {}
+
+function decodeUnknownOrNull<A, I>(schema: Schema.Schema<A, I>, input: unknown): A | null {
+	const decoded = Schema.decodeUnknownEither(schema)(input);
+	return Either.isRight(decoded) ? decoded.right : null;
+}
+
+function decodeUnknownOrReject<A, I>(
+	schema: Schema.Schema<A, I>,
+	input: unknown,
+	message: string,
+): Promise<A> {
+	const decoded = Schema.decodeUnknownEither(schema)(input);
+	if (Either.isRight(decoded)) {
+		return Promise.resolve(decoded.right);
+	}
+	return Promise.reject(new StatusBoundaryError({ message, cause: decoded.left }));
+}
+
+function parseJsonOrNull(text: string): unknown | null {
+	try {
+		return JSON.parse(text) as unknown;
+	} catch {
+		return null;
+	}
+}
 
 // Helper to build StatusRow with only defined optional properties
 function buildStatusRow(data: {
@@ -480,13 +510,11 @@ class StatusCard implements Component {
 }
 
 function parseGoogleProjectToken(apiKey: string): { token: string; projectId: string } | null {
-	try {
-		const parsed = Schema.decodeUnknownSync(GoogleProjectTokenSchema)(JSON.parse(apiKey));
-		if (!parsed.token || !parsed.projectId) return null;
-		return { token: parsed.token, projectId: parsed.projectId };
-	} catch {
-		return null;
-	}
+	const parsedJson = parseJsonOrNull(apiKey);
+	if (parsedJson === null) return null;
+	const parsed = decodeUnknownOrNull(GoogleProjectTokenSchema, parsedJson);
+	if (!parsed?.token || !parsed.projectId) return null;
+	return { token: parsed.token, projectId: parsed.projectId };
 }
 
 async function fetchGeminiQuota(token: string, projectId: string): Promise<GeminiQuotaResponse> {
@@ -503,12 +531,30 @@ async function fetchGeminiQuota(token: string, projectId: string): Promise<Gemin
 		body: JSON.stringify({ project: projectId }),
 	});
 
+	const text = await res.text().catch(() => "");
 	if (!res.ok) {
-		const text = await res.text().catch(() => "");
-		throw new Error(`HTTP ${res.status}${text ? `: ${text}` : ""}`);
+		return Promise.reject(
+			new StatusBoundaryError({
+				message: `HTTP ${res.status}${text ? `: ${text}` : ""}`,
+			}),
+		);
 	}
 
-	return Schema.decodeUnknownSync(GeminiQuotaResponseSchema)(await res.json());
+	const parsed = parseJsonOrNull(text);
+	if (parsed === null) {
+		return Promise.reject(
+			new StatusBoundaryError({
+				message: "Gemini quota endpoint returned invalid JSON",
+				cause: text,
+			}),
+		);
+	}
+
+	return decodeUnknownOrReject(
+		GeminiQuotaResponseSchema,
+		parsed,
+		"Gemini quota response failed schema validation",
+	);
 }
 
 type ExecSpec = { command: string; args: string[] };
@@ -658,27 +704,25 @@ async function fetchAntigravityStatus(pi: ExtensionAPI, signal?: AbortSignal): P
 	const stdout = proc.stdout ?? "";
 
 	if (!stdout.trim()) {
-		throw new Error("Antigravity language server process not found");
+		return Promise.reject(new StatusBoundaryError({ message: "Antigravity language server process not found" }));
 	}
 
 	let pid: number | undefined;
 	let cmdLine: string | undefined;
 
-	try {
-		const json = JSON.parse(stdout.trim()) as unknown;
-		const parsed = parseWindowsProcessJson(json);
+	const parsedJson = parseJsonOrNull(stdout.trim());
+	if (parsedJson !== null) {
+		const parsed = parseWindowsProcessJson(parsedJson);
 		if (parsed) {
 			pid = parsed.pid;
 			cmdLine = parsed.cmdLine;
 		}
-	} catch {
-		// ignore
 	}
 
 	if (pid === undefined || cmdLine === undefined) {
 		const parsed = parseUnixProcessOutput(stdout, processName);
 		if (!parsed) {
-			throw new Error("Antigravity language server process not found");
+			return Promise.reject(new StatusBoundaryError({ message: "Antigravity language server process not found" }));
 		}
 		pid = parsed.pid;
 		cmdLine = parsed.cmdLine;
@@ -686,14 +730,14 @@ async function fetchAntigravityStatus(pi: ExtensionAPI, signal?: AbortSignal): P
 
 	const csrfToken = extractCsrfToken(cmdLine);
 	if (!csrfToken) {
-		throw new Error("CSRF token not found in language server command line");
+		return Promise.reject(new StatusBoundaryError({ message: "CSRF token not found in language server command line" }));
 	}
 
 	const portExec = getPortListCommand(pid);
 	const portsOut = await execSpec(pi, portExec, signal);
 	const ports = parseListeningPorts(portsOut.stdout ?? "");
 	if (ports.length === 0) {
-		throw new Error("No listening ports found for language server");
+		return Promise.reject(new StatusBoundaryError({ message: "No listening ports found for language server" }));
 	}
 
 	let lastError: unknown;
@@ -705,7 +749,12 @@ async function fetchAntigravityStatus(pi: ExtensionAPI, signal?: AbortSignal): P
 		}
 	}
 
-	throw new Error(`Failed to connect to any language server port${lastError ? `: ${String(lastError)}` : ""}`);
+	return Promise.reject(
+		new StatusBoundaryError({
+			message: `Failed to connect to any language server port${lastError ? `: ${String(lastError)}` : ""}`,
+			cause: lastError,
+		}),
+	);
 }
 
 async function fetchAntigravityUserStatus(
@@ -742,33 +791,40 @@ async function fetchAntigravityUserStatus(
 				res.on("end", () => {
 					const text = Buffer.concat(chunks).toString("utf-8");
 					if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-						try {
-							resolve(Schema.decodeUnknownSync(AntigravityUserStatusSchema)(JSON.parse(text)));
-						} catch (err) {
-							reject(new Error(`Invalid JSON response: ${String(err)}`));
+						const parsed = parseJsonOrNull(text);
+						if (parsed === null) {
+							reject(new StatusBoundaryError({ message: "Invalid JSON response from Antigravity status endpoint" }));
+							return;
 						}
+						decodeUnknownOrReject(
+							AntigravityUserStatusSchema,
+							parsed,
+							"Antigravity status response failed schema validation",
+						)
+							.then(resolve)
+							.catch(reject);
 						return;
 					}
-					reject(new Error(`HTTP ${res.statusCode ?? 0}`));
+					reject(new StatusBoundaryError({ message: `HTTP ${res.statusCode ?? 0}` }));
 				});
 			},
 		);
 
-		req.on("error", reject);
+		req.on("error", (error) => reject(new StatusBoundaryError({ message: String(error), cause: error })));
 		req.on("timeout", () => {
-			req.destroy(new Error("timeout"));
+			req.destroy(new StatusBoundaryError({ message: "timeout" }));
 		});
 		if (signal) {
 			if (signal.aborted) {
-				req.destroy(new Error("aborted"));
-				reject(new Error("aborted"));
+				req.destroy(new StatusBoundaryError({ message: "aborted" }));
+				reject(new StatusBoundaryError({ message: "aborted" }));
 				return;
 			}
 			signal.addEventListener(
 				"abort",
 				() => {
-					req.destroy(new Error("aborted"));
-					reject(new Error("aborted"));
+					req.destroy(new StatusBoundaryError({ message: "aborted" }));
+					reject(new StatusBoundaryError({ message: "aborted" }));
 				},
 				{ once: true },
 			);
@@ -790,23 +846,35 @@ async function fetchOpenAiUsage(
 			"User-Agent": "pi",
 		},
 	});
+	const text = await res.text().catch(() => "");
 	if (!res.ok) {
-		const text = await res.text().catch(() => "");
-		throw new Error(`HTTP ${res.status}${text ? `: ${text}` : ""}`);
+		return Promise.reject(
+			new StatusBoundaryError({
+				message: `HTTP ${res.status}${text ? `: ${text}` : ""}`,
+			}),
+		);
 	}
-	return Schema.decodeUnknownSync(OpenAiUsagePayloadSchema)(await res.json());
+
+	const parsed = parseJsonOrNull(text);
+	if (parsed === null) {
+		return Promise.reject(new StatusBoundaryError({ message: "OpenAI usage endpoint returned invalid JSON" }));
+	}
+
+	return decodeUnknownOrReject(
+		OpenAiUsagePayloadSchema,
+		parsed,
+		"OpenAI usage response failed schema validation",
+	);
 }
 
 function decodeJwtPayload(token: string): Record<string, unknown> | null {
-	try {
-		const parts = token.split(".");
-		if (parts.length !== 3) return null;
-		const payload = parts[1] ?? "";
-		const decoded = Buffer.from(payload, "base64").toString("utf-8");
-		return Schema.decodeUnknownSync(JwtPayloadSchema)(JSON.parse(decoded));
-	} catch {
-		return null;
-	}
+	const parts = token.split(".");
+	if (parts.length !== 3) return null;
+	const payload = parts[1] ?? "";
+	const decoded = Buffer.from(payload, "base64").toString("utf-8");
+	const parsed = parseJsonOrNull(decoded);
+	if (parsed === null) return null;
+	return decodeUnknownOrNull(JwtPayloadSchema, parsed);
 }
 
 function formatPlanType(planType: string | undefined): string | undefined {

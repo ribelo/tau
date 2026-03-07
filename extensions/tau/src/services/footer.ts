@@ -1,16 +1,22 @@
 import { Context, Effect, Layer, SubscriptionRef } from "effect";
 
-import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@mariozechner/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	ReadonlyFooterDataProvider,
+	Theme,
+} from "@mariozechner/pi-coding-agent";
 import type { TUI } from "@mariozechner/pi-tui";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
-import { spawnSync } from "node:child_process";
-import * as fs from "node:fs";
 import * as path from "node:path";
+import { FileSystem } from "@effect/platform/FileSystem";
 
 import { PiAPI } from "../effect/pi.js";
 import { isRecord } from "../shared/json.js";
 import { Persistence } from "./persistence.js";
 import { SandboxState } from "./state.js";
+import { DEFAULT_SANDBOX_CONFIG } from "../sandbox/config.js";
+import type { SandboxConfigRequired } from "../schemas/config.js";
 
 export interface Footer {
 	readonly setup: Effect.Effect<void>;
@@ -80,25 +86,26 @@ const parseGitNumstat = (output: string): GitLineDelta => {
 	return { added, removed };
 };
 
-const collectGitLineDelta = (cwd: string): GitLineDelta => {
-	const runNumstat = (args: string[]): GitLineDelta => {
-		try {
-			const result = spawnSync("git", args, {
-				cwd,
-				encoding: "utf8",
-				stdio: ["ignore", "pipe", "ignore"],
-			});
-			if (result.status !== 0) {
-				return { added: 0, removed: 0 };
-			}
-			return parseGitNumstat(result.stdout ?? "");
-		} catch {
+const runNumstat = async (pi: ExtensionAPI, cwd: string, args: string[]): Promise<GitLineDelta> => {
+	try {
+		const result = await pi.exec("git", args, {
+			cwd,
+			timeout: 15_000,
+		});
+		if (result.code !== 0) {
 			return { added: 0, removed: 0 };
 		}
-	};
+		return parseGitNumstat(result.stdout ?? "");
+	} catch {
+		return { added: 0, removed: 0 };
+	}
+};
 
-	const unstaged = runNumstat(["diff", "--numstat", "--no-ext-diff"]);
-	const staged = runNumstat(["diff", "--cached", "--numstat", "--no-ext-diff"]);
+const collectGitLineDelta = async (pi: ExtensionAPI, cwd: string): Promise<GitLineDelta> => {
+	const [unstaged, staged] = await Promise.all([
+		runNumstat(pi, cwd, ["diff", "--numstat", "--no-ext-diff"]),
+		runNumstat(pi, cwd, ["diff", "--cached", "--numstat", "--no-ext-diff"]),
+	]);
 
 	return {
 		added: unstaged.added + staged.added,
@@ -106,20 +113,25 @@ const collectGitLineDelta = (cwd: string): GitLineDelta => {
 	};
 };
 
-const findBeadsJsonlPath = (startDir: string): string | null => {
-	let current = startDir;
-	for (;;) {
-		const candidate = path.join(current, ".beads", "beads.left.jsonl");
-		if (fs.existsSync(candidate)) {
-			return candidate;
+const findBeadsJsonlPath = (
+	fs: FileSystem,
+	startDir: string,
+): Effect.Effect<string | null, unknown> =>
+	Effect.gen(function* () {
+		let current = startDir;
+		for (;;) {
+			const candidate = path.join(current, ".beads", "beads.left.jsonl");
+			const exists = yield* fs.exists(candidate);
+			if (exists) {
+				return candidate;
+			}
+			const parent = path.dirname(current);
+			if (parent === current) {
+				return null;
+			}
+			current = parent;
 		}
-		const parent = path.dirname(current);
-		if (parent === current) {
-			return null;
-		}
-		current = parent;
-	}
-};
+	});
 
 const countInProgressIssuesFromJsonl = (content: string): number => {
 	let count = 0;
@@ -159,46 +171,74 @@ const computeTotalCost = (ctx: ExtensionContext): number => {
 	return totalCost;
 };
 
+const isSandboxConfigRequired = (value: unknown): value is SandboxConfigRequired => {
+	if (!isRecord(value)) return false;
+	const filesystemMode = value["filesystemMode"];
+	const networkMode = value["networkMode"];
+	const approvalPolicy = value["approvalPolicy"];
+	const approvalTimeoutSeconds = value["approvalTimeoutSeconds"];
+	const subagent = value["subagent"];
+
+	const validFs =
+		filesystemMode === "read-only" ||
+		filesystemMode === "workspace-write" ||
+		filesystemMode === "danger-full-access";
+	const validNet = networkMode === "deny" || networkMode === "allow-all";
+	const validPolicy =
+		approvalPolicy === "never" ||
+		approvalPolicy === "on-failure" ||
+		approvalPolicy === "on-request" ||
+		approvalPolicy === "unless-trusted";
+	const validTimeout =
+		typeof approvalTimeoutSeconds === "number" &&
+		Number.isFinite(approvalTimeoutSeconds) &&
+		Number.isInteger(approvalTimeoutSeconds) &&
+		approvalTimeoutSeconds > 0;
+
+	return validFs && validNet && validPolicy && validTimeout && typeof subagent === "boolean";
+};
+
 export const FooterLive = Layer.effect(
 	Footer,
 	Effect.gen(function* () {
 		const pi = yield* PiAPI;
+		const fs = yield* FileSystem;
 		const sandboxState = yield* SandboxState;
 		const persistence = yield* Persistence;
 
-		const hygieneRef = yield* SubscriptionRef.make<FooterHygiene>({
+		let currentHygiene: FooterHygiene = {
 			gitLineDelta: { added: 0, removed: 0 },
 			inProgressCount: 0,
-		});
-		const totalCostRef = yield* SubscriptionRef.make<number>(0);
+		};
+		let currentTotalCost = 0;
+		let currentSandboxConfig = yield* SubscriptionRef.get(sandboxState);
 
 		const emitFooterChanged = () => pi.events.emit("tau:footer:changed", null);
 
 		const refreshFooterHygieneOnce = Effect.gen(function* () {
 			const cwd = process.cwd();
-			const gitLineDelta = collectGitLineDelta(cwd);
+			const gitLineDelta = yield* Effect.promise(() => collectGitLineDelta(pi, cwd));
 
-			const issuesPath = findBeadsJsonlPath(cwd);
+			const issuesPath = yield* findBeadsJsonlPath(fs, cwd);
 			let inProgressCount = 0;
 			if (issuesPath) {
-				try {
-					const issuesJsonl = fs.readFileSync(issuesPath, "utf8");
+				const issuesJsonl = yield* fs.readFileString(issuesPath).pipe(
+					Effect.catchAll(() => Effect.succeed("")),
+				);
+				if (issuesJsonl.length > 0) {
 					inProgressCount = countInProgressIssuesFromJsonl(issuesJsonl);
-				} catch {
-					inProgressCount = 0;
 				}
 			}
 
-			const current = yield* SubscriptionRef.get(hygieneRef);
 			if (
-				current.gitLineDelta.added === gitLineDelta.added &&
-				current.gitLineDelta.removed === gitLineDelta.removed &&
-				current.inProgressCount === inProgressCount
+				currentHygiene.gitLineDelta.added === gitLineDelta.added &&
+				currentHygiene.gitLineDelta.removed === gitLineDelta.removed &&
+				currentHygiene.inProgressCount === inProgressCount
 			) {
 				return;
 			}
 
-			yield* SubscriptionRef.set(hygieneRef, { gitLineDelta, inProgressCount });
+			currentHygiene = { gitLineDelta, inProgressCount };
 			yield* Effect.sync(() => emitFooterChanged());
 		});
 
@@ -220,12 +260,17 @@ export const FooterLive = Layer.effect(
 
 				yield* Effect.sync(() => {
 					pi.on("session_start", (_event: unknown, ctx: ExtensionContext) => {
-						Effect.runSync(SubscriptionRef.set(totalCostRef, computeTotalCost(ctx)));
+						currentTotalCost = computeTotalCost(ctx);
 						emitFooterChanged();
 
 						ctx.ui.setFooter((tui: TUI, theme: Theme, footerData: ReadonlyFooterDataProvider) => {
 							const unsubBranch = footerData.onBranchChange(() => tui.requestRender());
-							const unsubSandbox = pi.events.on("tau:sandbox:changed", () => tui.requestRender());
+							const unsubSandbox = pi.events.on("tau:sandbox:changed", (config: unknown) => {
+								if (isSandboxConfigRequired(config)) {
+									currentSandboxConfig = config;
+								}
+								tui.requestRender();
+							});
 							const unsubFooter = pi.events.on("tau:footer:changed", () => tui.requestRender());
 							const unsubMode = pi.events.on("tau:mode:changed", () => tui.requestRender());
 
@@ -238,17 +283,17 @@ export const FooterLive = Layer.effect(
 								},
 								invalidate() {},
 								render(width: number): string[] {
-									const sandboxConfig = SubscriptionRef.get(sandboxState).pipe(Effect.runSync);
-									const hygiene = SubscriptionRef.get(hygieneRef).pipe(Effect.runSync);
-									const totalCost = SubscriptionRef.get(totalCostRef).pipe(Effect.runSync);
-									const persisted = SubscriptionRef.get(persistence.state).pipe(Effect.runSync);
+									const sandboxConfig = currentSandboxConfig;
+									const hygiene = currentHygiene;
+									const totalCost = currentTotalCost;
+									const persisted = persistence.getSnapshot();
 									const modeLabel = persisted.promptModes?.activeMode ?? "smart";
 
 									// Status dots
 									const dots: string[] = [];
 
 									// FS Dot
-									const fsMode = sandboxConfig.filesystemMode ?? "read-only";
+									const fsMode = sandboxConfig.filesystemMode ?? DEFAULT_SANDBOX_CONFIG.filesystemMode;
 									const fsColor =
 										fsMode === "danger-full-access"
 											? ("error" as const)
@@ -258,7 +303,7 @@ export const FooterLive = Layer.effect(
 									dots.push(theme.fg(fsColor, "•"));
 
 									// Net Dot
-									const netMode = sandboxConfig.networkMode ?? "deny";
+									const netMode = sandboxConfig.networkMode ?? DEFAULT_SANDBOX_CONFIG.networkMode;
 									const netColor = netMode === "allow-all" ? ("error" as const) : ("success" as const);
 									dots.push(theme.fg(netColor, "•"));
 
@@ -356,7 +401,7 @@ export const FooterLive = Layer.effect(
 					});
 
 					pi.on("turn_end", (_event: unknown, ctx: ExtensionContext) => {
-						Effect.runSync(SubscriptionRef.set(totalCostRef, computeTotalCost(ctx)));
+						currentTotalCost = computeTotalCost(ctx);
 						emitFooterChanged();
 					});
 					pi.on("session_tree", () => emitFooterChanged());

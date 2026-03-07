@@ -50,18 +50,82 @@ import { type ApprovalBroker, getWorkerApprovalBroker } from "../agent/approval-
 import initAgentAwareness from "./agent-awareness/index.js";
 
 type SandboxStateInternal = {
-  createSandboxedBashOperations?: (ctx: ExtensionContext, escalate: boolean) => BashOperations;
-  workspaceRoot?: string;
-  effectiveConfig?: Required<SandboxConfig>;
-  approvalBroker?: ApprovalBroker;
+  createSandboxedBashOperations?: ((ctx: ExtensionContext, escalate: boolean) => BashOperations) | undefined;
+  workspaceRoot?: string | undefined;
+  effectiveConfig?: Required<SandboxConfig> | undefined;
+  approvalBroker?: ApprovalBroker | undefined;
 };
+
+const isSandboxFactory = (
+  value: unknown,
+): value is (ctx: ExtensionContext, escalate: boolean) => BashOperations =>
+  typeof value === "function";
+
+const isApprovalBroker = (value: unknown): value is ApprovalBroker =>
+  isRecord(value) && typeof value["confirm"] === "function";
+
+function getSandboxRuntimeState(state: TauState): SandboxStateInternal | undefined {
+  if (!isRecord(state.sandbox)) return undefined;
+
+  const create = state.sandbox["createSandboxedBashOperations"];
+  const workspaceRoot = state.sandbox["workspaceRoot"];
+  const effectiveConfig = state.sandbox["effectiveConfig"];
+  const approvalBroker = state.sandbox["approvalBroker"];
+
+  const next: SandboxStateInternal = {};
+  if (isSandboxFactory(create)) next.createSandboxedBashOperations = create;
+  if (typeof workspaceRoot === "string") next.workspaceRoot = workspaceRoot;
+  if (isRecord(effectiveConfig)) {
+    const filesystemMode = effectiveConfig["filesystemMode"];
+    const networkMode = effectiveConfig["networkMode"];
+    const approvalPolicy = effectiveConfig["approvalPolicy"];
+    const approvalTimeoutSeconds = effectiveConfig["approvalTimeoutSeconds"];
+    const subagent = effectiveConfig["subagent"];
+
+    const validFilesystemMode =
+      filesystemMode === "read-only" ||
+      filesystemMode === "workspace-write" ||
+      filesystemMode === "danger-full-access";
+    const validNetworkMode = networkMode === "deny" || networkMode === "allow-all";
+    const validApprovalPolicy =
+      approvalPolicy === "never" ||
+      approvalPolicy === "on-failure" ||
+      approvalPolicy === "on-request" ||
+      approvalPolicy === "unless-trusted";
+    const validTimeout =
+      typeof approvalTimeoutSeconds === "number" &&
+      Number.isFinite(approvalTimeoutSeconds) &&
+      approvalTimeoutSeconds > 0;
+
+    if (validFilesystemMode && validNetworkMode && validApprovalPolicy && validTimeout && typeof subagent === "boolean") {
+      next.effectiveConfig = {
+        filesystemMode,
+        networkMode,
+        approvalPolicy,
+        approvalTimeoutSeconds,
+        subagent,
+      };
+    }
+  }
+  if (isApprovalBroker(approvalBroker)) next.approvalBroker = approvalBroker;
+
+  return next;
+}
+
+function updateSandboxRuntimeState(state: TauState, patch: Partial<SandboxStateInternal>): void {
+  const current = getSandboxRuntimeState(state) ?? {};
+  state.sandbox = {
+    ...current,
+    ...patch,
+  };
+}
 
 export function createSandboxedBashOperations(
   state: TauState,
   ctx: ExtensionContext,
   escalate: boolean,
 ): BashOperations {
-  const sandboxState = state.sandbox as SandboxStateInternal | undefined;
+  const sandboxState = getSandboxRuntimeState(state);
   const factory = sandboxState?.createSandboxedBashOperations;
   if (!factory) {
     throw new Error("sandbox not initialized (initSandbox must run before createSandboxedBashOperations)");
@@ -70,7 +134,7 @@ export function createSandboxedBashOperations(
 }
 
 export function getEffectiveSandboxConfig(state: TauState, ctx: ExtensionContext): Required<SandboxConfig> {
-  const sandboxState = state.sandbox as SandboxStateInternal | undefined;
+  const sandboxState = getSandboxRuntimeState(state);
   if (sandboxState?.effectiveConfig) return sandboxState.effectiveConfig;
 
   return computeEffectiveConfig({
@@ -132,29 +196,86 @@ type SessionState = {
   pendingSandboxNotice?: { hash: string; text: string } | undefined;
 };
 
-function loadSessionState(state: TauState): SessionState | undefined {
-  const last = state.persisted?.sandbox as unknown as SessionState | undefined;
+function readSessionOverride(value: unknown): SandboxConfig | undefined {
+  if (!isRecord(value)) return undefined;
+  const next: SandboxConfig = {};
 
-  if (!last) return undefined;
-
-  // Migration: clear pending notice if it contains legacy 'allowlist'
-  const pendingNotice = last.pendingSandboxNotice;
-  const cleanPending =
-    pendingNotice && pendingNotice.text.includes("allowlist")
-      ? undefined
-      : pendingNotice;
-
-  // Defensive copy
-  const result: SessionState = { ...last };
-
-  if (result.sessionOverride !== undefined && !isRecord(result.sessionOverride)) {
-    delete result.sessionOverride;
+  const filesystemMode = value["filesystemMode"];
+  if (filesystemMode === "read-only" || filesystemMode === "workspace-write" || filesystemMode === "danger-full-access") {
+    next.filesystemMode = filesystemMode;
   }
 
-  if (cleanPending) {
-    result.pendingSandboxNotice = { ...cleanPending };
-  } else {
-    delete result.pendingSandboxNotice;
+  const networkMode = value["networkMode"];
+  if (networkMode === "deny" || networkMode === "allow-all") {
+    next.networkMode = networkMode;
+  }
+
+  const approvalPolicy = value["approvalPolicy"];
+  if (approvalPolicy === "never" || approvalPolicy === "on-failure" || approvalPolicy === "on-request" || approvalPolicy === "unless-trusted") {
+    next.approvalPolicy = approvalPolicy;
+  }
+
+  const approvalTimeoutSeconds = value["approvalTimeoutSeconds"];
+  if (typeof approvalTimeoutSeconds === "number" && Number.isFinite(approvalTimeoutSeconds) && approvalTimeoutSeconds > 0) {
+    next.approvalTimeoutSeconds = approvalTimeoutSeconds;
+  }
+
+  const subagent = value["subagent"];
+  if (typeof subagent === "boolean") {
+    next.subagent = subagent;
+  }
+
+  return next;
+}
+
+function sessionStateToPersisted(state: SessionState): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (state.sandboxUnavailableDecision) out["sandboxUnavailableDecision"] = state.sandboxUnavailableDecision;
+  if (state.sessionOverride) out["sessionOverride"] = { ...state.sessionOverride };
+  if (typeof state.systemPromptInjected === "boolean") out["systemPromptInjected"] = state.systemPromptInjected;
+  if (typeof state.lastCommunicatedHash === "string") out["lastCommunicatedHash"] = state.lastCommunicatedHash;
+  if (state.pendingSandboxNotice) {
+    out["pendingSandboxNotice"] = {
+      hash: state.pendingSandboxNotice.hash,
+      text: state.pendingSandboxNotice.text,
+    };
+  }
+  return out;
+}
+
+function loadSessionState(state: TauState): SessionState | undefined {
+  const raw = state.persisted?.sandbox;
+  if (!isRecord(raw)) return undefined;
+
+  const result: SessionState = {};
+
+  const sandboxUnavailableDecision = raw["sandboxUnavailableDecision"];
+  if (sandboxUnavailableDecision === "allow" || sandboxUnavailableDecision === "deny") {
+    result.sandboxUnavailableDecision = sandboxUnavailableDecision;
+  }
+
+  const sessionOverride = readSessionOverride(raw["sessionOverride"]);
+  if (sessionOverride) {
+    result.sessionOverride = sessionOverride;
+  }
+
+  const systemPromptInjected = raw["systemPromptInjected"];
+  if (typeof systemPromptInjected === "boolean") {
+    result.systemPromptInjected = systemPromptInjected;
+  }
+
+  const lastCommunicatedHash = raw["lastCommunicatedHash"];
+  if (typeof lastCommunicatedHash === "string" && lastCommunicatedHash.length > 0) {
+    result.lastCommunicatedHash = lastCommunicatedHash;
+  }
+
+  const pending = raw["pendingSandboxNotice"];
+  if (isRecord(pending)) {
+    const hash = pending["hash"];
+    const text = pending["text"];
+    if (typeof hash === "string" && typeof text === "string" && !text.includes("allowlist")) {
+      result.pendingSandboxNotice = { hash, text };
+    }
   }
 
   return result;
@@ -201,8 +322,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
     workspaceRoot = discoverWorkspaceRoot(ctx.cwd);
     // Keep state.persisted in sync with the latest tau:state entry, even if another
     // component (e.g. task runner) appends tau:state directly.
-    const ctxWithSession = ctx as unknown as { sessionManager: { getEntries: () => unknown[] } };
-    state.persisted = loadPersistedState(ctxWithSession);
+    state.persisted = loadPersistedState(ctx);
     sessionState = loadSessionState(state) ?? {};
 
     // Session overrides come from tau:state; CLI flags override both session and file-based settings.
@@ -216,20 +336,19 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
       sessionOverride: mergedOverride,
     });
 
-    const sessionId = (ctx as unknown as { sessionManager?: { getSessionId?: () => string } }).sessionManager?.getSessionId?.() ?? "";
+    const sessionId = ctx.sessionManager.getSessionId();
 
-    state.sandbox = {
-      ...(state.sandbox ?? {}),
+    updateSandboxRuntimeState(state, {
       workspaceRoot,
       effectiveConfig,
       approvalBroker: getWorkerApprovalBroker(sessionId),
-    } as SandboxStateInternal;
+    });
 
     pi.events.emit("tau:sandbox:changed", effectiveConfig);
   }
 
   function persistState() {
-    updatePersistedState(pi, state, { sandbox: sessionState as unknown as Record<string, unknown> });
+    updatePersistedState(pi, state, { sandbox: sessionStateToPersisted(sessionState) });
   }
 
   function sendSandboxChangeHistoryEntry(text: string): void {
@@ -453,7 +572,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
     if (sessionState.sandboxUnavailableDecision === "allow") return true;
     if (sessionState.sandboxUnavailableDecision === "deny") return false;
 
-    const broker = (state.sandbox as SandboxStateInternal | undefined)?.approvalBroker;
+    const broker = getSandboxRuntimeState(state)?.approvalBroker;
     if (!ctx.hasUI && !broker) {
       // Headless: default deny.
       sessionState.sandboxUnavailableDecision = "deny";
@@ -511,7 +630,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
         const currentConfig = effectiveConfig;
         const currentWorkspace = workspaceRoot;
         const approvalTimeout = currentConfig.approvalTimeoutSeconds;
-        const broker = (state.sandbox as SandboxStateInternal | undefined)?.approvalBroker;
+        const broker = getSandboxRuntimeState(state)?.approvalBroker;
 
         // Check approval based on policy (using captured ctx)
         const approval = await checkBashApproval(
@@ -662,7 +781,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
           looksLikePolicyViolation(result.output)
         ) {
           try {
-            const broker = (state.sandbox as SandboxStateInternal | undefined)?.approvalBroker;
+            const broker = getSandboxRuntimeState(state)?.approvalBroker;
             const retryApproval = await requestApprovalAfterFailure(
               ctx,
               command,
@@ -692,10 +811,9 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
     };
   }
 
-  state.sandbox = {
-    ...(state.sandbox ?? {}),
+  updateSandboxRuntimeState(state, {
     createSandboxedBashOperations: createSandboxedBashOperationsInternal,
-  };
+  });
 
   // Run command and capture output for policy violation detection
   function runCommandCapture(
@@ -901,7 +1019,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
           filesystemMode: effectiveConfig.filesystemMode,
         });
         if (!check.allowed) {
-          const broker = (state.sandbox as SandboxStateInternal | undefined)?.approvalBroker;
+          const broker = getSandboxRuntimeState(state)?.approvalBroker;
           const approval = await checkFilesystemApproval(
             ctx,
             effectiveConfig.approvalPolicy,
@@ -939,7 +1057,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
           filesystemMode: effectiveConfig.filesystemMode,
         });
         if (!check.allowed) {
-          const broker = (state.sandbox as SandboxStateInternal | undefined)?.approvalBroker;
+          const broker = getSandboxRuntimeState(state)?.approvalBroker;
           const approval = await checkFilesystemApproval(
             ctx,
             effectiveConfig.approvalPolicy,
@@ -1121,15 +1239,25 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 
     const currentHash = computeSandboxConfigHash(effectiveConfig);
     const previousHash = sessionState.lastCommunicatedHash;
+    const shouldInjectInitialState = !previousHash;
     const hasChangedSinceLastCommunication = Boolean(previousHash && previousHash !== currentHash);
+    const hasUserMessage = filtered.some((m) => m?.role === "user");
 
-    const noticeText = hasChangedSinceLastCommunication
-      ? buildSandboxChangeNoticeText(effectiveConfig)
-      : buildSandboxStateNoticeText(effectiveConfig);
+    let nextMessages = filtered;
 
-    const nextMessages = injectSandboxNoticeIntoMessages(filtered, noticeText);
+    if (hasUserMessage && shouldInjectInitialState) {
+      nextMessages = injectSandboxNoticeIntoMessages(
+        filtered,
+        buildSandboxStateNoticeText(effectiveConfig),
+      );
+    } else if (hasUserMessage && hasChangedSinceLastCommunication) {
+      nextMessages = injectSandboxNoticeIntoMessages(
+        filtered,
+        buildSandboxChangeNoticeText(effectiveConfig),
+      );
+    }
 
-    if (previousHash !== currentHash || sessionState.pendingSandboxNotice) {
+    if (hasUserMessage && (shouldInjectInitialState || hasChangedSinceLastCommunication || sessionState.pendingSandboxNotice)) {
       sessionState.lastCommunicatedHash = currentHash;
       sessionState.pendingSandboxNotice = undefined;
       persistState();

@@ -1,5 +1,4 @@
-import type { TauState } from "../shared/state.js";
-import { Context, Effect, Layer, SubscriptionRef } from "effect";
+import { Context, Effect, Either, Layer, Schema, SubscriptionRef } from "effect";
 
 import { PiAPI } from "../effect/pi.js";
 import type { SandboxConfig } from "../sandbox/config.js";
@@ -35,11 +34,13 @@ export const SandboxLive = Layer.effect(
 				yield* Effect.sync(() => {
 					// For now, we wrap the legacy init function.
 					// We should gradually move logic here.
-					initSandboxLegacy(pi, makeLegacyStateBridge(persistence.state) as unknown as TauState);
+					initSandboxLegacy(pi, makeLegacyStateBridge(persistence));
 
-					// We want to bridge the tau:sandbox:changed event to our state
+					// We want to bridge the tau:sandbox:changed event to our state.
 					pi.events.on("tau:sandbox:changed", (config: unknown) => {
-						Effect.runSync(SubscriptionRef.set(state, config as SandboxConfigRequired));
+						const decoded = Schema.decodeUnknownEither(SandboxConfigRequired)(config);
+						if (Either.isLeft(decoded)) return;
+						Effect.runFork(SubscriptionRef.set(state, decoded.right));
 					});
 				});
 			}),

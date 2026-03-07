@@ -12,7 +12,7 @@ import { PiAPILive } from "../src/effect/pi.js";
 import { resolvePromptModePresets, type PromptModeName } from "../src/prompt/modes.js";
 import { Persistence } from "../src/services/persistence.js";
 import { PromptModes, PromptModesLive } from "../src/services/prompt-modes.js";
-import { TAU_PERSISTED_STATE_TYPE, type TauPersistedState } from "../src/shared/state.js";
+import { mergePersistedState, TAU_PERSISTED_STATE_TYPE, type TauPersistedState } from "../src/shared/state.js";
 
 type SessionStartHandler = (event: unknown, ctx: ExtensionContext) => unknown;
 
@@ -112,12 +112,15 @@ function makeSessionStartContext(cwd: string, entries: unknown[], hasUI = true):
 
 async function setupPromptModes(stateRef: SubscriptionRef.SubscriptionRef<TauPersistedState>, pi: ExtensionAPI): Promise<void> {
 	const persistenceLayer = Layer.succeed(Persistence, {
-		state: stateRef,
-		update: (patch: Partial<TauPersistedState>) =>
-			SubscriptionRef.update(stateRef, (current) => ({
-				...current,
-				...patch,
-			})),
+		getSnapshot: () => Effect.runSync(SubscriptionRef.get(stateRef)),
+		setSnapshot: (next: TauPersistedState) => {
+			Effect.runSync(SubscriptionRef.set(stateRef, next));
+		},
+		update: (patch: Partial<TauPersistedState>) => {
+			Effect.runSync(
+				SubscriptionRef.update(stateRef, (current) => mergePersistedState(current, patch)),
+			);
+		},
 		setup: Effect.void,
 	});
 

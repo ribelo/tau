@@ -6,8 +6,9 @@ export function withWorkerSandboxOverride(
 	base: TauPersistedState,
 	override: Required<SandboxConfig>,
 ): TauPersistedState {
+	const sandboxPatch: Record<string, unknown> = { sessionOverride: override };
 	return mergePersistedState(base, {
-		sandbox: { sessionOverride: override } as unknown as Record<string, unknown>,
+		sandbox: sandboxPatch,
 	});
 }
 

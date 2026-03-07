@@ -97,7 +97,7 @@ function ensureSkillMarkerState(state: TauState): SkillMarkerState {
 	const existing = state.skillMarker as SkillMarkerState | undefined;
 	if (existing?.registry) return existing;
 	const next: SkillMarkerState = { registry: new SkillRegistry() };
-	state.skillMarker = next as unknown as Record<string, unknown>;
+	state.skillMarker = next;
 	return next;
 }
 

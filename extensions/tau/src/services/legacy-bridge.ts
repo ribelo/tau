@@ -1,4 +1,3 @@
-import { Effect, SubscriptionRef } from "effect";
 import type { TauPersistedState, TauState } from "../shared/state.js";
 
 /**
@@ -6,23 +5,22 @@ import type { TauPersistedState, TauState } from "../shared/state.js";
  * Each service gets the same instance so they can share state buckets
  * (skillMarker, editor, sandbox, etc.) across the legacy boundary.
  */
-const sharedRuntimeState: Record<string, Record<string, unknown> | undefined> = {};
+const sharedRuntimeState: Record<string, unknown> = {};
 
-export const makeLegacyStateBridge = (
-	persistedRef: SubscriptionRef.SubscriptionRef<TauPersistedState>,
-): TauState => {
-	// We use a cast here because the strict exactOptionalPropertyTypes setting
-	// conflicts with getters that return potentially undefined values.
-	// This is a bridge layer - the runtime behavior is correct.
-	return {
+export interface LegacyPersistedBridge {
+	readonly getSnapshot: () => TauPersistedState;
+	readonly setSnapshot: (next: TauPersistedState) => void;
+}
+
+export const makeLegacyStateBridge = (persistedBridge: LegacyPersistedBridge): TauState => {
+	const state: TauState = {
 		config: {},
 		get persisted() {
-			return Effect.runSync(SubscriptionRef.get(persistedRef));
+			return persistedBridge.getSnapshot();
 		},
 		set persisted(val: TauPersistedState) {
-			Effect.runSync(SubscriptionRef.set(persistedRef, val));
+			persistedBridge.setSnapshot(val);
 		},
-		// Runtime state buckets - shared across all legacy modules
 		get skillMarker() {
 			return sharedRuntimeState["skillMarker"];
 		},
@@ -65,5 +63,7 @@ export const makeLegacyStateBridge = (
 		set commit(val) {
 			sharedRuntimeState["commit"] = val;
 		},
-	} as TauState;
+	};
+
+	return state;
 };

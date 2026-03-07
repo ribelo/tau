@@ -1,4 +1,3 @@
-import type { TauState } from "../shared/state.js";
 import { Context, Effect, Layer } from "effect";
 
 import { PiAPI } from "../effect/pi.js";
@@ -24,7 +23,7 @@ export const EditorLive = Layer.effect(
 		return Editor.of({
 			setup: Effect.gen(function* () {
 				yield* Effect.sync(() => {
-					initEditorLegacy(pi, makeLegacyStateBridge(persistence.state) as unknown as TauState);
+					initEditorLegacy(pi, makeLegacyStateBridge(persistence));
 				});
 			}),
 		});

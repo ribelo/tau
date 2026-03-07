@@ -34,6 +34,25 @@ You are the oracle.`;
 		expect(def.systemPrompt).toBe("You are the oracle.");
 	});
 
+	it("should parse xhigh thinking level", () => {
+		const content = `---
+name: oracle
+description: The oracle agent
+models:
+  - model: openai-codex/gpt-5.3-codex
+    thinking: xhigh
+sandbox_fs: read-only
+sandbox_net: allow-all
+approval_policy: never
+approval_timeout: 60
+---
+Deep reasoning.`;
+
+		const def = parseAgentDefinition(content);
+		expect(def.models).toHaveLength(1);
+		expect(def.models[0]).toEqual({ model: "openai-codex/gpt-5.3-codex", thinking: "xhigh" });
+	});
+
 	it("should parse inherit model", () => {
 		const content = `---
 name: finder

@@ -1,7 +1,9 @@
-import { readFileSync } from "node:fs";
+import { Effect } from "effect";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { FileSystem } from "@effect/platform/FileSystem";
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 
 import { readJsonFile } from "../shared/fs.js";
@@ -17,12 +19,20 @@ export type PromptModePreset = {
 
 const MODE_PROMPTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "modes");
 
-const loadModePrompt = (filename: "smart.md" | "deep.md" | "rush.md"): string =>
-	readFileSync(path.join(MODE_PROMPTS_DIR, filename), "utf8").trim();
+const loadModePrompt = async (filename: "smart.md" | "deep.md" | "rush.md"): Promise<string> => {
+	const filePath = path.join(MODE_PROMPTS_DIR, filename);
+	return await Effect.runPromise(
+		Effect.gen(function* () {
+			const fs = yield* FileSystem;
+			const contents = yield* fs.readFileString(filePath);
+			return contents.trim();
+		}).pipe(Effect.provide(NodeFileSystem.layer)),
+	);
+};
 
-export const SMART_MODE_SYSTEM_PROMPT = loadModePrompt("smart.md");
-export const DEEP_MODE_SYSTEM_PROMPT = loadModePrompt("deep.md");
-export const RUSH_MODE_SYSTEM_PROMPT = loadModePrompt("rush.md");
+export const SMART_MODE_SYSTEM_PROMPT = await loadModePrompt("smart.md");
+export const DEEP_MODE_SYSTEM_PROMPT = await loadModePrompt("deep.md");
+export const RUSH_MODE_SYSTEM_PROMPT = await loadModePrompt("rush.md");
 
 export const DEFAULT_PROMPT_MODE_PRESETS: Record<PromptModeName, PromptModePreset> = {
 	smart: {

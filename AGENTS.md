@@ -64,14 +64,14 @@ Topics: quick-start, project-setup, tsconfig, basics, services-and-layers, data-
 
 <!-- effect-solutions:end -->
 
-## Code Style: Final Form
+## Final Form Code Style
 
-Write code in its final form - clean, explicit, without fallbacks or migration paths.
+Write code clean, explicit, without fallbacks:
 
-- **No fallback logic**: When changing schemas or keys, remove the old code entirely. Don't support multiple variants.
-- **No migrations**: Don't write upgrade scripts. Breaking changes should fail fast with clear errors.
-- **Explicit over implicit**: Mandatory fields, strict parsing, no silent defaults. Fail if configuration is incomplete.
-- **Delete, don't deprecate**: When refactoring, delete old code rather than keeping it working temporarily.
+- **No fallback logic**: Remove old code entirely when changing schemas.
+- **No migrations**: Breaking changes fail fast with clear errors.
+- **Explicit over implicit**: Mandatory fields, strict parsing, no silent defaults.
+- **Delete, don't deprecate**: Remove old code rather than keeping it working temporarily.
 - **Invalid states are unrepresentable**: Design APIs and data structures so that invalid states cannot be expressed. When invalid data is encountered, stop immediately and report the error.
 
 ## Quick Reference

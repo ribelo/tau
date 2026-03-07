@@ -109,13 +109,12 @@ export function renderAgentResult(
 		const tools = status["tools"] as Array<{ name: string; args?: string; result?: string; isError?: boolean }> | undefined;
 		const idStr = id.slice(0, 8);
 		const typeStr = type ? `  ${theme.fg("accent", type)}` : "";
-		const now = Date.now();
-		const liveWorkedMs = (workedMs || 0)
-			+ (state === "running" && activeTurnStartedAtMs !== undefined
-				? Math.max(0, now - activeTurnStartedAtMs)
-				: 0);
-		const workedStr = liveWorkedMs > 0
-			? `  ${theme.fg("accent", "●")} ${theme.fg("dim", formatDuration(liveWorkedMs))}`
+		const showLiveTimer = !expanded && state === "running";
+		const shownWorkedMs = showLiveTimer && activeTurnStartedAtMs !== undefined
+			? (workedMs ?? 0) + Math.max(0, Date.now() - activeTurnStartedAtMs)
+			: (workedMs ?? 0);
+		const workedStr = shownWorkedMs > 0
+			? `  ${theme.fg("accent", "●")} ${theme.fg("dim", formatDuration(shownWorkedMs))}`
 			: "";
 		const countsStr = `  ${theme.fg("dim", `t:${turns ?? 0} • c:${toolCalls ?? 0}`)}`;
 

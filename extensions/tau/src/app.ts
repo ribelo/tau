@@ -1,4 +1,5 @@
 import { Effect, Layer } from "effect";
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 
 import { PiAPILive } from "./effect/pi.js";
 import { PiLoggerLive } from "./effect/logger.js";
@@ -34,6 +35,7 @@ const MainLayer = Layer.mergeAll(
 ).pipe(
 	Layer.provideMerge(SandboxStateLive),
 	Layer.provideMerge(PersistenceLive),
+	Layer.provideMerge(NodeFileSystem.layer),
 	Layer.provideMerge(PiLoggerLive),
 );
 
