@@ -1,4 +1,4 @@
-import { Context, Effect, Layer } from "effect";
+import { ServiceMap, Effect, Layer } from "effect";
 
 import { PiAPI } from "../effect/pi.js";
 import { Persistence } from "./persistence.js";
@@ -12,7 +12,7 @@ export interface TerminalPrompt {
 	readonly setup: Effect.Effect<void>;
 }
 
-export const TerminalPrompt = Context.GenericTag<TerminalPrompt>("TerminalPrompt");
+export const TerminalPrompt = ServiceMap.Service<TerminalPrompt>("TerminalPrompt");
 
 export const TerminalPromptLive = Layer.effect(
 	TerminalPrompt,

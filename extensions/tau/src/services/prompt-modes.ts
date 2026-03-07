@@ -1,4 +1,4 @@
-import { Context, Effect, Layer } from "effect";
+import { ServiceMap, Effect, Layer } from "effect";
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
 
@@ -12,7 +12,7 @@ export interface PromptModes {
 	readonly setup: Effect.Effect<void>;
 }
 
-export const PromptModes = Context.GenericTag<PromptModes>("PromptModes");
+export const PromptModes = ServiceMap.Service<PromptModes>("PromptModes");
 
 type PromptModePersistence = {
 	readonly getSnapshot: () => TauPersistedState;

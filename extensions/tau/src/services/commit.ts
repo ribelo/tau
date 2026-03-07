@@ -1,4 +1,4 @@
-import { Context, Effect, Layer } from "effect";
+import { ServiceMap, Effect, Layer } from "effect";
 
 import { PiAPI } from "../effect/pi.js";
 
@@ -10,7 +10,7 @@ export interface Commit {
 	readonly setup: Effect.Effect<void>;
 }
 
-export const Commit = Context.GenericTag<Commit>("Commit");
+export const Commit = ServiceMap.Service<Commit>("Commit");
 
 export const CommitLive = Layer.effect(
 	Commit,

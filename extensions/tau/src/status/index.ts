@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ThemeColor } from "@mariozechner/pi-coding-agent";
 import { Theme } from "@mariozechner/pi-coding-agent";
 import { Text, visibleWidth, type Component } from "@mariozechner/pi-tui";
-import { Data, Either, Schema } from "effect";
+import { Data, Schema } from "effect";
 import https from "node:https";
 
 import type { TauState } from "../shared/state.js";
@@ -25,21 +25,27 @@ class StatusBoundaryError extends Data.TaggedError("StatusBoundaryError")<{
 	readonly cause?: unknown;
 }> {}
 
-function decodeUnknownOrNull<A, I>(schema: Schema.Schema<A, I>, input: unknown): A | null {
-	const decoded = Schema.decodeUnknownEither(schema)(input);
-	return Either.isRight(decoded) ? decoded.right : null;
+function decodeUnknownOrNull<S extends Schema.Top & { readonly DecodingServices: never }>(
+	schema: S,
+	input: unknown,
+): S["Type"] | null {
+	try {
+		return Schema.decodeUnknownSync(schema)(input);
+	} catch {
+		return null;
+	}
 }
 
-function decodeUnknownOrReject<A, I>(
-	schema: Schema.Schema<A, I>,
+function decodeUnknownOrReject<S extends Schema.Top & { readonly DecodingServices: never }>(
+	schema: S,
 	input: unknown,
 	message: string,
-): Promise<A> {
-	const decoded = Schema.decodeUnknownEither(schema)(input);
-	if (Either.isRight(decoded)) {
-		return Promise.resolve(decoded.right);
+): Promise<S["Type"]> {
+	try {
+		return Promise.resolve(Schema.decodeUnknownSync(schema)(input));
+	} catch (cause) {
+		return Promise.reject(new StatusBoundaryError({ message, cause }));
 	}
-	return Promise.reject(new StatusBoundaryError({ message, cause: decoded.left }));
 }
 
 function parseJsonOrNull(text: string): unknown | null {
@@ -140,7 +146,7 @@ const GoogleProjectTokenSchema = Schema.Struct({
 	projectId: OptionalString,
 });
 
-const JwtPayloadSchema = Schema.Record({ key: Schema.String, value: Schema.Unknown });
+const JwtPayloadSchema = Schema.Record(Schema.String, Schema.Unknown);
 
 const RateLimitWindowSnapshotSchema = Schema.Struct({
 	used_percent: OptionalNumber,
@@ -152,25 +158,25 @@ const RateLimitWindowSnapshotSchema = Schema.Struct({
 const OpenAiUsagePayloadSchema = Schema.Struct({
 	plan_type: OptionalString,
 	rate_limit: Schema.optional(
-		Schema.Union(
+		Schema.Union([
 			Schema.Struct({
 				allowed: OptionalBoolean,
 				limit_reached: OptionalBoolean,
-				primary_window: Schema.optional(Schema.Union(RateLimitWindowSnapshotSchema, Schema.Null)),
-				secondary_window: Schema.optional(Schema.Union(RateLimitWindowSnapshotSchema, Schema.Null)),
+				primary_window: Schema.optional(Schema.Union([RateLimitWindowSnapshotSchema, Schema.Null])),
+				secondary_window: Schema.optional(Schema.Union([RateLimitWindowSnapshotSchema, Schema.Null])),
 			}),
 			Schema.Null,
-		),
+		]),
 	),
 	credits: Schema.optional(
-		Schema.Union(
+		Schema.Union([
 			Schema.Struct({
 				has_credits: OptionalBoolean,
 				unlimited: OptionalBoolean,
-				balance: Schema.optional(Schema.Union(Schema.String, Schema.Null)),
+				balance: Schema.optional(Schema.Union([Schema.String, Schema.Null])),
 			}),
 			Schema.Null,
-		),
+		]),
 	),
 });
 

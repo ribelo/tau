@@ -1,4 +1,4 @@
-import { Context, Effect, Layer } from "effect";
+import { ServiceMap, Effect, Layer } from "effect";
 
 import { PiAPI } from "../effect/pi.js";
 import {
@@ -9,15 +9,12 @@ import {
 } from "../shared/state.js";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 
-export class Persistence extends Context.Tag("Persistence")<
-	Persistence,
-	{
+export class Persistence extends ServiceMap.Service<Persistence, {
 		readonly getSnapshot: () => TauPersistedState;
 		readonly setSnapshot: (next: TauPersistedState) => void;
 		readonly update: (patch: Partial<TauPersistedState>) => void;
 		readonly setup: Effect.Effect<void>;
-	}
->() {}
+	}>()("Persistence") {}
 
 export const PersistenceLive = Layer.effect(
 	Persistence,

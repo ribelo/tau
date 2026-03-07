@@ -1,4 +1,4 @@
-import { Context, Data, Effect, Stream } from "effect";
+import { ServiceMap, Data, Effect, Stream } from "effect";
 import type { Model, Api } from "@mariozechner/pi-ai";
 import type { ModelRegistry } from "@mariozechner/pi-coding-agent";
 import type { AgentId, AgentDefinition } from "./types.js";
@@ -40,10 +40,7 @@ export interface AgentConfigService {
 	readonly idleTtlMs: number;
 }
 
-export class AgentConfig extends Context.Tag("AgentConfig")<
-	AgentConfig,
-	AgentConfigService
->() {}
+export class AgentConfig extends ServiceMap.Service<AgentConfig, AgentConfigService>()("AgentConfig") {}
 
 // Agent Info
 export interface AgentInfo {
@@ -80,9 +77,7 @@ export interface SpawnOptions {
 	readonly resultSchema?: unknown;
 }
 
-export class AgentManager extends Context.Tag("AgentManager")<
-	AgentManager,
-	{
+export class AgentManager extends ServiceMap.Service<AgentManager, {
 		readonly spawn: (
 			opts: SpawnOptions,
 		) => Effect.Effect<
@@ -102,8 +97,7 @@ export class AgentManager extends Context.Tag("AgentManager")<
 		) => Effect.Effect<AgentId[], AgentNotFound | AgentAccessDenied>;
 		readonly gc: Effect.Effect<AgentId[]>;
 		readonly shutdownAll: Effect.Effect<void>;
-	}
->() {}
+	}>()("AgentManager") {}
 
 // Agent Control
 export interface ControlSpawnOptions {
@@ -129,9 +123,7 @@ export interface WaitResult {
 	readonly interrupted?: boolean;
 }
 
-export class AgentControl extends Context.Tag("AgentControl")<
-	AgentControl,
-	{
+export class AgentControl extends ServiceMap.Service<AgentControl, {
 		readonly spawn: (
 			opts: ControlSpawnOptions,
 		) => Effect.Effect<
@@ -161,5 +153,4 @@ export class AgentControl extends Context.Tag("AgentControl")<
 		readonly gc: Effect.Effect<AgentId[]>;
 		readonly closeAll: Effect.Effect<void>;
 		readonly list: Effect.Effect<AgentInfo[]>;
-	}
->() {}
+	}>()("AgentControl") {}

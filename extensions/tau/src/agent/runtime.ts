@@ -11,7 +11,7 @@ import { PiLoggerLive } from "../effect/logger.js";
 import { createAgentToolDef, type AgentToolContext, type AgentToolDef } from "./tool.js";
 
 // Module-level runtime - initialized once, shared across all tool calls and workers
-let sharedRuntime: ManagedRuntime.ManagedRuntime<AgentControl, never> | null = null;
+let sharedRuntime: ManagedRuntime.ManagedRuntime<AgentControl, unknown> | null = null;
 
 export type AgentRuntimeConfig = AgentConfigService;
 
@@ -43,7 +43,7 @@ export function initAgentRuntime(pi: ExtensionAPI, config: AgentRuntimeConfig): 
  * Get the shared runtime for agent operations.
  * Must be called after initAgentRuntime().
  */
-export function getAgentRuntime(): ManagedRuntime.ManagedRuntime<AgentControl, never> {
+export function getAgentRuntime(): ManagedRuntime.ManagedRuntime<AgentControl, unknown> {
 	if (!sharedRuntime) {
 		throw new Error("Agent runtime not initialized. Call initAgentRuntime() first.");
 	}

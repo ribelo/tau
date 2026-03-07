@@ -82,10 +82,10 @@ type BdToolDetails = {
 
 type BdMessageDetails = BdToolDetails & { command: string };
 
-const BdCliJsonOutputSchema = Schema.Union(
+const BdCliJsonOutputSchema = Schema.Union([
 	Schema.Array(Schema.Unknown),
-	Schema.Record({ key: Schema.String, value: Schema.Unknown }),
-);
+	Schema.Record(Schema.String, Schema.Unknown),
+]);
 
 const BD_MESSAGE_TYPE = "bd";
 

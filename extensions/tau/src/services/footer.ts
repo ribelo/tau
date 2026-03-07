@@ -1,4 +1,5 @@
-import { Context, Effect, Layer, SubscriptionRef } from "effect";
+import { ServiceMap, Effect, Layer, SubscriptionRef } from "effect";
+import { FileSystem } from "effect/FileSystem";
 
 import type {
 	ExtensionAPI,
@@ -9,7 +10,6 @@ import type {
 import type { TUI } from "@mariozechner/pi-tui";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import * as path from "node:path";
-import { FileSystem } from "@effect/platform/FileSystem";
 
 import { PiAPI } from "../effect/pi.js";
 import { isRecord } from "../shared/json.js";
@@ -22,7 +22,7 @@ export interface Footer {
 	readonly setup: Effect.Effect<void>;
 }
 
-export const Footer = Context.GenericTag<Footer>("Footer");
+export const Footer = ServiceMap.Service<Footer>("Footer");
 
 type GitLineDelta = { readonly added: number; readonly removed: number };
 
@@ -116,7 +116,7 @@ const collectGitLineDelta = async (pi: ExtensionAPI, cwd: string): Promise<GitLi
 const findBeadsJsonlPath = (
 	fs: FileSystem,
 	startDir: string,
-): Effect.Effect<string | null, unknown> =>
+): Effect.Effect<string | null, unknown, never> =>
 	Effect.gen(function* () {
 		let current = startDir;
 		for (;;) {
@@ -223,7 +223,7 @@ export const FooterLive = Layer.effect(
 			let inProgressCount = 0;
 			if (issuesPath) {
 				const issuesJsonl = yield* fs.readFileString(issuesPath).pipe(
-					Effect.catchAll(() => Effect.succeed("")),
+					Effect.catch(() => Effect.succeed("")),
 				);
 				if (issuesJsonl.length > 0) {
 					inProgressCount = countInProgressIssuesFromJsonl(issuesJsonl);
@@ -242,21 +242,20 @@ export const FooterLive = Layer.effect(
 			yield* Effect.sync(() => emitFooterChanged());
 		});
 
-		const refreshFooterHygieneLoop = refreshFooterHygieneOnce.pipe(
-			Effect.catchAll(() => Effect.void),
-			Effect.zipRight(
-				Effect.forever(
-					Effect.sleep("5 seconds").pipe(
-						Effect.zipRight(refreshFooterHygieneOnce.pipe(Effect.catchAll(() => Effect.void))),
-					),
-				),
-			),
-		);
+		const refreshFooterHygieneLoop = Effect.gen(function* () {
+			yield* refreshFooterHygieneOnce.pipe(Effect.catch(() => Effect.void));
+			yield* Effect.forever(
+				Effect.gen(function* () {
+					yield* Effect.sleep("5 seconds");
+					yield* refreshFooterHygieneOnce.pipe(Effect.catch(() => Effect.void));
+				}),
+			);
+		});
 
 		return Footer.of({
 			setup: Effect.gen(function* () {
 				// Start hygiene refresh loop (git diff + beads in-progress count)
-				yield* Effect.forkDaemon(refreshFooterHygieneLoop);
+				yield* Effect.forkDetach(refreshFooterHygieneLoop);
 
 				yield* Effect.sync(() => {
 					pi.on("session_start", (_event: unknown, ctx: ExtensionContext) => {

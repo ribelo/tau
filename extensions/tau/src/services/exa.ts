@@ -1,4 +1,4 @@
-import { Context, Effect, Layer } from "effect";
+import { ServiceMap, Effect, Layer } from "effect";
 
 import { PiAPI } from "../effect/pi.js";
 
@@ -10,7 +10,7 @@ export interface Exa {
 	readonly setup: Effect.Effect<void>;
 }
 
-export const Exa = Context.GenericTag<Exa>("Exa");
+export const Exa = ServiceMap.Service<Exa>("Exa");
 
 export const ExaLive = Layer.effect(
 	Exa,

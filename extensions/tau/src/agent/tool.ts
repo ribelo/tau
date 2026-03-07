@@ -21,23 +21,20 @@ import type { ApprovalBroker } from "./approval-broker.js";
 
 /**
  * Convert an AbortSignal to an Effect that completes when the signal aborts.
- * Uses Effect.async with the provided AbortSignal for cleanup.
  */
 function abortSignalEffect(signal: AbortSignal | undefined): Effect.Effect<void> {
 	if (!signal) {
-		return Effect.never; // Never completes if no signal
+		return Effect.never;
 	}
-	
-	// If already aborted, complete immediately
 	if (signal.aborted) {
 		return Effect.void;
 	}
-	
-	return Effect.async<void>((resume) => {
-		const onAbort = () => resume(Effect.void);
-		signal.addEventListener("abort", onAbort, { once: true });
-		// Cleanup is handled by the AbortSignal passed to async
-	});
+	return Effect.promise(
+		() =>
+			new Promise<void>((resolve) => {
+				signal.addEventListener("abort", () => resolve(), { once: true });
+			}),
+	);
 }
 
 export const AgentParams = Type.Object({
@@ -133,7 +130,7 @@ async function executeWaitWithUpdates(
 ): Promise<ToolResult> {
 	try {
 		// Ref to store the latest result for interruption handling
-		const latestResultRef = await runEffect(Ref.make<WaitResult | null>(null));
+		const latestResultRef = await Effect.runPromise(Ref.make<WaitResult | null>(null));
 
 		const program = Effect.gen(function* () {
 			const control = yield* AgentControl;
@@ -179,10 +176,10 @@ async function executeWaitWithUpdates(
 
 		const result = await runEffect(
 			program.pipe(
-				Effect.catchAllCause((cause) =>
+				Effect.catchCause((cause) =>
 					Effect.gen(function* () {
 						// Check if this was an interruption (from abort signal)
-						if (Cause.isInterrupted(cause)) {
+						if (Cause.hasInterrupts(cause)) {
 							const lastResult = yield* Ref.get(latestResultRef);
 							if (lastResult) {
 								return { ...lastResult, interrupted: true };
@@ -192,7 +189,7 @@ async function executeWaitWithUpdates(
 						return yield* Effect.failCause(cause);
 					})
 				),
-				Effect.catchAll((err: unknown) =>
+				Effect.catch((err: unknown) =>
 					Effect.fail(err instanceof Error ? err : new Error(String(err))),
 				),
 			),
@@ -346,7 +343,7 @@ export function createAgentToolDef(
 							AgentError: (err: AgentError) =>
 								Effect.fail(new Error(err.message)),
 						}),
-						Effect.catchAll((err: unknown) =>
+						Effect.catch((err: unknown) =>
 							Effect.fail(err instanceof Error ? err : new Error(String(err))),
 						),
 					),

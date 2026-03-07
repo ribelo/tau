@@ -1,4 +1,4 @@
-import { Context, Effect, Layer } from "effect";
+import { ServiceMap, Effect, Layer } from "effect";
 
 import { PiAPI } from "../effect/pi.js";
 import { createState } from "../shared/state.js";
@@ -11,7 +11,7 @@ export interface Beads {
 	readonly setup: Effect.Effect<void>;
 }
 
-export const Beads = Context.GenericTag<Beads>("Beads");
+export const Beads = ServiceMap.Service<Beads>("Beads");
 
 export const BeadsLive = Layer.effect(
 	Beads,

@@ -507,21 +507,21 @@ export class AgentWorker implements Agent {
 	}
 
 	prompt(message: string): Effect.Effect<string, AgentError> {
-		return Effect.gen(this, function* () {
+		// eslint-disable-next-line @typescript-eslint/no-this-alias
+		const worker = this;
+		return Effect.gen(function* () {
 			const submissionId = `sub-${crypto.randomUUID()}`;
 
-			yield* SubscriptionRef.set(this.statusRef, {
+			yield* SubscriptionRef.set(worker.statusRef, {
 				state: "running",
-				turns: this.turns,
-				toolCalls: this.toolCalls,
-				workedMs: this.workedMs,
-				...(this.turnStartTime !== undefined ? { activeTurnStartedAtMs: this.turnStartTime } : {}),
-				tools: this.tools,
+				turns: worker.turns,
+				toolCalls: worker.toolCalls,
+				workedMs: worker.workedMs,
+				...(worker.turnStartTime !== undefined ? { activeTurnStartedAtMs: worker.turnStartTime } : {}),
+				tools: worker.tools,
 			});
 
 			// Fire-and-forget: try each model in sequence until one succeeds
-			// eslint-disable-next-line @typescript-eslint/no-this-alias
-			const worker = this;
 			Effect.runFork(
 				Effect.gen(function* () {
 					const errors: string[] = [];
@@ -544,7 +544,7 @@ export class AgentWorker implements Agent {
 								),
 								catch: (err) => err,
 							}).pipe(
-								Effect.catchAll((err: unknown) => {
+								Effect.catch((err: unknown) => {
 									const reason = err instanceof Error ? err.message : String(err);
 									errors.push(`${spec.model}: ${reason}`);
 									return Effect.fail("skip" as const);
@@ -572,7 +572,7 @@ export class AgentWorker implements Agent {
 								}),
 								catch: (err) => err,
 							}).pipe(
-								Effect.catchAll((err: unknown) => {
+								Effect.catch((err: unknown) => {
 									const reason = err instanceof Error ? err.message : String(err);
 									errors.push(`${spec.model}: ${reason}`);
 									return Effect.succeed("failed" as const);
@@ -596,7 +596,7 @@ export class AgentWorker implements Agent {
 							}),
 							catch: (err) => err,
 						}).pipe(
-							Effect.catchAll((err: unknown) => {
+							Effect.catch((err: unknown) => {
 								const reason = err instanceof Error ? err.message : String(err);
 								errors.push(`${spec.model}: ${reason}`);
 								return Effect.succeed("failed" as const);
@@ -646,7 +646,7 @@ export class AgentWorker implements Agent {
 						tools: worker.tools,
 					});
 				}).pipe(
-					Effect.catchAll((err: unknown) => {
+					Effect.catch((err: unknown) => {
 						const reason = err instanceof Error ? err.message : String(err);
 						return SubscriptionRef.set(worker.statusRef, {
 							state: "failed",
@@ -669,13 +669,15 @@ export class AgentWorker implements Agent {
 	}
 
 	shutdown(): Effect.Effect<void> {
-		return Effect.gen(this, function* () {
-			yield* Effect.promise(() => this.session.abort());
-			if (this.sessionUnsubscribe) {
-				this.sessionUnsubscribe();
-				this.sessionUnsubscribe = undefined;
+		// eslint-disable-next-line @typescript-eslint/no-this-alias
+		const worker = this;
+		return Effect.gen(function* () {
+			yield* Effect.promise(() => worker.session.abort());
+			if (worker.sessionUnsubscribe) {
+				worker.sessionUnsubscribe();
+				worker.sessionUnsubscribe = undefined;
 			}
-			yield* SubscriptionRef.set(this.statusRef, { state: "shutdown" });
+			yield* SubscriptionRef.set(worker.statusRef, { state: "shutdown" });
 		});
 	}
 
@@ -684,7 +686,7 @@ export class AgentWorker implements Agent {
 	}
 
 	subscribeStatus(): Stream.Stream<Status> {
-		return this.statusRef.changes;
+		return SubscriptionRef.changes(this.statusRef);
 	}
 }
 

@@ -22,13 +22,13 @@ const EXTENSION_AGENTS_DIR = path.resolve(
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "inherit"] as const;
 
-const ThinkingLevelSchema = Schema.Literal(...THINKING_LEVELS);
+const ThinkingLevelSchema = Schema.Literals([...THINKING_LEVELS]);
 
-const FilesystemModeSchema = Schema.Literal(...FILESYSTEM_MODES);
+const FilesystemModeSchema = Schema.Literals([...FILESYSTEM_MODES]);
 
-const NetworkModeSchema = Schema.Literal(...NETWORK_MODES);
+const NetworkModeSchema = Schema.Literals([...NETWORK_MODES]);
 
-const ApprovalPolicySchema = Schema.Literal(...APPROVAL_POLICIES);
+const ApprovalPolicySchema = Schema.Literals([...APPROVAL_POLICIES]);
 
 const ModelSpecSchema = Schema.Struct({
 	model: Schema.String,

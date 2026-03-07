@@ -1,4 +1,4 @@
-import { Context, Effect, Layer } from "effect";
+import { ServiceMap, Effect, Layer } from "effect";
 
 import { PiAPI } from "../effect/pi.js";
 import { Persistence } from "./persistence.js";
@@ -12,7 +12,7 @@ export interface SkillMarker {
 	readonly setup: Effect.Effect<void>;
 }
 
-export const SkillMarker = Context.GenericTag<SkillMarker>("SkillMarker");
+export const SkillMarker = ServiceMap.Service<SkillMarker>("SkillMarker");
 
 export const SkillMarkerLive = Layer.effect(
 	SkillMarker,

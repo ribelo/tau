@@ -1,4 +1,4 @@
-import { Effect, Layer, Stream, Schedule } from "effect";
+import { Effect, Layer, Result, Schedule, Stream } from "effect";
 import {
 	AgentControl,
 	AgentManager,
@@ -88,11 +88,11 @@ export const AgentControlLive = Layer.effect(
 					const getStatusMap = Effect.gen(function* () {
 						const statusMap: Record<string, Status> = {};
 						for (const id of ids) {
-							const agentResult = yield* manager.get(id).pipe(Effect.either);
-							if (agentResult._tag === "Left") {
+							const agentResult = yield* manager.get(id).pipe(Effect.result);
+							if (Result.isFailure(agentResult)) {
 								statusMap[id] = { state: "failed", reason: "Not found" };
 							} else {
-								statusMap[id] = yield* agentResult.right.status;
+								statusMap[id] = yield* agentResult.success.status;
 							}
 						}
 						return statusMap;
@@ -111,14 +111,17 @@ export const AgentControlLive = Layer.effect(
 						// Using stream subscription for each non-final agent
 						const waitForAgent = (id: AgentId) =>
 							Effect.gen(function* () {
-								const agentResult = yield* manager.get(id).pipe(Effect.either);
-								if (agentResult._tag === "Left") return; // Already handled as failed
-								
-								const currentStatus = yield* agentResult.right.status;
-								if (isFinal(currentStatus)) return; // Already done
-								
+								const agentResult = yield* manager.get(id).pipe(Effect.result);
+								if (Result.isFailure(agentResult)) {
+									return;
+								}
+								const currentStatus = yield* agentResult.success.status;
+								if (isFinal(currentStatus)) {
+									return;
+								}
+
 								// Wait for this specific agent to complete
-								yield* agentResult.right
+								yield* agentResult.success
 									.subscribeStatus()
 									.pipe(Stream.filter(isFinal), Stream.take(1), Stream.runDrain);
 							});
@@ -135,7 +138,7 @@ export const AgentControlLive = Layer.effect(
 					return yield* waitAll.pipe(
 						Effect.timeout(timeout),
 						Effect.map((status) => ({ status, timedOut: false })),
-						Effect.catchAll(() =>
+						Effect.catch(() =>
 							getStatusMap.pipe(
 								Effect.map((status) => ({ status, timedOut: true })),
 							),
@@ -157,13 +160,13 @@ export const AgentControlLive = Layer.effect(
 					const statusMap: Record<string, Status> = {};
 					const agentTypes: Record<string, string> = {};
 					for (const id of ids) {
-						const agentResult = yield* manager.get(id).pipe(Effect.either);
-						if (agentResult._tag === "Left") {
+						const agentResult = yield* manager.get(id).pipe(Effect.result);
+						if (Result.isFailure(agentResult)) {
 							statusMap[id] = { state: "failed", reason: "Not found" };
 							agentTypes[id] = "unknown";
 						} else {
-							statusMap[id] = yield* agentResult.right.status;
-							agentTypes[id] = agentResult.right.type;
+							statusMap[id] = yield* agentResult.success.status;
+							agentTypes[id] = agentResult.success.type;
 						}
 					}
 					return { statusMap, agentTypes };
@@ -179,25 +182,22 @@ export const AgentControlLive = Layer.effect(
 				});
 
 				// Create a polling stream: emit status, wait, repeat until all final
-				return Stream.repeatEffectWithSchedule(
-					pollEffect,
-					Schedule.spaced(pollInterval),
-				).pipe(
+				return Stream.fromEffectSchedule(pollEffect, Schedule.spaced(pollInterval)).pipe(
 					// Take until all agents are final (inclusive - emit the final state)
 					Stream.takeUntil((result) => allFinal(result.status) || ids.length === 0),
 					// Apply timeout to the whole stream
 					Stream.timeout(timeout),
-					Stream.catchAll(() => 
+					Stream.catch(() =>
 						// On timeout, emit final status with timedOut: true
 						Stream.fromEffect(
 							getStatusAndTypes.pipe(
-								Effect.map(({ statusMap, agentTypes }): WaitResult => ({ 
-									status: statusMap, 
+								Effect.map(({ statusMap, agentTypes }): WaitResult => ({
+									status: statusMap,
 									timedOut: true,
 									agentTypes,
-								}))
-							)
-						)
+								})),
+							),
+						),
 					),
 					Stream.ensuring(
 						Effect.gen(function* () {

@@ -1,4 +1,4 @@
-import { Context, Effect, Either, Layer, Schema, SubscriptionRef } from "effect";
+import { ServiceMap, Effect, Layer, Schema, SubscriptionRef } from "effect";
 
 import { PiAPI } from "../effect/pi.js";
 import type { SandboxConfig } from "../sandbox/config.js";
@@ -14,7 +14,7 @@ export interface Sandbox {
 	readonly setup: Effect.Effect<void>;
 }
 
-export const Sandbox = Context.GenericTag<Sandbox>("Sandbox");
+export const Sandbox = ServiceMap.Service<Sandbox>("Sandbox");
 
 export const SandboxLive = Layer.effect(
 	Sandbox,
@@ -38,9 +38,12 @@ export const SandboxLive = Layer.effect(
 
 					// We want to bridge the tau:sandbox:changed event to our state.
 					pi.events.on("tau:sandbox:changed", (config: unknown) => {
-						const decoded = Schema.decodeUnknownEither(SandboxConfigRequired)(config);
-						if (Either.isLeft(decoded)) return;
-						Effect.runFork(SubscriptionRef.set(state, decoded.right));
+						try {
+							const decoded = Schema.decodeUnknownSync(SandboxConfigRequired)(config);
+							Effect.runFork(SubscriptionRef.set(state, decoded));
+						} catch {
+							return;
+						}
 					});
 				});
 			}),

@@ -1,5 +1,4 @@
-import { Data, Effect, Schema, Context } from "effect";
-import * as ParseResult from "effect/ParseResult";
+import { Data, Effect, Schema, ServiceMap } from "effect";
 import { getMarkdownTheme, type ExtensionAPI, type Theme } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { Markdown, Text } from "@mariozechner/pi-tui";
@@ -24,10 +23,10 @@ export class ExaConfigError extends Data.TaggedError("ExaConfigError")<{
 
 // Helper to handle API returning null or undefined for optional fields
 // Accepts string | null | undefined - treat null as undefined at usage
-const OptionalString = Schema.optional(Schema.Union(Schema.String, Schema.Null));
-const OptionalNumber = Schema.optional(Schema.Union(Schema.Number, Schema.Null));
-const OptionalArray = <A, I>(schema: Schema.Schema<A, I>) =>
-	Schema.optional(Schema.Union(Schema.Array(schema), Schema.Null));
+const OptionalString = Schema.optional(Schema.Union([Schema.String, Schema.Null]));
+const OptionalNumber = Schema.optional(Schema.Union([Schema.Number, Schema.Null]));
+const OptionalArray = <S extends Schema.Top>(schema: S) =>
+	Schema.optional(Schema.Union([Schema.Array(schema), Schema.Null]));
 
 export const ExaSearchResult = Schema.Struct({
 	id: OptionalString,
@@ -112,12 +111,12 @@ export const getExaConfig = (): Effect.Effect<ExaConfig, ExaConfigError> =>
 // API Client
 // =============================================================================
 
-const exaPost = <A, I>(
+const exaPost = <S extends Schema.Top & { readonly DecodingServices: never }>(
 	path: string,
 	body: unknown,
-	schema: Schema.Schema<A, I>,
+	schema: S,
 	signal: AbortSignal | undefined,
-): Effect.Effect<A, ExaApiError | ExaConfigError> =>
+): Effect.Effect<S["Type"], ExaApiError | ExaConfigError> =>
 	Effect.gen(function* () {
 		const config = yield* getExaConfig();
 		const url = `${config.baseUrl}${path.startsWith("/") ? "" : "/"}${path}`;
@@ -163,16 +162,15 @@ const exaPost = <A, I>(
 				}),
 		});
 
-		return yield* Schema.decodeUnknown(schema)(json).pipe(
-			Effect.mapError((parseError): ExaApiError => {
-				const issues = ParseResult.ArrayFormatter.formatErrorSync(parseError);
-				return new ExaApiError({
-					message: `Failed to decode response: ${JSON.stringify(issues)}`,
-					status: res.status,
-					details: parseError,
-				});
-			}),
-		);
+		try {
+			return Schema.decodeUnknownSync(schema)(json);
+		} catch (parseError) {
+			return yield* new ExaApiError({
+				message: `Failed to decode response: ${String(parseError)}`,
+				status: res.status,
+				details: parseError,
+			});
+		}
 	});
 
 // =============================================================================
@@ -194,7 +192,7 @@ export interface ExaService {
 	) => Effect.Effect<ExaContextResponse, ExaApiError | ExaConfigError>;
 }
 
-export const ExaService = Context.GenericTag<ExaService>("ExaService");
+export const ExaService = ServiceMap.Service<ExaService>("ExaService");
 
 // =============================================================================
 // Helpers

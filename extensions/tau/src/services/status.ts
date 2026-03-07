@@ -1,4 +1,4 @@
-import { Context, Effect, Layer } from "effect";
+import { ServiceMap, Effect, Layer } from "effect";
 
 import { PiAPI } from "../effect/pi.js";
 import { Persistence } from "./persistence.js";
@@ -12,7 +12,7 @@ export interface Status {
 	readonly setup: Effect.Effect<void>;
 }
 
-export const Status = Context.GenericTag<Status>("Status");
+export const Status = ServiceMap.Service<Status>("Status");
 
 export const StatusLive = Layer.effect(
 	Status,

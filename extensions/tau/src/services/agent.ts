@@ -1,4 +1,4 @@
-import { Context, Effect, Layer } from "effect";
+import { ServiceMap, Effect, Layer } from "effect";
 import { PiAPI } from "../effect/pi.js";
 import initAgent from "../agent/index.js";
 
@@ -6,7 +6,7 @@ export interface Agent {
 	readonly setup: Effect.Effect<void>;
 }
 
-export const Agent = Context.GenericTag<Agent>("Agent");
+export const Agent = ServiceMap.Service<Agent>("Agent");
 
 export const AgentLive = Layer.effect(
 	Agent,

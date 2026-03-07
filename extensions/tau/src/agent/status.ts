@@ -1,8 +1,7 @@
 import { Schema } from "effect";
 
-const NonNegativeFiniteInt = Schema.Int.pipe(
-	Schema.nonNegative(),
-	Schema.finite(),
+const NonNegativeFiniteInt = Schema.Int.check(
+	Schema.isGreaterThanOrEqualTo(0),
 );
 
 export const ToolRecord = Schema.Struct({
@@ -14,17 +13,14 @@ export const ToolRecord = Schema.Struct({
 
 export type ToolRecord = Schema.Schema.Type<typeof ToolRecord>;
 
-export const Status = Schema.Union(
-	Schema.Struct({ state: Schema.Literal("pending") }),
-	Schema.Struct({ 
+export const Status = Schema.Union([Schema.Struct({ state: Schema.Literal("pending") }), Schema.Struct({ 
 		state: Schema.Literal("running"),
 		turns: Schema.optional(NonNegativeFiniteInt),
 		toolCalls: Schema.optional(NonNegativeFiniteInt),
 		workedMs: Schema.optional(NonNegativeFiniteInt),
 		activeTurnStartedAtMs: Schema.optional(NonNegativeFiniteInt),
 		tools: Schema.optional(Schema.Array(ToolRecord)),
-	}),
-	Schema.Struct({
+	}), Schema.Struct({
 		state: Schema.Literal("completed"),
 		message: Schema.optional(Schema.String),
 		structured_output: Schema.optional(Schema.Unknown),
@@ -32,17 +28,14 @@ export const Status = Schema.Union(
 		toolCalls: Schema.optional(NonNegativeFiniteInt),
 		workedMs: Schema.optional(NonNegativeFiniteInt),
 		tools: Schema.optional(Schema.Array(ToolRecord)),
-	}),
-	Schema.Struct({
+	}), Schema.Struct({
 		state: Schema.Literal("failed"),
 		reason: Schema.String,
 		turns: Schema.optional(NonNegativeFiniteInt),
 		toolCalls: Schema.optional(NonNegativeFiniteInt),
 		workedMs: Schema.optional(NonNegativeFiniteInt),
 		tools: Schema.optional(Schema.Array(ToolRecord)),
-	}),
-	Schema.Struct({ state: Schema.Literal("shutdown") }),
-);
+	}), Schema.Struct({ state: Schema.Literal("shutdown") })]);
 
 export type Status = Schema.Schema.Type<typeof Status>;
 

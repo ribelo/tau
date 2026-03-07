@@ -1,4 +1,4 @@
-import { Effect, Layer, Ref, HashMap, Option } from "effect";
+import { Effect, Layer, Ref, HashMap, Option, Semaphore } from "effect";
 import {
 	AgentManager,
 	AgentConfig,
@@ -80,7 +80,7 @@ export const AgentManagerLive = Layer.effect(
 		const depthMapRef = yield* Ref.make(HashMap.empty<AgentId, number>());
 		const parentMapRef = yield* Ref.make(HashMap.empty<AgentId, AgentId>());
 		const lastActivityRef = yield* Ref.make(HashMap.empty<AgentId, number>());
-		const operationGate = yield* Effect.makeSemaphore(1);
+		const operationGate = yield* Semaphore.make(1);
 		const withGate = operationGate.withPermits(1);
 
 		const removeAgentState = (id: AgentId) =>

@@ -1,8 +1,8 @@
 import { Effect } from "effect";
+import { FileSystem } from "effect/FileSystem";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { FileSystem } from "@effect/platform/FileSystem";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 
