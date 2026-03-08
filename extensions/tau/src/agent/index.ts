@@ -13,8 +13,6 @@ import { AgentParams, buildToolDescription, createAgentToolDef } from "./tool.js
 const defaultAgentConfig: AgentRuntimeConfig = {
 	maxThreads: 12,
 	maxDepth: 3,
-	maxAgents: 20,
-	idleTtlMs: 5 * 60 * 1000,
 };
 
 export default function initAgent(pi: ExtensionAPI) {

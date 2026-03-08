@@ -19,7 +19,6 @@ export const AgentControlLive = Layer.effect(
 	Effect.gen(function* () {
 		const manager = yield* AgentManager;
 		const sandbox = yield* Sandbox;
-		const runGc = manager.gc.pipe(Effect.ignore);
 		const touchIds = (ids: ReadonlyArray<AgentId>) =>
 			Effect.forEach(ids, (id) => manager.touch(id), { discard: true }).pipe(Effect.ignore);
 
@@ -148,7 +147,6 @@ export const AgentControlLive = Layer.effect(
 					Effect.ensuring(
 						Effect.gen(function* () {
 							yield* touchIds(ids);
-							yield* runGc;
 						}),
 					),
 				),
@@ -202,7 +200,6 @@ export const AgentControlLive = Layer.effect(
 					Stream.ensuring(
 						Effect.gen(function* () {
 							yield* touchIds(ids);
-							yield* runGc;
 						}),
 					),
 				);
@@ -211,7 +208,6 @@ export const AgentControlLive = Layer.effect(
 				Effect.gen(function* () {
 					return yield* manager.shutdown(id, requesterAgentId);
 				}),
-			gc: manager.gc,
 			closeAll: manager.shutdownAll,
 			list: manager.list,
 		});

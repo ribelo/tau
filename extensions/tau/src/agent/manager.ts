@@ -91,71 +91,6 @@ export const AgentManagerLive = Layer.effect(
 				yield* Ref.update(lastActivityRef, (map) => HashMap.remove(map, id));
 			});
 
-		const gcImpl = Effect.gen(function* () {
-			const agents = yield* Ref.get(agentsRef);
-			const parentMap = yield* Ref.get(parentMapRef);
-			const lastActivityMap = yield* Ref.get(lastActivityRef);
-			const now = Date.now();
-
-			const parentsWithActiveChildren = new Set<AgentId>();
-			for (const [childId, parentId] of parentMap) {
-				const childAgent = HashMap.get(agents, childId);
-				if (Option.isNone(childAgent)) {
-					continue;
-				}
-				const childStatus = yield* childAgent.value.status;
-				if (!isFinal(childStatus)) {
-					parentsWithActiveChildren.add(parentId);
-				}
-			}
-
-			const idleAgents: Array<{ id: AgentId; lastActivity: number }> = [];
-			for (const agent of HashMap.values(agents)) {
-				const status = yield* agent.status;
-				if (!isFinal(status)) {
-					continue;
-				}
-				if (parentsWithActiveChildren.has(agent.id)) {
-					continue;
-				}
-				const lastActivity = Option.getOrElse(HashMap.get(lastActivityMap, agent.id), () => now);
-				idleAgents.push({ id: agent.id, lastActivity });
-			}
-
-			const toEvict = new Set<AgentId>();
-			for (const idleAgent of idleAgents) {
-				if (now - idleAgent.lastActivity >= config.idleTtlMs) {
-					toEvict.add(idleAgent.id);
-				}
-			}
-
-			const remainingCount = HashMap.size(agents) - toEvict.size;
-			if (remainingCount > config.maxAgents) {
-				const extra = remainingCount - config.maxAgents;
-				const oldestIdle = idleAgents
-					.filter((candidate) => !toEvict.has(candidate.id))
-					.sort((a, b) => a.lastActivity - b.lastActivity);
-				for (let i = 0; i < extra && i < oldestIdle.length; i += 1) {
-					const candidate = oldestIdle[i];
-					if (candidate !== undefined) {
-						toEvict.add(candidate.id);
-					}
-				}
-			}
-
-			const evicted: AgentId[] = [];
-			for (const id of toEvict) {
-				const agent = HashMap.get(agents, id);
-				if (Option.isSome(agent)) {
-					yield* agent.value.shutdown().pipe(Effect.ignore);
-				}
-				yield* removeAgentState(id);
-				evicted.push(id);
-			}
-
-			return evicted;
-		});
-
 		const evictLru = Effect.gen(function* () {
 			const agents = yield* Ref.get(agentsRef);
 			const parentMap = yield* Ref.get(parentMapRef);
@@ -258,7 +193,6 @@ export const AgentManagerLive = Layer.effect(
 						// Initial prompt
 						yield* agent.prompt(opts.message);
 						yield* Ref.update(lastActivityRef, (map) => HashMap.set(map, id, Date.now()));
-						yield* gcImpl;
 
 						return id;
 					}),
@@ -339,7 +273,6 @@ export const AgentManagerLive = Layer.effect(
 						return idsToClose;
 					}),
 				),
-			gc: withGate(gcImpl),
 			shutdownAll: withGate(
 				Effect.gen(function* () {
 					const agents = yield* Ref.get(agentsRef);

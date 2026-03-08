@@ -36,8 +36,6 @@ export class AgentError extends Data.TaggedError("AgentError")<{
 export interface AgentConfigService {
 	readonly maxThreads: number;
 	readonly maxDepth: number;
-	readonly maxAgents: number;
-	readonly idleTtlMs: number;
 }
 
 export class AgentConfig extends ServiceMap.Service<AgentConfig, AgentConfigService>()("AgentConfig") {}
@@ -95,7 +93,6 @@ export class AgentManager extends ServiceMap.Service<AgentManager, {
 			id: AgentId,
 			requesterAgentId?: AgentId,
 		) => Effect.Effect<AgentId[], AgentNotFound | AgentAccessDenied>;
-		readonly gc: Effect.Effect<AgentId[]>;
 		readonly shutdownAll: Effect.Effect<void>;
 	}>()("AgentManager") {}
 
@@ -150,7 +147,6 @@ export class AgentControl extends ServiceMap.Service<AgentControl, {
 			id: AgentId,
 			requesterAgentId?: AgentId,
 		) => Effect.Effect<AgentId[], AgentNotFound | AgentAccessDenied>;
-		readonly gc: Effect.Effect<AgentId[]>;
 		readonly closeAll: Effect.Effect<void>;
 		readonly list: Effect.Effect<AgentInfo[]>;
 	}>()("AgentControl") {}
