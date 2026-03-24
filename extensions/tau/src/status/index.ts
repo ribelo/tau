@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ThemeColor } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Theme } from "@mariozechner/pi-coding-agent";
 import { Text, visibleWidth, type Component } from "@mariozechner/pi-tui";
 import { Data, Schema } from "effect";
@@ -14,27 +14,10 @@ type StatusState = {
 	values: Record<string, { percentLeft: number }>;
 };
 
-type BurnInfo = {
-	burnRatePerHour?: number | undefined;
-	exhaustsAt?: number | undefined;
-	exhaustsBeforeReset?: boolean | undefined;
-};
-
 class StatusBoundaryError extends Data.TaggedError("StatusBoundaryError")<{
 	readonly message: string;
 	readonly cause?: unknown;
 }> {}
-
-function decodeUnknownOrNull<S extends Schema.Decoder<unknown>>(
-	schema: S,
-	input: unknown,
-): S["Type"] | null {
-	try {
-		return Schema.decodeUnknownSync(schema)(input);
-	} catch {
-		return null;
-	}
-}
 
 function decodeUnknownOrReject<S extends Schema.Decoder<unknown>>(
 	schema: S,
@@ -166,8 +149,6 @@ const GoogleProjectTokenSchema = Schema.Struct({
 	projectId: OptionalString,
 });
 
-const JwtPayloadSchema = Schema.Record(Schema.String, Schema.Unknown);
-
 const RateLimitWindowSnapshotSchema = Schema.Struct({
 	used_percent: OptionalNumber,
 	limit_window_seconds: OptionalNumber,
@@ -290,10 +271,6 @@ type StatusMessageDetails = {
 	sections: StatusSectionData[];
 	fetchedAt: number;
 };
-
-function envVarNameOrMissing(value: string | undefined, envVarName: string): string | undefined {
-	return value ? envVarName : undefined;
-}
 
 function percentLeftFromUsedPercent(usedPercent: number | undefined): number | undefined {
 	if (typeof usedPercent !== "number" || Number.isNaN(usedPercent)) return undefined;
@@ -443,9 +420,9 @@ function buildStatusLines(
 	section: StatusSectionData,
 	width: number,
 	th: Theme,
-	fetchedAtMs: number,
+	_fetchedAtMs: number,
 ): string[] {
-	const innerWidth = Math.max(1, width - 2);
+	const _innerWidth = Math.max(1, width - 2);
 	const lines: string[] = [];
 
 	if (section.error) {
@@ -978,16 +955,6 @@ async function fetchOpenAiUsage(
 		parsed,
 		"OpenAI usage response failed schema validation",
 	);
-}
-
-function decodeJwtPayload(token: string): Record<string, unknown> | null {
-	const parts = token.split(".");
-	if (parts.length !== 3) return null;
-	const payload = parts[1] ?? "";
-	const decoded = Buffer.from(payload, "base64").toString("utf-8");
-	const parsed = parseJsonOrNull(decoded);
-	if (parsed === null) return null;
-	return decodeUnknownOrNull(JwtPayloadSchema, parsed);
 }
 
 function formatPlanType(planType: string | undefined): string | undefined {

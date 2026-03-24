@@ -4,7 +4,7 @@ import * as path from "node:path";
 
 import type { FilesystemMode } from "./config.js";
 
-export type FsCheckResult = { allowed: true } | { allowed: false; reason: string };
+type FsCheckResult = { allowed: true } | { allowed: false; reason: string };
 
 /**
  * Resolve a path to its real absolute path.

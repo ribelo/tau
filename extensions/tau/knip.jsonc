@@ -3,11 +3,6 @@
 	"entry": ["src/index.ts"],
 	"project": ["src/**/*.ts"],
 	"ignoreDependencies": [
-		// pi loads these at runtime via jiti - knip can't trace dynamic requires
-		"@mariozechner/pi-agent-core",
-		"@mariozechner/pi-ai",
-		"@mariozechner/pi-coding-agent",
-		"@mariozechner/pi-tui",
 		// will be used as tests migrate to @effect/vitest
 		"@effect/vitest"
 	]

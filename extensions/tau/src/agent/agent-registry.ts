@@ -366,7 +366,7 @@ function formatValidationErrors(errors: readonly string[]): string {
 	return `Invalid agent definition files:\n${details}`;
 }
 
-export interface AgentSummary {
+interface AgentSummary {
 	readonly name: string;
 	readonly description: string;
 }

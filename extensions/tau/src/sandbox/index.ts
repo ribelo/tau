@@ -9,7 +9,7 @@ import {
 	createWriteTool,
 	getSettingsListTheme,
 } from "@mariozechner/pi-coding-agent";
-import { Container, Input, SettingsList, Text, type SettingItem } from "@mariozechner/pi-tui";
+import { Container, SettingsList, Text, type SettingItem } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 
 import {
@@ -36,8 +36,6 @@ import { isRecord } from "../shared/json.js";
 import type { TauState } from "../shared/state.js";
 import { loadPersistedState, updatePersistedState } from "../shared/state.js";
 import { type ApprovalBroker, getWorkerApprovalBroker } from "../agent/approval-broker.js";
-
-import initAgentAwareness from "./agent-awareness/index.js";
 
 type SandboxStateInternal = {
 	createSandboxedBashOperations?:
@@ -116,33 +114,6 @@ function updateSandboxRuntimeState(state: TauState, patch: Partial<SandboxStateI
 		...current,
 		...patch,
 	};
-}
-
-export function createSandboxedBashOperations(
-	state: TauState,
-	ctx: ExtensionContext,
-	escalate: boolean,
-): BashOperations {
-	const sandboxState = getSandboxRuntimeState(state);
-	const factory = sandboxState?.createSandboxedBashOperations;
-	if (!factory) {
-		throw new Error(
-			"sandbox not initialized (initSandbox must run before createSandboxedBashOperations)",
-		);
-	}
-	return factory(ctx, escalate);
-}
-
-export function getEffectiveSandboxConfig(
-	state: TauState,
-	ctx: ExtensionContext,
-): Required<SandboxConfig> {
-	const sandboxState = getSandboxRuntimeState(state);
-	if (sandboxState?.effectiveConfig) return sandboxState.effectiveConfig;
-
-	return computeEffectiveConfig({
-		workspaceRoot: discoverWorkspaceRoot(ctx.cwd),
-	});
 }
 
 /**

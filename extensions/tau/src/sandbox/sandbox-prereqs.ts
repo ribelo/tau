@@ -1,13 +1,13 @@
 import { spawnSync } from "node:child_process";
 
-export type SandboxPrereqCheckResult = {
+type SandboxPrereqCheckResult = {
 	missingRequired: string[];
 	missingOptional: string[];
 };
 
-export type CommandExistsFn = (cmd: string) => boolean;
+type CommandExistsFn = (cmd: string) => boolean;
 
-export function defaultCommandExists(cmd: string): boolean {
+function defaultCommandExists(cmd: string): boolean {
 	try {
 		const res = spawnSync("which", [cmd], { stdio: "ignore" });
 		return res.status === 0;

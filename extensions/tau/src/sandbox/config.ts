@@ -46,7 +46,7 @@ function decodeSandboxConfigOrThrow(value: unknown, source: string): SandboxConf
 	}
 }
 
-export function applyDefaults(cfg: SandboxConfig | undefined): Required<SandboxConfig> {
+function applyDefaults(cfg: SandboxConfig | undefined): Required<SandboxConfig> {
 	return {
 		filesystemMode: cfg?.filesystemMode ?? DEFAULT_SANDBOX_CONFIG.filesystemMode,
 		networkMode: cfg?.networkMode ?? DEFAULT_SANDBOX_CONFIG.networkMode,
@@ -80,7 +80,7 @@ function readSettingsFileOrThrow(settingsPath: string): AnyRecord {
 	throw new Error(`Invalid settings JSON at ${settingsPath}: ${result.reason}`);
 }
 
-export function getUserSettingsPath(): string {
+function getUserSettingsPath(): string {
 	// Allow override for tests.
 	const override = process.env["TAU_SANDBOX_USER_SETTINGS_PATH"];
 	if (override) {
@@ -89,7 +89,7 @@ export function getUserSettingsPath(): string {
 	return path.join(os.homedir(), ".pi", "agent", "settings.json");
 }
 
-export function getProjectSettingsPath(workspaceRoot: string): string {
+function getProjectSettingsPath(workspaceRoot: string): string {
 	return path.join(workspaceRoot, ".pi", "settings.json");
 }
 
@@ -134,30 +134,4 @@ export function computeEffectiveConfig(opts: {
 		"effective sandbox config",
 	);
 	return applyDefaults(merged);
-}
-
-export function persistUserConfigPatch(patch: SandboxConfig): void {
-	const settingsPath = getUserSettingsPath();
-	const current = readSettingsFileOrThrow(settingsPath);
-	const existing = readSandboxNamespace(current, settingsPath);
-	const nextSandbox = decodeSandboxConfigOrThrow(
-		deepMerge(existing, decodeSandboxConfigOrThrow(patch, "user sandbox patch")),
-		"user sandbox config",
-	);
-	const currentTau = isRecord(current["tau"]) ? current["tau"] : {};
-	const merged = deepMerge(current, { tau: { ...currentTau, sandbox: nextSandbox } });
-	writeJsonFile(settingsPath, merged);
-}
-
-export function persistProjectConfigPatch(workspaceRoot: string, patch: SandboxConfig): void {
-	const settingsPath = getProjectSettingsPath(workspaceRoot);
-	const current = readSettingsFileOrThrow(settingsPath);
-	const existing = readSandboxNamespace(current, settingsPath);
-	const nextSandbox = decodeSandboxConfigOrThrow(
-		deepMerge(existing, decodeSandboxConfigOrThrow(patch, "project sandbox patch")),
-		"project sandbox config",
-	);
-	const currentTau = isRecord(current["tau"]) ? current["tau"] : {};
-	const merged = deepMerge(current, { tau: { ...currentTau, sandbox: nextSandbox } });
-	writeJsonFile(settingsPath, merged);
 }

@@ -7,7 +7,7 @@ import type { TauPersistedState, TauState } from "../shared/state.js";
  */
 const sharedRuntimeState: Record<string, unknown> = {};
 
-export interface LegacyPersistedBridge {
+interface LegacyPersistedBridge {
 	readonly getSnapshot: () => TauPersistedState;
 	readonly setSnapshot: (next: TauPersistedState) => void;
 }

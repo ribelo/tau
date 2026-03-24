@@ -68,5 +68,4 @@ export default function initAgent(pi: ExtensionAPI) {
 	});
 }
 
-// Re-export for external use
-export { getAgentRuntime, createWorkerAgentTool } from "./runtime.js";
+

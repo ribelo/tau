@@ -157,7 +157,7 @@ export function resolveModelPattern(pattern: string, models: Model<Api>[]): Mode
 	return partial;
 }
 
-export function buildWorkerAppendPrompts(options: {
+function buildWorkerAppendPrompts(options: {
 	definition: AgentDefinition;
 	resultSchema?: unknown;
 }): string[] {

@@ -15,16 +15,13 @@ import { classifySandboxFailure } from "./sandbox-diagnostics.js";
 import { isSafeCommand } from "./safe-commands.js";
 import type { ApprovalBroker } from "../agent/approval-broker.js";
 
-/** Default approval timeout in milliseconds */
-export const DEFAULT_APPROVAL_TIMEOUT_MS = 60_000;
-
 /** Result of an approval check */
-export type ApprovalResult =
+type ApprovalResult =
 	| { approved: true; runUnsandboxed?: boolean }
 	| { approved: false; reason: string };
 
 /** Options for approval check */
-export interface ApprovalOptions {
+interface ApprovalOptions {
 	/** Timeout in seconds (default: 60) */
 	timeoutSeconds?: number;
 }

@@ -5,11 +5,6 @@ type MessageLike = { role: string; content?: unknown };
 
 import type { SandboxConfig } from "./config.js";
 
-export type PendingSandboxNotice = {
-	hash: string;
-	text: string;
-};
-
 const SANDBOX_NOTICE_PREFIX = /^\s*SANDBOX_(?:STATE|CHANGE):[^\n]*(?:\n\n)?/;
 
 export function computeSandboxConfigHash(cfg: Required<SandboxConfig>): string {

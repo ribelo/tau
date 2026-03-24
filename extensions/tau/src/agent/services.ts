@@ -22,12 +22,6 @@ export class AgentLimitReached extends Data.TaggedError("AgentLimitReached")<{
 export class AgentDepthExceeded extends Data.TaggedError("AgentDepthExceeded")<{
 	readonly max: number;
 }> {}
-export class AgentAlreadyShutdown extends Data.TaggedError("AgentAlreadyShutdown")<{
-	readonly id: AgentId;
-}> {}
-export class ManagerDropped extends Data.TaggedError("ManagerDropped")<{
-	readonly message?: string;
-}> {}
 export class AgentError extends Data.TaggedError("AgentError")<{
 	readonly message: string;
 }> {}

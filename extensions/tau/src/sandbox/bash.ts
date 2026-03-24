@@ -88,7 +88,7 @@ function cleanupWorkspaceArtifacts(workspaceRoot: string): void {
 	}
 }
 
-export type WrapCommandResult =
+type WrapCommandResult =
 	| { success: true; wrappedCommand: string; home: string }
 	| { success: false; error: string };
 

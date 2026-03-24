@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { isRecord, type AnyRecord } from "./json.js";
 
-export type JsonFileReadResult =
+type JsonFileReadResult =
 	| { readonly _tag: "missing" }
 	| { readonly _tag: "invalid"; readonly reason: string }
 	| { readonly _tag: "ok"; readonly data: AnyRecord };

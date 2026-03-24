@@ -7,13 +7,13 @@ import { Markdown, Text } from "@mariozechner/pi-tui";
 // Errors
 // =============================================================================
 
-export class ExaApiError extends Data.TaggedError("ExaApiError")<{
+class ExaApiError extends Data.TaggedError("ExaApiError")<{
 	readonly message: string;
 	readonly status: number;
 	readonly details: unknown;
 }> {}
 
-export class ExaConfigError extends Data.TaggedError("ExaConfigError")<{
+class ExaConfigError extends Data.TaggedError("ExaConfigError")<{
 	readonly message: string;
 }> {}
 
@@ -28,7 +28,7 @@ const OptionalNumber = Schema.optional(Schema.Union([Schema.Number, Schema.Null]
 const OptionalArray = <S extends Schema.Top>(schema: S) =>
 	Schema.optional(Schema.Union([Schema.Array(schema), Schema.Null]));
 
-export const ExaSearchResult = Schema.Struct({
+const ExaSearchResult = Schema.Struct({
 	id: OptionalString,
 	url: OptionalString,
 	title: OptionalString,
@@ -38,9 +38,9 @@ export const ExaSearchResult = Schema.Struct({
 	text: OptionalString,
 	highlights: OptionalArray(Schema.String),
 });
-export type ExaSearchResult = Schema.Schema.Type<typeof ExaSearchResult>;
+type ExaSearchResult = Schema.Schema.Type<typeof ExaSearchResult>;
 
-export const ExaSearchResponse = Schema.Struct({
+const ExaSearchResponse = Schema.Struct({
 	requestId: OptionalString,
 	results: Schema.Array(ExaSearchResult),
 	resolvedSearchType: OptionalString,
@@ -48,9 +48,9 @@ export const ExaSearchResponse = Schema.Struct({
 	searchTime: OptionalNumber,
 	costDollars: Schema.optional(Schema.Unknown),
 });
-export type ExaSearchResponse = Schema.Schema.Type<typeof ExaSearchResponse>;
+type ExaSearchResponse = Schema.Schema.Type<typeof ExaSearchResponse>;
 
-export const ExaContentsResult = Schema.Struct({
+const ExaContentsResult = Schema.Struct({
 	id: OptionalString,
 	url: OptionalString,
 	title: OptionalString,
@@ -63,18 +63,18 @@ export const ExaContentsResult = Schema.Struct({
 	subpages: OptionalArray(Schema.Unknown),
 	extras: Schema.optional(Schema.Unknown),
 });
-export type ExaContentsResult = Schema.Schema.Type<typeof ExaContentsResult>;
+type ExaContentsResult = Schema.Schema.Type<typeof ExaContentsResult>;
 
-export const ExaContentsResponse = Schema.Struct({
+const ExaContentsResponse = Schema.Struct({
 	requestId: OptionalString,
 	results: Schema.Array(ExaContentsResult),
 	context: OptionalString,
 	statuses: OptionalArray(Schema.Unknown),
 	costDollars: Schema.optional(Schema.Unknown),
 });
-export type ExaContentsResponse = Schema.Schema.Type<typeof ExaContentsResponse>;
+type ExaContentsResponse = Schema.Schema.Type<typeof ExaContentsResponse>;
 
-export const ExaContextResponse = Schema.Struct({
+const ExaContextResponse = Schema.Struct({
 	requestId: OptionalString,
 	query: OptionalString,
 	response: OptionalString,
@@ -83,18 +83,18 @@ export const ExaContextResponse = Schema.Struct({
 	searchTime: OptionalNumber,
 	outputTokens: OptionalNumber,
 });
-export type ExaContextResponse = Schema.Schema.Type<typeof ExaContextResponse>;
+type ExaContextResponse = Schema.Schema.Type<typeof ExaContextResponse>;
 
 // =============================================================================
 // Config
 // =============================================================================
 
-export interface ExaConfig {
+interface ExaConfig {
 	readonly baseUrl: string;
 	readonly apiKey: string;
 }
 
-export const getExaConfig = (): Effect.Effect<ExaConfig, ExaConfigError> =>
+const getExaConfig = (): Effect.Effect<ExaConfig, ExaConfigError> =>
 	Effect.gen(function* () {
 		const apiKey = process.env["EXA_API_KEY"]?.trim();
 		if (!apiKey) {
@@ -180,7 +180,7 @@ const exaPost = <S extends Schema.Decoder<unknown>>(
 // Service Interface
 // =============================================================================
 
-export interface ExaService {
+interface ExaService {
 	readonly search: (
 		params: WebSearchParams,
 		signal: AbortSignal | undefined,
@@ -195,7 +195,7 @@ export interface ExaService {
 	) => Effect.Effect<ExaContextResponse, ExaApiError | ExaConfigError>;
 }
 
-export const ExaService = ServiceMap.Service<ExaService>("ExaService");
+const ExaService = ServiceMap.Service<ExaService>("ExaService");
 
 // =============================================================================
 // Helpers
@@ -239,7 +239,7 @@ const compactContentsResults = (
 // Search
 // =============================================================================
 
-export interface WebSearchParams {
+interface WebSearchParams {
 	readonly query: string;
 	readonly type?: "auto" | "neural" | "fast" | "deep";
 	readonly additionalQueries?: ReadonlyArray<string>;
@@ -290,7 +290,7 @@ const makeSearchBody = (params: WebSearchParams): Record<string, unknown> => {
 // Crawl
 // =============================================================================
 
-export interface CrawlingParams {
+interface CrawlingParams {
 	readonly urls: ReadonlyArray<string>;
 	readonly text?: boolean;
 	readonly highlights?: boolean;
@@ -322,7 +322,7 @@ const makeCrawlBody = (params: CrawlingParams): Record<string, unknown> => {
 // Code Context
 // =============================================================================
 
-export interface CodeContextParams {
+interface CodeContextParams {
 	readonly query: string;
 	readonly tokensNum?: "dynamic" | string;
 }
@@ -349,7 +349,7 @@ const makeCodeContextBody = (params: CodeContextParams): Record<string, unknown>
 // Live Implementation
 // =============================================================================
 
-export const ExaServiceLive: ExaService = {
+const ExaServiceLive: ExaService = {
 	search: (params, signal) =>
 		Effect.gen(function* () {
 			const body = makeSearchBody(params);

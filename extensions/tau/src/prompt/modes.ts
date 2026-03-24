@@ -11,7 +11,7 @@ import { isRecord } from "../shared/json.js";
 
 export type PromptModeName = "smart" | "deep" | "rush";
 
-export type PromptModePreset = {
+type PromptModePreset = {
 	readonly model: string;
 	readonly thinking: ThinkingLevel;
 	readonly systemPrompt: string;
@@ -34,7 +34,7 @@ export const SMART_MODE_SYSTEM_PROMPT = await loadModePrompt("smart.md");
 export const DEEP_MODE_SYSTEM_PROMPT = await loadModePrompt("deep.md");
 export const RUSH_MODE_SYSTEM_PROMPT = await loadModePrompt("rush.md");
 
-export const DEFAULT_PROMPT_MODE_PRESETS: Record<PromptModeName, PromptModePreset> = {
+const DEFAULT_PROMPT_MODE_PRESETS: Record<PromptModeName, PromptModePreset> = {
 	smart: {
 		model: "anthropic/claude-opus-4-5",
 		thinking: "medium",

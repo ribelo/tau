@@ -1,4 +1,4 @@
-export type SandboxFailure =
+type SandboxFailure =
 	| {
 			kind: "network";
 			subtype: "dns" | "blocked" | "connect";

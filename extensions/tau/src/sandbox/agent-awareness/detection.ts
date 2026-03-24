@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-export function isLinux(): boolean {
+function isLinux(): boolean {
 	return process.platform === "linux";
 }
 
@@ -45,7 +45,7 @@ function readProcCwd(pid: number): string | undefined {
 	}
 }
 
-export function listPiProcesses(): Array<{ pid: number; cwd: string }> {
+function listPiProcesses(): Array<{ pid: number; cwd: string }> {
 	if (!isLinux()) return [];
 	if (!fs.existsSync("/proc")) return [];
 
@@ -92,7 +92,7 @@ export function isOverlapping(
 	return false;
 }
 
-export function countOverlappingAgents(
+function countOverlappingAgents(
 	ourCwd: string,
 	ourGitRoot: string | null,
 ): { count: number; pids: number[] } {

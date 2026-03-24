@@ -14,7 +14,7 @@ type EditorWithPrivates = {
 	tryTriggerAutocomplete: (explicitTab?: boolean) => void;
 };
 
-export class TauEditor extends CustomEditor {
+class TauEditor extends CustomEditor {
 	private baseAutocompleteProvider?: AutocompleteProvider;
 	private tauState: TauState;
 

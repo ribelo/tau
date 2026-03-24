@@ -165,40 +165,6 @@ function renderIssueInline(issue: BdIssue, theme: Theme): string {
 	return `${mark}  ${theme.fg("accent", id)}  ${theme.fg("muted", prio)}  ${theme.fg("muted", type)}  ${theme.fg("dim", status)}  ${theme.fg("toolOutput", title)}${depType}`;
 }
 
-function renderIssueInlinePlain(issue: BdIssue): string {
-	const mark = statusGlyph(issue);
-	const id = (issue.id || "(no-id)").padEnd(12);
-	const prioNum = issue.priority;
-	const prioStr = prioNum !== undefined && prioNum !== null ? `P${prioNum}` : "P?";
-	const prio = `[${prioStr}]`.padEnd(6);
-	const type = `[${issue.issue_type || "?"}]`.padEnd(10);
-	const status = `(${issue.status || "???"})`.padEnd(12);
-	const title = issue.title || "(no title)";
-	const depType = issue.dependency_type ? ` via ${issue.dependency_type}` : "";
-
-	return `${mark}  ${id}  ${prio}  ${type}  ${status}  ${title}${depType}`;
-}
-
-function truncateText(s: string, maxChars: number): string {
-	if (s.length <= maxChars) return s;
-	return s.slice(0, Math.max(0, maxChars - 20)).trimEnd() + "\n… (truncated)";
-}
-
-function renderIssueDetailsPlain(issue: BdIssue): string {
-	let out = `${issue.id || "(no-id)"}: ${issue.title || "(no title)"}`;
-	const meta: string[] = [];
-	if (issue.status) meta.push(`status=${issue.status}`);
-	if (issue.priority !== undefined && issue.priority !== null)
-		meta.push(`priority=${issue.priority}`);
-	if (issue.issue_type) meta.push(`type=${issue.issue_type}`);
-	if (meta.length > 0) out += `\n${meta.join("  ")}`;
-
-	const desc = typeof issue.description === "string" ? issue.description.trim() : "";
-	if (desc) out += `\n\n${desc}`;
-
-	return out.trim();
-}
-
 function formatBdDetailsAsText(details: BdToolDetails): string {
 	if (!details.isJson) return details.outputText || "(no output)";
 	return JSON.stringify(details.json, null, 2);
