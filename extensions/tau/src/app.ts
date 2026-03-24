@@ -20,30 +20,41 @@ import { SkillMarker, SkillMarkerLive } from "./services/skill-marker.js";
 import { Agent, AgentLive } from "./services/agent.js";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
-const LegacyStateLayer = LegacyStateLive.pipe(Layer.provide(PersistenceLive));
-
-const SharedLayer = Layer.mergeAll(
-	SandboxStateLive,
-	PersistenceLive,
-	LegacyStateLayer,
-	NodeFileSystem.layer,
-	PiLoggerLive,
+const PersistenceLayer = PersistenceLive;
+const LegacyStateLayer = LegacyStateLive.pipe(Layer.provide(PersistenceLayer));
+const SandboxLayer = SandboxLive.pipe(
+	Layer.provide(SandboxStateLive),
+	Layer.provide(PersistenceLayer),
 );
+const FooterLayer = FooterLive.pipe(
+	Layer.provide(NodeFileSystem.layer),
+	Layer.provide(PersistenceLayer),
+	Layer.provide(SandboxLayer),
+);
+const PromptModesLayer = PromptModesLive.pipe(Layer.provide(PersistenceLayer));
+const StatusLayer = StatusLive.pipe(Layer.provide(PersistenceLayer));
+const BeadsLayer = BeadsLive.pipe(Layer.provide(LegacyStateLayer));
+const TerminalPromptLayer = TerminalPromptLive.pipe(Layer.provide(LegacyStateLayer));
+const WorkedForLayer = WorkedForLive.pipe(Layer.provide(LegacyStateLayer));
+const EditorLayer = EditorLive.pipe(Layer.provide(LegacyStateLayer));
+const SkillMarkerLayer = SkillMarkerLive.pipe(Layer.provide(LegacyStateLayer));
 
 const MainLayer = Layer.mergeAll(
-	SandboxLive,
-	BeadsLive,
-	FooterLive,
-	PromptModesLive,
+	PersistenceLayer,
+	LegacyStateLayer,
+	SandboxLayer,
+	BeadsLayer,
+	FooterLayer,
+	PromptModesLayer,
 	ExaLive,
-	TerminalPromptLive,
-	WorkedForLive,
-	StatusLive,
+	TerminalPromptLayer,
+	WorkedForLayer,
+	StatusLayer,
 	CommitLive,
-	EditorLive,
-	SkillMarkerLive,
+	EditorLayer,
+	SkillMarkerLayer,
 	AgentLive,
-).pipe(Layer.provide(SharedLayer));
+).pipe(Layer.provide(PiLoggerLive));
 
 export const runTau = (pi: ExtensionAPI) => {
 	const program = Effect.scoped(
@@ -79,7 +90,5 @@ export const runTau = (pi: ExtensionAPI) => {
 	);
 
 	const layer = MainLayer.pipe(Layer.provide(PiAPILive(pi)));
-	const runnableProgram = program.pipe(Effect.provide(layer)) as Effect.Effect<void, never, never>;
-
-	return Effect.runFork(runnableProgram);
+	return Effect.runFork(program.pipe(Effect.provide(layer)));
 };
