@@ -1,5 +1,5 @@
 import { Type, type Static, type TSchema } from "@sinclair/typebox";
-import { Effect, Stream, Ref, Cause } from "effect";
+import { Effect, Stream, Cause } from "effect";
 import { StringEnum } from "@mariozechner/pi-ai";
 import type { Model, Api } from "@mariozechner/pi-ai";
 import type { ModelRegistry } from "@mariozechner/pi-coding-agent";
@@ -135,8 +135,7 @@ async function executeWaitWithUpdates(
 	signal: AbortSignal | undefined,
 ): Promise<ToolResult> {
 	try {
-		// Ref to store the latest result for interruption handling
-		const latestResultRef = await Effect.runPromise(Ref.make<WaitResult | null>(null));
+		let latestResult: WaitResult | null = null;
 
 		const program = Effect.gen(function* () {
 			const control = yield* AgentControl;
@@ -156,8 +155,8 @@ async function executeWaitWithUpdates(
 			// Run the stream with interruption handling
 			const streamRun = stream.pipe(
 				Stream.tap((result) =>
-					Effect.gen(function* () {
-						yield* Ref.set(latestResultRef, result);
+					Effect.sync(() => {
+						latestResult = result;
 						if (onUpdate) {
 							onUpdate({
 								content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
@@ -173,10 +172,7 @@ async function executeWaitWithUpdates(
 
 			yield* streamRun;
 
-			// Return final result from ref
-			return yield* Ref.get(latestResultRef).pipe(
-				Effect.map((r) => r ?? { status: {}, timedOut: false }),
-			);
+			return latestResult ?? { status: {}, timedOut: false };
 		});
 
 		const result = await runEffect(
@@ -185,9 +181,8 @@ async function executeWaitWithUpdates(
 					Effect.gen(function* () {
 						// Check if this was an interruption (from abort signal)
 						if (Cause.hasInterrupts(cause)) {
-							const lastResult = yield* Ref.get(latestResultRef);
-							if (lastResult) {
-								return { ...lastResult, interrupted: true };
+							if (latestResult) {
+								return { ...latestResult, interrupted: true };
 							}
 						}
 						// Re-throw real errors

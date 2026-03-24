@@ -1,27 +1,33 @@
-import { Effect, Layer } from "effect";
+import { Effect, Layer, ManagedRuntime } from "effect";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 
 import { PiAPILive } from "./effect/pi.js";
 import { PiLoggerLive } from "./effect/logger.js";
 import { Sandbox, SandboxLive } from "./services/sandbox.js";
 import { SandboxStateLive } from "./services/state.js";
-import { Beads, BeadsLive } from "./services/beads.js";
 import { Footer, FooterLive } from "./services/footer.js";
 import { PromptModes, PromptModesLive } from "./services/prompt-modes.js";
 import { Persistence, PersistenceLive } from "./services/persistence.js";
-import { LegacyStateLive } from "./services/legacy-state.js";
-import { Exa, ExaLive } from "./services/exa.js";
-import { TerminalPrompt, TerminalPromptLive } from "./services/terminal-prompt.js";
-import { WorkedFor, WorkedForLive } from "./services/worked-for.js";
-import { Status, StatusLive } from "./services/status.js";
-import { Commit, CommitLive } from "./services/commit.js";
-import { Editor, EditorLive } from "./services/editor.js";
-import { SkillMarker, SkillMarkerLive } from "./services/skill-marker.js";
-import { Agent, AgentLive } from "./services/agent.js";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import initBeads from "./beads/index.js";
+import initExa from "./exa/index.js";
+import initTerminalPrompt from "./terminal-prompt/index.js";
+import initWorkedFor from "./worked-for/index.js";
+import { initStatus } from "./status/index.js";
+import initCommit from "./commit/index.js";
+import initEditor from "./editor/index.js";
+import initSkillMarker from "./skill-marker/index.js";
+import initAgent from "./agent/index.js";
+import { AgentConfig, AgentControl } from "./agent/services.js";
+import { AgentControlLive } from "./agent/control.js";
+import { AgentManagerLive } from "./agent/manager.js";
+import {
+	AgentRuntimeBridgeLive,
+	type AgentRuntimeBridgeService,
+} from "./agent/runtime.js";
+import { makeLegacyStateBridge } from "./services/legacy-bridge.js";
 
 const PersistenceLayer = PersistenceLive;
-const LegacyStateLayer = LegacyStateLive.pipe(Layer.provide(PersistenceLayer));
 const SandboxLayer = SandboxLive.pipe(
 	Layer.provide(SandboxStateLive),
 	Layer.provide(PersistenceLayer),
@@ -32,63 +38,90 @@ const FooterLayer = FooterLive.pipe(
 	Layer.provide(SandboxLayer),
 );
 const PromptModesLayer = PromptModesLive.pipe(Layer.provide(PersistenceLayer));
-const StatusLayer = StatusLive.pipe(Layer.provide(PersistenceLayer));
-const BeadsLayer = BeadsLive.pipe(Layer.provide(LegacyStateLayer));
-const TerminalPromptLayer = TerminalPromptLive.pipe(Layer.provide(LegacyStateLayer));
-const WorkedForLayer = WorkedForLive.pipe(Layer.provide(LegacyStateLayer));
-const EditorLayer = EditorLive.pipe(Layer.provide(LegacyStateLayer));
-const SkillMarkerLayer = SkillMarkerLive.pipe(Layer.provide(LegacyStateLayer));
+const AgentConfigLive = Layer.succeed(
+	AgentConfig,
+	AgentConfig.of({
+		maxThreads: 12,
+		maxDepth: 3,
+	}),
+);
 
-const MainLayer = Layer.mergeAll(
-	PersistenceLayer,
-	LegacyStateLayer,
-	SandboxLayer,
-	BeadsLayer,
-	FooterLayer,
-	PromptModesLayer,
-	ExaLive,
-	TerminalPromptLayer,
-	WorkedForLayer,
-	StatusLayer,
-	CommitLive,
-	EditorLayer,
-	SkillMarkerLayer,
-	AgentLive,
-).pipe(Layer.provide(PiLoggerLive));
+const createMainLayer = (agentRuntimeBridge: AgentRuntimeBridgeService) => {
+	const AgentLayer = AgentControlLive.pipe(
+		Layer.provide(AgentManagerLive),
+		Layer.provide(AgentConfigLive),
+		Layer.provide(AgentRuntimeBridgeLive(agentRuntimeBridge.runPromise)),
+		Layer.provide(SandboxLayer),
+	);
+
+	return Layer.mergeAll(
+		PersistenceLayer,
+		SandboxLayer,
+		FooterLayer,
+		PromptModesLayer,
+		AgentLayer,
+	).pipe(Layer.provide(PiLoggerLive));
+};
+
+type TauRuntime = ManagedRuntime.ManagedRuntime<
+	Persistence | Sandbox | Footer | PromptModes | AgentControl,
+	never
+>;
 
 export const runTau = (pi: ExtensionAPI) => {
+	let runtime: TauRuntime | undefined;
+
+	const agentRuntimeBridge: AgentRuntimeBridgeService = {
+		runPromise: (effect) => {
+			if (!runtime) {
+				return Promise.reject(new Error("tau runtime not initialized"));
+			}
+			return runtime.runPromise(effect);
+		},
+		closeAll: () =>
+			agentRuntimeBridge.runPromise(
+				Effect.gen(function* () {
+					const control = yield* AgentControl;
+					yield* control.closeAll;
+				}),
+			).then(() => undefined),
+	};
+
+	const layer = createMainLayer(agentRuntimeBridge).pipe(Layer.provide(PiAPILive(pi)));
+	const currentRuntime = ManagedRuntime.make(layer);
+	runtime = currentRuntime;
+
 	const program = Effect.scoped(
 		Effect.gen(function* () {
 			const persistence = yield* Persistence;
 			const sandbox = yield* Sandbox;
-			const beads = yield* Beads;
 			const footer = yield* Footer;
 			const promptModes = yield* PromptModes;
-			const exa = yield* Exa;
-			const terminalPrompt = yield* TerminalPrompt;
-			const workedFor = yield* WorkedFor;
-			const status = yield* Status;
-			const commit = yield* Commit;
-			const editor = yield* Editor;
-			const skillMarker = yield* SkillMarker;
-			const agent = yield* Agent;
+			const state = makeLegacyStateBridge({
+				getSnapshotSync: persistence.getSnapshot,
+				setSnapshotSync: persistence.setSnapshot,
+			});
 
 			yield* persistence.setup;
 			yield* sandbox.setup;
-			yield* beads.setup;
 			yield* footer.setup;
 			yield* promptModes.setup;
-			yield* exa.setup;
-			yield* terminalPrompt.setup;
-			yield* workedFor.setup;
-			yield* status.setup;
-			yield* commit.setup;
-			yield* editor.setup;
-			yield* skillMarker.setup;
-			yield* agent.setup;
+			yield* Effect.sync(() => {
+				initBeads(pi, state);
+				initExa(pi);
+				initTerminalPrompt(pi, state);
+				initWorkedFor(pi, state);
+				initStatus(pi, {
+					getSnapshot: () => persistence.getSnapshot(),
+					update: (patch) => persistence.update(patch),
+				});
+				initCommit(pi);
+				initEditor(pi, state);
+				initSkillMarker(pi, state);
+				initAgent(pi, agentRuntimeBridge);
+			});
 		}),
 	);
 
-	const layer = MainLayer.pipe(Layer.provide(PiAPILive(pi)));
-	return Effect.runFork(program.pipe(Effect.provide(layer)));
+	return currentRuntime.runFork(program);
 };

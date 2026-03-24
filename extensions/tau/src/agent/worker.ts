@@ -22,7 +22,7 @@ import { withWorkerSandboxOverride } from "./worker-sandbox.js";
 import { setWorkerApprovalBroker } from "./approval-broker.js";
 
 import type { ApprovalBroker } from "./approval-broker.js";
-import { createWorkerAgentTool } from "./runtime.js";
+import { createWorkerAgentTool, type RunAgentControlPromise } from "./runtime.js";
 
 function truncateStr(s: string, max: number): string {
 	if (s.length <= max) return s;
@@ -280,6 +280,7 @@ export class AgentWorker implements Agent {
 		approvalBroker: ApprovalBroker | undefined;
 		modelRegistry?: ModelRegistry | undefined;
 		resultSchema?: unknown;
+		runPromise: RunAgentControlPromise;
 	}) {
 		return Effect.gen(function* () {
 			const modelRegistry = opts.modelRegistry
@@ -309,7 +310,7 @@ export class AgentWorker implements Agent {
 				approvalBroker: opts.approvalBroker,
 			};
 
-			const agentTool = createWorkerAgentTool(agentContext);
+			const agentTool = createWorkerAgentTool(opts.runPromise, agentContext);
 
 			const customTools: ToolDefinition[] = [agentTool as ToolDefinition];
 

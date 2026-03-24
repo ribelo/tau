@@ -1,10 +1,9 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
-import { closeAllAgents } from "./runtime.js";
-
 interface ProcessGuardsState {
 	installed: boolean;
 	pi: ExtensionAPI | undefined;
+	closeAllAgents: (() => Promise<void>) | undefined;
 	lastReportedAt: number;
 	unhandledRejectionHandler?: (reason: unknown) => void;
 	uncaughtExceptionHandler?: (error: Error) => void;
@@ -17,6 +16,7 @@ const globalWithTauGuards = globalThis as typeof globalThis & {
 const guardsState: ProcessGuardsState = globalWithTauGuards.__tauProcessGuards ?? {
 	installed: false,
 	pi: undefined,
+	closeAllAgents: undefined,
 	lastReportedAt: 0,
 };
 
@@ -99,15 +99,19 @@ async function handleFatalLikeError(
 	// The underlying agent loop may have crashed without emitting agent_end events.
 	// Close all running agents so /agent wait doesn't hang forever.
 	try {
-		await closeAllAgents();
+		await guardsState.closeAllAgents?.();
 	} catch {
 		// ignore
 	}
 }
 
-export function installAgentProcessGuards(pi: ExtensionAPI): void {
+export function installAgentProcessGuards(
+	pi: ExtensionAPI,
+	closeAllAgents: () => Promise<void>,
+): void {
 	// Always refresh the active PI API reference (extension can be reloaded).
 	guardsState.pi = pi;
+	guardsState.closeAllAgents = closeAllAgents;
 
 	if (guardsState.installed) return;
 	guardsState.installed = true;

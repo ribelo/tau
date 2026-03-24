@@ -9,6 +9,7 @@ import {
 	AgentNotFound,
 	AgentAccessDenied,
 } from "./services.js";
+import { AgentRuntimeBridge } from "./runtime.js";
 import type { AgentId } from "./types.js";
 import { AgentWorker } from "./worker.js";
 import { isFinal } from "./status.js";
@@ -79,6 +80,7 @@ export const AgentManagerLive = Layer.effect(
 	AgentManager,
 	Effect.gen(function* () {
 		const config = yield* AgentConfig;
+		const agentRuntime = yield* AgentRuntimeBridge;
 		const agentsRef = yield* Ref.make(HashMap.empty<AgentId, Agent>());
 		const depthMapRef = yield* Ref.make(HashMap.empty<AgentId, number>());
 		const parentMapRef = yield* Ref.make(HashMap.empty<AgentId, AgentId>());
@@ -186,6 +188,7 @@ export const AgentManagerLive = Layer.effect(
 							approvalBroker: opts.approvalBroker,
 							modelRegistry: opts.modelRegistry,
 							resultSchema: opts.resultSchema,
+							runPromise: agentRuntime.runPromise,
 						});
 
 						const id = agent.id;
