@@ -1,11 +1,8 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Theme } from "@mariozechner/pi-coding-agent";
 import { Text, visibleWidth, type Component } from "@mariozechner/pi-tui";
-import { Data, Schema } from "effect";
+import { Data, Effect, Result, Schema } from "effect";
 import https from "node:https";
-
-import type { TauState } from "../shared/state.js";
-import { updatePersistedState } from "../shared/state.js";
 
 const STATUS_MESSAGE_TYPE = "tau:status";
 
@@ -19,16 +16,14 @@ class StatusBoundaryError extends Data.TaggedError("StatusBoundaryError")<{
 	readonly cause?: unknown;
 }> {}
 
-function decodeUnknownOrReject<S extends Schema.Decoder<unknown>>(
+function decodeOrFail<S extends Schema.Decoder<unknown>>(
 	schema: S,
 	input: unknown,
 	message: string,
-): Promise<S["Type"]> {
-	try {
-		return Promise.resolve(Schema.decodeUnknownSync(schema)(input));
-	} catch (cause) {
-		return Promise.reject(new StatusBoundaryError({ message, cause }));
-	}
+): Effect.Effect<S["Type"], StatusBoundaryError> {
+	return Schema.decodeUnknownEffect(schema)(input).pipe(
+		Effect.mapError((cause) => new StatusBoundaryError({ message, cause })),
+	);
 }
 
 function parseJsonOrNull(text: string): unknown | null {
@@ -39,7 +34,6 @@ function parseJsonOrNull(text: string): unknown | null {
 	}
 }
 
-// Helper to build StatusRow with only defined optional properties
 function buildStatusRow(data: {
 	label: string;
 	subLabel?: string | undefined;
@@ -261,7 +255,7 @@ type StatusRow = {
 
 type StatusSectionData = {
 	title: string;
-	statusLine?: string; // e.g. "[Pro] [Key: Configured]"
+	statusLine?: string;
 	error?: string;
 	notConfigured?: boolean;
 	rows: StatusRow[];
@@ -305,7 +299,6 @@ function computeBurnAndExhaust(
 
 	let burnRatePerHour: number | undefined;
 
-	// Method 1: If we know the window size, we can calculate the average burn since window start.
 	if (typeof windowSeconds === "number" && windowSeconds > 0 && typeof resetsAt === "number") {
 		const windowStartMs = resetsAt * 1000 - windowSeconds * 1000;
 		const elapsedMs = fetchedAtMs - windowStartMs;
@@ -316,7 +309,6 @@ function computeBurnAndExhaust(
 		}
 	}
 
-	// Method 2: Fallback to sample-based burn rate if Method 1 fails or isn't available.
 	if ((burnRatePerHour === undefined || burnRatePerHour < 0.01) && prev) {
 		const prevPercentLeft = prev.values[key]?.percentLeft;
 		if (typeof prevPercentLeft === "number" && Number.isFinite(prevPercentLeft)) {
@@ -442,17 +434,14 @@ function buildStatusLines(
 		const row = section.rows[i]!;
 		if (i > 0) lines.push("");
 
-		// Title line
 		lines.push(` ${row.label}${row.subLabel ? th.fg("dim", ` (${row.subLabel})`) : ""}`);
 
-		// Progress bar line
 		const bar = renderProgressBar(row.percentLeft, 20);
 		const pct = typeof row.percentLeft === "number" ? Math.round(row.percentLeft) : undefined;
 		const percent = typeof pct === "number" ? `${pct}% Left` : "?% Left";
 		const depletedText = row.isDepleted ? th.fg("error", " (Depleted)") : "";
 		lines.push(` ${bar} ${percent}${depletedText}`);
 
-		// Metadata line (Burn, Reset, Depletes)
 		const metadata: string[] = [];
 		if (typeof row.resetsAt === "number") {
 			const fmt = formatTime(row.resetsAt);
@@ -506,7 +495,6 @@ class StatusCard implements Component {
 		};
 
 		const drawBox = (section: StatusSectionData) => {
-			// Header
 			const title = ` ${th.bold(section.title)}`;
 			const status = section.statusLine ? `${section.statusLine} ` : "";
 			const headerPadding = innerWidth - visibleWidth(title) - visibleWidth(status);
@@ -529,13 +517,11 @@ class StatusCard implements Component {
 					th.fg("border", "┤"),
 			);
 
-			// Content
 			const content = buildStatusLines(section, width, th, this.details.fetchedAt);
 			for (const line of content) {
 				lines.push(th.fg("border", "│") + pad(line, innerWidth) + th.fg("border", "│"));
 			}
 
-			// Footer
 			lines.push(
 				th.fg("border", "╰") +
 					th.fg("border", "─".repeat(innerWidth)) +
@@ -559,62 +545,114 @@ class StatusCard implements Component {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Schema decode helpers
+// ---------------------------------------------------------------------------
+
+const isGoogleProjectToken = Schema.is(
+	Schema.Struct({ token: Schema.String, projectId: Schema.String }),
+);
+
 function parseGoogleProjectToken(apiKey: string): { token: string; projectId: string } | null {
 	const parsedJson = parseJsonOrNull(apiKey);
 	if (parsedJson === null) return null;
-	let parsed: { token?: string | null; projectId?: string | null };
-	try {
-		parsed = Schema.decodeUnknownSync(GoogleProjectTokenSchema)(parsedJson) as {
-			token?: string | null;
-			projectId?: string | null;
-		};
-	} catch {
-		return null;
-	}
-	if (!parsed?.token || !parsed.projectId) return null;
-	return { token: parsed.token, projectId: parsed.projectId };
+	const decoded = Schema.decodeUnknownOption(GoogleProjectTokenSchema)(parsedJson);
+	if (decoded._tag === "None") return null;
+	const val = decoded.value;
+	if (isGoogleProjectToken(val)) return val;
+	return null;
 }
 
-async function fetchGeminiQuota(token: string, projectId: string): Promise<GeminiQuotaResponse> {
-	const url = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota";
-	const res = await fetch(url, {
-		method: "POST",
-		headers: {
-			Authorization: `Bearer ${token}`,
-			"Content-Type": "application/json",
-			"User-Agent": "google-api-nodejs-client/9.15.1",
-			"X-Goog-Api-Client": "gl-node/22.17.0",
-			"Client-Metadata":
-				"ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI",
-		},
-		body: JSON.stringify({ project: projectId }),
+// ---------------------------------------------------------------------------
+// HTTP fetch as Effect
+// ---------------------------------------------------------------------------
+
+function fetchJson(
+	url: string,
+	init: RequestInit,
+	label: string,
+): Effect.Effect<unknown, StatusBoundaryError> {
+	return Effect.gen(function* () {
+		const res = yield* Effect.tryPromise({
+			try: () => fetch(url, init),
+			catch: (err) =>
+				new StatusBoundaryError({ message: `${label} fetch failed`, cause: err }),
+		});
+		const text = yield* Effect.tryPromise({
+			try: () => res.text(),
+			catch: () => new StatusBoundaryError({ message: `${label}: failed to read body` }),
+		});
+		if (!res.ok) {
+			return yield* Effect.fail(
+				new StatusBoundaryError({
+					message: `HTTP ${res.status}${text ? `: ${text}` : ""}`,
+				}),
+			);
+		}
+		const parsed = parseJsonOrNull(text);
+		if (parsed === null) {
+			return yield* Effect.fail(
+				new StatusBoundaryError({
+					message: `${label} returned invalid JSON`,
+					cause: text,
+				}),
+			);
+		}
+		return parsed;
 	});
+}
 
-	const text = await res.text().catch(() => "");
-	if (!res.ok) {
-		return Promise.reject(
-			new StatusBoundaryError({
-				message: `HTTP ${res.status}${text ? `: ${text}` : ""}`,
-			}),
-		);
-	}
-
-	const parsed = parseJsonOrNull(text);
-	if (parsed === null) {
-		return Promise.reject(
-			new StatusBoundaryError({
-				message: "Gemini quota endpoint returned invalid JSON",
-				cause: text,
-			}),
-		);
-	}
-
-	return decodeUnknownOrReject(
-		GeminiQuotaResponseSchema,
-		parsed,
-		"Gemini quota response failed schema validation",
+function fetchGeminiQuota(
+	token: string,
+	projectId: string,
+): Effect.Effect<GeminiQuotaResponse, StatusBoundaryError> {
+	const url = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota";
+	return fetchJson(
+		url,
+		{
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${token}`,
+				"Content-Type": "application/json",
+				"User-Agent": "google-api-nodejs-client/9.15.1",
+				"X-Goog-Api-Client": "gl-node/22.17.0",
+				"Client-Metadata":
+					"ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI",
+			},
+			body: JSON.stringify({ project: projectId }),
+		},
+		"Gemini quota",
+	).pipe(
+		Effect.flatMap((json) =>
+			decodeOrFail(GeminiQuotaResponseSchema, json, "Gemini quota response failed schema validation"),
+		),
 	);
 }
+
+function fetchOpenAiUsage(
+	token: string,
+	options: { accountId?: string | undefined },
+): Effect.Effect<OpenAiUsagePayload, StatusBoundaryError> {
+	return fetchJson(
+		"https://chatgpt.com/backend-api/wham/usage",
+		{
+			headers: {
+				Authorization: `Bearer ${token}`,
+				...(options.accountId ? { "ChatGPT-Account-Id": options.accountId } : {}),
+				"User-Agent": "pi",
+			},
+		},
+		"OpenAI usage",
+	).pipe(
+		Effect.flatMap((json) =>
+			decodeOrFail(OpenAiUsagePayloadSchema, json, "OpenAI usage response failed schema validation"),
+		),
+	);
+}
+
+// ---------------------------------------------------------------------------
+// Antigravity (process discovery + localhost HTTPS)
+// ---------------------------------------------------------------------------
 
 type ExecSpec = { command: string; args: string[] };
 
@@ -758,91 +796,28 @@ function getPortListCommand(pid: number): ExecSpec {
 	return { command: "sh", args: ["-c", `lsof -iTCP -sTCP:LISTEN -n -P -p ${pid}`] };
 }
 
-async function execSpec(pi: ExtensionAPI, spec: ExecSpec, signal?: AbortSignal) {
-	const opts: { signal?: AbortSignal } = {};
-	if (signal) opts.signal = signal;
-	return await pi.exec(spec.command, spec.args, opts);
-}
-
-async function fetchAntigravityStatus(
+function execSpec(
 	pi: ExtensionAPI,
-	signal?: AbortSignal,
-): Promise<AntigravityUserStatus> {
-	const { processName, exec } = getPlatformProcessInfo();
-	const proc = await execSpec(pi, exec, signal);
-	const stdout = proc.stdout ?? "";
-
-	if (!stdout.trim()) {
-		return Promise.reject(
-			new StatusBoundaryError({ message: "Antigravity language server process not found" }),
-		);
-	}
-
-	let pid: number | undefined;
-	let cmdLine: string | undefined;
-
-	const parsedJson = parseJsonOrNull(stdout.trim());
-	if (parsedJson !== null) {
-		const parsed = parseWindowsProcessJson(parsedJson);
-		if (parsed) {
-			pid = parsed.pid;
-			cmdLine = parsed.cmdLine;
-		}
-	}
-
-	if (pid === undefined || cmdLine === undefined) {
-		const parsed = parseUnixProcessOutput(stdout, processName);
-		if (!parsed) {
-			return Promise.reject(
-				new StatusBoundaryError({
-					message: "Antigravity language server process not found",
-				}),
-			);
-		}
-		pid = parsed.pid;
-		cmdLine = parsed.cmdLine;
-	}
-
-	const csrfToken = extractCsrfToken(cmdLine);
-	if (!csrfToken) {
-		return Promise.reject(
-			new StatusBoundaryError({
-				message: "CSRF token not found in language server command line",
-			}),
-		);
-	}
-
-	const portExec = getPortListCommand(pid);
-	const portsOut = await execSpec(pi, portExec, signal);
-	const ports = parseListeningPorts(portsOut.stdout ?? "");
-	if (ports.length === 0) {
-		return Promise.reject(
-			new StatusBoundaryError({ message: "No listening ports found for language server" }),
-		);
-	}
-
-	let lastError: unknown;
-	for (const port of ports) {
-		try {
-			return await fetchAntigravityUserStatus(port, csrfToken, signal);
-		} catch (err) {
-			lastError = err;
-		}
-	}
-
-	return Promise.reject(
-		new StatusBoundaryError({
-			message: `Failed to connect to any language server port${lastError ? `: ${String(lastError)}` : ""}`,
-			cause: lastError,
-		}),
-	);
+	spec: ExecSpec,
+): Effect.Effect<{ stdout: string; stderr: string; code: number }, StatusBoundaryError> {
+	return Effect.tryPromise({
+		try: async () => {
+			const result = await pi.exec(spec.command, spec.args, {});
+			return {
+				stdout: result.stdout ?? "",
+				stderr: result.stderr ?? "",
+				code: result.code ?? 0,
+			};
+		},
+		catch: (err) =>
+			new StatusBoundaryError({ message: `exec failed: ${spec.command}`, cause: err }),
+	});
 }
 
-async function fetchAntigravityUserStatus(
+function fetchAntigravityUserStatusFromPort(
 	port: number,
 	csrfToken: string,
-	signal?: AbortSignal,
-): Promise<AntigravityUserStatus> {
+): Effect.Effect<AntigravityUserStatus, StatusBoundaryError> {
 	const body = JSON.stringify({
 		metadata: {
 			ideName: "codex",
@@ -851,7 +826,7 @@ async function fetchAntigravityUserStatus(
 		},
 	});
 
-	return await new Promise((resolve, reject) => {
+	return Effect.callback<unknown, StatusBoundaryError>((resume) => {
 		const req = https.request(
 			{
 				host: "127.0.0.1",
@@ -874,86 +849,376 @@ async function fetchAntigravityUserStatus(
 					if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
 						const parsed = parseJsonOrNull(text);
 						if (parsed === null) {
-							reject(
-								new StatusBoundaryError({
-									message:
-										"Invalid JSON response from Antigravity status endpoint",
-								}),
+							resume(
+								Effect.fail(
+									new StatusBoundaryError({
+										message:
+											"Invalid JSON response from Antigravity status endpoint",
+									}),
+								),
 							);
 							return;
 						}
-						decodeUnknownOrReject(
-							AntigravityUserStatusSchema,
-							parsed,
-							"Antigravity status response failed schema validation",
-						)
-							.then((v) => resolve(v as AntigravityUserStatus))
-							.catch(reject);
+						resume(Effect.succeed(parsed));
 						return;
 					}
-					reject(new StatusBoundaryError({ message: `HTTP ${res.statusCode ?? 0}` }));
+					resume(
+						Effect.fail(
+							new StatusBoundaryError({ message: `HTTP ${res.statusCode ?? 0}` }),
+						),
+					);
 				});
 			},
 		);
 
 		req.on("error", (error) =>
-			reject(new StatusBoundaryError({ message: String(error), cause: error })),
+			resume(
+				Effect.fail(new StatusBoundaryError({ message: String(error), cause: error })),
+			),
 		);
 		req.on("timeout", () => {
-			req.destroy(new StatusBoundaryError({ message: "timeout" }));
+			req.destroy();
+			resume(Effect.fail(new StatusBoundaryError({ message: "timeout" })));
 		});
-		if (signal) {
-			if (signal.aborted) {
-				req.destroy(new StatusBoundaryError({ message: "aborted" }));
-				reject(new StatusBoundaryError({ message: "aborted" }));
-				return;
-			}
-			signal.addEventListener(
-				"abort",
-				() => {
-					req.destroy(new StatusBoundaryError({ message: "aborted" }));
-					reject(new StatusBoundaryError({ message: "aborted" }));
-				},
-				{ once: true },
-			);
-		}
 
 		req.write(body);
 		req.end();
+	}).pipe(
+		Effect.flatMap((json) =>
+			decodeOrFail(
+				AntigravityUserStatusSchema,
+				json,
+				"Antigravity status response failed schema validation",
+			),
+		),
+	);
+}
+
+function fetchAntigravityStatus(
+	pi: ExtensionAPI,
+): Effect.Effect<AntigravityUserStatus, StatusBoundaryError> {
+	return Effect.gen(function* () {
+		const { processName, exec } = getPlatformProcessInfo();
+		const proc = yield* execSpec(pi, exec);
+		const stdout = proc.stdout;
+
+		if (!stdout.trim()) {
+			return yield* Effect.fail(
+				new StatusBoundaryError({
+					message: "Antigravity language server process not found",
+				}),
+			);
+		}
+
+		let pid: number | undefined;
+		let cmdLine: string | undefined;
+
+		const parsedJson = parseJsonOrNull(stdout.trim());
+		if (parsedJson !== null) {
+			const parsed = parseWindowsProcessJson(parsedJson);
+			if (parsed) {
+				pid = parsed.pid;
+				cmdLine = parsed.cmdLine;
+			}
+		}
+
+		if (pid === undefined || cmdLine === undefined) {
+			const parsed = parseUnixProcessOutput(stdout, processName);
+			if (!parsed) {
+				return yield* Effect.fail(
+					new StatusBoundaryError({
+						message: "Antigravity language server process not found",
+					}),
+				);
+			}
+			pid = parsed.pid;
+			cmdLine = parsed.cmdLine;
+		}
+
+		const csrfToken = extractCsrfToken(cmdLine);
+		if (!csrfToken) {
+			return yield* Effect.fail(
+				new StatusBoundaryError({
+					message: "CSRF token not found in language server command line",
+				}),
+			);
+		}
+
+		const portExec = getPortListCommand(pid);
+		const portsOut = yield* execSpec(pi, portExec);
+		const ports = parseListeningPorts(portsOut.stdout);
+		if (ports.length === 0) {
+			return yield* Effect.fail(
+				new StatusBoundaryError({
+					message: "No listening ports found for language server",
+				}),
+			);
+		}
+
+		let lastError: StatusBoundaryError | undefined;
+		for (const port of ports) {
+			const result = yield* Effect.result(
+				fetchAntigravityUserStatusFromPort(port, csrfToken),
+			);
+			if (Result.isSuccess(result)) {
+				return result.success;
+			}
+			lastError = result.failure;
+		}
+
+		return yield* Effect.fail(
+			new StatusBoundaryError({
+				message: `Failed to connect to any language server port${lastError ? `: ${lastError.message}` : ""}`,
+				cause: lastError,
+			}),
+		);
 	});
 }
 
-async function fetchOpenAiUsage(
-	token: string,
-	options: { accountId?: string | undefined },
-): Promise<OpenAiUsagePayload> {
-	const res = await fetch("https://chatgpt.com/backend-api/wham/usage", {
-		headers: {
-			Authorization: `Bearer ${token}`,
-			...(options.accountId ? { "ChatGPT-Account-Id": options.accountId } : {}),
-			"User-Agent": "pi",
-		},
+// ---------------------------------------------------------------------------
+// Section builders — each returns Effect<StatusSectionData, never>
+// (errors are caught and mapped to error sections)
+// ---------------------------------------------------------------------------
+
+type SectionContext = {
+	readonly pi: ExtensionAPI;
+	readonly modelRegistry: {
+		readonly authStorage: { get(provider: string): unknown };
+		readonly getApiKeyForProvider: (provider: string) => Promise<string | undefined>;
+	};
+	readonly fetchedAt: number;
+	readonly prevState: StatusState | undefined;
+	readonly nextState: StatusState;
+};
+
+function buildOpenAiSection(
+	sctx: SectionContext,
+): Effect.Effect<StatusSectionData, StatusBoundaryError> {
+	return Effect.gen(function* () {
+		const cred = sctx.modelRegistry.authStorage.get("openai-codex") as
+			| { type: string; access?: string; accountId?: string; email?: string }
+			| undefined;
+		const token = yield* Effect.promise(() =>
+			sctx.modelRegistry.getApiKeyForProvider("openai-codex"),
+		);
+		if (!token) {
+			return { title: "OpenAI", notConfigured: true, rows: [] };
+		}
+
+		const accountIdOpts: { accountId?: string } = {};
+		if (cred?.accountId) accountIdOpts.accountId = cred.accountId;
+		const usage = yield* fetchOpenAiUsage(token, accountIdOpts);
+		const plan = formatPlanType(usage.plan_type);
+		const hasKey = Boolean(process.env["OPENAI_API_KEY"]);
+		const statusLine = `[${plan ?? "Pro"}] [Key: ${hasKey ? "Configured" : "Not set"}]`;
+
+		const rows: StatusRow[] = [];
+		const p = mapOpenAiRow(usage.rate_limit?.primary_window, sctx.prevState, sctx.fetchedAt);
+		if (p) rows.push(p);
+		const s = mapOpenAiRow(usage.rate_limit?.secondary_window, sctx.prevState, sctx.fetchedAt);
+		if (s) rows.push(s);
+
+		for (const r of rows) {
+			if (typeof r.percentLeft === "number") {
+				sctx.nextState.values[`openai:${r.label}`] = { percentLeft: r.percentLeft };
+			}
+		}
+
+		return { title: "OpenAI", statusLine, rows };
 	});
-	const text = await res.text().catch(() => "");
-	if (!res.ok) {
-		return Promise.reject(
-			new StatusBoundaryError({
-				message: `HTTP ${res.status}${text ? `: ${text}` : ""}`,
-			}),
-		);
-	}
+}
 
-	const parsed = parseJsonOrNull(text);
-	if (parsed === null) {
-		return Promise.reject(
-			new StatusBoundaryError({ message: "OpenAI usage endpoint returned invalid JSON" }),
+function buildGeminiSection(
+	sctx: SectionContext,
+): Effect.Effect<StatusSectionData, StatusBoundaryError> {
+	return Effect.gen(function* () {
+		let provider: "google-gemini-cli" | "google-antigravity" = "google-gemini-cli";
+		let apiKey = yield* Effect.promise(() =>
+			sctx.modelRegistry.getApiKeyForProvider(provider),
 		);
-	}
+		if (!apiKey) {
+			provider = "google-antigravity";
+			apiKey = yield* Effect.promise(() =>
+				sctx.modelRegistry.getApiKeyForProvider(provider),
+			);
+		}
 
-	return decodeUnknownOrReject(
-		OpenAiUsagePayloadSchema,
-		parsed,
-		"OpenAI usage response failed schema validation",
+		const cred = sctx.modelRegistry.authStorage.get(provider) as
+			| { type: string; email?: string }
+			| undefined;
+		const statusLine = `[${cred?.email ? cred.email : "Not logged in"}]`;
+
+		if (!apiKey) {
+			return { title: "Gemini CLI", notConfigured: true, rows: [], statusLine };
+		}
+
+		const parsed = parseGoogleProjectToken(apiKey);
+		if (!parsed) {
+			return {
+				title: "Gemini CLI",
+				error: "Missing Google projectId",
+				rows: [],
+				statusLine,
+			};
+		}
+
+		const quota = yield* fetchGeminiQuota(parsed.token, parsed.projectId);
+		const buckets = quota.buckets ?? [];
+
+		const groupRows: StatusRow[] = [];
+		const tiers = [
+			{
+				label: "Flash Tier",
+				subLabel: "2.0, 2.5, 3-Pre",
+				pattern: /flash/i,
+				exclude: /lite/i as RegExp | undefined,
+			},
+			{ label: "Pro Tier", subLabel: "2.5, 3-Pre", pattern: /pro/i, exclude: undefined as RegExp | undefined },
+			{ label: "Lite Tier", subLabel: "2.5-Lite", pattern: /lite/i, exclude: undefined as RegExp | undefined },
+		];
+
+		for (const tier of tiers) {
+			const tierBuckets = buckets.filter(
+				(b) =>
+					b.modelId &&
+					tier.pattern.test(b.modelId) &&
+					(!tier.exclude || !tier.exclude.test(b.modelId)),
+			);
+			if (tierBuckets.length > 0) {
+				const b = tierBuckets[0]!;
+				const percentLeft =
+					percentLeftFromRemainingFraction(b.remainingFraction) ?? 0;
+				const resetsAt = parseIsoTimeSeconds(b.resetTime);
+				const metrics = computeBurnAndExhaust(
+					sctx.prevState,
+					`gemini-cli:${tier.label}`,
+					sctx.fetchedAt,
+					percentLeft,
+					resetsAt,
+					86400,
+				);
+				groupRows.push(
+					buildStatusRow({
+						label: tier.label,
+						subLabel: tier.subLabel,
+						percentLeft,
+						resetsAt,
+						isDepleted: percentLeft === 0,
+						...metrics,
+					}),
+				);
+				sctx.nextState.values[`gemini-cli:${tier.label}`] = { percentLeft };
+			}
+		}
+
+		return { title: "Gemini CLI", statusLine, rows: groupRows };
+	});
+}
+
+function buildAntigravitySection(
+	sctx: SectionContext,
+): Effect.Effect<StatusSectionData, StatusBoundaryError> {
+	return Effect.gen(function* () {
+		const status = yield* fetchAntigravityStatus(sctx.pi);
+		const user = status.userStatus;
+		const email = user?.email ?? "Unknown";
+		const planName = user?.planStatus?.planInfo?.planName;
+		const tierName = user?.userTier?.name;
+		const plan =
+			[planName, tierName].filter(Boolean).join(" (") +
+			(planName && tierName ? ")" : "");
+		const statusLine = `[${email}]${plan ? ` [${plan}]` : ""}`;
+
+		const configs = user?.cascadeModelConfigData?.clientModelConfigs ?? [];
+
+		const rows: StatusRow[] = [];
+
+		const proConfigs = configs.filter((c) =>
+			c.label?.toLowerCase().includes("pro"),
+		);
+		if (proConfigs.length > 0) {
+			const c = proConfigs[0]!;
+			const percentLeft =
+				percentLeftFromRemainingFraction(c.quotaInfo?.remainingFraction) ?? 0;
+			const resetsAt = parseIsoTimeSeconds(c.quotaInfo?.resetTime);
+			const metrics = computeBurnAndExhaust(
+				sctx.prevState,
+				`antigravity:Pro`,
+				sctx.fetchedAt,
+				percentLeft,
+				resetsAt,
+				18000,
+			);
+			rows.push(
+				buildStatusRow({
+					label: "Gemini 3 Pro",
+					subLabel: "High/Low",
+					percentLeft,
+					resetsAt,
+					isDepleted: percentLeft === 0,
+					...metrics,
+				}),
+			);
+			sctx.nextState.values[`antigravity:Pro`] = { percentLeft };
+		}
+
+		const flashConfigs = configs.filter((c) =>
+			c.label?.toLowerCase().includes("flash"),
+		);
+		if (flashConfigs.length > 0) {
+			const c = flashConfigs[0]!;
+			const percentLeft =
+				percentLeftFromRemainingFraction(c.quotaInfo?.remainingFraction) ?? 0;
+			const resetsAt = parseIsoTimeSeconds(c.quotaInfo?.resetTime);
+			const metrics = computeBurnAndExhaust(
+				sctx.prevState,
+				`antigravity:Flash`,
+				sctx.fetchedAt,
+				percentLeft,
+				resetsAt,
+				18000,
+			);
+			rows.push(
+				buildStatusRow({
+					label: "Gemini 3 Flash",
+					percentLeft,
+					resetsAt,
+					isDepleted: percentLeft === 0,
+					...metrics,
+				}),
+			);
+			sctx.nextState.values[`antigravity:Flash`] = { percentLeft };
+		} else {
+			rows.push(
+				buildStatusRow({
+					label: "Gemini 3 Flash",
+					percentLeft: 0,
+					isDepleted: true,
+				}),
+			);
+		}
+
+		return { title: "Antigravity", statusLine, rows };
+	});
+}
+
+// ---------------------------------------------------------------------------
+// Settle helper: run an Effect, catch errors into StatusSectionData
+// ---------------------------------------------------------------------------
+
+function settleSection(
+	effect: Effect.Effect<StatusSectionData, StatusBoundaryError>,
+	fallbackTitle: string,
+): Effect.Effect<StatusSectionData> {
+	return Effect.result(effect).pipe(
+		Effect.map((result) => {
+			if (Result.isSuccess(result)) return result.success;
+			const err = result.failure;
+			const msg = err instanceof Error ? err.message : String(err);
+			const notConfigured =
+				/process not found|language server process not found|not logged in/i.test(msg);
+			return { title: fallbackTitle, error: msg, notConfigured, rows: [] };
+		}),
 	);
 }
 
@@ -964,7 +1229,16 @@ function formatPlanType(planType: string | undefined): string | undefined {
 	return t.charAt(0).toUpperCase() + t.slice(1);
 }
 
-export default function initStatus(pi: ExtensionAPI, state: TauState) {
+// ---------------------------------------------------------------------------
+// Public API: registers renderer + /status command
+// ---------------------------------------------------------------------------
+
+export type StatusPersistence = {
+	readonly getSnapshot: () => { status?: StatusState };
+	readonly update: (patch: { status?: StatusState }) => void;
+};
+
+export function initStatus(pi: ExtensionAPI, persistence: StatusPersistence): void {
 	pi.registerMessageRenderer<StatusMessageDetails>(
 		STATUS_MESSAGE_TYPE,
 		(message, _options, theme) => {
@@ -998,239 +1272,40 @@ export default function initStatus(pi: ExtensionAPI, state: TauState) {
 
 				const fetchedAt = Date.now();
 				const prevState = (() => {
-					const data = state.persisted?.status;
+					const data = persistence.getSnapshot().status;
 					if (!data || typeof data !== "object") return undefined;
 					const candidate = data as { fetchedAt?: unknown; values?: unknown };
 					if (typeof candidate.fetchedAt !== "number") return undefined;
-					if (!candidate.values || typeof candidate.values !== "object") return undefined;
+					if (!candidate.values || typeof candidate.values !== "object")
+						return undefined;
 					return candidate as StatusState;
 				})();
 
 				const nextState: StatusState = { fetchedAt, values: {} };
 
-				const openaiPromise = (async (): Promise<StatusSectionData> => {
-					const cred = ctx.modelRegistry.authStorage.get("openai-codex") as
-						| { type: string; access?: string; accountId?: string; email?: string }
-						| undefined;
-					const token = await ctx.modelRegistry.getApiKeyForProvider("openai-codex");
-					if (!token) {
-						return { title: "OpenAI", notConfigured: true, rows: [] };
-					}
-
-					const accountIdOpts: { accountId?: string } = {};
-					if (cred?.accountId) accountIdOpts.accountId = cred.accountId;
-					const usage = await fetchOpenAiUsage(token, accountIdOpts);
-					const plan = formatPlanType(usage.plan_type);
-					const hasKey = Boolean(process.env["OPENAI_API_KEY"]);
-					const statusLine = `[${plan ?? "Pro"}] [Key: ${hasKey ? "Configured" : "Not set"}]`;
-
-					const rows: StatusRow[] = [];
-					const p = mapOpenAiRow(usage.rate_limit?.primary_window, prevState, fetchedAt);
-					if (p) rows.push(p);
-					const s = mapOpenAiRow(
-						usage.rate_limit?.secondary_window,
-						prevState,
-						fetchedAt,
-					);
-					if (s) rows.push(s);
-
-					for (const r of rows) {
-						if (typeof r.percentLeft === "number") {
-							nextState.values[`openai:${r.label}`] = { percentLeft: r.percentLeft };
-						}
-					}
-
-					return { title: "OpenAI", statusLine, rows };
-				})();
-
-				const geminiPromise = (async (): Promise<StatusSectionData> => {
-					let provider: "google-gemini-cli" | "google-antigravity" = "google-gemini-cli";
-					let apiKey = await ctx.modelRegistry.getApiKeyForProvider(provider);
-					if (!apiKey) {
-						provider = "google-antigravity";
-						apiKey = await ctx.modelRegistry.getApiKeyForProvider(provider);
-					}
-
-					const cred = ctx.modelRegistry.authStorage.get(provider) as
-						| { type: string; email?: string }
-						| undefined;
-					const statusLine = `[${cred?.email ? cred.email : "Not logged in"}]`;
-
-					if (!apiKey) {
-						return { title: "Gemini CLI", notConfigured: true, rows: [], statusLine };
-					}
-
-					const parsed = parseGoogleProjectToken(apiKey);
-					if (!parsed) {
-						return {
-							title: "Gemini CLI",
-							error: "Missing Google projectId",
-							rows: [],
-							statusLine,
-						};
-					}
-
-					const quota = await fetchGeminiQuota(parsed.token, parsed.projectId);
-					const buckets = quota.buckets ?? [];
-
-					const groupRows: StatusRow[] = [];
-					const tiers = [
-						{
-							label: "Flash Tier",
-							subLabel: "2.0, 2.5, 3-Pre",
-							pattern: /flash/i,
-							exclude: /lite/i,
-						},
-						{ label: "Pro Tier", subLabel: "2.5, 3-Pre", pattern: /pro/i },
-						{ label: "Lite Tier", subLabel: "2.5-Lite", pattern: /lite/i },
-					];
-
-					for (const tier of tiers) {
-						const tierBuckets = buckets.filter(
-							(b) =>
-								b.modelId &&
-								tier.pattern.test(b.modelId) &&
-								(!tier.exclude || !tier.exclude.test(b.modelId)),
-						);
-						if (tierBuckets.length > 0) {
-							const b = tierBuckets[0]!;
-							const percentLeft =
-								percentLeftFromRemainingFraction(b.remainingFraction) ?? 0;
-							const resetsAt = parseIsoTimeSeconds(b.resetTime);
-							const metrics = computeBurnAndExhaust(
-								prevState,
-								`gemini-cli:${tier.label}`,
-								fetchedAt,
-								percentLeft,
-								resetsAt,
-								86400,
-							);
-							groupRows.push(
-								buildStatusRow({
-									label: tier.label,
-									subLabel: tier.subLabel,
-									percentLeft,
-									resetsAt,
-									isDepleted: percentLeft === 0,
-									...metrics,
-								}),
-							);
-							nextState.values[`gemini-cli:${tier.label}`] = { percentLeft };
-						}
-					}
-
-					return { title: "Gemini CLI", statusLine, rows: groupRows };
-				})();
-
-				const antigravityPromise = (async (): Promise<StatusSectionData> => {
-					const status = await fetchAntigravityStatus(pi);
-					const user = status.userStatus;
-					const email = user?.email ?? "Unknown";
-					const planName = user?.planStatus?.planInfo?.planName;
-					const tierName = user?.userTier?.name;
-					const plan =
-						[planName, tierName].filter(Boolean).join(" (") +
-						(planName && tierName ? ")" : "");
-					const statusLine = `[${email}]${plan ? ` [${plan}]` : ""}`;
-
-					const configs = user?.cascadeModelConfigData?.clientModelConfigs ?? [];
-
-					const rows: StatusRow[] = [];
-
-					const proConfigs = configs.filter((c) =>
-						c.label?.toLowerCase().includes("pro"),
-					);
-					if (proConfigs.length > 0) {
-						const c = proConfigs[0]!;
-						const percentLeft =
-							percentLeftFromRemainingFraction(c.quotaInfo?.remainingFraction) ?? 0;
-						const resetsAt = parseIsoTimeSeconds(c.quotaInfo?.resetTime);
-						const metrics = computeBurnAndExhaust(
-							prevState,
-							`antigravity:Pro`,
-							fetchedAt,
-							percentLeft,
-							resetsAt,
-							18000,
-						); // 5h heuristic
-						rows.push(
-							buildStatusRow({
-								label: "Gemini 3 Pro",
-								subLabel: "High/Low",
-								percentLeft,
-								resetsAt,
-								isDepleted: percentLeft === 0,
-								...metrics,
-							}),
-						);
-						nextState.values[`antigravity:Pro`] = { percentLeft };
-					}
-
-					const flashConfigs = configs.filter((c) =>
-						c.label?.toLowerCase().includes("flash"),
-					);
-					if (flashConfigs.length > 0) {
-						const c = flashConfigs[0]!;
-						const percentLeft =
-							percentLeftFromRemainingFraction(c.quotaInfo?.remainingFraction) ?? 0;
-						const resetsAt = parseIsoTimeSeconds(c.quotaInfo?.resetTime);
-						const metrics = computeBurnAndExhaust(
-							prevState,
-							`antigravity:Flash`,
-							fetchedAt,
-							percentLeft,
-							resetsAt,
-							18000,
-						); // 5h heuristic
-						rows.push(
-							buildStatusRow({
-								label: "Gemini 3 Flash",
-								percentLeft,
-								resetsAt,
-								isDepleted: percentLeft === 0,
-								...metrics,
-							}),
-						);
-						nextState.values[`antigravity:Flash`] = { percentLeft };
-					} else {
-						rows.push(
-							buildStatusRow({
-								label: "Gemini 3 Flash",
-								percentLeft: 0,
-								isDepleted: true,
-							}),
-						);
-					}
-
-					return { title: "Antigravity", statusLine, rows };
-				})();
-
-				const toErrorString = (e: unknown): string => {
-					if (e instanceof Error) {
-						return e.message;
-					}
-					return String(e);
+				const sctx: SectionContext = {
+					pi,
+					modelRegistry: ctx.modelRegistry,
+					fetchedAt,
+					prevState,
+					nextState,
 				};
 
-				const results = await Promise.allSettled([
-					openaiPromise,
-					geminiPromise,
-					antigravityPromise,
-				]);
-				const sections: StatusSectionData[] = results.map((r, i) => {
-					if (r.status === "fulfilled") return r.value;
-					const titles = ["OpenAI", "Gemini CLI", "Antigravity"];
-					const title = titles[i]!;
-					const msg = toErrorString(r.reason);
-					const notConfigured =
-						/process not found|language server process not found|not logged in/i.test(
-							msg,
-						);
-					return { title, error: msg, notConfigured, rows: [] };
-				});
+				const [openai, gemini, antigravity] = await Effect.runPromise(
+					Effect.all(
+						[
+							settleSection(buildOpenAiSection(sctx), "OpenAI"),
+							settleSection(buildGeminiSection(sctx), "Gemini CLI"),
+							settleSection(buildAntigravitySection(sctx), "Antigravity"),
+						],
+						{ concurrency: "unbounded" },
+					),
+				);
+
+				const sections: StatusSectionData[] = [openai, gemini, antigravity];
 
 				if (Object.keys(nextState.values).length > 0) {
-					updatePersistedState(pi, state, { status: nextState });
+					persistence.update({ status: nextState });
 				}
 
 				pi.sendMessage(

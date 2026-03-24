@@ -1,4 +1,4 @@
-import { ServiceMap, Effect, Layer } from "effect";
+import { ServiceMap, Effect, Layer, Ref } from "effect";
 
 import { PiAPI } from "../effect/pi.js";
 import {
@@ -23,21 +23,23 @@ export const PersistenceLive = Layer.effect(
 	Persistence,
 	Effect.gen(function* () {
 		const pi = yield* PiAPI;
-		let snapshot: TauPersistedState = {};
+		const ref = yield* Ref.make<TauPersistedState>({});
 
 		const mergeFromContext = (ctx: ExtensionContext): void => {
 			const persisted = loadPersistedState(ctx);
-			snapshot = mergePersistedState(snapshot, persisted);
+			Effect.runSync(Ref.update(ref, (current) => mergePersistedState(current, persisted)));
 		};
 
 		return {
-			getSnapshot: () => snapshot,
+			getSnapshot: () => Ref.getUnsafe(ref),
 			setSnapshot: (next) => {
-				snapshot = next;
+				Effect.runSync(Ref.set(ref, next));
 			},
 			update: (patch) => {
-				snapshot = mergePersistedState(snapshot, patch);
-				pi.appendEntry(TAU_PERSISTED_STATE_TYPE, snapshot);
+				const updated = Effect.runSync(
+					Ref.updateAndGet(ref, (current) => mergePersistedState(current, patch)),
+				);
+				pi.appendEntry(TAU_PERSISTED_STATE_TYPE, updated);
 			},
 			setup: Effect.sync(() => {
 				pi.on("session_start", (_event: unknown, ctx: ExtensionContext) => {
