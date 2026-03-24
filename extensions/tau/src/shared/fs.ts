@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { isRecord, type AnyRecord } from "./json.js";
 
@@ -50,4 +51,39 @@ export function safeRealpath(targetPath: string): string {
 			return absolute;
 		}
 	}
+}
+
+export function isPathInsideRoot(targetPath: string, root: string): boolean {
+	const resolved = safeRealpath(targetPath);
+	const resolvedRoot = safeRealpath(root);
+	const normalizedTarget = path.normalize(resolved);
+	const normalizedRoot = path.normalize(resolvedRoot);
+
+	return (
+		normalizedTarget === normalizedRoot ||
+		normalizedTarget.startsWith(normalizedRoot + path.sep)
+	);
+}
+
+export function collectTempRoots(): readonly string[] {
+	const tempRoots = new Set<string>();
+
+	const addPath = (candidate: string) => {
+		tempRoots.add(candidate);
+		try {
+			tempRoots.add(fs.realpathSync(candidate));
+		} catch {
+			// Ignore missing or inaccessible temp roots.
+		}
+	};
+
+	addPath("/tmp");
+	addPath(os.tmpdir());
+
+	const envTmpDir = process.env["TMPDIR"];
+	if (envTmpDir) {
+		addPath(envTmpDir);
+	}
+
+	return Array.from(tempRoots);
 }

@@ -747,16 +747,17 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 	});
 
 	// Run command and capture output for policy violation detection
-	function runCommandCapture(
+	function runSpawnedCommand(
 		cmd: string,
 		cwd: string,
 		env: Record<string, string>,
+		options: { readonly captureOutput: boolean },
 		opts: {
 			onData: (data: Buffer) => void;
 			signal?: AbortSignal | undefined;
 			timeout?: number | undefined;
 		},
-	): Promise<{ exitCode: number | null; output: string }> {
+	): Promise<{ exitCode: number | null; output?: string | undefined }> {
 		return new Promise((resolve, reject) => {
 			if (!existsSync(cwd)) {
 				reject(new Error(`Working directory does not exist: ${cwd}`));
@@ -787,13 +788,17 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 
 			if (child.stdout) {
 				child.stdout.on("data", (data) => {
-					outputBuffer += data.toString();
+					if (options.captureOutput) {
+						outputBuffer += data.toString();
+					}
 					onData(data);
 				});
 			}
 			if (child.stderr) {
 				child.stderr.on("data", (data) => {
-					outputBuffer += data.toString();
+					if (options.captureOutput) {
+						outputBuffer += data.toString();
+					}
 					onData(data);
 				});
 			}
@@ -816,15 +821,33 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 			child.on("close", (code) => {
 				if (timeoutHandle) clearTimeout(timeoutHandle);
 				if (signal) signal.removeEventListener("abort", onAbort);
+				const exitCode = timedOut ? null : code;
 
-				if (timedOut) {
-					resolve({ exitCode: null, output: outputBuffer });
-				} else {
-					resolve({ exitCode: code, output: outputBuffer });
-				}
+				resolve(
+					options.captureOutput
+						? { exitCode, output: outputBuffer }
+						: { exitCode },
+				);
 			});
 		});
 	}
+
+	function runCommandCapture(
+		cmd: string,
+		cwd: string,
+		env: Record<string, string>,
+		opts: {
+			onData: (data: Buffer) => void;
+			signal?: AbortSignal | undefined;
+			timeout?: number | undefined;
+		},
+	): Promise<{ exitCode: number | null; output: string }> {
+		return runSpawnedCommand(cmd, cwd, env, { captureOutput: true }, opts).then((result) => ({
+			exitCode: result.exitCode,
+			output: result.output ?? "",
+		}));
+	}
+
 	// Run command directly without output capture (for approved/retry runs)
 	function runCommandDirect(
 		cmd: string,
@@ -836,66 +859,9 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 			timeout?: number | undefined;
 		},
 	): Promise<{ exitCode: number | null }> {
-		return new Promise((resolve, reject) => {
-			if (!existsSync(cwd)) {
-				reject(new Error(`Working directory does not exist: ${cwd}`));
-				return;
-			}
-
-			const { onData, signal, timeout } = opts;
-
-			const child = spawn("bash", ["-lc", cmd], {
-				cwd,
-				env,
-				detached: true,
-				stdio: ["ignore", "pipe", "pipe"],
-			});
-
-			let timedOut = false;
-			let timeoutHandle: NodeJS.Timeout | undefined;
-
-			if (timeout !== undefined && timeout > 0) {
-				timeoutHandle = setTimeout(() => {
-					timedOut = true;
-					if (child.pid) {
-						killProcessTree(child.pid);
-					}
-				}, timeout * 1000);
-			}
-
-			if (child.stdout) {
-				child.stdout.on("data", onData);
-			}
-			if (child.stderr) {
-				child.stderr.on("data", onData);
-			}
-
-			child.on("error", (err) => {
-				if (timeoutHandle) clearTimeout(timeoutHandle);
-				reject(err);
-			});
-
-			const onAbort = () => {
-				if (child.pid) {
-					killProcessTree(child.pid);
-				}
-			};
-
-			if (signal) {
-				signal.addEventListener("abort", onAbort);
-			}
-
-			child.on("close", (code) => {
-				if (timeoutHandle) clearTimeout(timeoutHandle);
-				if (signal) signal.removeEventListener("abort", onAbort);
-
-				if (timedOut) {
-					resolve({ exitCode: null });
-				} else {
-					resolve({ exitCode: code });
-				}
-			});
-		});
+		return runSpawnedCommand(cmd, cwd, env, { captureOutput: false }, opts).then(
+			(result) => ({ exitCode: result.exitCode }),
+		);
 	}
 	pi.registerTool({
 		...baseBashTool,

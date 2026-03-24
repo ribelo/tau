@@ -1,8 +1,6 @@
-import { Effect } from "effect";
-import { FileSystem } from "effect/FileSystem";
+import * as fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 
 import { readJsonFile } from "../shared/fs.js";
@@ -19,38 +17,47 @@ type PromptModePreset = {
 
 const MODE_PROMPTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "modes");
 
-const loadModePrompt = async (filename: "smart.md" | "deep.md" | "rush.md"): Promise<string> => {
+const loadModePrompt = (filename: "smart.md" | "deep.md" | "rush.md"): string => {
 	const filePath = path.join(MODE_PROMPTS_DIR, filename);
-	return await Effect.runPromise(
-		Effect.gen(function* () {
-			const fs = yield* FileSystem;
-			const contents = yield* fs.readFileString(filePath);
-			return contents.trim();
-		}).pipe(Effect.provide(NodeFileSystem.layer)),
-	);
+	return fs.readFileSync(filePath, "utf-8").trim();
 };
 
-export const SMART_MODE_SYSTEM_PROMPT = await loadModePrompt("smart.md");
-export const DEEP_MODE_SYSTEM_PROMPT = await loadModePrompt("deep.md");
-export const RUSH_MODE_SYSTEM_PROMPT = await loadModePrompt("rush.md");
-
-const DEFAULT_PROMPT_MODE_PRESETS: Record<PromptModeName, PromptModePreset> = {
-	smart: {
-		model: "anthropic/claude-opus-4-5",
-		thinking: "medium",
-		systemPrompt: SMART_MODE_SYSTEM_PROMPT,
-	},
-	deep: {
-		model: "openai-codex/gpt-5.3-codex",
-		thinking: "high",
-		systemPrompt: DEEP_MODE_SYSTEM_PROMPT,
-	},
-	rush: {
-		model: "kimi-coding/kimi-k2-thinking",
-		thinking: "off",
-		systemPrompt: RUSH_MODE_SYSTEM_PROMPT,
-	},
+const DEFAULT_PROMPT_MODE_CONFIG: Record<
+	PromptModeName,
+	{ readonly model: string; readonly thinking: ThinkingLevel; readonly promptFile: "smart.md" | "deep.md" | "rush.md" }
+> = {
+	smart: { model: "anthropic/claude-opus-4-5", thinking: "medium", promptFile: "smart.md" },
+	deep: { model: "openai-codex/gpt-5.3-codex", thinking: "high", promptFile: "deep.md" },
+	rush: { model: "kimi-coding/kimi-k2-thinking", thinking: "off", promptFile: "rush.md" },
 };
+
+let cachedDefaultPromptModePresets: Record<PromptModeName, PromptModePreset> | undefined;
+
+function getDefaultPromptModePresets(): Record<PromptModeName, PromptModePreset> {
+	if (cachedDefaultPromptModePresets) {
+		return cachedDefaultPromptModePresets;
+	}
+
+	cachedDefaultPromptModePresets = {
+		smart: {
+			model: DEFAULT_PROMPT_MODE_CONFIG.smart.model,
+			thinking: DEFAULT_PROMPT_MODE_CONFIG.smart.thinking,
+			systemPrompt: loadModePrompt(DEFAULT_PROMPT_MODE_CONFIG.smart.promptFile),
+		},
+		deep: {
+			model: DEFAULT_PROMPT_MODE_CONFIG.deep.model,
+			thinking: DEFAULT_PROMPT_MODE_CONFIG.deep.thinking,
+			systemPrompt: loadModePrompt(DEFAULT_PROMPT_MODE_CONFIG.deep.promptFile),
+		},
+		rush: {
+			model: DEFAULT_PROMPT_MODE_CONFIG.rush.model,
+			thinking: DEFAULT_PROMPT_MODE_CONFIG.rush.thinking,
+			systemPrompt: loadModePrompt(DEFAULT_PROMPT_MODE_CONFIG.rush.promptFile),
+		},
+	};
+
+	return cachedDefaultPromptModePresets;
+}
 
 export const isPromptModeName = (value: string): value is PromptModeName =>
 	value === "smart" || value === "deep" || value === "rush";
@@ -156,6 +163,7 @@ function readPromptModeOverridesFromSettingsFile(
 }
 
 export function resolvePromptModePresets(cwd: string): Record<PromptModeName, PromptModePreset> {
+	const defaults = getDefaultPromptModePresets();
 	const globalPath = getUserSettingsPath();
 	const projectPath = findNearestProjectSettingsPath(cwd);
 
@@ -165,9 +173,9 @@ export function resolvePromptModePresets(cwd: string): Record<PromptModeName, Pr
 		: {};
 
 	const resolved: Record<PromptModeName, PromptModePreset> = {
-		smart: { ...DEFAULT_PROMPT_MODE_PRESETS.smart },
-		deep: { ...DEFAULT_PROMPT_MODE_PRESETS.deep },
-		rush: { ...DEFAULT_PROMPT_MODE_PRESETS.rush },
+		smart: { ...defaults.smart },
+		deep: { ...defaults.deep },
+		rush: { ...defaults.rush },
 	};
 
 	for (const mode of ["smart", "deep", "rush"] as const) {

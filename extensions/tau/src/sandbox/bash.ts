@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { execSync } from "node:child_process";
 
 import type { FilesystemMode, NetworkMode } from "./config.js";
-import { safeRealpath } from "../shared/fs.js";
+import { collectTempRoots, safeRealpath } from "../shared/fs.js";
 
 /**
  * Check if bwrap is available on the system.
@@ -113,31 +113,7 @@ export async function wrapCommandWithSandbox(opts: {
 	// across tool calls. In read-only mode, use ephemeral tmpfs (writable scratch
 	// space within a single call, but lost between calls).
 	if (filesystemMode === "workspace-write") {
-		// Bind all known temp directories writable so files persist between calls.
-		const tmpBinds = new Set<string>();
-		tmpBinds.add("/tmp");
-		try {
-			tmpBinds.add(fs.realpathSync("/tmp"));
-		} catch {
-			/* ignore */
-		}
-		const osTmp = os.tmpdir();
-		tmpBinds.add(osTmp);
-		try {
-			tmpBinds.add(fs.realpathSync(osTmp));
-		} catch {
-			/* ignore */
-		}
-		const envTmpDir = process.env["TMPDIR"];
-		if (envTmpDir) {
-			tmpBinds.add(envTmpDir);
-			try {
-				tmpBinds.add(fs.realpathSync(envTmpDir));
-			} catch {
-				/* ignore */
-			}
-		}
-		for (const tmp of tmpBinds) {
+		for (const tmp of collectTempRoots()) {
 			if (exists(tmp)) {
 				args.push("--bind", tmp, tmp);
 			}

@@ -4,8 +4,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 import { PiAPI } from "../effect/pi.js";
 import type { TauState } from "../shared/state.js";
-import { Persistence } from "./persistence.js";
-import { makeLegacyStateBridge } from "./legacy-bridge.js";
+import { LegacyState } from "./legacy-state.js";
 
 type LegacySetup = { readonly setup: Effect.Effect<void> };
 
@@ -25,14 +24,14 @@ export function legacyPiLayer<Id, S extends LegacySetup>(
 export function legacyBridgedLayer<Id, S extends LegacySetup>(
 	tag: ServiceMap.Service<Id, S>,
 	initFn: (pi: ExtensionAPI, state: TauState) => void,
-): Layer.Layer<Id, never, PiAPI | Persistence> {
+): Layer.Layer<Id, never, PiAPI | LegacyState> {
 	return Layer.effect(
 		tag,
 		Effect.gen(function* () {
 			const pi = yield* PiAPI;
-			const persistence = yield* Persistence;
+			const state = yield* LegacyState;
 			return tag.of({
-				setup: Effect.sync(() => initFn(pi, makeLegacyStateBridge(persistence))),
+				setup: Effect.sync(() => initFn(pi, state)),
 			} as S);
 		}),
 	);

@@ -26,6 +26,14 @@ interface ApprovalOptions {
 	timeoutSeconds?: number;
 }
 
+function canPrompt(ctx: ExtensionContext, broker: ApprovalBroker | undefined): boolean {
+	return Boolean(ctx.hasUI || broker);
+}
+
+function denial(reason: string): ApprovalResult {
+	return { approved: false, reason };
+}
+
 /** Strip ANSI escape codes to prevent TUI rendering crashes */
 function stripAnsi(str: string): string {
 	// eslint-disable-next-line no-control-regex
@@ -86,6 +94,46 @@ async function promptForApproval(
 	}
 }
 
+async function requestUnsandboxedApproval(
+	ctx: ExtensionContext,
+	broker: ApprovalBroker | undefined,
+	commandPreview: string,
+	timeoutMs: number,
+): Promise<ApprovalResult> {
+	if (!canPrompt(ctx, broker)) {
+		return denial("Cannot prompt for escalation in headless mode");
+	}
+
+	const approved = await promptForApproval(
+		ctx,
+		broker,
+		"Escalation requested",
+		`Model requests to run without sandbox:\n\n${commandPreview}\n\nAllow?`,
+		timeoutMs,
+	);
+
+	return approved
+		? { approved: true, runUnsandboxed: true }
+		: denial("Escalation not approved (declined or timed out)");
+}
+
+async function requestPolicyApproval(
+	ctx: ExtensionContext,
+	broker: ApprovalBroker | undefined,
+	title: string,
+	message: string,
+	timeoutMs: number,
+	deniedReason: string,
+	success: ApprovalResult,
+): Promise<ApprovalResult> {
+	if (!canPrompt(ctx, broker)) {
+		return denial("Cannot prompt for approval in headless mode");
+	}
+
+	const approved = await promptForApproval(ctx, broker, title, message, timeoutMs);
+	return approved ? success : denial(deniedReason);
+}
+
 /**
  * Check if a bash command should be approved based on policy.
  *
@@ -125,45 +173,14 @@ export async function checkBashApproval(
 			return { approved: true, runUnsandboxed: false };
 		}
 
-		// Model requested escalation - prompt user
-		if (!ctx.hasUI && !broker) {
-			return { approved: false, reason: "Cannot prompt for escalation in headless mode" };
-		}
-
-		const approved = await promptForApproval(
-			ctx,
-			broker,
-			"Escalation requested",
-			`Model requests to run without sandbox:\n\n${cmdPreview}\n\nAllow?`,
-			timeoutMs,
-		);
-
-		if (approved) {
-			return { approved: true, runUnsandboxed: true };
-		}
-		return { approved: false, reason: "Escalation not approved (declined or timed out)" };
+		return requestUnsandboxedApproval(ctx, broker, cmdPreview, timeoutMs);
 	}
 
 	// "unless-trusted" - auto-approve safe commands, prompt for unsafe
 	if (policy === "unless-trusted") {
 		// If model explicitly requests escalation, prompt
 		if (escalate) {
-			if (!ctx.hasUI && !broker) {
-				return { approved: false, reason: "Cannot prompt for escalation in headless mode" };
-			}
-
-			const approved = await promptForApproval(
-				ctx,
-				broker,
-				"Escalation requested",
-				`Model requests to run without sandbox:\n\n${cmdPreview}\n\nAllow?`,
-				timeoutMs,
-			);
-
-			if (approved) {
-				return { approved: true, runUnsandboxed: true };
-			}
-			return { approved: false, reason: "Escalation not approved (declined or timed out)" };
+			return requestUnsandboxedApproval(ctx, broker, cmdPreview, timeoutMs);
 		}
 
 		// Check if command is safe
@@ -173,22 +190,19 @@ export async function checkBashApproval(
 		}
 
 		// Unsafe command - prompt user
-		if (!ctx.hasUI && !broker) {
-			return { approved: false, reason: "Unsafe command in headless mode" };
+		if (!canPrompt(ctx, broker)) {
+			return denial("Unsafe command in headless mode");
 		}
 
-		const approved = await promptForApproval(
+		return requestPolicyApproval(
 			ctx,
 			broker,
 			"Command requires approval",
 			`This command is not in the safe list:\n\n${cmdPreview}\n\nAllow?`,
 			timeoutMs,
+			"Command not approved (declined or timed out)",
+			{ approved: true, runUnsandboxed: false },
 		);
-
-		if (approved) {
-			return { approved: true, runUnsandboxed: false };
-		}
-		return { approved: false, reason: "Command not approved (declined or timed out)" };
 	}
 
 	// Unknown policy - deny
@@ -219,22 +233,15 @@ export async function checkFilesystemApproval(
 
 	// "on-failure" - for edit/write, we pre-check so this acts like prompt
 	// "on-request" / "unless-trusted" - prompt for filesystem operations
-	if (!ctx.hasUI && !broker) {
-		return { approved: false, reason: "Cannot prompt for approval in headless mode" };
-	}
-
-	const approved = await promptForApproval(
+	return requestPolicyApproval(
 		ctx,
 		broker,
 		`${tool}: path outside workspace`,
 		`Tool: ${tool}\nPath: ${targetPath}\n\nAllow this operation?`,
 		timeoutMs,
+		"Not approved (declined or timed out)",
+		{ approved: true },
 	);
-
-	if (approved) {
-		return { approved: true };
-	}
-	return { approved: false, reason: "Not approved (declined or timed out)" };
 }
 
 /**

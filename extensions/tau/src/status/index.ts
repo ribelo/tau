@@ -1271,8 +1271,9 @@ export function initStatus(pi: ExtensionAPI, persistence: StatusPersistence): vo
 				await ctx.waitForIdle();
 
 				const fetchedAt = Date.now();
+				const persisted = persistence.getSnapshot();
 				const prevState = (() => {
-					const data = persistence.getSnapshot().status;
+					const data = persisted.status;
 					if (!data || typeof data !== "object") return undefined;
 					const candidate = data as { fetchedAt?: unknown; values?: unknown };
 					if (typeof candidate.fetchedAt !== "number") return undefined;

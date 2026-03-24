@@ -226,6 +226,50 @@ export class AgentWorker implements Agent {
 		},
 	) {}
 
+	private currentRunningStatus(): Status {
+		return {
+			state: "running",
+			turns: this.turns,
+			toolCalls: this.toolCalls,
+			workedMs: this.workedMs,
+			...(this.turnStartTime !== undefined
+				? { activeTurnStartedAtMs: this.turnStartTime }
+				: {}),
+			tools: this.tools,
+		};
+	}
+
+	private publishStatus(status: Status): void {
+		Effect.runFork(SubscriptionRef.set(this.statusRef, status));
+	}
+
+	private publishRunningStatus(): void {
+		this.publishStatus(this.currentRunningStatus());
+	}
+
+	private publishFailed(reason: string): void {
+		this.publishStatus({
+			state: "failed",
+			reason,
+			turns: this.turns,
+			toolCalls: this.toolCalls,
+			workedMs: this.workedMs,
+			tools: this.tools,
+		});
+	}
+
+	private publishCompleted(message: string | undefined): void {
+		this.publishStatus({
+			state: "completed",
+			message,
+			structured_output: this.structuredOutput,
+			turns: this.turns,
+			toolCalls: this.toolCalls,
+			workedMs: this.workedMs,
+			tools: this.tools,
+		});
+	}
+
 	static make(opts: {
 		definition: AgentDefinition;
 		depth: number;
@@ -373,41 +417,18 @@ export class AgentWorker implements Agent {
 		}
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const agent = this;
-		const statusRef = this.statusRef;
 
 		this.sessionUnsubscribe = session.subscribe((event) => {
 			if (event.type === "turn_start") {
 				agent.turns++;
 				agent.turnStartTime = Date.now();
-				Effect.runFork(
-					SubscriptionRef.set(statusRef, {
-						state: "running",
-						turns: agent.turns,
-						toolCalls: agent.toolCalls,
-						workedMs: agent.workedMs,
-						...(agent.turnStartTime !== undefined
-							? { activeTurnStartedAtMs: agent.turnStartTime }
-							: {}),
-						tools: agent.tools,
-					}),
-				);
+				agent.publishRunningStatus();
 			} else if (event.type === "turn_end") {
 				if (agent.turnStartTime !== undefined) {
 					agent.workedMs += Date.now() - agent.turnStartTime;
 					agent.turnStartTime = undefined;
 				}
-				Effect.runFork(
-					SubscriptionRef.set(statusRef, {
-						state: "running",
-						turns: agent.turns,
-						toolCalls: agent.toolCalls,
-						workedMs: agent.workedMs,
-						...(agent.turnStartTime !== undefined
-							? { activeTurnStartedAtMs: agent.turnStartTime }
-							: {}),
-						tools: agent.tools,
-					}),
-				);
+				agent.publishRunningStatus();
 			} else if (event.type === "tool_execution_start") {
 				agent.toolCalls++;
 				const argsPreview = truncateStr(formatToolArgs(event.toolName, event.args), 100);
@@ -415,18 +436,7 @@ export class AgentWorker implements Agent {
 					name: event.toolName,
 					args: argsPreview,
 				});
-				Effect.runFork(
-					SubscriptionRef.set(statusRef, {
-						state: "running",
-						turns: agent.turns,
-						toolCalls: agent.toolCalls,
-						workedMs: agent.workedMs,
-						...(agent.turnStartTime !== undefined
-							? { activeTurnStartedAtMs: agent.turnStartTime }
-							: {}),
-						tools: agent.tools,
-					}),
-				);
+				agent.publishRunningStatus();
 			} else if (event.type === "tool_execution_end") {
 				const pending = agent.pendingTools.get(event.toolCallId);
 				if (pending) {
@@ -443,18 +453,7 @@ export class AgentWorker implements Agent {
 						isError: event.isError,
 					});
 				}
-				Effect.runFork(
-					SubscriptionRef.set(statusRef, {
-						state: "running",
-						turns: agent.turns,
-						toolCalls: agent.toolCalls,
-						workedMs: agent.workedMs,
-						...(agent.turnStartTime !== undefined
-							? { activeTurnStartedAtMs: agent.turnStartTime }
-							: {}),
-						tools: agent.tools,
-					}),
-				);
+				agent.publishRunningStatus();
 			} else if (event.type === "agent_end") {
 				if (agent.turnStartTime !== undefined) {
 					agent.workedMs += Date.now() - agent.turnStartTime;
@@ -485,16 +484,7 @@ export class AgentWorker implements Agent {
 							.join("\n") ||
 						"Agent ended with error (no details provided)";
 
-					Effect.runFork(
-						SubscriptionRef.set(statusRef, {
-							state: "failed",
-							reason,
-							turns: agent.turns,
-							toolCalls: agent.toolCalls,
-							workedMs: agent.workedMs,
-							tools: agent.tools,
-						}),
-					);
+					agent.publishFailed(reason);
 				} else if (
 					assistantMsg?.stopReason === "aborted" &&
 					agent.structuredOutput === undefined
@@ -504,32 +494,13 @@ export class AgentWorker implements Agent {
 							(p): p is { type: "text"; text: string } =>
 								p.type === "text" && typeof p.text === "string",
 						)
-						.map((p) => p.text)
-						.join("\n");
+							.map((p) => p.text)
+							.join("\n");
 
 					if (!textContent) {
-						Effect.runFork(
-							SubscriptionRef.set(statusRef, {
-								state: "failed",
-								reason: "Agent was aborted before producing a response",
-								turns: agent.turns,
-								toolCalls: agent.toolCalls,
-								workedMs: agent.workedMs,
-								tools: agent.tools,
-							}),
-						);
+						agent.publishFailed("Agent was aborted before producing a response");
 					} else {
-						Effect.runFork(
-							SubscriptionRef.set(statusRef, {
-								state: "completed",
-								message: textContent,
-								structured_output: agent.structuredOutput,
-								turns: agent.turns,
-								toolCalls: agent.toolCalls,
-								workedMs: agent.workedMs,
-								tools: agent.tools,
-							}),
-						);
+						agent.publishCompleted(textContent);
 					}
 				} else {
 					const message = assistantMsg
@@ -542,17 +513,7 @@ export class AgentWorker implements Agent {
 								.join("\n")
 						: undefined;
 
-					Effect.runFork(
-						SubscriptionRef.set(statusRef, {
-							state: "completed",
-							message,
-							structured_output: agent.structuredOutput,
-							turns: agent.turns,
-							toolCalls: agent.toolCalls,
-							workedMs: agent.workedMs,
-							tools: agent.tools,
-						}),
-					);
+					agent.publishCompleted(message);
 				}
 			}
 		});
@@ -564,16 +525,7 @@ export class AgentWorker implements Agent {
 		return Effect.gen(function* () {
 			const submissionId = `sub-${crypto.randomUUID()}`;
 
-			yield* SubscriptionRef.set(worker.statusRef, {
-				state: "running",
-				turns: worker.turns,
-				toolCalls: worker.toolCalls,
-				workedMs: worker.workedMs,
-				...(worker.turnStartTime !== undefined
-					? { activeTurnStartedAtMs: worker.turnStartTime }
-					: {}),
-				tools: worker.tools,
-			});
+			yield* SubscriptionRef.set(worker.statusRef, worker.currentRunningStatus());
 
 			// Fire-and-forget: try each model in sequence until one succeeds
 			Effect.runFork(

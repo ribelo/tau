@@ -1,67 +1,18 @@
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 
 import type { FilesystemMode } from "./config.js";
-import { safeRealpath } from "../shared/fs.js";
+import { collectTempRoots, isPathInsideRoot, safeRealpath } from "../shared/fs.js";
 
 type FsCheckResult = { allowed: true } | { allowed: false; reason: string };
-
-/**
- * Check if a path is under a given root directory.
- */
-function isUnderRoot(targetPath: string, root: string): boolean {
-	const resolved = safeRealpath(targetPath);
-	const resolvedRoot = safeRealpath(root);
-
-	// Normalize both paths to ensure consistent comparison
-	const normalizedTarget = path.normalize(resolved);
-	const normalizedRoot = path.normalize(resolvedRoot);
-
-	// Check if target starts with root (with proper path separator handling)
-	return (
-		normalizedTarget === normalizedRoot ||
-		normalizedTarget.startsWith(normalizedRoot + path.sep)
-	);
-}
 
 /**
  * Check if a path is in a temp directory (/tmp, $TMPDIR, os.tmpdir()).
  */
 function isInTempDir(targetPath: string): boolean {
 	const resolved = safeRealpath(targetPath);
-	const tmpDirs = new Set<string>();
-
-	// Add standard temp directories
-	tmpDirs.add("/tmp");
-	try {
-		tmpDirs.add(fs.realpathSync("/tmp"));
-	} catch {
-		// ignore
-	}
-
-	// Add os.tmpdir()
-	const osTmp = os.tmpdir();
-	tmpDirs.add(osTmp);
-	try {
-		tmpDirs.add(fs.realpathSync(osTmp));
-	} catch {
-		// ignore
-	}
-
-	// Add $TMPDIR if set
-	const envTmpDir = process.env["TMPDIR"];
-	if (envTmpDir) {
-		tmpDirs.add(envTmpDir);
-		try {
-			tmpDirs.add(fs.realpathSync(envTmpDir));
-		} catch {
-			// ignore
-		}
-	}
-
-	for (const tmpDir of tmpDirs) {
-		if (isUnderRoot(resolved, tmpDir)) {
+	for (const tmpDir of collectTempRoots()) {
+		if (isPathInsideRoot(resolved, tmpDir)) {
 			return true;
 		}
 	}
@@ -79,7 +30,7 @@ function isGitHooksPath(targetPath: string, workspaceRoot: string): boolean {
 
 	try {
 		const resolvedHooksDir = safeRealpath(hooksDir);
-		return isUnderRoot(resolved, resolvedHooksDir);
+		return isPathInsideRoot(resolved, resolvedHooksDir);
 	} catch {
 		// .git/hooks doesn't exist - check pattern match
 		return (
@@ -114,7 +65,7 @@ export function checkWriteAllowed(opts: {
 
 		case "workspace-write":
 			// Allow writes under workspace root
-			if (isUnderRoot(resolved, workspaceRoot)) {
+			if (isPathInsideRoot(resolved, workspaceRoot)) {
 				return { allowed: true };
 			}
 			// Allow writes to temp directories

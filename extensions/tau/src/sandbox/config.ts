@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Exit, Schema } from "effect";
 import * as path from "node:path";
 import { SandboxConfig as SandboxConfigSchema } from "../schemas/config.js";
 import { readJsonFileDetailed, writeJsonFile } from "../shared/fs.js";
@@ -40,39 +40,38 @@ export const DEFAULT_SANDBOX_CONFIG: ResolvedSandboxConfig = {
 	subagent: false,
 };
 
-const decodeSandboxConfig = Schema.decodeUnknownSync(SandboxConfigSchema);
+const decodeSandboxConfig = Schema.decodeUnknownExit(SandboxConfigSchema);
 
 function decodeSandboxConfigOrThrow(
 	value: unknown,
 	source: string,
 ): SandboxConfig {
-	try {
-		const decoded = decodeSandboxConfig(value);
-		const normalized: SandboxConfig = {};
-
-		// If preset is set, use it directly
-		if (decoded.preset !== undefined) {
-			normalized.preset = decoded.preset;
-		}
-		// If legacy fields are present but no preset, migrate to nearest preset
-		else if (
-			decoded.filesystemMode !== undefined ||
-			decoded.networkMode !== undefined ||
-			decoded.approvalPolicy !== undefined
-		) {
-			normalized.preset = inferPresetFromModes({
-				filesystemMode: decoded.filesystemMode,
-				networkMode: decoded.networkMode,
-				approvalPolicy: decoded.approvalPolicy,
-			});
-		}
-
-		if (decoded.subagent !== undefined) normalized.subagent = decoded.subagent;
-		return normalized;
-	} catch (error) {
-		const reason = error instanceof Error ? error.message : String(error);
-		throw new Error(`Invalid sandbox config at ${source}: ${reason}`);
+	const decoded = decodeSandboxConfig(value);
+	if (Exit.isFailure(decoded)) {
+		throw new Error(`Invalid sandbox config at ${source}: ${String(decoded.cause)}`);
 	}
+
+	const normalized: SandboxConfig = {};
+
+	// If preset is set, use it directly
+	if (decoded.value.preset !== undefined) {
+		normalized.preset = decoded.value.preset;
+	}
+	// If legacy fields are present but no preset, migrate to nearest preset
+	else if (
+		decoded.value.filesystemMode !== undefined ||
+		decoded.value.networkMode !== undefined ||
+		decoded.value.approvalPolicy !== undefined
+	) {
+		normalized.preset = inferPresetFromModes({
+			filesystemMode: decoded.value.filesystemMode,
+			networkMode: decoded.value.networkMode,
+			approvalPolicy: decoded.value.approvalPolicy,
+		});
+	}
+
+	if (decoded.value.subagent !== undefined) normalized.subagent = decoded.value.subagent;
+	return normalized;
 }
 
 function applyDefaults(cfg: SandboxConfig | undefined): ResolvedSandboxConfig {

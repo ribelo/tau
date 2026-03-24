@@ -9,6 +9,7 @@ import { Beads, BeadsLive } from "./services/beads.js";
 import { Footer, FooterLive } from "./services/footer.js";
 import { PromptModes, PromptModesLive } from "./services/prompt-modes.js";
 import { Persistence, PersistenceLive } from "./services/persistence.js";
+import { LegacyStateLive } from "./services/legacy-state.js";
 import { Exa, ExaLive } from "./services/exa.js";
 import { TerminalPrompt, TerminalPromptLive } from "./services/terminal-prompt.js";
 import { WorkedFor, WorkedForLive } from "./services/worked-for.js";
@@ -18,6 +19,16 @@ import { Editor, EditorLive } from "./services/editor.js";
 import { SkillMarker, SkillMarkerLive } from "./services/skill-marker.js";
 import { Agent, AgentLive } from "./services/agent.js";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+
+const LegacyStateLayer = LegacyStateLive.pipe(Layer.provide(PersistenceLive));
+
+const SharedLayer = Layer.mergeAll(
+	SandboxStateLive,
+	PersistenceLive,
+	LegacyStateLayer,
+	NodeFileSystem.layer,
+	PiLoggerLive,
+);
 
 const MainLayer = Layer.mergeAll(
 	SandboxLive,
@@ -32,52 +43,43 @@ const MainLayer = Layer.mergeAll(
 	EditorLive,
 	SkillMarkerLive,
 	AgentLive,
-).pipe(
-	Layer.provideMerge(SandboxStateLive),
-	Layer.provideMerge(PersistenceLive),
-	Layer.provideMerge(NodeFileSystem.layer),
-	Layer.provideMerge(PiLoggerLive),
-);
+).pipe(Layer.provide(SharedLayer));
 
 export const runTau = (pi: ExtensionAPI) => {
-	const program = Effect.gen(function* () {
-		const persistence = yield* Persistence;
-		const sandbox = yield* Sandbox;
-		const beads = yield* Beads;
-		const footer = yield* Footer;
-		const promptModes = yield* PromptModes;
-		const exa = yield* Exa;
-		const terminalPrompt = yield* TerminalPrompt;
-		const workedFor = yield* WorkedFor;
-		const status = yield* Status;
-		const commit = yield* Commit;
-		const editor = yield* Editor;
-		const skillMarker = yield* SkillMarker;
-		const agent = yield* Agent;
+	const program = Effect.scoped(
+		Effect.gen(function* () {
+			const persistence = yield* Persistence;
+			const sandbox = yield* Sandbox;
+			const beads = yield* Beads;
+			const footer = yield* Footer;
+			const promptModes = yield* PromptModes;
+			const exa = yield* Exa;
+			const terminalPrompt = yield* TerminalPrompt;
+			const workedFor = yield* WorkedFor;
+			const status = yield* Status;
+			const commit = yield* Commit;
+			const editor = yield* Editor;
+			const skillMarker = yield* SkillMarker;
+			const agent = yield* Agent;
 
-		yield* Effect.all(
-			[
-				persistence.setup,
-				sandbox.setup,
-				beads.setup,
-				footer.setup,
-				promptModes.setup,
-				exa.setup,
-				terminalPrompt.setup,
-				workedFor.setup,
-				status.setup,
-				commit.setup,
-				editor.setup,
-				skillMarker.setup,
-				agent.setup,
-			],
-			{
-				concurrency: "unbounded",
-			},
-		);
-	});
+			yield* persistence.setup;
+			yield* sandbox.setup;
+			yield* beads.setup;
+			yield* footer.setup;
+			yield* promptModes.setup;
+			yield* exa.setup;
+			yield* terminalPrompt.setup;
+			yield* workedFor.setup;
+			yield* status.setup;
+			yield* commit.setup;
+			yield* editor.setup;
+			yield* skillMarker.setup;
+			yield* agent.setup;
+		}),
+	);
 
 	const layer = MainLayer.pipe(Layer.provide(PiAPILive(pi)));
+	const runnableProgram = program.pipe(Effect.provide(layer)) as Effect.Effect<void, never, never>;
 
-	return Effect.runFork(program.pipe(Effect.provide(layer)));
+	return Effect.runFork(runnableProgram);
 };

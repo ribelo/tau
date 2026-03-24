@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Exit, Schema } from "effect";
 import { parse } from "yaml";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -37,11 +37,23 @@ const AgentDefinitionFrontmatterSchema = Schema.Struct({
 	approval_timeout: Schema.optional(ApprovalTimeoutSeconds),
 });
 
-const decodeModelSpec = Schema.decodeUnknownSync(ModelSpecSchema);
-const decodeAgentDefinitionFrontmatter = Schema.decodeUnknownSync(AgentDefinitionFrontmatterSchema);
+const decodeModelSpec = Schema.decodeUnknownExit(ModelSpecSchema);
+const decodeAgentDefinitionFrontmatter = Schema.decodeUnknownExit(
+	AgentDefinitionFrontmatterSchema,
+);
+
+function decodeOrThrow<A>(
+	result: Exit.Exit<A, unknown>,
+	context: string,
+): A {
+	if (Exit.isSuccess(result)) {
+		return result.value;
+	}
+	throw new Error(`${context}: ${String(result.cause)}`);
+}
 
 function parseModelSpec(entry: unknown): ModelSpec {
-	const modelSpec = decodeModelSpec(entry);
+	const modelSpec = decodeOrThrow(decodeModelSpec(entry), "Invalid agent model spec");
 	return {
 		model: modelSpec.model,
 		...(modelSpec.thinking === undefined ? {} : { thinking: modelSpec.thinking }),
@@ -62,7 +74,10 @@ export function parseAgentDefinition(content: string): AgentDefinition {
 
 	const frontmatter = parse(frontmatterRaw);
 	const systemPrompt = systemPromptRaw.trim();
-	const parsedFrontmatter = decodeAgentDefinitionFrontmatter(frontmatter);
+	const parsedFrontmatter = decodeOrThrow(
+		decodeAgentDefinitionFrontmatter(frontmatter),
+		"Invalid agent frontmatter",
+	);
 
 	const models: ModelSpec[] = parsedFrontmatter.models.map((entry) => parseModelSpec(entry));
 

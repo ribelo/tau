@@ -1,4 +1,4 @@
-import { ServiceMap, Effect, Layer, Schema, SubscriptionRef } from "effect";
+import { Effect, Exit, Layer, Schema, ServiceMap, Stream, SubscriptionRef } from "effect";
 
 import { PiAPI } from "../effect/pi.js";
 import type { SandboxConfig } from "../sandbox/config.js";
@@ -8,10 +8,11 @@ import { Persistence } from "./persistence.js";
 import { makeLegacyStateBridge } from "./legacy-bridge.js";
 import initSandboxLegacy from "../sandbox/index.js";
 
-const isSandboxConfigRequired = Schema.is(SandboxConfigRequired);
+const decodeSandboxConfigRequired = Schema.decodeUnknownExit(SandboxConfigRequired);
 
 export interface Sandbox {
 	readonly getConfig: Effect.Effect<SandboxConfigRequired>;
+	readonly changes: Stream.Stream<SandboxConfigRequired>;
 	readonly setConfig: (config: Partial<SandboxConfig>) => Effect.Effect<void>;
 	readonly setup: Effect.Effect<void>;
 }
@@ -24,21 +25,40 @@ export const SandboxLive = Layer.effect(
 		const pi = yield* PiAPI;
 		const state = yield* SandboxState;
 		const persistence = yield* Persistence;
+		let currentConfig = yield* SubscriptionRef.get(state);
+
+		const replaceConfig = (next: SandboxConfigRequired): Effect.Effect<void> =>
+			Effect.gen(function* () {
+				currentConfig = next;
+				yield* SubscriptionRef.set(state, next);
+			});
 
 		return Sandbox.of({
-			getConfig: SubscriptionRef.get(state),
+			getConfig: Effect.sync(() => currentConfig),
+			changes: SubscriptionRef.changes(state),
 			setConfig: (patch) =>
-				SubscriptionRef.update(state, (current) => ({
-					...current,
-					...patch,
-				})),
+				Effect.gen(function* () {
+					const next: SandboxConfigRequired = {
+						...currentConfig,
+						...patch,
+					};
+					yield* replaceConfig(next);
+				}),
 			setup: Effect.gen(function* () {
 				yield* Effect.sync(() => {
-					initSandboxLegacy(pi, makeLegacyStateBridge(persistence));
+					initSandboxLegacy(
+						pi,
+						makeLegacyStateBridge({
+							getSnapshotSync: persistence.getSnapshot,
+							setSnapshotSync: persistence.setSnapshot,
+						}),
+					);
 
 					pi.events.on("tau:sandbox:changed", (config: unknown) => {
-						if (isSandboxConfigRequired(config)) {
-							Effect.runSync(SubscriptionRef.set(state, config));
+						const decoded = decodeSandboxConfigRequired(config);
+						if (Exit.isSuccess(decoded)) {
+							currentConfig = decoded.value;
+							Effect.runFork(SubscriptionRef.set(state, decoded.value));
 						}
 					});
 				});

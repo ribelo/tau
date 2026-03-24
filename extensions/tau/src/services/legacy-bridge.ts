@@ -1,25 +1,19 @@
 import type { TauPersistedState, TauState } from "../shared/state.js";
 
-/**
- * Shared runtime state for legacy modules.
- * Each service gets the same instance so they can share state buckets
- * (skillMarker, editor, sandbox, etc.) across the legacy boundary.
- */
-const sharedRuntimeState: Record<string, unknown> = {};
-
 interface LegacyPersistedBridge {
-	readonly getSnapshot: () => TauPersistedState;
-	readonly setSnapshot: (next: TauPersistedState) => void;
+	readonly getSnapshotSync: () => TauPersistedState;
+	readonly setSnapshotSync: (next: TauPersistedState) => void;
 }
 
 export const makeLegacyStateBridge = (persistedBridge: LegacyPersistedBridge): TauState => {
+	const sharedRuntimeState: Record<string, unknown> = {};
 	const state: TauState = {
 		config: {},
 		get persisted() {
-			return persistedBridge.getSnapshot();
+			return persistedBridge.getSnapshotSync();
 		},
 		set persisted(val: TauPersistedState) {
-			persistedBridge.setSnapshot(val);
+			persistedBridge.setSnapshotSync(val);
 		},
 		get skillMarker() {
 			return sharedRuntimeState["skillMarker"];

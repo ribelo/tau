@@ -4,7 +4,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Stream } from "effect";
 
 import type {
 	BeforeAgentStartEvent,
@@ -107,6 +107,17 @@ describe("AGENTS.md availability", () => {
 				update: (patch) => {
 					persisted = mergePersistedState(persisted, patch);
 				},
+				getSnapshotEffect: Effect.sync(() => persisted),
+				setSnapshotEffect: (next) =>
+					Effect.sync(() => {
+						persisted = next;
+					}),
+				updateEffect: (patch) =>
+					Effect.sync(() => {
+						persisted = mergePersistedState(persisted, patch);
+						return persisted;
+					}),
+				changes: Stream.empty,
 				setup: Effect.void,
 			});
 

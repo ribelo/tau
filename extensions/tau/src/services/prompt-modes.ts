@@ -283,7 +283,9 @@ export const PromptModesLive = Layer.effect(
 								return;
 							}
 
-							const currentMode = resolvePersistedMode(persistence.getSnapshot());
+							const currentMode = resolvePersistedMode(
+								persistence.getSnapshot(),
+							);
 							const nextMode = nextPromptMode(currentMode);
 							await applyModeSelection(pi, persistence, nextMode, ctx, {
 								notifyOnSuccess: true,
@@ -324,8 +326,7 @@ export const PromptModesLive = Layer.effect(
 						// from the original base prompt so the mode prompt is injected exactly once.
 						if (baseSystemPrompt === undefined) baseSystemPrompt = event.systemPrompt;
 
-						const state = persistence.getSnapshot();
-						const mode = resolvePersistedMode(state);
+						const mode = resolvePersistedMode(persistence.getSnapshot());
 						const presets = resolvePromptModePresets(ctx.cwd);
 						const preset = presets[mode];
 						return { systemPrompt: `${baseSystemPrompt}\n\n${preset.systemPrompt}` };

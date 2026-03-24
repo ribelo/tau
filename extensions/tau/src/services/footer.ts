@@ -1,4 +1,4 @@
-import { ServiceMap, Effect, Layer, Schema, SubscriptionRef } from "effect";
+import { Effect, Layer, Schedule, Scope, ServiceMap, Stream } from "effect";
 import { FileSystem } from "effect/FileSystem";
 
 import type {
@@ -14,12 +14,11 @@ import * as path from "node:path";
 import { PiAPI } from "../effect/pi.js";
 import { isRecord } from "../shared/json.js";
 import { Persistence } from "./persistence.js";
-import { SandboxState } from "./state.js";
+import { Sandbox } from "./sandbox.js";
 import { DEFAULT_SANDBOX_CONFIG } from "../sandbox/config.js";
-import { SandboxConfigRequired } from "../schemas/config.js";
 
 export interface Footer {
-	readonly setup: Effect.Effect<void>;
+	readonly setup: Effect.Effect<void, never, Scope.Scope>;
 }
 
 export const Footer = ServiceMap.Service<Footer>("Footer");
@@ -171,14 +170,12 @@ const computeTotalCost = (ctx: ExtensionContext): number => {
 	return totalCost;
 };
 
-const isSandboxConfigRequired = Schema.is(SandboxConfigRequired);
-
 export const FooterLive = Layer.effect(
 	Footer,
 	Effect.gen(function* () {
 		const pi = yield* PiAPI;
 		const fs = yield* FileSystem;
-		const sandboxState = yield* SandboxState;
+		const sandbox = yield* Sandbox;
 		const persistence = yield* Persistence;
 
 		let currentHygiene: FooterHygiene = {
@@ -186,7 +183,8 @@ export const FooterLive = Layer.effect(
 			inProgressCount: 0,
 		};
 		let currentTotalCost = 0;
-		let currentSandboxConfig = yield* SubscriptionRef.get(sandboxState);
+		let currentSandboxConfig = yield* sandbox.getConfig;
+		let currentPersisted = persistence.getSnapshot();
 
 		const emitFooterChanged = () => pi.events.emit("tau:footer:changed", null);
 
@@ -217,60 +215,62 @@ export const FooterLive = Layer.effect(
 			yield* Effect.sync(() => emitFooterChanged());
 		});
 
-		const refreshFooterHygieneLoop = Effect.gen(function* () {
-			yield* refreshFooterHygieneOnce.pipe(Effect.catch(() => Effect.void));
-			yield* Effect.forever(
-				Effect.gen(function* () {
-					yield* Effect.sleep("5 seconds");
-					yield* refreshFooterHygieneOnce.pipe(Effect.catch(() => Effect.void));
-				}),
-			);
-		});
+		const refreshFooterHygieneLoop = refreshFooterHygieneOnce.pipe(
+			Effect.catch(() => Effect.void),
+			Effect.repeat(Schedule.spaced("5 seconds")),
+		);
 
 		return Footer.of({
 			setup: Effect.gen(function* () {
-				// Start hygiene refresh loop (git diff + beads in-progress count)
-				yield* Effect.forkDetach(refreshFooterHygieneLoop);
+				yield* refreshFooterHygieneLoop.pipe(Effect.forkScoped);
+				yield* sandbox.changes.pipe(
+					Stream.runForEach((config) =>
+						Effect.sync(() => {
+							currentSandboxConfig = config;
+							emitFooterChanged();
+						}),
+					),
+					Effect.forkScoped,
+				);
+				yield* persistence.changes.pipe(
+					Stream.runForEach((persisted) =>
+						Effect.sync(() => {
+							currentPersisted = persisted;
+							emitFooterChanged();
+						}),
+					),
+					Effect.forkScoped,
+				);
 
 				yield* Effect.sync(() => {
-					pi.on("session_start", (_event: unknown, ctx: ExtensionContext) => {
+					const updateSessionFooterState = (_event: unknown, ctx: ExtensionContext) => {
 						currentTotalCost = computeTotalCost(ctx);
 						emitFooterChanged();
+					};
 
+					pi.on("session_switch", updateSessionFooterState);
+					pi.on("session_start", (_event: unknown, ctx: ExtensionContext) => {
+						updateSessionFooterState(null, ctx);
 						ctx.ui.setFooter(
 							(tui: TUI, theme: Theme, footerData: ReadonlyFooterDataProvider) => {
 								const unsubBranch = footerData.onBranchChange(() =>
 									tui.requestRender(),
 								);
-								const unsubSandbox = pi.events.on(
-									"tau:sandbox:changed",
-									(config: unknown) => {
-										if (isSandboxConfigRequired(config)) {
-											currentSandboxConfig = config;
-										}
-										tui.requestRender();
-									},
-								);
 								const unsubFooter = pi.events.on("tau:footer:changed", () =>
-									tui.requestRender(),
-								);
-								const unsubMode = pi.events.on("tau:mode:changed", () =>
 									tui.requestRender(),
 								);
 
 								return {
 									dispose() {
 										unsubBranch();
-										unsubSandbox();
 										unsubFooter();
-										unsubMode();
 									},
 									invalidate() {},
 									render(width: number): string[] {
 										const sandboxConfig = currentSandboxConfig;
 										const hygiene = currentHygiene;
 										const totalCost = currentTotalCost;
-										const persisted = persistence.getSnapshot();
+										const persisted = currentPersisted;
 										const modeLabel =
 											persisted.promptModes?.activeMode ?? "smart";
 
