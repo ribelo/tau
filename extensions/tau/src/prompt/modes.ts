@@ -1,6 +1,5 @@
 import { Effect } from "effect";
 import { FileSystem } from "effect/FileSystem";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
@@ -8,6 +7,7 @@ import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 
 import { readJsonFile } from "../shared/fs.js";
 import { isRecord } from "../shared/json.js";
+import { findNearestProjectPiDir, getUserSettingsPath } from "../shared/discovery.js";
 
 export type PromptModeName = "smart" | "deep" | "rush";
 
@@ -115,14 +115,10 @@ function parsePresetOverride(value: unknown, context: string): PromptModePresetO
 }
 
 function findNearestProjectSettingsPath(cwd: string): string | null {
-	let current = cwd;
-	for (;;) {
-		const candidate = path.join(current, ".pi", "settings.json");
-		if (readJsonFile(candidate)) return candidate;
-		const parent = path.dirname(current);
-		if (parent === current) return null;
-		current = parent;
-	}
+	const piDir = findNearestProjectPiDir(cwd);
+	if (!piDir) return null;
+	const candidate = path.join(piDir, "settings.json");
+	return readJsonFile(candidate) ? candidate : null;
 }
 
 function readPromptModesNamespace(settings: unknown): unknown {
@@ -160,7 +156,7 @@ function readPromptModeOverridesFromSettingsFile(
 }
 
 export function resolvePromptModePresets(cwd: string): Record<PromptModeName, PromptModePreset> {
-	const globalPath = path.join(os.homedir(), ".pi", "agent", "settings.json");
+	const globalPath = getUserSettingsPath();
 	const projectPath = findNearestProjectSettingsPath(cwd);
 
 	const globalOverrides = readPromptModeOverridesFromSettingsFile(globalPath);

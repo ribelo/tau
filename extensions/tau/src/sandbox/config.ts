@@ -1,8 +1,8 @@
 import { Schema } from "effect";
-import * as os from "node:os";
 import * as path from "node:path";
 import { SandboxConfig as SandboxConfigSchema } from "../schemas/config.js";
 import { readJsonFileDetailed, writeJsonFile } from "../shared/fs.js";
+import { getUserSettingsPath } from "../shared/discovery.js";
 import { deepMerge, isRecord, type AnyRecord } from "../shared/json.js";
 import {
 	type ApprovalPolicy,
@@ -109,15 +109,6 @@ function readSettingsFileOrThrow(settingsPath: string): AnyRecord {
 	if (result._tag === "missing") return {};
 	if (result._tag === "ok") return result.data;
 	throw new Error(`Invalid settings JSON at ${settingsPath}: ${result.reason}`);
-}
-
-function getUserSettingsPath(): string {
-	// Allow override for tests.
-	const override = process.env["TAU_SANDBOX_USER_SETTINGS_PATH"];
-	if (override) {
-		return override;
-	}
-	return path.join(os.homedir(), ".pi", "agent", "settings.json");
 }
 
 function getProjectSettingsPath(workspaceRoot: string): string {

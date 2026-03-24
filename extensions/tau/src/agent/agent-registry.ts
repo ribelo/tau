@@ -12,14 +12,18 @@
  */
 
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 
 import { readJsonFileDetailed } from "../shared/fs.js";
 import { isRecord } from "../shared/json.js";
+import {
+	EXTENSION_AGENTS_DIR,
+	findNearestProjectPiDir,
+	getUserAgentsDir,
+	getUserSettingsPath,
+} from "../shared/discovery.js";
 import {
 	resolvePromptModePresets,
 	type PromptModeName,
@@ -29,18 +33,8 @@ import type { SandboxConfig } from "../sandbox/config.js";
 import { parseAgentDefinition } from "./parser.js";
 import type { AgentDefinition, Complexity, ModelSpec } from "./types.js";
 
-const EXTENSION_AGENTS_DIR = path.resolve(
-	path.dirname(fileURLToPath(import.meta.url)),
-	"..",
-	"..",
-	"agents",
-);
-
 const MODE_AGENT_SANDBOX: SandboxConfig = {
-	filesystemMode: "workspace-write",
-	networkMode: "allow-all",
-	approvalPolicy: "never",
-	approvalTimeoutSeconds: 60,
+	preset: "full-access",
 };
 
 const THINKING_LEVELS = new Set<ThinkingLevel | "inherit">([
@@ -103,17 +97,6 @@ function isFile(p: string): boolean {
 		return fs.statSync(p).isFile();
 	} catch {
 		return false;
-	}
-}
-
-function findNearestProjectPiDir(cwd: string): string | null {
-	let current = cwd;
-	for (;;) {
-		const candidate = path.join(current, ".pi");
-		if (isDirectory(candidate)) return candidate;
-		const parent = path.dirname(current);
-		if (parent === current) return null;
-		current = parent;
 	}
 }
 
@@ -203,15 +186,11 @@ interface AgentSettingsOverride {
 	};
 }
 
-function findNearestProjectSettings(cwd: string): string | null {
-	let current = cwd;
-	for (;;) {
-		const candidate = path.join(current, ".pi", "settings.json");
-		if (isFile(candidate)) return candidate;
-		const parent = path.dirname(current);
-		if (parent === current) return null;
-		current = parent;
-	}
+function findNearestProjectSettingsPath(cwd: string): string | null {
+	const piDir = findNearestProjectPiDir(cwd);
+	if (!piDir) return null;
+	const candidate = path.join(piDir, "settings.json");
+	return isFile(candidate) ? candidate : null;
 }
 
 function loadAgentSettings(cwd: string): Map<string, AgentSettingsOverride> {
@@ -319,10 +298,10 @@ function loadAgentSettings(cwd: string): Map<string, AgentSettingsOverride> {
 		}
 	};
 
-	const globalSettings = path.join(os.homedir(), ".pi", "agent", "settings.json");
+	const globalSettings = getUserSettingsPath();
 	applySettings(globalSettings);
 
-	const projectSettings = findNearestProjectSettings(cwd);
+	const projectSettings = findNearestProjectSettingsPath(cwd);
 	if (projectSettings) applySettings(projectSettings);
 
 	return result;
@@ -391,7 +370,7 @@ export class AgentRegistry {
 
 	static load(cwd: string): AgentRegistry {
 		const extensionAgents = discoverAgentFiles(EXTENSION_AGENTS_DIR);
-		const userAgentsDir = path.join(os.homedir(), ".pi", "agent", "agents");
+		const userAgentsDir = getUserAgentsDir();
 		const userAgents = discoverAgentFiles(userAgentsDir);
 
 		const projectPi = findNearestProjectPiDir(cwd);

@@ -2,23 +2,17 @@ import { Schema } from "effect";
 import { parse } from "yaml";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as os from "node:os";
-import { fileURLToPath } from "node:url";
 import type { AgentDefinition, ModelSpec } from "./types.js";
 import type { SandboxConfig } from "../sandbox/config.js";
 import { ApprovalTimeoutSeconds } from "../schemas/config.js";
-import { APPROVAL_POLICIES, FILESYSTEM_MODES, NETWORK_MODES } from "../shared/policy.js";
-
-const EXTENSION_AGENTS_DIR = path.resolve(
-	path.dirname(fileURLToPath(import.meta.url)),
-	"..",
-	"..",
-	"agents",
-);
+import { APPROVAL_POLICIES, FILESYSTEM_MODES, NETWORK_MODES, SANDBOX_PRESET_NAMES, inferPresetFromModes } from "../shared/policy.js";
+import { EXTENSION_AGENTS_DIR, findNearestProjectPiDir, getUserAgentsDir } from "../shared/discovery.js";
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "inherit"] as const;
 
 const ThinkingLevelSchema = Schema.Literals([...THINKING_LEVELS]);
+
+const SandboxPresetSchema = Schema.Literals([...SANDBOX_PRESET_NAMES]);
 
 const FilesystemModeSchema = Schema.Literals([...FILESYSTEM_MODES]);
 
@@ -35,10 +29,12 @@ const AgentDefinitionFrontmatterSchema = Schema.Struct({
 	name: Schema.String,
 	description: Schema.String,
 	models: Schema.NonEmptyArray(ModelSpecSchema),
-	sandbox_fs: FilesystemModeSchema,
-	sandbox_net: NetworkModeSchema,
-	approval_policy: ApprovalPolicySchema,
-	approval_timeout: ApprovalTimeoutSeconds,
+	sandbox_preset: Schema.optional(SandboxPresetSchema),
+	// Legacy fields still accepted for back-compat
+	sandbox_fs: Schema.optional(FilesystemModeSchema),
+	sandbox_net: Schema.optional(NetworkModeSchema),
+	approval_policy: Schema.optional(ApprovalPolicySchema),
+	approval_timeout: Schema.optional(ApprovalTimeoutSeconds),
 });
 
 const decodeModelSpec = Schema.decodeUnknownSync(ModelSpecSchema);
@@ -71,10 +67,11 @@ export function parseAgentDefinition(content: string): AgentDefinition {
 	const models: ModelSpec[] = parsedFrontmatter.models.map((entry) => parseModelSpec(entry));
 
 	const sandbox: SandboxConfig = {
-		filesystemMode: parsedFrontmatter.sandbox_fs,
-		networkMode: parsedFrontmatter.sandbox_net,
-		approvalPolicy: parsedFrontmatter.approval_policy,
-		approvalTimeoutSeconds: parsedFrontmatter.approval_timeout,
+		preset: parsedFrontmatter.sandbox_preset ?? inferPresetFromModes({
+			filesystemMode: parsedFrontmatter.sandbox_fs,
+			networkMode: parsedFrontmatter.sandbox_net,
+			approvalPolicy: parsedFrontmatter.approval_policy,
+		}),
 	};
 
 	return {
@@ -94,21 +91,6 @@ function isFile(p: string): boolean {
 	}
 }
 
-function findNearestProjectPiDir(cwd: string): string | null {
-	let current = cwd;
-	while (true) {
-		const candidate = path.join(current, ".pi");
-		try {
-			if (fs.statSync(candidate).isDirectory()) return candidate;
-		} catch {
-			// ignore
-		}
-		const parent = path.dirname(current);
-		if (parent === current) return null;
-		current = parent;
-	}
-}
-
 export function loadAgentDefinition(name: string, cwd: string): AgentDefinition | null {
 	const projectPi = findNearestProjectPiDir(cwd);
 	const candidates: string[] = [];
@@ -117,10 +99,7 @@ export function loadAgentDefinition(name: string, cwd: string): AgentDefinition 
 		candidates.push(path.join(projectPi, "agents", `${name}.md`));
 	}
 
-	const userAgentsDir = path.join(os.homedir(), ".pi", "agent", "agents");
-	candidates.push(path.join(userAgentsDir, `${name}.md`));
-
-	// Extension-bundled fallback
+	candidates.push(path.join(getUserAgentsDir(), `${name}.md`));
 	candidates.push(path.join(EXTENSION_AGENTS_DIR, `${name}.md`));
 
 	for (const filePath of candidates) {
