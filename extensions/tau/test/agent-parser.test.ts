@@ -27,10 +27,7 @@ You are the oracle.`;
 		expect(def.models).toHaveLength(2);
 		expect(def.models[0]).toEqual({ model: "claude-3-5-sonnet-latest", thinking: "high" });
 		expect(def.models[1]).toEqual({ model: "groq/llama-4-scout", thinking: "medium" });
-		expect(def.sandbox.filesystemMode).toBe("workspace-write");
-		expect(def.sandbox.networkMode).toBe("allow-all");
-		expect(def.sandbox.approvalPolicy).toBe("on-failure");
-		expect(def.sandbox.approvalTimeoutSeconds).toBe(45);
+		expect(def.sandbox.preset).toBe("default");
 		expect(def.systemPrompt).toBe("You are the oracle.");
 	});
 

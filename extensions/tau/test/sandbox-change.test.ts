@@ -24,7 +24,7 @@ describe("sandbox-change", () => {
 
 		const out = injectSandboxNoticeIntoMessages(
 			messages,
-			"SANDBOX_STATE: fs=read-only net=deny approval=never subagent=false",
+			"SANDBOX_STATE: preset=default subagent=false",
 		);
 		const textBlocks = getTextBlocks(out[0]?.content);
 
@@ -39,7 +39,7 @@ describe("sandbox-change", () => {
 				content: [
 					{
 						type: "text",
-						text: "SANDBOX_STATE: fs=workspace-write net=deny approval=on-request subagent=false\n\n",
+						text: "SANDBOX_STATE: preset=default subagent=false\n\n",
 					},
 					{ type: "text", text: "continue" },
 				],
@@ -48,7 +48,7 @@ describe("sandbox-change", () => {
 
 		const out = injectSandboxNoticeIntoMessages(
 			messages,
-			"SANDBOX_CHANGE: fs=read-only net=deny approval=never subagent=false",
+			"SANDBOX_CHANGE: preset=full-access subagent=false",
 		);
 		const textBlocks = getTextBlocks(out[0]?.content);
 
@@ -64,7 +64,7 @@ describe("sandbox-change", () => {
 				content: [
 					{
 						type: "text",
-						text: "SANDBOX_CHANGE: fs=read-only net=deny approval=never subagent=false\n\nrun tests",
+						text: "SANDBOX_CHANGE: preset=read-only subagent=false\n\nrun tests",
 					},
 				],
 			},
@@ -72,7 +72,7 @@ describe("sandbox-change", () => {
 
 		const out = injectSandboxNoticeIntoMessages(
 			messages,
-			"SANDBOX_STATE: fs=read-only net=deny approval=never subagent=false",
+			"SANDBOX_STATE: preset=default subagent=false",
 		);
 		const textBlocks = getTextBlocks(out[0]?.content);
 
@@ -85,16 +85,16 @@ describe("sandbox-change", () => {
 		const messages = [{ role: "user", content: "status" }];
 		const once = injectSandboxNoticeIntoMessages(
 			messages,
-			"SANDBOX_STATE: fs=read-only net=deny approval=never subagent=false",
+			"SANDBOX_STATE: preset=read-only subagent=false",
 		);
 		const twice = injectSandboxNoticeIntoMessages(
 			once,
-			"SANDBOX_STATE: fs=workspace-write net=deny approval=on-request subagent=false",
+			"SANDBOX_STATE: preset=default subagent=false",
 		);
 		const textBlocks = getTextBlocks(twice[0]?.content);
 		const sandboxHeaders = textBlocks.filter((text) => text.trimStart().startsWith("SANDBOX_"));
 
 		expect(sandboxHeaders).toHaveLength(1);
-		expect(sandboxHeaders[0]).toContain("workspace-write");
+		expect(sandboxHeaders[0]).toContain("default");
 	});
 });

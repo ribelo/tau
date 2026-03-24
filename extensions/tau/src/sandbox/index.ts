@@ -25,7 +25,7 @@ import {
 	computeSandboxConfigHash,
 	injectSandboxNoticeIntoMessages,
 } from "./sandbox-change.js";
-import type { ApprovalPolicy, FilesystemMode, NetworkMode, SandboxConfig } from "./config.js";
+import type { ResolvedSandboxConfig, SandboxConfig, SandboxPreset } from "./config.js";
 import { computeEffectiveConfig, ensureUserDefaults } from "./config.js";
 import { checkWriteAllowed } from "./fs-policy.js";
 import { wrapCommandWithSandbox, isAsrtAvailable, getAsrtLoadError } from "./bash.js";
@@ -36,13 +36,14 @@ import { isRecord } from "../shared/json.js";
 import type { TauState } from "../shared/state.js";
 import { loadPersistedState, updatePersistedState } from "../shared/state.js";
 import { type ApprovalBroker, getWorkerApprovalBroker } from "../agent/approval-broker.js";
+import { SANDBOX_PRESET_NAMES } from "../shared/policy.js";
 
 type SandboxStateInternal = {
 	createSandboxedBashOperations?:
 		| ((ctx: ExtensionContext, escalate: boolean) => BashOperations)
 		| undefined;
 	workspaceRoot?: string | undefined;
-	effectiveConfig?: Required<SandboxConfig> | undefined;
+	effectiveConfig?: ResolvedSandboxConfig | undefined;
 	approvalBroker?: ApprovalBroker | undefined;
 };
 
@@ -66,12 +67,15 @@ function getSandboxRuntimeState(state: TauState): SandboxStateInternal | undefin
 	if (isSandboxFactory(create)) next.createSandboxedBashOperations = create;
 	if (typeof workspaceRoot === "string") next.workspaceRoot = workspaceRoot;
 	if (isRecord(effectiveConfig)) {
+		const preset = effectiveConfig["preset"];
 		const filesystemMode = effectiveConfig["filesystemMode"];
 		const networkMode = effectiveConfig["networkMode"];
 		const approvalPolicy = effectiveConfig["approvalPolicy"];
 		const approvalTimeoutSeconds = effectiveConfig["approvalTimeoutSeconds"];
 		const subagent = effectiveConfig["subagent"];
 
+		const validPreset =
+			preset === "read-only" || preset === "default" || preset === "full-access";
 		const validFilesystemMode =
 			filesystemMode === "read-only" ||
 			filesystemMode === "workspace-write" ||
@@ -88,6 +92,7 @@ function getSandboxRuntimeState(state: TauState): SandboxStateInternal | undefin
 			approvalTimeoutSeconds > 0;
 
 		if (
+			validPreset &&
 			validFilesystemMode &&
 			validNetworkMode &&
 			validApprovalPolicy &&
@@ -95,6 +100,7 @@ function getSandboxRuntimeState(state: TauState): SandboxStateInternal | undefin
 			typeof subagent === "boolean"
 		) {
 			next.effectiveConfig = {
+				preset,
 				filesystemMode,
 				networkMode,
 				approvalPolicy,
@@ -135,10 +141,13 @@ function killProcessTree(pid: number): void {
 
 const SANDBOX_CHANGE_MESSAGE_TYPE = "sandbox:change";
 
-const FILESYSTEM_VALUES = ["read-only", "workspace-write", "danger-full-access"] as const;
-const NETWORK_VALUES = ["deny", "allow-all"] as const;
-const APPROVAL_VALUES = ["never", "on-failure", "on-request", "unless-trusted"] as const;
-const TIMEOUT_VALUES = ["15", "30", "60", "120", "300"] as const;
+const PRESET_VALUES: readonly SandboxPreset[] = SANDBOX_PRESET_NAMES;
+
+const PRESET_LABELS: Record<SandboxPreset, string> = {
+	"read-only": "Read Only",
+	default: "Default (Agent)",
+	"full-access": "Full Access",
+};
 
 type SessionState = {
 	/**
@@ -170,37 +179,9 @@ function readSessionOverride(value: unknown): SandboxConfig | undefined {
 	if (!isRecord(value)) return undefined;
 	const next: SandboxConfig = {};
 
-	const filesystemMode = value["filesystemMode"];
-	if (
-		filesystemMode === "read-only" ||
-		filesystemMode === "workspace-write" ||
-		filesystemMode === "danger-full-access"
-	) {
-		next.filesystemMode = filesystemMode;
-	}
-
-	const networkMode = value["networkMode"];
-	if (networkMode === "deny" || networkMode === "allow-all") {
-		next.networkMode = networkMode;
-	}
-
-	const approvalPolicy = value["approvalPolicy"];
-	if (
-		approvalPolicy === "never" ||
-		approvalPolicy === "on-failure" ||
-		approvalPolicy === "on-request" ||
-		approvalPolicy === "unless-trusted"
-	) {
-		next.approvalPolicy = approvalPolicy;
-	}
-
-	const approvalTimeoutSeconds = value["approvalTimeoutSeconds"];
-	if (
-		typeof approvalTimeoutSeconds === "number" &&
-		Number.isFinite(approvalTimeoutSeconds) &&
-		approvalTimeoutSeconds > 0
-	) {
-		next.approvalTimeoutSeconds = approvalTimeoutSeconds;
+	const preset = value["preset"];
+	if (preset === "read-only" || preset === "default" || preset === "full-access") {
+		next.preset = preset;
 	}
 
 	const subagent = value["subagent"];
@@ -272,20 +253,9 @@ function buildSourceHint(): string {
 }
 
 export default function initSandbox(pi: ExtensionAPI, state: TauState) {
-	// Disabled: agent awareness (concurrent pi detection)
-	// initAgentAwareness(pi, state);
-
-	// Register CLI flags for testing sandbox modes
-	pi.registerFlag("sandbox-fs", {
-		description: "Filesystem sandbox mode (read-only, workspace-write, danger)",
-		type: "string",
-	});
-	pi.registerFlag("sandbox-net", {
-		description: "Network sandbox mode (deny, allow)",
-		type: "string",
-	});
-	pi.registerFlag("approval-policy", {
-		description: "Approval policy (never, on-failure, on-request, unless-trusted)",
+	// Register CLI flags
+	pi.registerFlag("sandbox-mode", {
+		description: "Sandbox preset (read-only, default, full-access)",
 		type: "string",
 	});
 	pi.registerFlag("no-sandbox", {
@@ -313,8 +283,8 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 
 		// Session overrides come from tau:state; CLI flags override both session and file-based settings.
 		const mergedOverride: SandboxConfig = {
-			...(sessionState.sessionOverride ?? {}),
-			...(cliOverride ?? {}),
+			...sessionState.sessionOverride,
+			...cliOverride,
 		};
 
 		effectiveConfig = computeEffectiveConfig({
@@ -376,25 +346,16 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 		};
 	}
 
-	function setOverrideValue<K extends keyof SandboxConfig>(
-		key: K,
-		value: SandboxConfig[K] | undefined,
-	) {
+	function setPreset(preset: SandboxPreset) {
 		const prevHash = computeSandboxConfigHash(effectiveConfig);
 
-		const prevOverride = sessionState.sessionOverride ?? {};
-		const nextOverride: SandboxConfig = { ...prevOverride };
-
-		if (value === undefined) {
-			delete nextOverride[key];
-		} else {
-			nextOverride[key] = value;
-		}
-
-		sessionState.sessionOverride = nextOverride;
+		sessionState.sessionOverride = { ...sessionState.sessionOverride, preset };
 		persistState();
 
-		const mergedOverride: SandboxConfig = { ...nextOverride, ...(cliOverride ?? {}) };
+		const mergedOverride: SandboxConfig = {
+			...sessionState.sessionOverride,
+			...cliOverride,
+		};
 		effectiveConfig = computeEffectiveConfig({
 			workspaceRoot,
 			sessionOverride: mergedOverride,
@@ -406,32 +367,13 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 		pi.events.emit("tau:sandbox:changed", effectiveConfig);
 	}
 
-	/** Get the display value for UI - returns the effective value */
-	function getDisplayValue<K extends keyof SandboxConfig>(key: K): string {
-		const value = effectiveConfig[key];
-		return String(value);
-	}
-
-	function updateSettingFromSelect<K extends keyof SandboxConfig>(key: K, value: string) {
-		setOverrideValue(key, value as SandboxConfig[K]);
-	}
-
-	function updateTimeoutFromSelect(rawValue: string, ctx: ExtensionContext) {
-		const parsed = Number.parseInt(rawValue, 10);
-		if (!Number.isFinite(parsed) || parsed <= 0) {
-			ctx.ui.notify(`Invalid timeout: ${rawValue}`, "warning");
-			return;
-		}
-		setOverrideValue("approvalTimeoutSeconds", parsed);
-	}
-
 	function buildSandboxSummary(): string {
 		const lines = [
 			"Sandbox configuration:",
+			`Preset: ${PRESET_LABELS[effectiveConfig.preset]}`,
 			`Filesystem: ${effectiveConfig.filesystemMode}`,
 			`Network: ${effectiveConfig.networkMode}`,
 			`Approval: ${effectiveConfig.approvalPolicy}`,
-			`Timeout: ${effectiveConfig.approvalTimeoutSeconds}s`,
 			`Subagent: ${effectiveConfig.subagent}`,
 		];
 		return lines.join("\n");
@@ -456,31 +398,10 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 		await ctx.ui.custom((tui, theme, _kb, done) => {
 			const items: SettingItem[] = [
 				{
-					id: "filesystemMode",
-					label: "Filesystem mode",
-					currentValue: getDisplayValue("filesystemMode"),
-					values: [...FILESYSTEM_VALUES],
-					description: buildSourceHint(),
-				},
-				{
-					id: "networkMode",
-					label: "Network mode",
-					currentValue: getDisplayValue("networkMode"),
-					values: [...NETWORK_VALUES],
-					description: buildSourceHint(),
-				},
-				{
-					id: "approvalPolicy",
-					label: "Approval policy",
-					currentValue: getDisplayValue("approvalPolicy"),
-					values: [...APPROVAL_VALUES],
-					description: buildSourceHint(),
-				},
-				{
-					id: "approvalTimeoutSeconds",
-					label: "Approval timeout (s)",
-					currentValue: getDisplayValue("approvalTimeoutSeconds"),
-					values: [...TIMEOUT_VALUES],
+					id: "preset",
+					label: "Sandbox mode",
+					currentValue: effectiveConfig.preset,
+					values: [...PRESET_VALUES],
 					description: buildSourceHint(),
 				},
 			];
@@ -493,28 +414,11 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 				Math.min(items.length + 2, 15),
 				getSettingsListTheme(),
 				(id, newValue) => {
-					if (id === "filesystemMode") {
-						updateSettingFromSelect("filesystemMode", newValue);
-					}
-					if (id === "networkMode") {
-						updateSettingFromSelect("networkMode", newValue);
-					}
-					if (id === "approvalPolicy") {
-						updateSettingFromSelect("approvalPolicy", newValue);
-					}
-					if (id === "approvalTimeoutSeconds") {
-						updateTimeoutFromSelect(newValue, ctx);
+					if (id === "preset") {
+						setPreset(newValue as SandboxPreset);
 					}
 
-					// Descriptions stay the same - changes apply to this session.
-
-					settingsList.updateValue("filesystemMode", getDisplayValue("filesystemMode"));
-					settingsList.updateValue("networkMode", getDisplayValue("networkMode"));
-					settingsList.updateValue("approvalPolicy", getDisplayValue("approvalPolicy"));
-					settingsList.updateValue(
-						"approvalTimeoutSeconds",
-						getDisplayValue("approvalTimeoutSeconds"),
-					);
+					settingsList.updateValue("preset", effectiveConfig.preset);
 				},
 				() => done(undefined),
 			);
@@ -770,22 +674,23 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 
 						const hint =
 							classification.kind === "network"
-								? "Network sandboxing can surface as DNS/connectivity failures. If network is required, use /sandbox to switch to allow-all, or re-run with escalate=true."
+								? "Network sandboxing can surface as DNS/connectivity failures. If network is required, use /approval to switch to full-access preset, or re-run with escalate=true."
 								: classification.kind === "filesystem" &&
 									  classification.subtype === "read"
-									? "In read-only sandbox mode, /tmp is an ephemeral tmpfs mount. Files written in one tool call do not persist to the next. Switch to workspace-write mode (/sandbox) to get a persistent /tmp, or re-run with escalate=true."
+									? "In read-only preset, /tmp is an ephemeral tmpfs mount. Files written in one tool call do not persist to the next. Switch to default preset (/approval) to get a persistent /tmp, or re-run with escalate=true."
 									: classification.kind === "filesystem"
-										? "Filesystem sandboxing can surface as permission errors. If a write is required, use /sandbox to switch to workspace-write/danger-full-access, or re-run with escalate=true."
+										? "Filesystem sandboxing can surface as permission errors. If a write is required, use /approval to switch to default or full-access preset, or re-run with escalate=true."
 										: "";
 
 						onData(
 							Buffer.from(
-								`[sandbox] Command failed likely due to sandbox restrictions (${type}). (fs=${currentConfig.filesystemMode}, net=${currentConfig.networkMode}). Evidence: "${evidence}". ${hint}\n`,
+								`[sandbox] Command failed likely due to sandbox restrictions (${type}). (preset=${currentConfig.preset}). Evidence: "${evidence}". ${hint}\n`,
 							),
 						);
 
 						const diagnostic = {
 							usingSandbox: true,
+							preset: currentConfig.preset,
 							filesystemMode: currentConfig.filesystemMode,
 							networkMode: currentConfig.networkMode,
 							classification,
@@ -1144,74 +1049,27 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 			return;
 		}
 
-		// Apply CLI flags
-		const sandboxFs = pi.getFlag("sandbox-fs") as string | undefined;
-		const sandboxNet = pi.getFlag("sandbox-net") as string | undefined;
-		const approvalPolicy = pi.getFlag("approval-policy") as string | undefined;
+		// Apply CLI flag
+		const sandboxMode = pi.getFlag("sandbox-mode") as string | undefined;
 
-		if (sandboxFs || sandboxNet || approvalPolicy) {
-			cliOverride = {};
-
-			if (sandboxFs) {
-				const fsMap: Record<string, FilesystemMode> = {
-					"read-only": "read-only",
-					readonly: "read-only",
-					"workspace-write": "workspace-write",
-					workspace: "workspace-write",
-					danger: "danger-full-access",
-					"danger-full-access": "danger-full-access",
-				};
-				const mapped = fsMap[sandboxFs.toLowerCase()];
-				if (mapped) {
-					cliOverride.filesystemMode = mapped;
-					ctx.ui.notify(`Sandbox filesystem mode: ${mapped}`, "info");
-				} else {
-					ctx.ui.notify(
-						`Invalid --sandbox-fs value: ${sandboxFs}. Use: read-only, workspace-write, danger`,
-						"warning",
-					);
-				}
-			}
-
-			if (sandboxNet) {
-				const netMap: Record<string, NetworkMode> = {
-					deny: "deny",
-					block: "deny",
-					allow: "allow-all",
-					"allow-all": "allow-all",
-				};
-				const mapped = netMap[sandboxNet.toLowerCase()];
-				if (mapped) {
-					cliOverride.networkMode = mapped;
-					ctx.ui.notify(`Sandbox network mode: ${mapped}`, "info");
-				} else {
-					ctx.ui.notify(
-						`Invalid --sandbox-net value: ${sandboxNet}. Use: deny, allow-all`,
-						"warning",
-					);
-				}
-			}
-
-			if (approvalPolicy) {
-				const policyMap: Record<string, ApprovalPolicy> = {
-					never: "never",
-					"on-failure": "on-failure",
-					onfailure: "on-failure",
-					"on-request": "on-request",
-					onrequest: "on-request",
-					"unless-trusted": "unless-trusted",
-					untrusted: "unless-trusted",
-				};
-				const mapped = policyMap[approvalPolicy.toLowerCase()];
-				if (mapped) {
-					cliOverride.approvalPolicy = mapped;
-					ctx.ui.notify(`Sandbox approval policy: ${mapped}`, "info");
-				} else {
-					ctx.ui.notify(
-						`Invalid --approval-policy value: ${approvalPolicy}. Use: never, on-failure, on-request, unless-trusted`,
-						"warning",
-					);
-				}
+		if (sandboxMode) {
+			const modeMap: Record<string, SandboxPreset> = {
+				"read-only": "read-only",
+				readonly: "read-only",
+				default: "default",
+				agent: "default",
+				"full-access": "full-access",
+				full: "full-access",
+			};
+			const mapped = modeMap[sandboxMode.toLowerCase()];
+			if (mapped) {
+				cliOverride = { preset: mapped };
+				ctx.ui.notify(`Sandbox mode: ${PRESET_LABELS[mapped]}`, "info");
+			} else {
+				ctx.ui.notify(
+					`Invalid --sandbox-mode value: ${sandboxMode}. Use: read-only, default, full-access`,
+					"warning",
+				);
 			}
 		}
 
@@ -1244,21 +1102,10 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 			"<permissions instructions>\n" +
 			"Assume all tool calls execute under bubblewrap sandbox restrictions. Do not attempt to bypass restrictions by using other tools.\n" +
 			"\n" +
-			"Filesystem modes:\n" +
-			"  - read-only: writes only to temp dirs (e.g. /tmp, $TMPDIR); /tmp is ephemeral (fresh tmpfs per tool call, files do NOT persist between calls)\n" +
-			"  - workspace-write: writes to workspace + temp dirs; .git/hooks blocked; /tmp is persistent (bind-mounted from host, files persist between calls)\n" +
-			"  - danger-full-access: unrestricted\n" +
-			"  Reads always allowed everywhere.\n" +
-			"\n" +
-			"Network modes:\n" +
-			'  - deny: outbound blocked (often surfaces as DNS errors like "Could not resolve host")\n' +
-			"  - allow-all: unrestricted\n" +
-			"\n" +
-			"Approval modes:\n" +
-			"  - on-failure: runs sandboxed; prompts on likely sandbox-related failure to retry unsandboxed\n" +
-			"  - on-request: runs sandboxed unless tool call requests escalation (e.g. escalate=true)\n" +
-			"  - unless-trusted: auto-approves safe read-only commands; prompts for unsafe\n" +
-			"  - never: no prompts; sandbox errors returned to you\n" +
+			"Sandbox presets:\n" +
+			"  - read-only: filesystem read-only (writes only to ephemeral /tmp), network denied, approval on-request\n" +
+			"  - default: workspace-write (writes to workspace + temp dirs, .git/hooks blocked, /tmp persistent), network denied, approval on-request\n" +
+			"  - full-access: unrestricted filesystem, unrestricted network, no approval prompts\n" +
 			"\n" +
 			"Authoritative current sandbox state is injected into the start of the user message as content[0]:\n" +
 			"  - SANDBOX_STATE: ... (initial)\n" +
@@ -1326,8 +1173,8 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 		return { messages: nextMessages };
 	});
 
-	pi.registerCommand("sandbox", {
-		description: "Configure sandbox and approval settings",
+	pi.registerCommand("approval", {
+		description: "Configure sandbox preset",
 		handler: async (_args, ctx) => {
 			refreshConfig(ctx);
 			await showSandboxSettings(ctx);

@@ -1,5 +1,8 @@
 import { Schema } from "effect";
 
+const SandboxPreset = Schema.Literals(["read-only", "default", "full-access"]);
+type SandboxPreset = Schema.Schema.Type<typeof SandboxPreset>;
+
 const FilesystemMode = Schema.Literals([
 	"read-only",
 	"workspace-write",
@@ -25,16 +28,21 @@ export const ApprovalTimeoutSeconds = Schema.Number.check(
 );
 export type ApprovalTimeoutSeconds = Schema.Schema.Type<typeof ApprovalTimeoutSeconds>;
 
+/** User-facing sandbox config: preset-based */
 export const SandboxConfig = Schema.Struct({
+	preset: Schema.optional(SandboxPreset),
+	subagent: Schema.optional(Schema.Boolean),
+	// Legacy fields accepted for migration
 	filesystemMode: Schema.optional(FilesystemMode),
 	networkMode: Schema.optional(NetworkMode),
 	approvalPolicy: Schema.optional(ApprovalPolicy),
 	approvalTimeoutSeconds: Schema.optional(ApprovalTimeoutSeconds),
-	subagent: Schema.optional(Schema.Boolean),
 });
 export type SandboxConfig = Schema.Schema.Type<typeof SandboxConfig>;
 
+/** Resolved internal config with all fields expanded */
 export const SandboxConfigRequired = Schema.Struct({
+	preset: SandboxPreset,
 	filesystemMode: FilesystemMode,
 	networkMode: NetworkMode,
 	approvalPolicy: ApprovalPolicy,
