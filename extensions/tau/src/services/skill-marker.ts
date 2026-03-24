@@ -1,12 +1,7 @@
-import { ServiceMap, Effect, Layer } from "effect";
+import { type Effect, ServiceMap } from "effect";
 
-import { PiAPI } from "../effect/pi.js";
-import { Persistence } from "./persistence.js";
-import { makeLegacyStateBridge } from "./legacy-bridge.js";
-
-// We'll import everything from the old skill-marker/index.js for now,
-// but we'll wrap the initialization.
 import initSkillMarkerLegacy from "../skill-marker/index.js";
+import { legacyBridgedLayer } from "./legacy.js";
 
 export interface SkillMarker {
 	readonly setup: Effect.Effect<void>;
@@ -14,18 +9,7 @@ export interface SkillMarker {
 
 export const SkillMarker = ServiceMap.Service<SkillMarker>("SkillMarker");
 
-export const SkillMarkerLive = Layer.effect(
+export const SkillMarkerLive = legacyBridgedLayer(
 	SkillMarker,
-	Effect.gen(function* () {
-		const pi = yield* PiAPI;
-		const persistence = yield* Persistence;
-
-		return SkillMarker.of({
-			setup: Effect.gen(function* () {
-				yield* Effect.sync(() => {
-					initSkillMarkerLegacy(pi, makeLegacyStateBridge(persistence));
-				});
-			}),
-		});
-	}),
+	(pi, state) => initSkillMarkerLegacy(pi, state),
 );

@@ -1,12 +1,7 @@
-import { ServiceMap, Effect, Layer } from "effect";
+import { type Effect, ServiceMap } from "effect";
 
-import { PiAPI } from "../effect/pi.js";
-import { Persistence } from "./persistence.js";
-import { makeLegacyStateBridge } from "./legacy-bridge.js";
-
-// We'll import everything from the old worked-for/index.js for now,
-// but we'll wrap the initialization.
 import initWorkedForLegacy from "../worked-for/index.js";
+import { legacyBridgedLayer } from "./legacy.js";
 
 export interface WorkedFor {
 	readonly setup: Effect.Effect<void>;
@@ -14,18 +9,7 @@ export interface WorkedFor {
 
 export const WorkedFor = ServiceMap.Service<WorkedFor>("WorkedFor");
 
-export const WorkedForLive = Layer.effect(
+export const WorkedForLive = legacyBridgedLayer(
 	WorkedFor,
-	Effect.gen(function* () {
-		const pi = yield* PiAPI;
-		const persistence = yield* Persistence;
-
-		return WorkedFor.of({
-			setup: Effect.gen(function* () {
-				yield* Effect.sync(() => {
-					initWorkedForLegacy(pi, makeLegacyStateBridge(persistence));
-				});
-			}),
-		});
-	}),
+	(pi, state) => initWorkedForLegacy(pi, state),
 );

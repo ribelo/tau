@@ -1,12 +1,7 @@
-import { ServiceMap, Effect, Layer } from "effect";
+import { type Effect, ServiceMap } from "effect";
 
-import { PiAPI } from "../effect/pi.js";
-import { Persistence } from "./persistence.js";
-import { makeLegacyStateBridge } from "./legacy-bridge.js";
-
-// We'll import everything from the old terminal-prompt/index.js for now,
-// but we'll wrap the initialization.
 import initTerminalPromptLegacy from "../terminal-prompt/index.js";
+import { legacyBridgedLayer } from "./legacy.js";
 
 export interface TerminalPrompt {
 	readonly setup: Effect.Effect<void>;
@@ -14,18 +9,7 @@ export interface TerminalPrompt {
 
 export const TerminalPrompt = ServiceMap.Service<TerminalPrompt>("TerminalPrompt");
 
-export const TerminalPromptLive = Layer.effect(
+export const TerminalPromptLive = legacyBridgedLayer(
 	TerminalPrompt,
-	Effect.gen(function* () {
-		const pi = yield* PiAPI;
-		const persistence = yield* Persistence;
-
-		return TerminalPrompt.of({
-			setup: Effect.gen(function* () {
-				yield* Effect.sync(() => {
-					initTerminalPromptLegacy(pi, makeLegacyStateBridge(persistence));
-				});
-			}),
-		});
-	}),
+	(pi, state) => initTerminalPromptLegacy(pi, state),
 );

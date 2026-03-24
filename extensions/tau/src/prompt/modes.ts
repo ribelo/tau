@@ -176,8 +176,8 @@ export function resolvePromptModePresets(cwd: string): Record<PromptModeName, Pr
 
 	for (const mode of ["smart", "deep", "rush"] as const) {
 		const override = {
-			...(globalOverrides[mode] ?? {}),
-			...(projectOverrides[mode] ?? {}),
+			...globalOverrides[mode],
+			...projectOverrides[mode],
 		};
 		if (override.model !== undefined) {
 			resolved[mode] = { ...resolved[mode], model: override.model };

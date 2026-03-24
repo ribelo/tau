@@ -36,3 +36,18 @@ export function writeJsonFile(filePath: string, obj: unknown): void {
 	fs.mkdirSync(path.dirname(filePath), { recursive: true });
 	fs.writeFileSync(filePath, JSON.stringify(obj, null, 2) + "\n", "utf-8");
 }
+
+export function safeRealpath(targetPath: string): string {
+	const absolute = path.isAbsolute(targetPath) ? targetPath : path.resolve(targetPath);
+	try {
+		return fs.realpathSync(absolute);
+	} catch {
+		const parent = path.dirname(absolute);
+		const filename = path.basename(absolute);
+		try {
+			return path.join(fs.realpathSync(parent), filename);
+		} catch {
+			return absolute;
+		}
+	}
+}

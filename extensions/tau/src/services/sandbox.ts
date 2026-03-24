@@ -8,6 +8,8 @@ import { Persistence } from "./persistence.js";
 import { makeLegacyStateBridge } from "./legacy-bridge.js";
 import initSandboxLegacy from "../sandbox/index.js";
 
+const isSandboxConfigRequired = Schema.is(SandboxConfigRequired);
+
 export interface Sandbox {
 	readonly getConfig: Effect.Effect<SandboxConfigRequired>;
 	readonly setConfig: (config: Partial<SandboxConfig>) => Effect.Effect<void>;
@@ -32,17 +34,11 @@ export const SandboxLive = Layer.effect(
 				})),
 			setup: Effect.gen(function* () {
 				yield* Effect.sync(() => {
-					// For now, we wrap the legacy init function.
-					// We should gradually move logic here.
 					initSandboxLegacy(pi, makeLegacyStateBridge(persistence));
 
-					// We want to bridge the tau:sandbox:changed event to our state.
 					pi.events.on("tau:sandbox:changed", (config: unknown) => {
-						try {
-							const decoded = Schema.decodeUnknownSync(SandboxConfigRequired)(config);
-							Effect.runFork(SubscriptionRef.set(state, decoded));
-						} catch {
-							return;
+						if (isSandboxConfigRequired(config)) {
+							Effect.runSync(SubscriptionRef.set(state, config));
 						}
 					});
 				});

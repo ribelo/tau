@@ -4,40 +4,69 @@ import * as path from "node:path";
 import { SandboxConfig as SandboxConfigSchema } from "../schemas/config.js";
 import { readJsonFileDetailed, writeJsonFile } from "../shared/fs.js";
 import { deepMerge, isRecord, type AnyRecord } from "../shared/json.js";
-import { type ApprovalPolicy, type FilesystemMode, type NetworkMode } from "../shared/policy.js";
+import {
+	type ApprovalPolicy,
+	type FilesystemMode,
+	type NetworkMode,
+	type SandboxPreset,
+	resolvePreset,
+	inferPresetFromModes,
+} from "../shared/policy.js";
 
-export type { ApprovalPolicy, FilesystemMode, NetworkMode };
+export type { ApprovalPolicy, FilesystemMode, NetworkMode, SandboxPreset };
 
 export type SandboxConfig = {
-	filesystemMode?: FilesystemMode;
-	networkMode?: NetworkMode;
-	approvalPolicy?: ApprovalPolicy;
-	approvalTimeoutSeconds?: number;
+	preset?: SandboxPreset;
 	/** If true, agent is running in subagent mode (blocks git, restricted operations) */
 	subagent?: boolean;
 };
 
-export const DEFAULT_SANDBOX_CONFIG: Required<SandboxConfig> = {
+/** Fully resolved internal config - all fields expanded from preset */
+export type ResolvedSandboxConfig = {
+	preset: SandboxPreset;
+	filesystemMode: FilesystemMode;
+	networkMode: NetworkMode;
+	approvalPolicy: ApprovalPolicy;
+	approvalTimeoutSeconds: number;
+	subagent: boolean;
+};
+
+export const DEFAULT_SANDBOX_CONFIG: ResolvedSandboxConfig = {
+	preset: "default",
 	filesystemMode: "workspace-write",
-	networkMode: "allow-all",
-	approvalPolicy: "on-failure",
+	networkMode: "deny",
+	approvalPolicy: "on-request",
 	approvalTimeoutSeconds: 60,
 	subagent: false,
 };
 
 const decodeSandboxConfig = Schema.decodeUnknownSync(SandboxConfigSchema);
 
-function decodeSandboxConfigOrThrow(value: unknown, source: string): SandboxConfig {
+function decodeSandboxConfigOrThrow(
+	value: unknown,
+	source: string,
+): SandboxConfig {
 	try {
 		const decoded = decodeSandboxConfig(value);
 		const normalized: SandboxConfig = {};
-		if (decoded.filesystemMode !== undefined)
-			normalized.filesystemMode = decoded.filesystemMode;
-		if (decoded.networkMode !== undefined) normalized.networkMode = decoded.networkMode;
-		if (decoded.approvalPolicy !== undefined)
-			normalized.approvalPolicy = decoded.approvalPolicy;
-		if (decoded.approvalTimeoutSeconds !== undefined)
-			normalized.approvalTimeoutSeconds = decoded.approvalTimeoutSeconds;
+
+		// If preset is set, use it directly
+		if (decoded.preset !== undefined) {
+			normalized.preset = decoded.preset;
+		}
+		// If legacy fields are present but no preset, migrate to nearest preset
+		else if (
+			decoded.filesystemMode !== undefined ||
+			decoded.networkMode !== undefined ||
+			decoded.approvalPolicy !== undefined
+		) {
+			normalized.preset = inferPresetFromModes({
+				filesystemMode: decoded.filesystemMode,
+				networkMode: decoded.networkMode,
+				approvalPolicy: decoded.approvalPolicy,
+			});
+		}
+
 		if (decoded.subagent !== undefined) normalized.subagent = decoded.subagent;
 		return normalized;
 	} catch (error) {
@@ -46,13 +75,15 @@ function decodeSandboxConfigOrThrow(value: unknown, source: string): SandboxConf
 	}
 }
 
-function applyDefaults(cfg: SandboxConfig | undefined): Required<SandboxConfig> {
+function applyDefaults(cfg: SandboxConfig | undefined): ResolvedSandboxConfig {
+	const preset = cfg?.preset ?? DEFAULT_SANDBOX_CONFIG.preset;
+	const resolved = resolvePreset(preset);
 	return {
-		filesystemMode: cfg?.filesystemMode ?? DEFAULT_SANDBOX_CONFIG.filesystemMode,
-		networkMode: cfg?.networkMode ?? DEFAULT_SANDBOX_CONFIG.networkMode,
-		approvalPolicy: cfg?.approvalPolicy ?? DEFAULT_SANDBOX_CONFIG.approvalPolicy,
-		approvalTimeoutSeconds:
-			cfg?.approvalTimeoutSeconds ?? DEFAULT_SANDBOX_CONFIG.approvalTimeoutSeconds,
+		preset,
+		filesystemMode: resolved.filesystemMode,
+		networkMode: resolved.networkMode,
+		approvalPolicy: resolved.approvalPolicy,
+		approvalTimeoutSeconds: DEFAULT_SANDBOX_CONFIG.approvalTimeoutSeconds,
 		subagent: cfg?.subagent ?? DEFAULT_SANDBOX_CONFIG.subagent,
 	};
 }
@@ -105,21 +136,23 @@ export function ensureUserDefaults(): void {
 
 	const currentTau = isRecord(current["tau"]) ? current["tau"] : undefined;
 	const needsWrite =
-		currentTau?.["sandbox"] === undefined ||
-		existing.filesystemMode === undefined ||
-		existing.networkMode === undefined ||
-		existing.approvalPolicy === undefined ||
-		existing.approvalTimeoutSeconds === undefined;
+		currentTau?.["sandbox"] === undefined || existing.preset === undefined;
 
 	if (!needsWrite) return;
-	const merged = deepMerge(current, { tau: { ...(currentTau ?? {}), sandbox: withDefaults } });
+	// Write only the preset-based fields
+	const merged = deepMerge(current, {
+		tau: {
+			...currentTau,
+			sandbox: { preset: withDefaults.preset, subagent: withDefaults.subagent },
+		},
+	});
 	writeJsonFile(settingsPath, merged);
 }
 
 export function computeEffectiveConfig(opts: {
 	workspaceRoot: string;
 	sessionOverride?: SandboxConfig;
-}): Required<SandboxConfig> {
+}): ResolvedSandboxConfig {
 	const userSettingsPath = getUserSettingsPath();
 	const projectSettingsPath = getProjectSettingsPath(opts.workspaceRoot);
 	const userSettings = readSettingsFileOrThrow(userSettingsPath);
@@ -129,9 +162,13 @@ export function computeEffectiveConfig(opts: {
 	const projectSandbox = readSandboxNamespace(projectSettings, projectSettingsPath);
 
 	// precedence: session > project > user
-	const merged = decodeSandboxConfigOrThrow(
-		deepMerge(deepMerge(userSandbox, projectSandbox), opts.sessionOverride ?? {}),
-		"effective sandbox config",
-	);
+	const merged: SandboxConfig = {};
+	const mergedPreset =
+		opts.sessionOverride?.preset ?? projectSandbox.preset ?? userSandbox.preset;
+	const mergedSubagent =
+		opts.sessionOverride?.subagent ?? projectSandbox.subagent ?? userSandbox.subagent;
+	if (mergedPreset !== undefined) merged.preset = mergedPreset;
+	if (mergedSubagent !== undefined) merged.subagent = mergedSubagent;
+
 	return applyDefaults(merged);
 }

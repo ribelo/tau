@@ -1,6 +1,7 @@
-import { ServiceMap, Effect, Layer } from "effect";
-import { PiAPI } from "../effect/pi.js";
+import { type Effect, ServiceMap } from "effect";
+
 import initAgent from "../agent/index.js";
+import { legacyPiLayer } from "./legacy.js";
 
 export interface Agent {
 	readonly setup: Effect.Effect<void>;
@@ -8,17 +9,4 @@ export interface Agent {
 
 export const Agent = ServiceMap.Service<Agent>("Agent");
 
-export const AgentLive = Layer.effect(
-	Agent,
-	Effect.gen(function* () {
-		const pi = yield* PiAPI;
-
-		return Agent.of({
-			setup: Effect.gen(function* () {
-				yield* Effect.sync(() => {
-					initAgent(pi);
-				});
-			}),
-		});
-	}),
-);
+export const AgentLive = legacyPiLayer(Agent, (pi) => initAgent(pi));

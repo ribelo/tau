@@ -1,12 +1,7 @@
-import { ServiceMap, Effect, Layer } from "effect";
+import { type Effect, ServiceMap } from "effect";
 
-import { PiAPI } from "../effect/pi.js";
-import { Persistence } from "./persistence.js";
-import { makeLegacyStateBridge } from "./legacy-bridge.js";
-
-// We'll import everything from the old status/index.js for now,
-// but we'll wrap the initialization.
 import initStatusLegacy from "../status/index.js";
+import { legacyBridgedLayer } from "./legacy.js";
 
 export interface Status {
 	readonly setup: Effect.Effect<void>;
@@ -14,18 +9,4 @@ export interface Status {
 
 export const Status = ServiceMap.Service<Status>("Status");
 
-export const StatusLive = Layer.effect(
-	Status,
-	Effect.gen(function* () {
-		const pi = yield* PiAPI;
-		const persistence = yield* Persistence;
-
-		return Status.of({
-			setup: Effect.gen(function* () {
-				yield* Effect.sync(() => {
-					initStatusLegacy(pi, makeLegacyStateBridge(persistence));
-				});
-			}),
-		});
-	}),
-);
+export const StatusLive = legacyBridgedLayer(Status, (pi, state) => initStatusLegacy(pi, state));

@@ -73,7 +73,7 @@ function persistModeState(
 ): void {
 	const current = persistence.getSnapshot();
 	const modelsByMode: Partial<Record<PromptModeName, string>> = {
-		...(current.promptModes?.modelsByMode ?? {}),
+		...current.promptModes?.modelsByMode,
 		[mode]: selectedModel,
 	};
 

@@ -16,7 +16,7 @@ import { type Status } from "./status.js";
 import type { AgentId, AgentDefinition, ModelSpec } from "./types.js";
 import { type Agent, AgentError } from "./services.js";
 import { computeClampedWorkerSandboxConfig } from "./sandbox-policy.js";
-import type { SandboxConfig } from "../sandbox/config.js";
+import type { ResolvedSandboxConfig } from "../sandbox/config.js";
 import { TAU_PERSISTED_STATE_TYPE, loadPersistedState } from "../shared/state.js";
 import { withWorkerSandboxOverride } from "./worker-sandbox.js";
 import { setWorkerApprovalBroker } from "./approval-broker.js";
@@ -190,7 +190,7 @@ interface SessionInfra {
 	readonly settingsManager: SettingsManager;
 	readonly resourceLoader: DefaultResourceLoader;
 	readonly customTools: ToolDefinition[];
-	readonly sandboxConfig: Required<SandboxConfig>;
+	readonly sandboxConfig: ResolvedSandboxConfig;
 	readonly appendPrompts: string[];
 	readonly cwd: string;
 	readonly approvalBroker: ApprovalBroker | undefined;
@@ -231,7 +231,7 @@ export class AgentWorker implements Agent {
 		depth: number;
 		cwd: string;
 		parentSessionId: string;
-		parentSandboxConfig: Required<SandboxConfig>;
+		parentSandboxConfig: ResolvedSandboxConfig;
 		parentModel: Model<Api> | undefined;
 		approvalBroker: ApprovalBroker | undefined;
 		modelRegistry?: ModelRegistry | undefined;
@@ -831,7 +831,7 @@ async function createSessionForModelAsync(
 /** Wire sandbox config and approval broker onto a session. */
 function wireSession(
 	session: AgentSession,
-	sandboxConfig: Required<SandboxConfig>,
+	sandboxConfig: ResolvedSandboxConfig,
 	approvalBroker: ApprovalBroker | undefined,
 ): void {
 	const persisted = loadPersistedState({

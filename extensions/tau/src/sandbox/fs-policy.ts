@@ -3,30 +3,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import type { FilesystemMode } from "./config.js";
+import { safeRealpath } from "../shared/fs.js";
 
 type FsCheckResult = { allowed: true } | { allowed: false; reason: string };
-
-/**
- * Resolve a path to its real absolute path.
- * If the file doesn't exist yet, resolve the parent directory and append the filename.
- */
-function safeRealpath(targetPath: string): string {
-	const absolute = path.isAbsolute(targetPath) ? targetPath : path.resolve(targetPath);
-
-	try {
-		return fs.realpathSync(absolute);
-	} catch {
-		// File doesn't exist yet - resolve parent and append filename
-		const parent = path.dirname(absolute);
-		const filename = path.basename(absolute);
-		try {
-			return path.join(fs.realpathSync(parent), filename);
-		} catch {
-			// Parent doesn't exist either - return as-is
-			return absolute;
-		}
-	}
-}
 
 /**
  * Check if a path is under a given root directory.

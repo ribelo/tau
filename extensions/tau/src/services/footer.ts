@@ -1,4 +1,4 @@
-import { ServiceMap, Effect, Layer, SubscriptionRef } from "effect";
+import { ServiceMap, Effect, Layer, Schema, SubscriptionRef } from "effect";
 import { FileSystem } from "effect/FileSystem";
 
 import type {
@@ -16,7 +16,7 @@ import { isRecord } from "../shared/json.js";
 import { Persistence } from "./persistence.js";
 import { SandboxState } from "./state.js";
 import { DEFAULT_SANDBOX_CONFIG } from "../sandbox/config.js";
-import type { SandboxConfigRequired } from "../schemas/config.js";
+import { SandboxConfigRequired } from "../schemas/config.js";
 
 export interface Footer {
 	readonly setup: Effect.Effect<void>;
@@ -171,32 +171,7 @@ const computeTotalCost = (ctx: ExtensionContext): number => {
 	return totalCost;
 };
 
-const isSandboxConfigRequired = (value: unknown): value is SandboxConfigRequired => {
-	if (!isRecord(value)) return false;
-	const filesystemMode = value["filesystemMode"];
-	const networkMode = value["networkMode"];
-	const approvalPolicy = value["approvalPolicy"];
-	const approvalTimeoutSeconds = value["approvalTimeoutSeconds"];
-	const subagent = value["subagent"];
-
-	const validFs =
-		filesystemMode === "read-only" ||
-		filesystemMode === "workspace-write" ||
-		filesystemMode === "danger-full-access";
-	const validNet = networkMode === "deny" || networkMode === "allow-all";
-	const validPolicy =
-		approvalPolicy === "never" ||
-		approvalPolicy === "on-failure" ||
-		approvalPolicy === "on-request" ||
-		approvalPolicy === "unless-trusted";
-	const validTimeout =
-		typeof approvalTimeoutSeconds === "number" &&
-		Number.isFinite(approvalTimeoutSeconds) &&
-		Number.isInteger(approvalTimeoutSeconds) &&
-		approvalTimeoutSeconds > 0;
-
-	return validFs && validNet && validPolicy && validTimeout && typeof subagent === "boolean";
-};
+const isSandboxConfigRequired = Schema.is(SandboxConfigRequired);
 
 export const FooterLive = Layer.effect(
 	Footer,

@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { execSync } from "node:child_process";
 
 import type { FilesystemMode, NetworkMode } from "./config.js";
+import { safeRealpath } from "../shared/fs.js";
 
 /**
  * Check if bwrap is available on the system.
@@ -22,24 +23,6 @@ export async function isAsrtAvailable(): Promise<boolean> {
  */
 export function getAsrtLoadError(): string | null {
 	return "bubblewrap (bwrap) is not installed or not in PATH. It is required for sandboxed execution.";
-}
-
-/**
- * Resolve symlinks, while still working for paths that don't exist yet.
- */
-function safeRealpath(targetPath: string): string {
-	try {
-		return fs.realpathSync(targetPath);
-	} catch {
-		try {
-			const parent = path.dirname(targetPath);
-			const base = path.basename(targetPath);
-			const resolvedParent = fs.realpathSync(parent);
-			return path.join(resolvedParent, base);
-		} catch {
-			return targetPath;
-		}
-	}
 }
 
 /**

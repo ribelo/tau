@@ -1,4 +1,4 @@
-import { Data, Effect, Schema, ServiceMap } from "effect";
+import { Data, Effect, Schema } from "effect";
 import { getMarkdownTheme, type ExtensionAPI, type Theme } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { Markdown, Text } from "@mariozechner/pi-tui";
@@ -165,15 +165,16 @@ const exaPost = <S extends Schema.Decoder<unknown>>(
 				}),
 		});
 
-		try {
-			return Schema.decodeUnknownSync(schema)(json);
-		} catch (parseError) {
-			return yield* new ExaApiError({
-				message: `Failed to decode response: ${String(parseError)}`,
-				status: res.status,
-				details: parseError,
-			});
-		}
+		return yield* Schema.decodeUnknownEffect(schema)(json).pipe(
+			Effect.mapError(
+				(parseError) =>
+					new ExaApiError({
+						message: `Failed to decode response: ${String(parseError)}`,
+						status: res.status,
+						details: parseError,
+					}),
+			),
+		);
 	});
 
 // =============================================================================
@@ -195,7 +196,6 @@ interface ExaService {
 	) => Effect.Effect<ExaContextResponse, ExaApiError | ExaConfigError>;
 }
 
-const ExaService = ServiceMap.Service<ExaService>("ExaService");
 
 // =============================================================================
 // Helpers

@@ -4,7 +4,7 @@ import type { ModelRegistry } from "@mariozechner/pi-coding-agent";
 import type { AgentId, AgentDefinition } from "./types.js";
 import type { Status } from "./status.js";
 export type { Status };
-import type { SandboxConfig } from "../sandbox/config.js";
+import type { ResolvedSandboxConfig } from "../sandbox/config.js";
 import type { ApprovalBroker } from "./approval-broker.js";
 
 // Error Types
@@ -64,7 +64,7 @@ export interface SpawnOptions {
 	readonly cwd: string;
 	readonly parentSessionId: string;
 	readonly parentAgentId?: AgentId | undefined;
-	readonly parentSandboxConfig: Required<SandboxConfig>;
+	readonly parentSandboxConfig: ResolvedSandboxConfig;
 	readonly parentModel?: Model<Api> | undefined;
 	readonly approvalBroker?: ApprovalBroker | undefined;
 	readonly modelRegistry?: ModelRegistry | undefined;

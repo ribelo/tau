@@ -1,12 +1,7 @@
-import { ServiceMap, Effect, Layer } from "effect";
+import { type Effect, ServiceMap } from "effect";
 
-import { PiAPI } from "../effect/pi.js";
-import { Persistence } from "./persistence.js";
-import { makeLegacyStateBridge } from "./legacy-bridge.js";
-
-// We'll import everything from the old editor/index.js for now,
-// but we'll wrap the initialization.
 import initEditorLegacy from "../editor/index.js";
+import { legacyBridgedLayer } from "./legacy.js";
 
 export interface Editor {
 	readonly setup: Effect.Effect<void>;
@@ -14,18 +9,4 @@ export interface Editor {
 
 export const Editor = ServiceMap.Service<Editor>("Editor");
 
-export const EditorLive = Layer.effect(
-	Editor,
-	Effect.gen(function* () {
-		const pi = yield* PiAPI;
-		const persistence = yield* Persistence;
-
-		return Editor.of({
-			setup: Effect.gen(function* () {
-				yield* Effect.sync(() => {
-					initEditorLegacy(pi, makeLegacyStateBridge(persistence));
-				});
-			}),
-		});
-	}),
-);
+export const EditorLive = legacyBridgedLayer(Editor, (pi, state) => initEditorLegacy(pi, state));

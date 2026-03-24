@@ -1,7 +1,10 @@
-import type { ImageContent, TextContent } from "@mariozechner/pi-ai";
-
-/** Minimal message shape for injection functions - content is kept loose to support all message types */
-type MessageLike = { role: string; content?: unknown };
+import type { TextContent } from "@mariozechner/pi-ai";
+import {
+	type ContentItem,
+	type MessageLike,
+	asContentArray,
+	prependToLastUserMessage,
+} from "../../shared/message-injection.js";
 
 type AgentContextOpts = {
 	count: number;
@@ -21,11 +24,10 @@ export function buildAgentContextNotice(opts: AgentContextOpts): string {
 	return `AGENT_CONTEXT: ${count} other pi agent${plural} detected in overlapping directories${pidSuffix}`;
 }
 
-function asContentArray(content: unknown): (TextContent | ImageContent)[] {
-	if (content === undefined || content === null) return [];
-	if (typeof content === "string") return [{ type: "text", text: content }];
-	if (Array.isArray(content)) return content as (TextContent | ImageContent)[];
-	return [];
+function alreadyHasAgentContext(content: ContentItem[]): boolean {
+	const first = content[0];
+	if (!first || first.type !== "text") return false;
+	return (first as TextContent).text.trimStart().startsWith("AGENT_CONTEXT:");
 }
 
 export function injectAgentContextIntoMessages<T extends MessageLike>(
@@ -37,18 +39,10 @@ export function injectAgentContextIntoMessages<T extends MessageLike>(
 	for (let i = out.length - 1; i >= 0; i--) {
 		const msg = out[i];
 		if (msg && msg.role === "user") {
-			const contentArr = asContentArray(msg.content);
-			const firstText =
-				contentArr[0] && contentArr[0].type === "text"
-					? (contentArr[0] as TextContent).text
-					: "";
-			if (firstText.trimStart().startsWith("AGENT_CONTEXT:")) return out;
-
-			const injected: TextContent = { type: "text", text: `${noticeText}\n\n` };
-			out[i] = { ...msg, content: [injected, ...contentArr] };
-			return out;
+			if (alreadyHasAgentContext(asContentArray(msg.content))) return out;
+			break;
 		}
 	}
 
-	return out;
+	return prependToLastUserMessage(messages, noticeText);
 }
