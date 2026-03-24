@@ -56,12 +56,12 @@ export function getAgentRuntime(): ManagedRuntime.ManagedRuntime<AgentControl, u
  */
 export async function closeAllAgents(): Promise<void> {
 	if (!sharedRuntime) return;
-	
+
 	const program = Effect.gen(function* () {
 		const control = yield* AgentControl;
 		yield* control.closeAll;
 	});
-	
+
 	await sharedRuntime.runPromise(program);
 }
 

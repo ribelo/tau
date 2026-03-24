@@ -17,10 +17,7 @@ import type { AgentId, AgentDefinition, ModelSpec } from "./types.js";
 import { type Agent, AgentError } from "./services.js";
 import { computeClampedWorkerSandboxConfig } from "./sandbox-policy.js";
 import type { SandboxConfig } from "../sandbox/config.js";
-import {
-	TAU_PERSISTED_STATE_TYPE,
-	loadPersistedState,
-} from "../shared/state.js";
+import { TAU_PERSISTED_STATE_TYPE, loadPersistedState } from "../shared/state.js";
 import { withWorkerSandboxOverride } from "./worker-sandbox.js";
 import { setWorkerApprovalBroker } from "./approval-broker.js";
 
@@ -78,7 +75,8 @@ function toolOnlyStreamFn(
 ) {
 	// Build options without undefined values (exactOptionalPropertyTypes compliance)
 	const base: Record<string, unknown> = {
-		maxTokens: (options?.["maxTokens"] as number | undefined) || Math.min(model.maxTokens, 32000),
+		maxTokens:
+			(options?.["maxTokens"] as number | undefined) || Math.min(model.maxTokens, 32000),
 	};
 	if (options?.["temperature"] !== undefined) base["temperature"] = options["temperature"];
 	if (options?.["signal"] !== undefined) base["signal"] = options["signal"];
@@ -90,25 +88,36 @@ function toolOnlyStreamFn(
 
 	switch (api) {
 		case "anthropic-messages":
-			return stream(model as Model<"anthropic-messages">, ctx, { ...base, thinkingEnabled: false, toolChoice: "any" });
+			return stream(model as Model<"anthropic-messages">, ctx, {
+				...base,
+				thinkingEnabled: false,
+				toolChoice: "any",
+			});
 		case "openai-completions":
-			return stream(model as Model<"openai-completions">, ctx, { ...base, toolChoice: "required" });
+			return stream(model as Model<"openai-completions">, ctx, {
+				...base,
+				toolChoice: "required",
+			});
 		case "google-generative-ai":
 		case "google-vertex":
 		case "google-gemini-cli":
-			return stream(model as Model<"google-generative-ai">, ctx, { ...base, toolChoice: "any", thinking: { enabled: false } });
+			return stream(model as Model<"google-generative-ai">, ctx, {
+				...base,
+				toolChoice: "any",
+				thinking: { enabled: false },
+			});
 		case "bedrock-converse-stream":
 		case "amazon-bedrock":
-			return stream(model as Model<"bedrock-converse-stream">, ctx, { ...base, toolChoice: "any" });
+			return stream(model as Model<"bedrock-converse-stream">, ctx, {
+				...base,
+				toolChoice: "any",
+			});
 		default:
 			return streamSimple(model, { messages: context }, options);
 	}
 }
 
-export function resolveModelPattern(
-	pattern: string,
-	models: Model<Api>[],
-): Model<Api> | undefined {
+export function resolveModelPattern(pattern: string, models: Model<Api>[]): Model<Api> | undefined {
 	const trimmed = pattern.trim();
 	if (!trimmed) return undefined;
 
@@ -121,15 +130,11 @@ export function resolveModelPattern(
 		const provider = providerInput.toLowerCase();
 		const modelId = modelIdInput.toLowerCase();
 		const match = models.find(
-			(m) =>
-				m.provider.toLowerCase() === provider &&
-				m.id.toLowerCase() === modelId,
+			(m) => m.provider.toLowerCase() === provider && m.id.toLowerCase() === modelId,
 		);
 		if (match) return match;
 
-		const providerTemplate = models.find(
-			(m) => m.provider.toLowerCase() === provider,
-		);
+		const providerTemplate = models.find((m) => m.provider.toLowerCase() === provider);
 		if (providerTemplate) {
 			return {
 				...providerTemplate,
@@ -168,7 +173,9 @@ export function buildWorkerAppendPrompts(options: {
 
 	// Append structured output instructions if schema provided
 	if (options.resultSchema) {
-		prompts.push(`## Structured Output\n- You must call submit_result exactly once with JSON matching the provided schema.\n- Do not respond with free text.\n- Stop immediately after calling submit_result.\n\nSchema:\n\n\`\`\`json\n${JSON.stringify(options.resultSchema, null, 2)}\n\`\`\``);
+		prompts.push(
+			`## Structured Output\n- You must call submit_result exactly once with JSON matching the provided schema.\n- Do not respond with free text.\n- Stop immediately after calling submit_result.\n\nSchema:\n\n\`\`\`json\n${JSON.stringify(options.resultSchema, null, 2)}\n\`\`\``,
+		);
 	}
 
 	return prompts;
@@ -233,7 +240,7 @@ export class AgentWorker implements Agent {
 		return Effect.gen(function* () {
 			const modelRegistry = opts.modelRegistry
 				? opts.modelRegistry
-				: new ModelRegistry(new AuthStorage());
+				: new ModelRegistry(AuthStorage.create());
 			const authStorage = modelRegistry.authStorage;
 
 			const appendPrompts = buildWorkerAppendPrompts({
@@ -271,7 +278,13 @@ export class AgentWorker implements Agent {
 					label: "submit_result",
 					description: "Submit structured result for the task",
 					parameters: Type.Unsafe(opts.resultSchema as object),
-					async execute(_toolCallId: string, params: unknown, signal: AbortSignal | undefined, _onUpdate, _ctx) {
+					async execute(
+						_toolCallId: string,
+						params: unknown,
+						signal: AbortSignal | undefined,
+						_onUpdate,
+						_ctx,
+					) {
 						if (signal?.aborted) throw new Error("Aborted");
 						agent.structuredOutput = params;
 						agent.session.abort().catch(() => undefined);
@@ -314,10 +327,15 @@ export class AgentWorker implements Agent {
 			// Create initial session with first model
 			const firstSpec = models[0];
 			if (!firstSpec) {
-				return yield* Effect.fail(new AgentError({ message: "Agent definition has no models" }));
+				return yield* Effect.fail(
+					new AgentError({ message: "Agent definition has no models" }),
+				);
 			}
 			const session = yield* createSessionForModel(
-				infra, firstSpec, opts.parentModel, modelRegistry,
+				infra,
+				firstSpec,
+				opts.parentModel,
+				modelRegistry,
 			);
 
 			agentContext.parentSessionId = session.sessionId;
@@ -326,7 +344,8 @@ export class AgentWorker implements Agent {
 			wireSession(session, sandboxConfig, opts.approvalBroker);
 
 			if (opts.resultSchema) {
-				session.agent.streamFn = toolOnlyStreamFn as unknown as typeof session.agent.streamFn;
+				session.agent.streamFn =
+					toolOnlyStreamFn as unknown as typeof session.agent.streamFn;
 			}
 
 			agent = new AgentWorker(
@@ -360,27 +379,35 @@ export class AgentWorker implements Agent {
 			if (event.type === "turn_start") {
 				agent.turns++;
 				agent.turnStartTime = Date.now();
-				Effect.runFork(SubscriptionRef.set(statusRef, {
-					state: "running",
-					turns: agent.turns,
-					toolCalls: agent.toolCalls,
-					workedMs: agent.workedMs,
-					...(agent.turnStartTime !== undefined ? { activeTurnStartedAtMs: agent.turnStartTime } : {}),
-					tools: agent.tools,
-				}));
+				Effect.runFork(
+					SubscriptionRef.set(statusRef, {
+						state: "running",
+						turns: agent.turns,
+						toolCalls: agent.toolCalls,
+						workedMs: agent.workedMs,
+						...(agent.turnStartTime !== undefined
+							? { activeTurnStartedAtMs: agent.turnStartTime }
+							: {}),
+						tools: agent.tools,
+					}),
+				);
 			} else if (event.type === "turn_end") {
 				if (agent.turnStartTime !== undefined) {
 					agent.workedMs += Date.now() - agent.turnStartTime;
 					agent.turnStartTime = undefined;
 				}
-				Effect.runFork(SubscriptionRef.set(statusRef, {
-					state: "running",
-					turns: agent.turns,
-					toolCalls: agent.toolCalls,
-					workedMs: agent.workedMs,
-					...(agent.turnStartTime !== undefined ? { activeTurnStartedAtMs: agent.turnStartTime } : {}),
-					tools: agent.tools,
-				}));
+				Effect.runFork(
+					SubscriptionRef.set(statusRef, {
+						state: "running",
+						turns: agent.turns,
+						toolCalls: agent.toolCalls,
+						workedMs: agent.workedMs,
+						...(agent.turnStartTime !== undefined
+							? { activeTurnStartedAtMs: agent.turnStartTime }
+							: {}),
+						tools: agent.tools,
+					}),
+				);
 			} else if (event.type === "tool_execution_start") {
 				agent.toolCalls++;
 				const argsPreview = truncateStr(formatToolArgs(event.toolName, event.args), 100);
@@ -388,20 +415,26 @@ export class AgentWorker implements Agent {
 					name: event.toolName,
 					args: argsPreview,
 				});
-				Effect.runFork(SubscriptionRef.set(statusRef, {
-					state: "running",
-					turns: agent.turns,
-					toolCalls: agent.toolCalls,
-					workedMs: agent.workedMs,
-					...(agent.turnStartTime !== undefined ? { activeTurnStartedAtMs: agent.turnStartTime } : {}),
-					tools: agent.tools,
-				}));
+				Effect.runFork(
+					SubscriptionRef.set(statusRef, {
+						state: "running",
+						turns: agent.turns,
+						toolCalls: agent.toolCalls,
+						workedMs: agent.workedMs,
+						...(agent.turnStartTime !== undefined
+							? { activeTurnStartedAtMs: agent.turnStartTime }
+							: {}),
+						tools: agent.tools,
+					}),
+				);
 			} else if (event.type === "tool_execution_end") {
 				const pending = agent.pendingTools.get(event.toolCallId);
 				if (pending) {
 					agent.pendingTools.delete(event.toolCallId);
 					const resultPreview = truncateStr(
-						typeof event.result === "string" ? event.result : JSON.stringify(event.result),
+						typeof event.result === "string"
+							? event.result
+							: JSON.stringify(event.result),
 						100,
 					);
 					agent.tools.push({
@@ -410,36 +443,47 @@ export class AgentWorker implements Agent {
 						isError: event.isError,
 					});
 				}
-				Effect.runFork(SubscriptionRef.set(statusRef, {
-					state: "running",
-					turns: agent.turns,
-					toolCalls: agent.toolCalls,
-					workedMs: agent.workedMs,
-					...(agent.turnStartTime !== undefined ? { activeTurnStartedAtMs: agent.turnStartTime } : {}),
-					tools: agent.tools,
-				}));
+				Effect.runFork(
+					SubscriptionRef.set(statusRef, {
+						state: "running",
+						turns: agent.turns,
+						toolCalls: agent.toolCalls,
+						workedMs: agent.workedMs,
+						...(agent.turnStartTime !== undefined
+							? { activeTurnStartedAtMs: agent.turnStartTime }
+							: {}),
+						tools: agent.tools,
+					}),
+				);
 			} else if (event.type === "agent_end") {
 				if (agent.turnStartTime !== undefined) {
 					agent.workedMs += Date.now() - agent.turnStartTime;
 					agent.turnStartTime = undefined;
 				}
-				
+
 				const lastMsg = event.messages[event.messages.length - 1];
 
-				const assistantMsg = lastMsg?.role === "assistant" ? lastMsg as {
-					role: "assistant";
-					content: Array<{ type: string; text?: string }>;
-					stopReason?: string;
-					errorMessage?: string;
-				} : undefined;
+				const assistantMsg =
+					lastMsg?.role === "assistant"
+						? (lastMsg as {
+								role: "assistant";
+								content: Array<{ type: string; text?: string }>;
+								stopReason?: string;
+								errorMessage?: string;
+							})
+						: undefined;
 
 				if (assistantMsg?.stopReason === "error") {
-					const reason = assistantMsg.errorMessage
-						|| assistantMsg.content
-							.filter((p): p is { type: "text"; text: string } => p.type === "text" && typeof p.text === "string")
+					const reason =
+						assistantMsg.errorMessage ||
+						assistantMsg.content
+							.filter(
+								(p): p is { type: "text"; text: string } =>
+									p.type === "text" && typeof p.text === "string",
+							)
 							.map((p) => p.text)
-							.join("\n")
-						|| "Agent ended with error (no details provided)";
+							.join("\n") ||
+						"Agent ended with error (no details provided)";
 
 					Effect.runFork(
 						SubscriptionRef.set(statusRef, {
@@ -451,9 +495,15 @@ export class AgentWorker implements Agent {
 							tools: agent.tools,
 						}),
 					);
-				} else if (assistantMsg?.stopReason === "aborted" && agent.structuredOutput === undefined) {
+				} else if (
+					assistantMsg?.stopReason === "aborted" &&
+					agent.structuredOutput === undefined
+				) {
 					const textContent = assistantMsg.content
-						.filter((p): p is { type: "text"; text: string } => p.type === "text" && typeof p.text === "string")
+						.filter(
+							(p): p is { type: "text"; text: string } =>
+								p.type === "text" && typeof p.text === "string",
+						)
 						.map((p) => p.text)
 						.join("\n");
 
@@ -482,13 +532,15 @@ export class AgentWorker implements Agent {
 						);
 					}
 				} else {
-					const message =
-						assistantMsg
-							? assistantMsg.content
-									.filter((p): p is { type: "text"; text: string } => p.type === "text" && typeof p.text === "string")
-									.map((p) => p.text)
-									.join("\n")
-							: undefined;
+					const message = assistantMsg
+						? assistantMsg.content
+								.filter(
+									(p): p is { type: "text"; text: string } =>
+										p.type === "text" && typeof p.text === "string",
+								)
+								.map((p) => p.text)
+								.join("\n")
+						: undefined;
 
 					Effect.runFork(
 						SubscriptionRef.set(statusRef, {
@@ -517,7 +569,9 @@ export class AgentWorker implements Agent {
 				turns: worker.turns,
 				toolCalls: worker.toolCalls,
 				workedMs: worker.workedMs,
-				...(worker.turnStartTime !== undefined ? { activeTurnStartedAtMs: worker.turnStartTime } : {}),
+				...(worker.turnStartTime !== undefined
+					? { activeTurnStartedAtMs: worker.turnStartTime }
+					: {}),
 				tools: worker.tools,
 			});
 
@@ -539,9 +593,13 @@ export class AgentWorker implements Agent {
 							}
 
 							const newSession = yield* Effect.tryPromise({
-								try: () => createSessionForModelAsync(
-									worker.infra, spec, worker.parentModel, worker.infra.modelRegistry,
-								),
+								try: () =>
+									createSessionForModelAsync(
+										worker.infra,
+										spec,
+										worker.parentModel,
+										worker.infra.modelRegistry,
+									),
 								catch: (err) => err,
 							}).pipe(
 								Effect.catch((err: unknown) => {
@@ -555,9 +613,14 @@ export class AgentWorker implements Agent {
 
 							worker.session = newSession;
 							worker.agentContext.parentSessionId = newSession.sessionId;
-							wireSession(newSession, worker.infra.sandboxConfig, worker.infra.approvalBroker);
+							wireSession(
+								newSession,
+								worker.infra.sandboxConfig,
+								worker.infra.approvalBroker,
+							);
 							if (worker.infra.resultSchema) {
-								newSession.agent.streamFn = toolOnlyStreamFn as unknown as typeof newSession.agent.streamFn;
+								newSession.agent.streamFn =
+									toolOnlyStreamFn as unknown as typeof newSession.agent.streamFn;
 							}
 							worker.subscribeToSession(newSession);
 						}
@@ -566,10 +629,11 @@ export class AgentWorker implements Agent {
 						// Main-agent -> subagent traffic should interrupt/redirect current work.
 						if (worker.session.isStreaming) {
 							const queued = yield* Effect.tryPromise({
-								try: () => worker.session.prompt(message, {
-									source: "extension",
-									streamingBehavior: "steer",
-								}),
+								try: () =>
+									worker.session.prompt(message, {
+										source: "extension",
+										streamingBehavior: "steer",
+									}),
 								catch: (err) => err,
 							}).pipe(
 								Effect.catch((err: unknown) => {
@@ -590,10 +654,11 @@ export class AgentWorker implements Agent {
 						// assistant message ended with stopReason === "error". We treat that as a
 						// failed attempt and transparently fall back to the next model/provider.
 						const promptResult = yield* Effect.tryPromise({
-							try: () => worker.session.prompt(message, {
-								source: "extension",
-								streamingBehavior: "steer",
-							}),
+							try: () =>
+								worker.session.prompt(message, {
+									source: "extension",
+									streamingBehavior: "steer",
+								}),
 							catch: (err) => err,
 						}).pipe(
 							Effect.catch((err: unknown) => {
@@ -609,22 +674,27 @@ export class AgentWorker implements Agent {
 						}
 
 						const last = worker.session.messages[worker.session.messages.length - 1];
-						const assistantMsg = last && last.role === "assistant"
-							? (last as {
-								role: "assistant";
-								content?: Array<{ type: string; text?: string }>;
-								stopReason?: string;
-								errorMessage?: string;
-							})
-							: undefined;
+						const assistantMsg =
+							last && last.role === "assistant"
+								? (last as {
+										role: "assistant";
+										content?: Array<{ type: string; text?: string }>;
+										stopReason?: string;
+										errorMessage?: string;
+									})
+								: undefined;
 
 						if (assistantMsg?.stopReason === "error") {
-							const reason = assistantMsg.errorMessage
-								|| assistantMsg.content
-									?.filter((p): p is { type: "text"; text: string } => p.type === "text" && typeof p.text === "string")
+							const reason =
+								assistantMsg.errorMessage ||
+								assistantMsg.content
+									?.filter(
+										(p): p is { type: "text"; text: string } =>
+											p.type === "text" && typeof p.text === "string",
+									)
 									.map((p) => p.text)
-									.join("\n")
-								|| "Agent ended with error";
+									.join("\n") ||
+								"Agent ended with error";
 							errors.push(`${spec.model}: ${reason}`);
 							// Try next model
 							continue;
@@ -637,9 +707,10 @@ export class AgentWorker implements Agent {
 					// All models failed
 					yield* SubscriptionRef.set(worker.statusRef, {
 						state: "failed",
-						reason: errors.length === 1
-							? errors[0] ?? "Unknown error"
-							: `All models failed:\n${errors.map((e) => `  - ${e}`).join("\n")}`,
+						reason:
+							errors.length === 1
+								? (errors[0] ?? "Unknown error")
+								: `All models failed:\n${errors.map((e) => `  - ${e}`).join("\n")}`,
 						turns: worker.turns,
 						toolCalls: worker.toolCalls,
 						workedMs: worker.workedMs,
@@ -698,9 +769,10 @@ function createSessionForModel(
 	modelRegistry: ModelRegistry,
 ): Effect.Effect<AgentSession, AgentError> {
 	return Effect.gen(function* () {
-		const resolvedModel = (spec.model !== "inherit")
-			? resolveModelPattern(spec.model, modelRegistry.getAll())
-			: parentModel;
+		const resolvedModel =
+			spec.model !== "inherit"
+				? resolveModelPattern(spec.model, modelRegistry.getAll())
+				: parentModel;
 
 		const sessionOpts = {
 			cwd: infra.cwd,
@@ -731,9 +803,10 @@ async function createSessionForModelAsync(
 	parentModel: Model<Api> | undefined,
 	modelRegistry: ModelRegistry,
 ): Promise<AgentSession> {
-	const resolvedModel = (spec.model !== "inherit")
-		? resolveModelPattern(spec.model, modelRegistry.getAll())
-		: parentModel;
+	const resolvedModel =
+		spec.model !== "inherit"
+			? resolveModelPattern(spec.model, modelRegistry.getAll())
+			: parentModel;
 
 	const sessionOpts = {
 		cwd: infra.cwd,

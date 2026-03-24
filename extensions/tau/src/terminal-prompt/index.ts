@@ -51,7 +51,9 @@ function renderTerminalPrompt(width: number, next: (w: number) => string[]): str
 
 	if (bottomBorderIndex === -1) {
 		// Unexpected, but don't crash; just prefix everything.
-		return base.map((line, i) => withBg(`${i === 0 ? promptPrefix : continuationPrefix}${line}`, width));
+		return base.map((line, i) =>
+			withBg(`${i === 0 ? promptPrefix : continuationPrefix}${line}`, width),
+		);
 	}
 
 	const contentLines = base.slice(1, bottomBorderIndex);
@@ -81,13 +83,16 @@ function renderTerminalPrompt(width: number, next: (w: number) => string[]): str
 	return result;
 }
 
-export function wrapEditorRender(state: TauState, width: number, next: (w: number) => string[]): string[] {
+export function wrapEditorRender(
+	state: TauState,
+	width: number,
+	next: (w: number) => string[],
+): string[] {
 	const enabled = state.persisted?.terminalPrompt?.enabled ?? true;
 	return enabled ? renderTerminalPrompt(width, next) : next(width);
 }
 
 export default function initTerminalPrompt(pi: ExtensionAPI, state: TauState) {
-
 	pi.registerCommand("tau", {
 		description: "Tau settings: /tau prompt on|off|toggle",
 		handler: async (args, ctx) => {
@@ -96,7 +101,10 @@ export default function initTerminalPrompt(pi: ExtensionAPI, state: TauState) {
 			const parts = trimmed.split(/\s+/).filter(Boolean);
 
 			if (parts.length === 0) {
-				ctx.ui.notify(`Tau prompt: ${enabled ? "on" : "off"}. Usage: /tau prompt on|off|toggle`, "info");
+				ctx.ui.notify(
+					`Tau prompt: ${enabled ? "on" : "off"}. Usage: /tau prompt on|off|toggle`,
+					"info",
+				);
 				return;
 			}
 

@@ -25,7 +25,7 @@ class StatusBoundaryError extends Data.TaggedError("StatusBoundaryError")<{
 	readonly cause?: unknown;
 }> {}
 
-function decodeUnknownOrNull<S extends Schema.Top & { readonly DecodingServices: never }>(
+function decodeUnknownOrNull<S extends Schema.Decoder<unknown>>(
 	schema: S,
 	input: unknown,
 ): S["Type"] | null {
@@ -36,7 +36,7 @@ function decodeUnknownOrNull<S extends Schema.Top & { readonly DecodingServices:
 	}
 }
 
-function decodeUnknownOrReject<S extends Schema.Top & { readonly DecodingServices: never }>(
+function decodeUnknownOrReject<S extends Schema.Decoder<unknown>>(
 	schema: S,
 	input: unknown,
 	message: string,
@@ -80,17 +80,23 @@ function buildStatusRow(data: {
 
 type OpenAiUsagePayload = {
 	plan_type?: string | undefined;
-	rate_limit?: {
-		allowed?: boolean | undefined;
-		limit_reached?: boolean | undefined;
-		primary_window?: RateLimitWindowSnapshot | null | undefined;
-		secondary_window?: RateLimitWindowSnapshot | null | undefined;
-	} | null | undefined;
-	credits?: {
-		has_credits?: boolean | undefined;
-		unlimited?: boolean | undefined;
-		balance?: string | null | undefined;
-	} | null | undefined;
+	rate_limit?:
+		| {
+				allowed?: boolean | undefined;
+				limit_reached?: boolean | undefined;
+				primary_window?: RateLimitWindowSnapshot | null | undefined;
+				secondary_window?: RateLimitWindowSnapshot | null | undefined;
+		  }
+		| null
+		| undefined;
+	credits?:
+		| {
+				has_credits?: boolean | undefined;
+				unlimited?: boolean | undefined;
+				balance?: string | null | undefined;
+		  }
+		| null
+		| undefined;
 };
 
 type RateLimitWindowSnapshot = {
@@ -101,40 +107,54 @@ type RateLimitWindowSnapshot = {
 };
 
 type GeminiQuotaResponse = {
-	buckets?: ReadonlyArray<{
-		remainingAmount?: string | undefined;
-		remainingFraction?: number | undefined;
-		resetTime?: string | undefined;
-		tokenType?: string | undefined;
-		modelId?: string | undefined;
-	}> | undefined;
+	buckets?:
+		| ReadonlyArray<{
+				remainingAmount?: string | undefined;
+				remainingFraction?: number | undefined;
+				resetTime?: string | undefined;
+				tokenType?: string | undefined;
+				modelId?: string | undefined;
+		  }>
+		| undefined;
 };
 
 type AntigravityUserStatus = {
-	userStatus?: {
-		name?: string | undefined;
-		email?: string | undefined;
-		userTier?: { name?: string | undefined } | undefined;
-		planStatus?: {
-			availablePromptCredits?: number | undefined;
-			availableFlowCredits?: number | undefined;
-			planInfo?: {
-				planName?: string | undefined;
-				monthlyPromptCredits?: number | undefined;
-				monthlyFlowCredits?: number | undefined;
-			} | undefined;
-		} | undefined;
-		cascadeModelConfigData?: {
-			clientModelConfigs?: ReadonlyArray<{
-				label?: string | undefined;
-				modelOrAlias?: { model?: string | undefined } | undefined;
-				quotaInfo?: {
-					remainingFraction?: number | undefined;
-					resetTime?: string | undefined;
-				} | undefined;
-			}> | undefined;
-		} | undefined;
-	} | undefined;
+	userStatus?:
+		| {
+				name?: string | undefined;
+				email?: string | undefined;
+				userTier?: { name?: string | undefined } | undefined;
+				planStatus?:
+					| {
+							availablePromptCredits?: number | undefined;
+							availableFlowCredits?: number | undefined;
+							planInfo?:
+								| {
+										planName?: string | undefined;
+										monthlyPromptCredits?: number | undefined;
+										monthlyFlowCredits?: number | undefined;
+								  }
+								| undefined;
+					  }
+					| undefined;
+				cascadeModelConfigData?:
+					| {
+							clientModelConfigs?:
+								| ReadonlyArray<{
+										label?: string | undefined;
+										modelOrAlias?: { model?: string | undefined } | undefined;
+										quotaInfo?:
+											| {
+													remainingFraction?: number | undefined;
+													resetTime?: string | undefined;
+											  }
+											| undefined;
+								  }>
+								| undefined;
+					  }
+					| undefined;
+		  }
+		| undefined;
 };
 
 const OptionalString = Schema.optional(Schema.String);
@@ -162,8 +182,12 @@ const OpenAiUsagePayloadSchema = Schema.Struct({
 			Schema.Struct({
 				allowed: OptionalBoolean,
 				limit_reached: OptionalBoolean,
-				primary_window: Schema.optional(Schema.Union([RateLimitWindowSnapshotSchema, Schema.Null])),
-				secondary_window: Schema.optional(Schema.Union([RateLimitWindowSnapshotSchema, Schema.Null])),
+				primary_window: Schema.optional(
+					Schema.Union([RateLimitWindowSnapshotSchema, Schema.Null]),
+				),
+				secondary_window: Schema.optional(
+					Schema.Union([RateLimitWindowSnapshotSchema, Schema.Null]),
+				),
 			}),
 			Schema.Null,
 		]),
@@ -295,7 +319,11 @@ function computeBurnAndExhaust(
 	currentPercentLeft: number | undefined,
 	resetsAt: number | undefined,
 	windowSeconds?: number,
-): { burnRatePerHour?: number | undefined; exhaustsAt?: number | undefined; exhaustsBeforeReset?: boolean | undefined } {
+): {
+	burnRatePerHour?: number | undefined;
+	exhaustsAt?: number | undefined;
+	exhaustsBeforeReset?: boolean | undefined;
+} {
 	if (typeof currentPercentLeft !== "number" || !Number.isFinite(currentPercentLeft)) return {};
 
 	let burnRatePerHour: number | undefined;
@@ -326,7 +354,11 @@ function computeBurnAndExhaust(
 		}
 	}
 
-	if (typeof burnRatePerHour !== "number" || !Number.isFinite(burnRatePerHour) || burnRatePerHour < 0.01) {
+	if (
+		typeof burnRatePerHour !== "number" ||
+		!Number.isFinite(burnRatePerHour) ||
+		burnRatePerHour < 0.01
+	) {
 		return {};
 	}
 
@@ -345,7 +377,8 @@ function mapOpenAiRow(
 ): StatusRow | undefined {
 	if (!window) return undefined;
 
-	const seconds = typeof window.limit_window_seconds === "number" ? window.limit_window_seconds : undefined;
+	const seconds =
+		typeof window.limit_window_seconds === "number" ? window.limit_window_seconds : undefined;
 	const minutes = seconds && seconds > 0 ? Math.ceil(seconds / 60) : undefined;
 	const label = (() => {
 		if (minutes === 300) return "5h Limit";
@@ -359,7 +392,14 @@ function mapOpenAiRow(
 	const usedPercent = typeof window.used_percent === "number" ? window.used_percent : undefined;
 	const percentLeft = percentLeftFromUsedPercent(usedPercent);
 
-	const metrics = computeBurnAndExhaust(prev, `openai:${label}`, fetchedAtMs, percentLeft, resetsAt, seconds);
+	const metrics = computeBurnAndExhaust(
+		prev,
+		`openai:${label}`,
+		fetchedAtMs,
+		percentLeft,
+		resetsAt,
+		seconds,
+	);
 
 	return buildStatusRow({
 		label,
@@ -389,7 +429,9 @@ function formatTime(tsSeconds: number): { time: string; date?: string } {
 
 	const now = new Date();
 	const sameDay =
-		d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+		d.getFullYear() === now.getFullYear() &&
+		d.getMonth() === now.getMonth() &&
+		d.getDate() === now.getDate();
 	if (sameDay) return { time };
 
 	const day = String(d.getDate()).padStart(2, "0");
@@ -397,13 +439,20 @@ function formatTime(tsSeconds: number): { time: string; date?: string } {
 	return { time, date: `${day} ${month}` };
 }
 
-function buildStatusLines(section: StatusSectionData, width: number, th: Theme, fetchedAtMs: number): string[] {
+function buildStatusLines(
+	section: StatusSectionData,
+	width: number,
+	th: Theme,
+	fetchedAtMs: number,
+): string[] {
 	const innerWidth = Math.max(1, width - 2);
 	const lines: string[] = [];
 
 	if (section.error) {
 		const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
-		lines.push(`  ${section.notConfigured ? th.fg("dim", "Not configured") : `${th.fg("error", "Error:")} ${oneLine(section.error)}`}`);
+		lines.push(
+			`  ${section.notConfigured ? th.fg("dim", "Not configured") : `${th.fg("error", "Error:")} ${oneLine(section.error)}`}`,
+		);
 		return lines;
 	}
 
@@ -484,10 +533,24 @@ class StatusCard implements Component {
 			const title = ` ${th.bold(section.title)}`;
 			const status = section.statusLine ? `${section.statusLine} ` : "";
 			const headerPadding = innerWidth - visibleWidth(title) - visibleWidth(status);
-			
-			lines.push(th.fg("border", "╭") + th.fg("border", "─".repeat(innerWidth)) + th.fg("border", "╮"));
-			lines.push(th.fg("border", "│") + title + " ".repeat(Math.max(0, headerPadding)) + status + th.fg("border", "│"));
-			lines.push(th.fg("border", "├") + th.fg("border", "─".repeat(innerWidth)) + th.fg("border", "┤"));
+
+			lines.push(
+				th.fg("border", "╭") +
+					th.fg("border", "─".repeat(innerWidth)) +
+					th.fg("border", "╮"),
+			);
+			lines.push(
+				th.fg("border", "│") +
+					title +
+					" ".repeat(Math.max(0, headerPadding)) +
+					status +
+					th.fg("border", "│"),
+			);
+			lines.push(
+				th.fg("border", "├") +
+					th.fg("border", "─".repeat(innerWidth)) +
+					th.fg("border", "┤"),
+			);
 
 			// Content
 			const content = buildStatusLines(section, width, th, this.details.fetchedAt);
@@ -496,7 +559,11 @@ class StatusCard implements Component {
 			}
 
 			// Footer
-			lines.push(th.fg("border", "╰") + th.fg("border", "─".repeat(innerWidth)) + th.fg("border", "╯"));
+			lines.push(
+				th.fg("border", "╰") +
+					th.fg("border", "─".repeat(innerWidth)) +
+					th.fg("border", "╯"),
+			);
 		};
 
 		for (let i = 0; i < this.details.sections.length; i++) {
@@ -518,7 +585,15 @@ class StatusCard implements Component {
 function parseGoogleProjectToken(apiKey: string): { token: string; projectId: string } | null {
 	const parsedJson = parseJsonOrNull(apiKey);
 	if (parsedJson === null) return null;
-	const parsed = decodeUnknownOrNull(GoogleProjectTokenSchema, parsedJson);
+	let parsed: { token?: string | null; projectId?: string | null };
+	try {
+		parsed = Schema.decodeUnknownSync(GoogleProjectTokenSchema)(parsedJson) as {
+			token?: string | null;
+			projectId?: string | null;
+		};
+	} catch {
+		return null;
+	}
 	if (!parsed?.token || !parsed.projectId) return null;
 	return { token: parsed.token, projectId: parsed.projectId };
 }
@@ -532,7 +607,8 @@ async function fetchGeminiQuota(token: string, projectId: string): Promise<Gemin
 			"Content-Type": "application/json",
 			"User-Agent": "google-api-nodejs-client/9.15.1",
 			"X-Goog-Api-Client": "gl-node/22.17.0",
-			"Client-Metadata": "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI",
+			"Client-Metadata":
+				"ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI",
 		},
 		body: JSON.stringify({ project: projectId }),
 	});
@@ -572,7 +648,10 @@ function getPlatformProcessInfo(): { processName: string; exec: ExecSpec } {
 	if (platform === "win32") {
 		const processName = "language_server_windows_x64.exe";
 		const ps = `Get-CimInstance Win32_Process -Filter "name='${processName}'" | Select-Object ProcessId,CommandLine | ConvertTo-Json`;
-		return { processName, exec: { command: "powershell", args: ["-NoProfile", "-Command", ps] } };
+		return {
+			processName,
+			exec: { command: "powershell", args: ["-NoProfile", "-Command", ps] },
+		};
 	}
 
 	if (platform === "darwin") {
@@ -587,7 +666,10 @@ function getPlatformProcessInfo(): { processName: string; exec: ExecSpec } {
 		return { processName, exec: { command: "sh", args: ["-c", `pgrep -af ${processName}`] } };
 	}
 
-	return { processName: "language_server", exec: { command: "sh", args: ["-c", "pgrep -af language_server"] } };
+	return {
+		processName: "language_server",
+		exec: { command: "sh", args: ["-c", "pgrep -af language_server"] },
+	};
 }
 
 function extractCsrfToken(cmdLine: string): string | null {
@@ -595,9 +677,7 @@ function extractCsrfToken(cmdLine: string): string | null {
 	return m?.[1] ?? null;
 }
 
-function parseWindowsProcessJson(
-	json: unknown,
-): { pid: number; cmdLine: string } | null {
+function parseWindowsProcessJson(json: unknown): { pid: number; cmdLine: string } | null {
 	const items = Array.isArray(json) ? json : [json];
 	for (const item of items) {
 		if (!item || typeof item !== "object") continue;
@@ -615,7 +695,10 @@ function parseWindowsProcessJson(
 	return null;
 }
 
-function parseUnixProcessOutput(stdout: string, processName: string): { pid: number; cmdLine: string } | null {
+function parseUnixProcessOutput(
+	stdout: string,
+	processName: string,
+): { pid: number; cmdLine: string } | null {
 	for (const rawLine of stdout.split("\n")) {
 		const line = rawLine.trim();
 		if (!line) continue;
@@ -704,13 +787,18 @@ async function execSpec(pi: ExtensionAPI, spec: ExecSpec, signal?: AbortSignal) 
 	return await pi.exec(spec.command, spec.args, opts);
 }
 
-async function fetchAntigravityStatus(pi: ExtensionAPI, signal?: AbortSignal): Promise<AntigravityUserStatus> {
+async function fetchAntigravityStatus(
+	pi: ExtensionAPI,
+	signal?: AbortSignal,
+): Promise<AntigravityUserStatus> {
 	const { processName, exec } = getPlatformProcessInfo();
 	const proc = await execSpec(pi, exec, signal);
 	const stdout = proc.stdout ?? "";
 
 	if (!stdout.trim()) {
-		return Promise.reject(new StatusBoundaryError({ message: "Antigravity language server process not found" }));
+		return Promise.reject(
+			new StatusBoundaryError({ message: "Antigravity language server process not found" }),
+		);
 	}
 
 	let pid: number | undefined;
@@ -728,7 +816,11 @@ async function fetchAntigravityStatus(pi: ExtensionAPI, signal?: AbortSignal): P
 	if (pid === undefined || cmdLine === undefined) {
 		const parsed = parseUnixProcessOutput(stdout, processName);
 		if (!parsed) {
-			return Promise.reject(new StatusBoundaryError({ message: "Antigravity language server process not found" }));
+			return Promise.reject(
+				new StatusBoundaryError({
+					message: "Antigravity language server process not found",
+				}),
+			);
 		}
 		pid = parsed.pid;
 		cmdLine = parsed.cmdLine;
@@ -736,14 +828,20 @@ async function fetchAntigravityStatus(pi: ExtensionAPI, signal?: AbortSignal): P
 
 	const csrfToken = extractCsrfToken(cmdLine);
 	if (!csrfToken) {
-		return Promise.reject(new StatusBoundaryError({ message: "CSRF token not found in language server command line" }));
+		return Promise.reject(
+			new StatusBoundaryError({
+				message: "CSRF token not found in language server command line",
+			}),
+		);
 	}
 
 	const portExec = getPortListCommand(pid);
 	const portsOut = await execSpec(pi, portExec, signal);
 	const ports = parseListeningPorts(portsOut.stdout ?? "");
 	if (ports.length === 0) {
-		return Promise.reject(new StatusBoundaryError({ message: "No listening ports found for language server" }));
+		return Promise.reject(
+			new StatusBoundaryError({ message: "No listening ports found for language server" }),
+		);
 	}
 
 	let lastError: unknown;
@@ -799,7 +897,12 @@ async function fetchAntigravityUserStatus(
 					if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
 						const parsed = parseJsonOrNull(text);
 						if (parsed === null) {
-							reject(new StatusBoundaryError({ message: "Invalid JSON response from Antigravity status endpoint" }));
+							reject(
+								new StatusBoundaryError({
+									message:
+										"Invalid JSON response from Antigravity status endpoint",
+								}),
+							);
 							return;
 						}
 						decodeUnknownOrReject(
@@ -807,7 +910,7 @@ async function fetchAntigravityUserStatus(
 							parsed,
 							"Antigravity status response failed schema validation",
 						)
-							.then(resolve)
+							.then((v) => resolve(v as AntigravityUserStatus))
 							.catch(reject);
 						return;
 					}
@@ -816,7 +919,9 @@ async function fetchAntigravityUserStatus(
 			},
 		);
 
-		req.on("error", (error) => reject(new StatusBoundaryError({ message: String(error), cause: error })));
+		req.on("error", (error) =>
+			reject(new StatusBoundaryError({ message: String(error), cause: error })),
+		);
 		req.on("timeout", () => {
 			req.destroy(new StatusBoundaryError({ message: "timeout" }));
 		});
@@ -863,7 +968,9 @@ async function fetchOpenAiUsage(
 
 	const parsed = parseJsonOrNull(text);
 	if (parsed === null) {
-		return Promise.reject(new StatusBoundaryError({ message: "OpenAI usage endpoint returned invalid JSON" }));
+		return Promise.reject(
+			new StatusBoundaryError({ message: "OpenAI usage endpoint returned invalid JSON" }),
+		);
 	}
 
 	return decodeUnknownOrReject(
@@ -891,14 +998,17 @@ function formatPlanType(planType: string | undefined): string | undefined {
 }
 
 export default function initStatus(pi: ExtensionAPI, state: TauState) {
-	pi.registerMessageRenderer<StatusMessageDetails>(STATUS_MESSAGE_TYPE, (message, _options, theme) => {
-		const details = message.details as StatusMessageDetails | undefined;
-		if (!details) {
-			const text = typeof message.content === "string" ? message.content : "";
-			return new Text(text, 0, 0);
-		}
-		return new StatusCard(details, theme);
-	});
+	pi.registerMessageRenderer<StatusMessageDetails>(
+		STATUS_MESSAGE_TYPE,
+		(message, _options, theme) => {
+			const details = message.details as StatusMessageDetails | undefined;
+			if (!details) {
+				const text = typeof message.content === "string" ? message.content : "";
+				return new Text(text, 0, 0);
+			}
+			return new StatusCard(details, theme);
+		},
+	);
 
 	pi.on("context", async (event) => {
 		const filtered = event.messages.filter(
@@ -950,7 +1060,11 @@ export default function initStatus(pi: ExtensionAPI, state: TauState) {
 					const rows: StatusRow[] = [];
 					const p = mapOpenAiRow(usage.rate_limit?.primary_window, prevState, fetchedAt);
 					if (p) rows.push(p);
-					const s = mapOpenAiRow(usage.rate_limit?.secondary_window, prevState, fetchedAt);
+					const s = mapOpenAiRow(
+						usage.rate_limit?.secondary_window,
+						prevState,
+						fetchedAt,
+					);
 					if (s) rows.push(s);
 
 					for (const r of rows) {
@@ -970,7 +1084,9 @@ export default function initStatus(pi: ExtensionAPI, state: TauState) {
 						apiKey = await ctx.modelRegistry.getApiKeyForProvider(provider);
 					}
 
-					const cred = ctx.modelRegistry.authStorage.get(provider) as | { type: string; email?: string } | undefined;
+					const cred = ctx.modelRegistry.authStorage.get(provider) as
+						| { type: string; email?: string }
+						| undefined;
 					const statusLine = `[${cred?.email ? cred.email : "Not logged in"}]`;
 
 					if (!apiKey) {
@@ -979,7 +1095,12 @@ export default function initStatus(pi: ExtensionAPI, state: TauState) {
 
 					const parsed = parseGoogleProjectToken(apiKey);
 					if (!parsed) {
-						return { title: "Gemini CLI", error: "Missing Google projectId", rows: [], statusLine };
+						return {
+							title: "Gemini CLI",
+							error: "Missing Google projectId",
+							rows: [],
+							statusLine,
+						};
 					}
 
 					const quota = await fetchGeminiQuota(parsed.token, parsed.projectId);
@@ -987,28 +1108,46 @@ export default function initStatus(pi: ExtensionAPI, state: TauState) {
 
 					const groupRows: StatusRow[] = [];
 					const tiers = [
-						{ label: "Flash Tier", subLabel: "2.0, 2.5, 3-Pre", pattern: /flash/i, exclude: /lite/i },
+						{
+							label: "Flash Tier",
+							subLabel: "2.0, 2.5, 3-Pre",
+							pattern: /flash/i,
+							exclude: /lite/i,
+						},
 						{ label: "Pro Tier", subLabel: "2.5, 3-Pre", pattern: /pro/i },
 						{ label: "Lite Tier", subLabel: "2.5-Lite", pattern: /lite/i },
 					];
 
 					for (const tier of tiers) {
-						const tierBuckets = buckets.filter(b => 
-							b.modelId && tier.pattern.test(b.modelId) && (!tier.exclude || !tier.exclude.test(b.modelId))
+						const tierBuckets = buckets.filter(
+							(b) =>
+								b.modelId &&
+								tier.pattern.test(b.modelId) &&
+								(!tier.exclude || !tier.exclude.test(b.modelId)),
 						);
 						if (tierBuckets.length > 0) {
 							const b = tierBuckets[0]!;
-							const percentLeft = percentLeftFromRemainingFraction(b.remainingFraction) ?? 0;
+							const percentLeft =
+								percentLeftFromRemainingFraction(b.remainingFraction) ?? 0;
 							const resetsAt = parseIsoTimeSeconds(b.resetTime);
-							const metrics = computeBurnAndExhaust(prevState, `gemini-cli:${tier.label}`, fetchedAt, percentLeft, resetsAt, 86400);
-							groupRows.push(buildStatusRow({
-								label: tier.label,
-								subLabel: tier.subLabel,
+							const metrics = computeBurnAndExhaust(
+								prevState,
+								`gemini-cli:${tier.label}`,
+								fetchedAt,
 								percentLeft,
 								resetsAt,
-								isDepleted: percentLeft === 0,
-								...metrics
-							}));
+								86400,
+							);
+							groupRows.push(
+								buildStatusRow({
+									label: tier.label,
+									subLabel: tier.subLabel,
+									percentLeft,
+									resetsAt,
+									isDepleted: percentLeft === 0,
+									...metrics,
+								}),
+							);
 							nextState.values[`gemini-cli:${tier.label}`] = { percentLeft };
 						}
 					}
@@ -1022,50 +1161,78 @@ export default function initStatus(pi: ExtensionAPI, state: TauState) {
 					const email = user?.email ?? "Unknown";
 					const planName = user?.planStatus?.planInfo?.planName;
 					const tierName = user?.userTier?.name;
-					const plan = [planName, tierName].filter(Boolean).join(" (") + (planName && tierName ? ")" : "");
+					const plan =
+						[planName, tierName].filter(Boolean).join(" (") +
+						(planName && tierName ? ")" : "");
 					const statusLine = `[${email}]${plan ? ` [${plan}]` : ""}`;
 
 					const configs = user?.cascadeModelConfigData?.clientModelConfigs ?? [];
-					
+
 					const rows: StatusRow[] = [];
-					
-					const proConfigs = configs.filter(c => c.label?.toLowerCase().includes("pro"));
+
+					const proConfigs = configs.filter((c) =>
+						c.label?.toLowerCase().includes("pro"),
+					);
 					if (proConfigs.length > 0) {
 						const c = proConfigs[0]!;
-						const percentLeft = percentLeftFromRemainingFraction(c.quotaInfo?.remainingFraction) ?? 0;
+						const percentLeft =
+							percentLeftFromRemainingFraction(c.quotaInfo?.remainingFraction) ?? 0;
 						const resetsAt = parseIsoTimeSeconds(c.quotaInfo?.resetTime);
-						const metrics = computeBurnAndExhaust(prevState, `antigravity:Pro`, fetchedAt, percentLeft, resetsAt, 18000); // 5h heuristic
-						rows.push(buildStatusRow({
-							label: "Gemini 3 Pro",
-							subLabel: "High/Low",
+						const metrics = computeBurnAndExhaust(
+							prevState,
+							`antigravity:Pro`,
+							fetchedAt,
 							percentLeft,
 							resetsAt,
-							isDepleted: percentLeft === 0,
-							...metrics
-						}));
+							18000,
+						); // 5h heuristic
+						rows.push(
+							buildStatusRow({
+								label: "Gemini 3 Pro",
+								subLabel: "High/Low",
+								percentLeft,
+								resetsAt,
+								isDepleted: percentLeft === 0,
+								...metrics,
+							}),
+						);
 						nextState.values[`antigravity:Pro`] = { percentLeft };
 					}
 
-					const flashConfigs = configs.filter(c => c.label?.toLowerCase().includes("flash"));
+					const flashConfigs = configs.filter((c) =>
+						c.label?.toLowerCase().includes("flash"),
+					);
 					if (flashConfigs.length > 0) {
 						const c = flashConfigs[0]!;
-						const percentLeft = percentLeftFromRemainingFraction(c.quotaInfo?.remainingFraction) ?? 0;
+						const percentLeft =
+							percentLeftFromRemainingFraction(c.quotaInfo?.remainingFraction) ?? 0;
 						const resetsAt = parseIsoTimeSeconds(c.quotaInfo?.resetTime);
-						const metrics = computeBurnAndExhaust(prevState, `antigravity:Flash`, fetchedAt, percentLeft, resetsAt, 18000); // 5h heuristic
-						rows.push(buildStatusRow({
-							label: "Gemini 3 Flash",
+						const metrics = computeBurnAndExhaust(
+							prevState,
+							`antigravity:Flash`,
+							fetchedAt,
 							percentLeft,
 							resetsAt,
-							isDepleted: percentLeft === 0,
-							...metrics
-						}));
+							18000,
+						); // 5h heuristic
+						rows.push(
+							buildStatusRow({
+								label: "Gemini 3 Flash",
+								percentLeft,
+								resetsAt,
+								isDepleted: percentLeft === 0,
+								...metrics,
+							}),
+						);
 						nextState.values[`antigravity:Flash`] = { percentLeft };
 					} else {
-						rows.push(buildStatusRow({
-							label: "Gemini 3 Flash",
-							percentLeft: 0,
-							isDepleted: true,
-						}));
+						rows.push(
+							buildStatusRow({
+								label: "Gemini 3 Flash",
+								percentLeft: 0,
+								isDepleted: true,
+							}),
+						);
 					}
 
 					return { title: "Antigravity", statusLine, rows };
@@ -1078,13 +1245,20 @@ export default function initStatus(pi: ExtensionAPI, state: TauState) {
 					return String(e);
 				};
 
-				const results = await Promise.allSettled([openaiPromise, geminiPromise, antigravityPromise]);
+				const results = await Promise.allSettled([
+					openaiPromise,
+					geminiPromise,
+					antigravityPromise,
+				]);
 				const sections: StatusSectionData[] = results.map((r, i) => {
 					if (r.status === "fulfilled") return r.value;
 					const titles = ["OpenAI", "Gemini CLI", "Antigravity"];
 					const title = titles[i]!;
 					const msg = toErrorString(r.reason);
-					const notConfigured = /process not found|language server process not found|not logged in/i.test(msg);
+					const notConfigured =
+						/process not found|language server process not found|not logged in/i.test(
+							msg,
+						);
 					return { title, error: msg, notConfigured, rows: [] };
 				});
 

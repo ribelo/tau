@@ -30,6 +30,11 @@ export default function initAgent(pi: ExtensionAPI) {
 		name: "agent",
 		label: "agent",
 		description: buildToolDescription(),
+		promptSnippet: "Manage non-blocking agent tasks (spawn, send, wait, close, list)",
+		promptGuidelines: [
+			"Use all the tools available to you.",
+			"For complex tasks requiring deep analysis, planning, or debugging across multiple files, use an expert reasoning subagent and then validate findings with your own investigation.",
+		],
 		parameters: AgentParams,
 
 		async execute(toolCallId, params, signal, onUpdate, ctx) {

@@ -22,7 +22,10 @@ export function computeSandboxConfigHash(cfg: Required<SandboxConfig>): string {
 	].join(";");
 }
 
-function buildSandboxNotice(prefix: "SANDBOX_STATE:" | "SANDBOX_CHANGE:", cfg: Required<SandboxConfig>): string {
+function buildSandboxNotice(
+	prefix: "SANDBOX_STATE:" | "SANDBOX_CHANGE:",
+	cfg: Required<SandboxConfig>,
+): string {
 	return [
 		prefix,
 		`fs=${cfg.filesystemMode}`,
@@ -40,9 +43,7 @@ export function buildSandboxChangeNoticeText(cfg: Required<SandboxConfig>): stri
 	return buildSandboxNotice("SANDBOX_CHANGE:", cfg);
 }
 
-function asContentArray(
-	content: unknown,
-): (TextContent | ImageContent)[] {
+function asContentArray(content: unknown): (TextContent | ImageContent)[] {
 	if (content === undefined || content === null) return [];
 	if (typeof content === "string") return [{ type: "text", text: content }];
 	if (Array.isArray(content)) return content as (TextContent | ImageContent)[];

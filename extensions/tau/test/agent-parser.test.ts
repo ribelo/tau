@@ -173,12 +173,17 @@ Prompt`;
 	});
 
 	describe("loadAgentDefinition", () => {
-		const tempDir = path.join(os.tmpdir(), "tau-agent-test-" + Math.random().toString(36).slice(2));
+		const tempDir = path.join(
+			os.tmpdir(),
+			"tau-agent-test-" + Math.random().toString(36).slice(2),
+		);
 		const agentsDir = path.join(tempDir, ".pi", "agents");
 
 		beforeAll(() => {
 			fs.mkdirSync(agentsDir, { recursive: true });
-			fs.writeFileSync(path.join(agentsDir, "test-agent.md"), `---
+			fs.writeFileSync(
+				path.join(agentsDir, "test-agent.md"),
+				`---
 name: test-agent
 description: A test agent
 models:
@@ -189,7 +194,8 @@ sandbox_net: deny
 approval_policy: never
 approval_timeout: 60
 ---
-Test prompt`);
+Test prompt`,
+			);
 		});
 
 		afterAll(() => {

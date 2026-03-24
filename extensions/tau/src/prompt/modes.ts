@@ -136,7 +136,9 @@ function readPromptModesNamespace(settings: unknown): unknown {
 	return legacy;
 }
 
-function readPromptModeOverridesFromSettingsFile(filePath: string): Partial<Record<PromptModeName, PromptModePresetOverride>> {
+function readPromptModeOverridesFromSettingsFile(
+	filePath: string,
+): Partial<Record<PromptModeName, PromptModePresetOverride>> {
 	const json = readJsonFile(filePath);
 	if (!json) return {};
 
@@ -148,7 +150,10 @@ function readPromptModeOverridesFromSettingsFile(filePath: string): Partial<Reco
 
 	const out: Partial<Record<PromptModeName, PromptModePresetOverride>> = {};
 	for (const mode of ["smart", "deep", "rush"] as const) {
-		const override = parsePresetOverride(presets[mode], `${filePath}: promptModes.presets.${mode}`);
+		const override = parsePresetOverride(
+			presets[mode],
+			`${filePath}: promptModes.presets.${mode}`,
+		);
 		if (override) out[mode] = override;
 	}
 	return out;
@@ -159,7 +164,9 @@ export function resolvePromptModePresets(cwd: string): Record<PromptModeName, Pr
 	const projectPath = findNearestProjectSettingsPath(cwd);
 
 	const globalOverrides = readPromptModeOverridesFromSettingsFile(globalPath);
-	const projectOverrides = projectPath ? readPromptModeOverridesFromSettingsFile(projectPath) : {};
+	const projectOverrides = projectPath
+		? readPromptModeOverridesFromSettingsFile(projectPath)
+		: {};
 
 	const resolved: Record<PromptModeName, PromptModePreset> = {
 		smart: { ...DEFAULT_PROMPT_MODE_PRESETS.smart },

@@ -28,10 +28,12 @@ export const AgentControlLive = Layer.effect(
 					const registry = AgentRegistry.load(opts.cwd);
 					const complexity = (opts.complexity || "medium") as Complexity;
 					const definition = registry.resolve(opts.agent, complexity);
-					
+
 					if (!definition) {
 						return yield* Effect.fail(
-							new AgentError({ message: `Unknown agent: "${opts.agent}". Available: ${registry.names().join(", ")}` })
+							new AgentError({
+								message: `Unknown agent: "${opts.agent}". Available: ${registry.names().join(", ")}`,
+							}),
 						);
 					}
 
@@ -51,12 +53,7 @@ export const AgentControlLive = Layer.effect(
 						resultSchema: opts.result_schema,
 					} satisfies SpawnOptions as SpawnOptions);
 				}),
-			send: (
-				id: AgentId,
-				message: string,
-				interrupt?: boolean,
-				requesterAgentId?: AgentId,
-			) =>
+			send: (id: AgentId, message: string, interrupt?: boolean, requesterAgentId?: AgentId) =>
 				Effect.gen(function* () {
 					const agent = yield* manager.get(id);
 					const canRequesterMutate = yield* manager.canMutate(id, requesterAgentId);
@@ -138,9 +135,7 @@ export const AgentControlLive = Layer.effect(
 						Effect.timeout(timeout),
 						Effect.map((status) => ({ status, timedOut: false })),
 						Effect.catch(() =>
-							getStatusMap.pipe(
-								Effect.map((status) => ({ status, timedOut: true })),
-							),
+							getStatusMap.pipe(Effect.map((status) => ({ status, timedOut: true }))),
 						),
 					);
 				}).pipe(
@@ -189,11 +184,13 @@ export const AgentControlLive = Layer.effect(
 						// On timeout, emit final status with timedOut: true
 						Stream.fromEffect(
 							getStatusAndTypes.pipe(
-								Effect.map(({ statusMap, agentTypes }): WaitResult => ({
-									status: statusMap,
-									timedOut: true,
-									agentTypes,
-								})),
+								Effect.map(
+									({ statusMap, agentTypes }): WaitResult => ({
+										status: statusMap,
+										timedOut: true,
+										agentTypes,
+									}),
+								),
 							),
 						),
 					),

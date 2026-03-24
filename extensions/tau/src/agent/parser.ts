@@ -7,11 +7,7 @@ import { fileURLToPath } from "node:url";
 import type { AgentDefinition, ModelSpec } from "./types.js";
 import type { SandboxConfig } from "../sandbox/config.js";
 import { ApprovalTimeoutSeconds } from "../schemas/config.js";
-import {
-	APPROVAL_POLICIES,
-	FILESYSTEM_MODES,
-	NETWORK_MODES,
-} from "../shared/policy.js";
+import { APPROVAL_POLICIES, FILESYSTEM_MODES, NETWORK_MODES } from "../shared/policy.js";
 
 const EXTENSION_AGENTS_DIR = path.resolve(
 	path.dirname(fileURLToPath(import.meta.url)),

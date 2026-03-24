@@ -182,9 +182,7 @@ function parseModelsArray(arr: unknown, keyPath: string): ModelSpec[] | undefine
 		}
 
 		const spec: ModelSpec =
-			validatedThinking === undefined
-				? { model }
-				: { model, thinking: validatedThinking };
+			validatedThinking === undefined ? { model } : { model, thinking: validatedThinking };
 
 		result.push(spec);
 	}
@@ -409,9 +407,7 @@ export class AgentRegistry {
 				try {
 					parsedByPath.set(filePath, parseAndValidateAgentFile(name, filePath));
 				} catch (error) {
-					validationErrors.push(
-						error instanceof Error ? error.message : String(error),
-					);
+					validationErrors.push(error instanceof Error ? error.message : String(error));
 				}
 			}
 		};
@@ -423,9 +419,7 @@ export class AgentRegistry {
 		validateSource(projectAgents);
 
 		if (validationErrors.length > 0) {
-			throw new AgentRegistryConfigError(
-				formatValidationErrors(validationErrors),
-			);
+			throw new AgentRegistryConfigError(formatValidationErrors(validationErrors));
 		}
 
 		const mergedPaths = new Map<string, string>();
@@ -472,16 +466,11 @@ export class AgentRegistry {
 	}
 
 	has(name: string): boolean {
-		return isPromptModeName(name)
-			? this.modeAgents.has(name)
-			: this.definitions.has(name);
+		return isPromptModeName(name) ? this.modeAgents.has(name) : this.definitions.has(name);
 	}
 
 	names(): string[] {
-		const names = new Set<string>([
-			...this.definitions.keys(),
-			...this.modeAgents.keys(),
-		]);
+		const names = new Set<string>([...this.definitions.keys(), ...this.modeAgents.keys()]);
 		return Array.from(names).sort();
 	}
 

@@ -38,7 +38,9 @@ export interface AgentConfigService {
 	readonly maxDepth: number;
 }
 
-export class AgentConfig extends ServiceMap.Service<AgentConfig, AgentConfigService>()("AgentConfig") {}
+export class AgentConfig extends ServiceMap.Service<AgentConfig, AgentConfigService>()(
+	"AgentConfig",
+) {}
 
 // Agent Info
 export interface AgentInfo {
@@ -75,13 +77,12 @@ export interface SpawnOptions {
 	readonly resultSchema?: unknown;
 }
 
-export class AgentManager extends ServiceMap.Service<AgentManager, {
+export class AgentManager extends ServiceMap.Service<
+	AgentManager,
+	{
 		readonly spawn: (
 			opts: SpawnOptions,
-		) => Effect.Effect<
-			AgentId,
-			AgentLimitReached | AgentDepthExceeded | AgentError
-		>;
+		) => Effect.Effect<AgentId, AgentLimitReached | AgentDepthExceeded | AgentError>;
 		readonly get: (id: AgentId) => Effect.Effect<Agent, AgentNotFound>;
 		readonly touch: (id: AgentId) => Effect.Effect<void>;
 		readonly list: Effect.Effect<AgentInfo[]>;
@@ -94,7 +95,8 @@ export class AgentManager extends ServiceMap.Service<AgentManager, {
 			requesterAgentId?: AgentId,
 		) => Effect.Effect<AgentId[], AgentNotFound | AgentAccessDenied>;
 		readonly shutdownAll: Effect.Effect<void>;
-	}>()("AgentManager") {}
+	}
+>()("AgentManager") {}
 
 // Agent Control
 export interface ControlSpawnOptions {
@@ -120,23 +122,19 @@ export interface WaitResult {
 	readonly interrupted?: boolean;
 }
 
-export class AgentControl extends ServiceMap.Service<AgentControl, {
+export class AgentControl extends ServiceMap.Service<
+	AgentControl,
+	{
 		readonly spawn: (
 			opts: ControlSpawnOptions,
-		) => Effect.Effect<
-			AgentId,
-			AgentLimitReached | AgentDepthExceeded | AgentError
-		>;
+		) => Effect.Effect<AgentId, AgentLimitReached | AgentDepthExceeded | AgentError>;
 		readonly send: (
 			id: AgentId,
 			message: string,
 			interrupt?: boolean,
 			requesterAgentId?: AgentId,
 		) => Effect.Effect<string, AgentNotFound | AgentAccessDenied | AgentError>;
-		readonly wait: (
-			ids: AgentId[],
-			timeoutMs?: number,
-		) => Effect.Effect<WaitResult, unknown>;
+		readonly wait: (ids: AgentId[], timeoutMs?: number) => Effect.Effect<WaitResult, unknown>;
 		/** Stream version of wait that emits status updates */
 		readonly waitStream: (
 			ids: AgentId[],
@@ -149,4 +147,5 @@ export class AgentControl extends ServiceMap.Service<AgentControl, {
 		) => Effect.Effect<AgentId[], AgentNotFound | AgentAccessDenied>;
 		readonly closeAll: Effect.Effect<void>;
 		readonly list: Effect.Effect<AgentInfo[]>;
-	}>()("AgentControl") {}
+	}
+>()("AgentControl") {}

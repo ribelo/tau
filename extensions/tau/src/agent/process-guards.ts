@@ -35,7 +35,7 @@ function toErrorString(reason: unknown): string {
 }
 
 function toShortErrorString(reason: unknown, max = 600): string {
-	const full = reason instanceof Error ? (reason.message || String(reason)) : toErrorString(reason);
+	const full = reason instanceof Error ? reason.message || String(reason) : toErrorString(reason);
 	if (full.length <= max) return full;
 	return full.slice(0, Math.max(0, max - 3)) + "...";
 }
@@ -59,7 +59,11 @@ function shouldThrottle(now: number): boolean {
 	return false;
 }
 
-async function handleFatalLikeError(pi: ExtensionAPI, kind: string, reason: unknown): Promise<void> {
+async function handleFatalLikeError(
+	pi: ExtensionAPI,
+	kind: string,
+	reason: unknown,
+): Promise<void> {
 	const now = Date.now();
 	if (shouldThrottle(now)) return;
 

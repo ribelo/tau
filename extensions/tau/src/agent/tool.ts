@@ -39,23 +39,27 @@ function abortSignalEffect(signal: AbortSignal | undefined): Effect.Effect<void>
 
 export const AgentParams = Type.Object({
 	action: StringEnum(["spawn", "send", "wait", "close", "list"] as const, {
-		description: "Action: spawn (create), send (message existing), wait (block until done), close (terminate), list (show all)",
+		description:
+			"Action: spawn (create), send (message existing), wait (block until done), close (terminate), list (show all)",
 	}),
 	// spawn
-	agent: Type.Optional(Type.String({ 
-		description: "Agent name to spawn (e.g., oracle, finder, smart, deep, rush, review, painter, librarian)" 
-	})),
-	message: Type.Optional(
-		Type.String({ description: "Task instructions for the agent" }),
+	agent: Type.Optional(
+		Type.String({
+			description:
+				"Agent name to spawn (e.g., oracle, finder, smart, deep, rush, review, painter, librarian)",
+		}),
 	),
+	message: Type.Optional(Type.String({ description: "Task instructions for the agent" })),
 	complexity: Type.Optional(
 		StringEnum(["low", "medium", "high"] as const, {
-			description: "Model selection: low (fast/cheap), medium (default), high (capable/expensive)",
+			description:
+				"Model selection: low (fast/cheap), medium (default), high (capable/expensive)",
 		}),
 	),
 	result_schema: Type.Optional(
 		Type.Any({
-			description: "JSON schema for structured output. Agent must call submit_result with matching data.",
+			description:
+				"JSON schema for structured output. Agent must call submit_result with matching data.",
 		}),
 	),
 	// send/close
@@ -67,13 +71,15 @@ export const AgentParams = Type.Object({
 	),
 	// wait
 	ids: Type.Optional(
-		Type.Array(Type.String(), { 
-			description: "Agent IDs to wait for (required for wait action). Returns when all finish (completed/failed/shutdown)" 
+		Type.Array(Type.String(), {
+			description:
+				"Agent IDs to wait for (required for wait action). Returns when all finish (completed/failed/shutdown)",
 		}),
 	),
 	timeout_ms: Type.Optional(
-		Type.Number({ 
-			description: "Max wait time in ms. Default 900000 (15 min), max 14400000 (4 hours). Returns timedOut:true if exceeded" 
+		Type.Number({
+			description:
+				"Max wait time in ms. Default 900000 (15 min), max 14400000 (4 hours). Returns timedOut:true if exceeded",
 		}),
 	),
 });
@@ -82,7 +88,7 @@ export function buildToolDescription(cwd?: string): string {
 	// Load registry to get available agents
 	const registry = AgentRegistry.load(cwd ?? process.cwd());
 	const agents = registry.list();
-	
+
 	const lines: string[] = [];
 	lines.push("Manage non-blocking agent tasks. Actions: spawn, send, wait, close, list.");
 	lines.push("");
@@ -134,43 +140,42 @@ async function executeWaitWithUpdates(
 
 		const program = Effect.gen(function* () {
 			const control = yield* AgentControl;
-			
+
 			const ids = p.ids as AgentId[] | undefined;
 			if (!ids || ids.length === 0) {
 				return yield* Effect.fail(
 					new Error("wait requires 'ids' with at least one agent ID"),
 				);
 			}
-			
+
 			const stream = control.waitStream(ids, p.timeout_ms, 1000);
-			
+
 			// Create abort effect that completes when signal triggers
 			const abortEffect = abortSignalEffect(signal);
-			
+
 			// Run the stream with interruption handling
-			const streamRun = stream
-				.pipe(
-					Stream.tap((result) =>
-						Effect.gen(function* () {
-							yield* Ref.set(latestResultRef, result);
-							if (onUpdate) {
-								onUpdate({
-									content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-									details: result,
-								});
-							}
-						})
-					),
-					Stream.runDrain,
-					// Interrupt when abort signal triggers
-					Effect.race(abortEffect)
-				);
-			
+			const streamRun = stream.pipe(
+				Stream.tap((result) =>
+					Effect.gen(function* () {
+						yield* Ref.set(latestResultRef, result);
+						if (onUpdate) {
+							onUpdate({
+								content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+								details: result,
+							});
+						}
+					}),
+				),
+				Stream.runDrain,
+				// Interrupt when abort signal triggers
+				Effect.race(abortEffect),
+			);
+
 			yield* streamRun;
-			
+
 			// Return final result from ref
 			return yield* Ref.get(latestResultRef).pipe(
-				Effect.map((r) => r ?? { status: {}, timedOut: false })
+				Effect.map((r) => r ?? { status: {}, timedOut: false }),
 			);
 		});
 
@@ -187,7 +192,7 @@ async function executeWaitWithUpdates(
 						}
 						// Re-throw real errors
 						return yield* Effect.failCause(cause);
-					})
+					}),
 				),
 				Effect.catch((err: unknown) =>
 					Effect.fail(err instanceof Error ? err : new Error(String(err))),
@@ -247,14 +252,23 @@ export function createAgentToolDef(
 		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
 			const context = getContext();
 			const p = params as Static<typeof AgentParams>;
-			
+
 			// Special case for wait: use streaming with onUpdate and abort handling
 			if (p.action === "wait") {
 				const typedOnUpdate = onUpdate as AgentToolUpdateCallback<object> | undefined;
 				return executeWaitWithUpdates(runEffect, p, typedOnUpdate, signal);
 			}
-			
-			const program: Effect.Effect<object, AgentLimitReached | AgentDepthExceeded | AgentNotFound | AgentAccessDenied | AgentError | Error, AgentControl> = Effect.gen(function* () {
+
+			const program: Effect.Effect<
+				object,
+				| AgentLimitReached
+				| AgentDepthExceeded
+				| AgentNotFound
+				| AgentAccessDenied
+				| AgentError
+				| Error,
+				AgentControl
+			> = Effect.gen(function* () {
 				const control = yield* AgentControl;
 
 				switch (p.action) {
@@ -276,8 +290,8 @@ export function createAgentToolDef(
 							modelRegistry: context.modelRegistry,
 							cwd: context.cwd,
 						} satisfies ControlSpawnOptions as ControlSpawnOptions);
-						return { 
-							agent_id: id, 
+						return {
+							agent_id: id,
 							status: "running",
 							message: p.message,
 							note: "Agent started. Call wait with this id to get result when done.",
@@ -310,14 +324,18 @@ export function createAgentToolDef(
 					}
 					case "list": {
 						const agents = yield* control.list;
-						const summary = agents.map(a => {
+						const summary = agents.map((a) => {
 							const { state } = a.status;
 							const base: Record<string, unknown> = { id: a.id, type: a.type, state };
 							const s = a.status as Record<string, unknown>;
-							if (a.parentAgentId !== undefined) base["parentAgentId"] = a.parentAgentId;
-							if ("turns" in s && s["turns"] !== undefined) base["turns"] = s["turns"];
-							if ("toolCalls" in s && s["toolCalls"] !== undefined) base["toolCalls"] = s["toolCalls"];
-							if ("workedMs" in s && s["workedMs"] !== undefined) base["workedMs"] = s["workedMs"];
+							if (a.parentAgentId !== undefined)
+								base["parentAgentId"] = a.parentAgentId;
+							if ("turns" in s && s["turns"] !== undefined)
+								base["turns"] = s["turns"];
+							if ("toolCalls" in s && s["toolCalls"] !== undefined)
+								base["toolCalls"] = s["toolCalls"];
+							if ("workedMs" in s && s["workedMs"] !== undefined)
+								base["workedMs"] = s["workedMs"];
 							if (state === "failed" && "reason" in s) base["reason"] = s["reason"];
 							return base;
 						});
@@ -333,9 +351,17 @@ export function createAgentToolDef(
 					program.pipe(
 						Effect.catchTags({
 							AgentLimitReached: (err: AgentLimitReached) =>
-								Effect.fail(new Error(`Agent limit reached (max: ${err.max}). Close completed agents (agent close <id>) or wait for running agents to finish.`)),
+								Effect.fail(
+									new Error(
+										`Agent limit reached (max: ${err.max}). Close completed agents (agent close <id>) or wait for running agents to finish.`,
+									),
+								),
 							AgentDepthExceeded: (err: AgentDepthExceeded) =>
-								Effect.fail(new Error(`Agent depth exceeded (max: ${err.max}). Deeply nested agent spawns are restricted.`)),
+								Effect.fail(
+									new Error(
+										`Agent depth exceeded (max: ${err.max}). Deeply nested agent spawns are restricted.`,
+									),
+								),
 							AgentNotFound: (err: AgentNotFound) =>
 								Effect.fail(new Error(`Agent not found: ${err.id}`)),
 							AgentAccessDenied: (err: AgentAccessDenied) =>
@@ -344,8 +370,7 @@ export function createAgentToolDef(
 										`Access denied for agent ${err.requesterId}: cannot mutate ${err.id} (parent: ${err.parentId}).`,
 									),
 								),
-							AgentError: (err: AgentError) =>
-								Effect.fail(new Error(err.message)),
+							AgentError: (err: AgentError) => Effect.fail(new Error(err.message)),
 						}),
 						Effect.catch((err: unknown) =>
 							Effect.fail(err instanceof Error ? err : new Error(String(err))),

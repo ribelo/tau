@@ -25,7 +25,10 @@ function parsePids(stdout: string): number[] {
 
 function listPiPids(): number[] {
 	try {
-		const res = spawnSync("pgrep", ["-x", "pi"], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
+		const res = spawnSync("pgrep", ["-x", "pi"], {
+			encoding: "utf-8",
+			stdio: ["ignore", "pipe", "pipe"],
+		});
 		if (res.status !== 0) return [];
 		return parsePids(res.stdout || "");
 	} catch {
@@ -69,7 +72,11 @@ function isSameOrAncestor(ancestor: string, child: string): boolean {
 	return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
 }
 
-export function isOverlapping(ourCwd: string, ourGitRoot: string | null, theirCwd: string): boolean {
+export function isOverlapping(
+	ourCwd: string,
+	ourGitRoot: string | null,
+	theirCwd: string,
+): boolean {
 	const our = normalizeForCompare(ourCwd);
 	const theirs = normalizeForCompare(theirCwd);
 
@@ -106,4 +113,3 @@ export function countOverlappingAgents(
 		return { count: 0, pids: [] };
 	}
 }
-

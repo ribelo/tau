@@ -23,3 +23,6 @@ yarn-error.log*
 
 # pi local artifacts
 .pi/
+
+# effect-solutions reference
+.reference/

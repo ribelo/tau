@@ -32,7 +32,11 @@ export class SkillMarkerAutocompleteProvider implements AutocompleteProvider {
 			const filtered = fuzzyFilter(this.getCandidates(), query, (c) => c.name).slice(0, 30);
 			if (filtered.length === 0) return null;
 			return {
-				items: filtered.map((c) => ({ value: c.name, label: c.name, description: c.description })),
+				items: filtered.map((c) => ({
+					value: c.name,
+					label: c.name,
+					description: c.description,
+				})),
 				prefix,
 			};
 		}
@@ -90,4 +94,3 @@ export function shouldAutoTriggerSkillAutocomplete(
 	const textBeforeCursor = currentLine.slice(0, cursor.col);
 	return SKILL_AUTOCOMPLETE_REGEX.test(textBeforeCursor);
 }
-

@@ -52,24 +52,36 @@ function setupFooter(pi: ExtensionAPI, state: TauState, ctx: ExtensionContext) {
 			invalidate() {},
 			render(width: number): string[] {
 				const config = getEffectiveSandboxConfig(state, ctx);
-				
+
 				// 1. Sandbox Dots (Hardcoded ANSI for high contrast in Alacritty)
 				const green = "\x1b[32m";
 				const yellow = "\x1b[33m";
 				const red = "\x1b[31m";
 				const reset = "\x1b[39m";
 
-				const fsDotRaw = config.filesystemMode === "read-only" ? green : config.filesystemMode === "workspace-write" ? yellow : red;
+				const fsDotRaw =
+					config.filesystemMode === "read-only"
+						? green
+						: config.filesystemMode === "workspace-write"
+							? yellow
+							: red;
 				const fsDot = `${fsDotRaw}•${reset}`;
-						
+
 				const netDotRaw = config.networkMode === "deny" ? green : red;
 				const netDot = `${netDotRaw}•${reset}`;
-						
-				const appDotRaw = config.approvalPolicy === "never" ? green : config.approvalPolicy === "on-failure" ? yellow : red;
+
+				const appDotRaw =
+					config.approvalPolicy === "never"
+						? green
+						: config.approvalPolicy === "on-failure"
+							? yellow
+							: red;
 				const appDot = `${appDotRaw}•${reset}`;
 
 				// 2. Subscription Dot
-				const usingSubscription = ctx.model ? ctx.modelRegistry.isUsingOAuth(ctx.model) : false;
+				const usingSubscription = ctx.model
+					? ctx.modelRegistry.isUsingOAuth(ctx.model)
+					: false;
 				const subDot = usingSubscription ? theme.fg("success", "•") : theme.fg("dim", "•");
 
 				const dots = `${fsDot} ${netDot} ${appDot} ${subDot}`;
@@ -85,7 +97,10 @@ function setupFooter(pi: ExtensionAPI, state: TauState, ctx: ExtensionContext) {
 				const provider = ctx.model?.provider || "unknown";
 				const modelId = ctx.model?.id || "no-model";
 				const thinking = pi.getThinkingLevel() || "off";
-				const modelInfo = theme.fg("dim", `${provider} • ${modelId}${thinking !== "off" ? ` • ${thinking}` : ""}`);
+				const modelInfo = theme.fg(
+					"dim",
+					`${provider} • ${modelId}${thinking !== "off" ? ` • ${thinking}` : ""}`,
+				);
 
 				// 5. Usage & Context
 				let totalCost = 0;
@@ -97,13 +112,14 @@ function setupFooter(pi: ExtensionAPI, state: TauState, ctx: ExtensionContext) {
 				}
 
 				const usage = ctx.getContextUsage();
-				const contextTokens = usage ? usage.tokens : 0;
-				const contextWindow = usage ? usage.contextWindow : (ctx.model?.contextWindow || 0);
-				const contextPercentValue = contextWindow > 0 ? (contextTokens / contextWindow) * 100 : 0;
+				const contextTokens = usage?.tokens ?? 0;
+				const contextWindow = usage ? usage.contextWindow : ctx.model?.contextWindow || 0;
+				const contextPercentValue =
+					contextWindow > 0 ? (contextTokens / contextWindow) * 100 : 0;
 				const contextPercent = contextPercentValue.toFixed(1);
 
 				const costStr = theme.fg("dim", `$${totalCost.toFixed(3)}`);
-				
+
 				let contextPercentStr: string;
 				const contextDisplay = `${contextPercent}%/${formatTokens(contextWindow)}`;
 				if (contextPercentValue > 90) {
@@ -114,11 +130,7 @@ function setupFooter(pi: ExtensionAPI, state: TauState, ctx: ExtensionContext) {
 					contextPercentStr = theme.fg("dim", contextDisplay);
 				}
 
-				const leftParts = [
-					dots,
-					repoGit,
-					modelInfo,
-				];
+				const leftParts = [dots, repoGit, modelInfo];
 
 				const left = leftParts.join(" ");
 				const right = `${costStr} ${contextPercentStr}`;

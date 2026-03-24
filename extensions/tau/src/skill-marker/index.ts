@@ -12,10 +12,7 @@ import type { AutocompleteProvider } from "@mariozechner/pi-tui";
 import { readFile } from "node:fs/promises";
 
 import type { TauState } from "../shared/state.js";
-import {
-	SkillMarkerAutocompleteProvider,
-	type SkillCandidate,
-} from "./autocomplete.js";
+import { SkillMarkerAutocompleteProvider, type SkillCandidate } from "./autocomplete.js";
 
 // Re-export for use by editor
 export { shouldAutoTriggerSkillAutocomplete } from "./autocomplete.js";
@@ -76,7 +73,10 @@ class SkillRegistry {
 
 		const raw = await readFile(info.path, "utf-8");
 		const body = stripFrontmatter(raw).trim();
-		const truncation = truncateHead(body, { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES });
+		const truncation = truncateHead(body, {
+			maxBytes: DEFAULT_MAX_BYTES,
+			maxLines: DEFAULT_MAX_LINES,
+		});
 
 		const result: SkillBody = {
 			path: info.path,
@@ -142,8 +142,6 @@ export function wrapAutocompleteProvider(
 	}
 	return s.wrapper;
 }
-
-
 
 export default function initSkillMarker(pi: ExtensionAPI, state: TauState) {
 	if (!ENABLED) return;
@@ -236,4 +234,3 @@ export default function initSkillMarker(pi: ExtensionAPI, state: TauState) {
 		};
 	});
 }
-

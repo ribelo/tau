@@ -16,7 +16,8 @@ function renderToText(result: AgentToolResult<unknown>, options: ToolRenderResul
 
 describe("agent renderer", () => {
 	it("shows full send message when expanded", () => {
-		const fullMessage = "Create a DETAILED porting plan from service alpha to service beta with edge cases";
+		const fullMessage =
+			"Create a DETAILED porting plan from service alpha to service beta with edge cases";
 		const result = {
 			content: [{ type: "text", text: "" }],
 			details: {

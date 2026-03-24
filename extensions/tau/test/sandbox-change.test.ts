@@ -22,7 +22,10 @@ describe("sandbox-change", () => {
 	it("injectSandboxNoticeIntoMessages: prepends sandbox state notice", () => {
 		const messages = [{ role: "user", content: "do thing" }];
 
-		const out = injectSandboxNoticeIntoMessages(messages, "SANDBOX_STATE: fs=read-only net=deny approval=never subagent=false");
+		const out = injectSandboxNoticeIntoMessages(
+			messages,
+			"SANDBOX_STATE: fs=read-only net=deny approval=never subagent=false",
+		);
 		const textBlocks = getTextBlocks(out[0]?.content);
 
 		expect(textBlocks[0]).toContain("SANDBOX_STATE:");
@@ -34,13 +37,19 @@ describe("sandbox-change", () => {
 			{
 				role: "user",
 				content: [
-					{ type: "text", text: "SANDBOX_STATE: fs=workspace-write net=deny approval=on-request subagent=false\n\n" },
+					{
+						type: "text",
+						text: "SANDBOX_STATE: fs=workspace-write net=deny approval=on-request subagent=false\n\n",
+					},
 					{ type: "text", text: "continue" },
 				],
 			},
 		];
 
-		const out = injectSandboxNoticeIntoMessages(messages, "SANDBOX_CHANGE: fs=read-only net=deny approval=never subagent=false");
+		const out = injectSandboxNoticeIntoMessages(
+			messages,
+			"SANDBOX_CHANGE: fs=read-only net=deny approval=never subagent=false",
+		);
 		const textBlocks = getTextBlocks(out[0]?.content);
 
 		expect(textBlocks[0]).toContain("SANDBOX_CHANGE:");
@@ -52,11 +61,19 @@ describe("sandbox-change", () => {
 		const messages = [
 			{
 				role: "user",
-				content: [{ type: "text", text: "SANDBOX_CHANGE: fs=read-only net=deny approval=never subagent=false\n\nrun tests" }],
+				content: [
+					{
+						type: "text",
+						text: "SANDBOX_CHANGE: fs=read-only net=deny approval=never subagent=false\n\nrun tests",
+					},
+				],
 			},
 		];
 
-		const out = injectSandboxNoticeIntoMessages(messages, "SANDBOX_STATE: fs=read-only net=deny approval=never subagent=false");
+		const out = injectSandboxNoticeIntoMessages(
+			messages,
+			"SANDBOX_STATE: fs=read-only net=deny approval=never subagent=false",
+		);
 		const textBlocks = getTextBlocks(out[0]?.content);
 
 		expect(textBlocks[0]).toContain("SANDBOX_STATE:");
@@ -66,8 +83,14 @@ describe("sandbox-change", () => {
 
 	it("injectSandboxNoticeIntoMessages: keeps a single sandbox prefix across repeated calls", () => {
 		const messages = [{ role: "user", content: "status" }];
-		const once = injectSandboxNoticeIntoMessages(messages, "SANDBOX_STATE: fs=read-only net=deny approval=never subagent=false");
-		const twice = injectSandboxNoticeIntoMessages(once, "SANDBOX_STATE: fs=workspace-write net=deny approval=on-request subagent=false");
+		const once = injectSandboxNoticeIntoMessages(
+			messages,
+			"SANDBOX_STATE: fs=read-only net=deny approval=never subagent=false",
+		);
+		const twice = injectSandboxNoticeIntoMessages(
+			once,
+			"SANDBOX_STATE: fs=workspace-write net=deny approval=on-request subagent=false",
+		);
 		const textBlocks = getTextBlocks(twice[0]?.content);
 		const sandboxHeaders = textBlocks.filter((text) => text.trimStart().startsWith("SANDBOX_"));
 

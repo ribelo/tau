@@ -4,9 +4,7 @@ import * as path from "node:path";
 
 import type { FilesystemMode } from "./config.js";
 
-export type FsCheckResult =
-	| { allowed: true }
-	| { allowed: false; reason: string };
+export type FsCheckResult = { allowed: true } | { allowed: false; reason: string };
 
 /**
  * Resolve a path to its real absolute path.
@@ -105,8 +103,10 @@ function isGitHooksPath(targetPath: string, workspaceRoot: string): boolean {
 		return isUnderRoot(resolved, resolvedHooksDir);
 	} catch {
 		// .git/hooks doesn't exist - check pattern match
-		return resolved.includes(`${path.sep}.git${path.sep}hooks${path.sep}`) ||
-			resolved.endsWith(`${path.sep}.git${path.sep}hooks`);
+		return (
+			resolved.includes(`${path.sep}.git${path.sep}hooks${path.sep}`) ||
+			resolved.endsWith(`${path.sep}.git${path.sep}hooks`)
+		);
 	}
 }
 

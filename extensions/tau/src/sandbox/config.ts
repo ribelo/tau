@@ -4,11 +4,7 @@ import * as path from "node:path";
 import { SandboxConfig as SandboxConfigSchema } from "../schemas/config.js";
 import { readJsonFileDetailed, writeJsonFile } from "../shared/fs.js";
 import { deepMerge, isRecord, type AnyRecord } from "../shared/json.js";
-import {
-	type ApprovalPolicy,
-	type FilesystemMode,
-	type NetworkMode,
-} from "../shared/policy.js";
+import { type ApprovalPolicy, type FilesystemMode, type NetworkMode } from "../shared/policy.js";
 
 export type { ApprovalPolicy, FilesystemMode, NetworkMode };
 
@@ -35,10 +31,13 @@ function decodeSandboxConfigOrThrow(value: unknown, source: string): SandboxConf
 	try {
 		const decoded = decodeSandboxConfig(value);
 		const normalized: SandboxConfig = {};
-		if (decoded.filesystemMode !== undefined) normalized.filesystemMode = decoded.filesystemMode;
+		if (decoded.filesystemMode !== undefined)
+			normalized.filesystemMode = decoded.filesystemMode;
 		if (decoded.networkMode !== undefined) normalized.networkMode = decoded.networkMode;
-		if (decoded.approvalPolicy !== undefined) normalized.approvalPolicy = decoded.approvalPolicy;
-		if (decoded.approvalTimeoutSeconds !== undefined) normalized.approvalTimeoutSeconds = decoded.approvalTimeoutSeconds;
+		if (decoded.approvalPolicy !== undefined)
+			normalized.approvalPolicy = decoded.approvalPolicy;
+		if (decoded.approvalTimeoutSeconds !== undefined)
+			normalized.approvalTimeoutSeconds = decoded.approvalTimeoutSeconds;
 		if (decoded.subagent !== undefined) normalized.subagent = decoded.subagent;
 		return normalized;
 	} catch (error) {
@@ -52,7 +51,8 @@ export function applyDefaults(cfg: SandboxConfig | undefined): Required<SandboxC
 		filesystemMode: cfg?.filesystemMode ?? DEFAULT_SANDBOX_CONFIG.filesystemMode,
 		networkMode: cfg?.networkMode ?? DEFAULT_SANDBOX_CONFIG.networkMode,
 		approvalPolicy: cfg?.approvalPolicy ?? DEFAULT_SANDBOX_CONFIG.approvalPolicy,
-		approvalTimeoutSeconds: cfg?.approvalTimeoutSeconds ?? DEFAULT_SANDBOX_CONFIG.approvalTimeoutSeconds,
+		approvalTimeoutSeconds:
+			cfg?.approvalTimeoutSeconds ?? DEFAULT_SANDBOX_CONFIG.approvalTimeoutSeconds,
 		subagent: cfg?.subagent ?? DEFAULT_SANDBOX_CONFIG.subagent,
 	};
 }

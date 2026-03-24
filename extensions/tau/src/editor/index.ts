@@ -3,7 +3,10 @@ import { CustomEditor } from "@mariozechner/pi-coding-agent";
 import type { AutocompleteProvider, EditorTheme, TUI } from "@mariozechner/pi-tui";
 
 import type { TauState } from "../shared/state.js";
-import { shouldAutoTriggerSkillAutocomplete, wrapAutocompleteProvider } from "../skill-marker/index.js";
+import {
+	shouldAutoTriggerSkillAutocomplete,
+	wrapAutocompleteProvider,
+} from "../skill-marker/index.js";
 import { wrapEditorRender } from "../terminal-prompt/index.js";
 
 // Runtime access to private Editor method
@@ -15,12 +18,7 @@ export class TauEditor extends CustomEditor {
 	private baseAutocompleteProvider?: AutocompleteProvider;
 	private tauState: TauState;
 
-	constructor(
-		tui: TUI,
-		theme: EditorTheme,
-		keybindings: KeybindingsManager,
-		tauState: TauState,
-	) {
+	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, tauState: TauState) {
 		super(tui, theme, keybindings);
 		this.tauState = tauState;
 	}
@@ -55,7 +53,9 @@ export default function initEditor(pi: ExtensionAPI, state: TauState) {
 		if (!ctx.hasUI) return;
 		// Prefer to run after any other editor installs (legacy extensions may still be present).
 		setTimeout(() => {
-			ctx.ui.setEditorComponent((tui, theme, keybindings) => new TauEditor(tui, theme, keybindings, state));
+			ctx.ui.setEditorComponent(
+				(tui, theme, keybindings) => new TauEditor(tui, theme, keybindings, state),
+			);
 		}, 1);
 	});
 }

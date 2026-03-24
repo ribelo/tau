@@ -222,9 +222,9 @@ export const FooterLive = Layer.effect(
 			const issuesPath = yield* findBeadsJsonlPath(fs, cwd);
 			let inProgressCount = 0;
 			if (issuesPath) {
-				const issuesJsonl = yield* fs.readFileString(issuesPath).pipe(
-					Effect.catch(() => Effect.succeed("")),
-				);
+				const issuesJsonl = yield* fs
+					.readFileString(issuesPath)
+					.pipe(Effect.catch(() => Effect.succeed("")));
 				if (issuesJsonl.length > 0) {
 					inProgressCount = countInProgressIssuesFromJsonl(issuesJsonl);
 				}
@@ -262,141 +262,185 @@ export const FooterLive = Layer.effect(
 						currentTotalCost = computeTotalCost(ctx);
 						emitFooterChanged();
 
-						ctx.ui.setFooter((tui: TUI, theme: Theme, footerData: ReadonlyFooterDataProvider) => {
-							const unsubBranch = footerData.onBranchChange(() => tui.requestRender());
-							const unsubSandbox = pi.events.on("tau:sandbox:changed", (config: unknown) => {
-								if (isSandboxConfigRequired(config)) {
-									currentSandboxConfig = config;
-								}
-								tui.requestRender();
-							});
-							const unsubFooter = pi.events.on("tau:footer:changed", () => tui.requestRender());
-							const unsubMode = pi.events.on("tau:mode:changed", () => tui.requestRender());
+						ctx.ui.setFooter(
+							(tui: TUI, theme: Theme, footerData: ReadonlyFooterDataProvider) => {
+								const unsubBranch = footerData.onBranchChange(() =>
+									tui.requestRender(),
+								);
+								const unsubSandbox = pi.events.on(
+									"tau:sandbox:changed",
+									(config: unknown) => {
+										if (isSandboxConfigRequired(config)) {
+											currentSandboxConfig = config;
+										}
+										tui.requestRender();
+									},
+								);
+								const unsubFooter = pi.events.on("tau:footer:changed", () =>
+									tui.requestRender(),
+								);
+								const unsubMode = pi.events.on("tau:mode:changed", () =>
+									tui.requestRender(),
+								);
 
-							return {
-								dispose() {
-									unsubBranch();
-									unsubSandbox();
-									unsubFooter();
-									unsubMode();
-								},
-								invalidate() {},
-								render(width: number): string[] {
-									const sandboxConfig = currentSandboxConfig;
-									const hygiene = currentHygiene;
-									const totalCost = currentTotalCost;
-									const persisted = persistence.getSnapshot();
-									const modeLabel = persisted.promptModes?.activeMode ?? "smart";
+								return {
+									dispose() {
+										unsubBranch();
+										unsubSandbox();
+										unsubFooter();
+										unsubMode();
+									},
+									invalidate() {},
+									render(width: number): string[] {
+										const sandboxConfig = currentSandboxConfig;
+										const hygiene = currentHygiene;
+										const totalCost = currentTotalCost;
+										const persisted = persistence.getSnapshot();
+										const modeLabel =
+											persisted.promptModes?.activeMode ?? "smart";
 
-									// Status dots
-									const dots: string[] = [];
+										// Status dots
+										const dots: string[] = [];
 
-									// FS Dot
-									const fsMode = sandboxConfig.filesystemMode ?? DEFAULT_SANDBOX_CONFIG.filesystemMode;
-									const fsColor =
-										fsMode === "danger-full-access"
-											? ("error" as const)
-											: fsMode === "workspace-write"
-												? ("warning" as const)
+										// FS Dot
+										const fsMode =
+											sandboxConfig.filesystemMode ??
+											DEFAULT_SANDBOX_CONFIG.filesystemMode;
+										const fsColor =
+											fsMode === "danger-full-access"
+												? ("error" as const)
+												: fsMode === "workspace-write"
+													? ("warning" as const)
+													: ("success" as const);
+										dots.push(theme.fg(fsColor, "•"));
+
+										// Net Dot
+										const netMode =
+											sandboxConfig.networkMode ??
+											DEFAULT_SANDBOX_CONFIG.networkMode;
+										const netColor =
+											netMode === "allow-all"
+												? ("error" as const)
 												: ("success" as const);
-									dots.push(theme.fg(fsColor, "•"));
+										dots.push(theme.fg(netColor, "•"));
 
-									// Net Dot
-									const netMode = sandboxConfig.networkMode ?? DEFAULT_SANDBOX_CONFIG.networkMode;
-									const netColor = netMode === "allow-all" ? ("error" as const) : ("success" as const);
-									dots.push(theme.fg(netColor, "•"));
+										// App Dot (running)
+										dots.push(theme.fg("success", "•"));
 
-									// App Dot (running)
-									dots.push(theme.fg("success", "•"));
+										const repoName = path.basename(ctx.cwd);
+										const branch = footerData.getGitBranch();
+										const repoLine = branch
+											? `${repoName}:${branch}`
+											: repoName;
 
-									const repoName = path.basename(ctx.cwd);
-									const branch = footerData.getGitBranch();
-									const repoLine = branch ? `${repoName}:${branch}` : repoName;
+										const gitLineDeltaText = `Δ+${hygiene.gitLineDelta.added}/-${hygiene.gitLineDelta.removed}`;
+										const gitLineDeltaPart = theme.fg("dim", gitLineDeltaText);
 
-									const gitLineDeltaText = `Δ+${hygiene.gitLineDelta.added}/-${hygiene.gitLineDelta.removed}`;
-									const gitLineDeltaPart = theme.fg("dim", gitLineDeltaText);
+										const inProgressText = `ρ${hygiene.inProgressCount}`;
+										const inProgressPart = theme.fg("dim", inProgressText);
 
-									const inProgressText = `ρ${hygiene.inProgressCount}`;
-									const inProgressPart = theme.fg("dim", inProgressText);
+										const left =
+											dots.join(" ") +
+											"  " +
+											theme.fg("dim", repoLine) +
+											" " +
+											gitLineDeltaPart +
+											" " +
+											inProgressPart;
 
-									const left =
-										dots.join(" ") +
-										"  " +
-										theme.fg("dim", repoLine) +
-										" " +
-										gitLineDeltaPart +
-										" " +
-										inProgressPart;
+										const providerLabel = resolveFooterProviderLabel(
+											ctx.model?.provider ?? null,
+										);
+										const model = ctx.model?.id ?? "no-model";
+										const thinkingLabel = pi.getThinkingLevel() ?? "off";
+										const thinkingStr = ` • ${thinkingLabel}`;
+										const modeStr = ` • ${modeLabel}`;
+										const modelAndMetaRaw = `${model}${thinkingStr}${modeStr}`;
+										const middleRaw = providerLabel
+											? `${providerLabel} • ${modelAndMetaRaw}`
+											: modelAndMetaRaw;
+										const middle = theme.fg("dim", middleRaw);
 
-									const providerLabel = resolveFooterProviderLabel(ctx.model?.provider ?? null);
-									const model = ctx.model?.id ?? "no-model";
-									const thinkingLabel = pi.getThinkingLevel() ?? "off";
-									const thinkingStr = ` • ${thinkingLabel}`;
-									const modeStr = ` • ${modeLabel}`;
-									const modelAndMetaRaw = `${model}${thinkingStr}${modeStr}`;
-									const middleRaw = providerLabel ? `${providerLabel} • ${modelAndMetaRaw}` : modelAndMetaRaw;
-									const middle = theme.fg("dim", middleRaw);
+										const costStr = `$${totalCost.toFixed(3)}`;
 
-									const costStr = `$${totalCost.toFixed(3)}`;
+										const usage = ctx.getContextUsage();
+										const contextWindow = usage?.contextWindow;
+										const contextStr =
+											typeof contextWindow === "number" &&
+											Number.isFinite(contextWindow) &&
+											contextWindow > 0
+												? `${Math.round(usage?.percent ?? 0)}%/${formatTokenWindow(contextWindow)}`
+												: null;
 
-									const usage = ctx.getContextUsage();
-									const contextWindow = usage?.contextWindow;
-									const contextStr =
-										typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0
-											? `${Math.round(usage?.percent ?? 0)}%/${formatTokenWindow(contextWindow)}`
-											: null;
+										const rightParts = [costStr, contextStr].filter(
+											(part): part is string =>
+												typeof part === "string" && part.length > 0,
+										);
+										const right = theme.fg("dim", rightParts.join(" "));
 
-									const rightParts = [costStr, contextStr].filter(
-										(part): part is string => typeof part === "string" && part.length > 0,
-									);
-									const right = theme.fg("dim", rightParts.join(" "));
+										const leftWidth = visibleWidth(left);
+										const middleWidth = visibleWidth(middleRaw);
+										const rightWidth = visibleWidth(right);
 
-									const leftWidth = visibleWidth(left);
-									const middleWidth = visibleWidth(middleRaw);
-									const rightWidth = visibleWidth(right);
+										let statsLine = left;
+										if (Number.isFinite(width) && width > 0) {
+											const minGap = 2;
+											const fullRequired =
+												leftWidth + middleWidth + rightWidth + minGap * 2;
 
-									let statsLine = left;
-									if (Number.isFinite(width) && width > 0) {
-										const minGap = 2;
-										const fullRequired = leftWidth + middleWidth + rightWidth + minGap * 2;
-
-										if (fullRequired <= width) {
-											const free = width - fullRequired;
-											const leftGap = minGap + Math.floor(free / 2);
-											const rightGap = minGap + Math.ceil(free / 2);
-											statsLine = `${left}${" ".repeat(leftGap)}${middle}${" ".repeat(rightGap)}${right}`;
-										} else {
-											const middleBudget = width - leftWidth - rightWidth - minGap * 2;
-											if (middleBudget > 0) {
-												const compactMiddleRaw = modelAndMetaRaw;
-												const preferredMiddleRaw =
-													providerLabel && visibleWidth(compactMiddleRaw) <= middleBudget
-														? compactMiddleRaw
-														: middleRaw;
-												const renderedMiddleRaw =
-													visibleWidth(preferredMiddleRaw) <= middleBudget
-														? preferredMiddleRaw
-														: truncateMiddle(preferredMiddleRaw, middleBudget);
-												const renderedMiddle = theme.fg("dim", renderedMiddleRaw);
-												const consumed =
-													leftWidth + visibleWidth(renderedMiddleRaw) + rightWidth + minGap * 2;
-												const free = Math.max(0, width - consumed);
+											if (fullRequired <= width) {
+												const free = width - fullRequired;
 												const leftGap = minGap + Math.floor(free / 2);
 												const rightGap = minGap + Math.ceil(free / 2);
-												statsLine = `${left}${" ".repeat(leftGap)}${renderedMiddle}${" ".repeat(rightGap)}${right}`;
+												statsLine = `${left}${" ".repeat(leftGap)}${middle}${" ".repeat(rightGap)}${right}`;
 											} else {
-												const padding = " ".repeat(Math.max(1, width - leftWidth - rightWidth));
-												statsLine = `${left}${padding}${right}`;
+												const middleBudget =
+													width - leftWidth - rightWidth - minGap * 2;
+												if (middleBudget > 0) {
+													const compactMiddleRaw = modelAndMetaRaw;
+													const preferredMiddleRaw =
+														providerLabel &&
+														visibleWidth(compactMiddleRaw) <=
+															middleBudget
+															? compactMiddleRaw
+															: middleRaw;
+													const renderedMiddleRaw =
+														visibleWidth(preferredMiddleRaw) <=
+														middleBudget
+															? preferredMiddleRaw
+															: truncateMiddle(
+																	preferredMiddleRaw,
+																	middleBudget,
+																);
+													const renderedMiddle = theme.fg(
+														"dim",
+														renderedMiddleRaw,
+													);
+													const consumed =
+														leftWidth +
+														visibleWidth(renderedMiddleRaw) +
+														rightWidth +
+														minGap * 2;
+													const free = Math.max(0, width - consumed);
+													const leftGap = minGap + Math.floor(free / 2);
+													const rightGap = minGap + Math.ceil(free / 2);
+													statsLine = `${left}${" ".repeat(leftGap)}${renderedMiddle}${" ".repeat(rightGap)}${right}`;
+												} else {
+													const padding = " ".repeat(
+														Math.max(1, width - leftWidth - rightWidth),
+													);
+													statsLine = `${left}${padding}${right}`;
+												}
 											}
+										} else {
+											statsLine = `${left}  ${middle}  ${right}`;
 										}
-									} else {
-										statsLine = `${left}  ${middle}  ${right}`;
-									}
 
-									return [truncateToWidth(statsLine, width)];
-								},
-							};
-						});
+										return [truncateToWidth(statsLine, width)];
+									},
+								};
+							},
+						);
 					});
 
 					pi.on("turn_end", (_event: unknown, ctx: ExtensionContext) => {

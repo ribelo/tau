@@ -4,7 +4,10 @@ export type ApprovalBroker = {
 
 const brokerBySessionId = new Map<string, ApprovalBroker>();
 
-export function setWorkerApprovalBroker(sessionId: string, broker: ApprovalBroker | undefined): void {
+export function setWorkerApprovalBroker(
+	sessionId: string,
+	broker: ApprovalBroker | undefined,
+): void {
 	if (!sessionId) return;
 	if (!broker) brokerBySessionId.delete(sessionId);
 	else brokerBySessionId.set(sessionId, broker);
@@ -14,7 +17,9 @@ export function getWorkerApprovalBroker(sessionId: string): ApprovalBroker | und
 	return brokerBySessionId.get(sessionId);
 }
 
-export function createUiApprovalBroker(ui: { confirm: (title: string, message: string, options: { timeout?: number }) => Promise<boolean> }): ApprovalBroker {
+export function createUiApprovalBroker(ui: {
+	confirm: (title: string, message: string, options: { timeout?: number }) => Promise<boolean>;
+}): ApprovalBroker {
 	// Serialize prompts so we never show overlapping dialogs.
 	let queue = Promise.resolve();
 
@@ -31,4 +36,3 @@ export function createUiApprovalBroker(ui: { confirm: (title: string, message: s
 		},
 	};
 }
-

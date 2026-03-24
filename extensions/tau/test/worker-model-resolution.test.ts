@@ -22,10 +22,9 @@ const antigravityTemplate: Model<Api> = {
 
 describe("resolveModelPattern", () => {
 	it("builds a model from provider template for unknown fully-qualified ids", () => {
-		const resolved = resolveModelPattern(
-			"google-antigravity/gemini-3.1-pro-high",
-			[antigravityTemplate],
-		);
+		const resolved = resolveModelPattern("google-antigravity/gemini-3.1-pro-high", [
+			antigravityTemplate,
+		]);
 
 		expect(resolved).toBeDefined();
 		expect(resolved).not.toBe(antigravityTemplate);
@@ -39,10 +38,9 @@ describe("resolveModelPattern", () => {
 	});
 
 	it("returns undefined for fully-qualified patterns when provider is unknown", () => {
-		const resolved = resolveModelPattern(
-			"unknown-provider/gemini-3.1-pro-high",
-			[antigravityTemplate],
-		);
+		const resolved = resolveModelPattern("unknown-provider/gemini-3.1-pro-high", [
+			antigravityTemplate,
+		]);
 		expect(resolved).toBeUndefined();
 	});
 });

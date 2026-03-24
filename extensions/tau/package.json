@@ -8,31 +8,33 @@
 		]
 	},
 	"dependencies": {
-		"@effect/platform-node": "^4.0.0-beta.28",
-		"ajv": "^8.17.1",
-		"ajv-formats": "^3.0.1",
-		"effect": "^4.0.0-beta.28",
+		"@effect/platform-node": "4.0.0-beta.38",
+		"effect": "4.0.0-beta.38",
 		"yaml": "^2.7.0"
 	},
 	"devDependencies": {
-		"@effect/language-service": "^0.77.0",
-		"@mariozechner/pi-agent-core": "^0.51.6",
-		"@mariozechner/pi-ai": "^0.51.6",
-		"@mariozechner/pi-coding-agent": "^0.51.6",
-		"@mariozechner/pi-tui": "^0.51.6",
+		"@effect/language-service": "latest",
+		"@effect/vitest": "4.0.0-beta.38",
+		"@mariozechner/pi-agent-core": "^0.62.0",
+		"@mariozechner/pi-ai": "^0.62.0",
+		"@mariozechner/pi-coding-agent": "^0.62.0",
+		"@mariozechner/pi-tui": "^0.62.0",
 		"@sinclair/typebox": "^0.34.47",
-		"@types/node": "^25.0.9",
-		"@typescript-eslint/eslint-plugin": "^8.20.0",
-		"@typescript-eslint/parser": "^8.20.0",
-		"eslint": "^9.18.0",
-		"typescript": "^5.9.3",
-		"vitest": "^3.2.4"
+		"@types/node": "latest",
+		"knip": "latest",
+		"oxfmt": "latest",
+		"oxlint": "latest",
+		"typescript": "latest",
+		"vitest": "latest"
 	},
 	"scripts": {
 		"test": "vitest --run --passWithNoTests",
 		"typecheck": "tsc --noEmit",
-		"lint": "eslint src",
-		"effect:diagnostics": "bunx effect-language-service diagnostics --project tsconfig.json --format pretty --progress",
+		"lint": "npx oxlint src",
+		"format": "npx oxfmt src test",
+		"format:check": "npx oxfmt --check src test",
+		"knip": "npx knip",
+		"effect:diagnostics": "npx effect-language-service diagnostics --project tsconfig.json --format pretty --progress",
 		"gate": "npm run typecheck && npm run lint && npm run test"
 	}
 }

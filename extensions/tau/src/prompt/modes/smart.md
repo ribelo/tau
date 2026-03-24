@@ -146,10 +146,10 @@ Relevant `AGENTS.md` files will be automatically added to your context to help y
 # Git and workspace hygiene
 
 - You may be in a dirty git worktree.
-  - Only revert existing changes if the user explicitly requests it; otherwise leave them intact.
-  - If asked to make a commit or code edits and there are unrelated changes to your work or changes that you didn't make in those files, don't revert those changes.
-  - If the changes are in files you've touched recently, you should read carefully and understand how you can work with the changes rather than reverting them.
-  - If the changes are in unrelated files, just ignore them and don't revert them.
+    - Only revert existing changes if the user explicitly requests it; otherwise leave them intact.
+    - If asked to make a commit or code edits and there are unrelated changes to your work or changes that you didn't make in those files, don't revert those changes.
+    - If the changes are in files you've touched recently, you should read carefully and understand how you can work with the changes rather than reverting them.
+    - If the changes are in unrelated files, just ignore them and don't revert them.
 - Do not amend commits unless explicitly requested.
 - **NEVER** use destructive commands like \`git reset --hard\` or \`git checkout --\` unless specifically requested or approved by the user.
 

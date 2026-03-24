@@ -32,7 +32,10 @@ export interface ApprovalOptions {
 /** Strip ANSI escape codes to prevent TUI rendering crashes */
 function stripAnsi(str: string): string {
 	// eslint-disable-next-line no-control-regex
-	return str.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, "");
+	return str.replace(
+		/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g,
+		"",
+	);
 }
 
 /**
@@ -88,7 +91,7 @@ async function promptForApproval(
 
 /**
  * Check if a bash command should be approved based on policy.
- * 
+ *
  * @returns ApprovalResult with:
  *   - approved: true, runUnsandboxed: false → run in sandbox
  *   - approved: true, runUnsandboxed: true → run without sandbox (user approved escalation)
@@ -211,7 +214,10 @@ export async function checkFilesystemApproval(
 
 	// "never" - deny without prompt
 	if (policy === "never") {
-		return { approved: false, reason: "Policy 'never' denies filesystem operations outside allowed paths" };
+		return {
+			approved: false,
+			reason: "Policy 'never' denies filesystem operations outside allowed paths",
+		};
 	}
 
 	// "on-failure" - for edit/write, we pre-check so this acts like prompt

@@ -94,12 +94,16 @@ const bdParams = Type.Object({
 		description:
 			"bd command to run. Omit the leading `bd` (it will be stripped if present). Examples: `ready`, `list`, `show tau-xyz`, `dep tree tau-xyz --direction up`.",
 	}),
-	cwd: Type.Optional(Type.String({
-		description: "Optional current working directory to run the command in.",
-	})),
+	cwd: Type.Optional(
+		Type.String({
+			description: "Optional current working directory to run the command in.",
+		}),
+	),
 });
 
-function statusKind(issue: BdIssue): "done" | "closed" | "in_progress" | "deferred" | "open" | "unknown" {
+function statusKind(
+	issue: BdIssue,
+): "done" | "closed" | "in_progress" | "deferred" | "open" | "unknown" {
 	const status = (issue.status || "").trim();
 	if (!status) return "unknown";
 	if (status === "in_progress") return "in_progress";
@@ -154,7 +158,9 @@ function renderIssueInline(issue: BdIssue, theme: Theme): string {
 	const type = `[${issue.issue_type || "?"}]`.padEnd(10);
 	const status = `(${issue.status || "???"})`.padEnd(12);
 	const title = issue.title || "(no title)";
-	const depType = issue.dependency_type ? ` ${theme.fg("dim", `via ${issue.dependency_type}`)}` : "";
+	const depType = issue.dependency_type
+		? ` ${theme.fg("dim", `via ${issue.dependency_type}`)}`
+		: "";
 
 	return `${mark}  ${theme.fg("accent", id)}  ${theme.fg("muted", prio)}  ${theme.fg("muted", type)}  ${theme.fg("dim", status)}  ${theme.fg("toolOutput", title)}${depType}`;
 }
@@ -182,7 +188,8 @@ function renderIssueDetailsPlain(issue: BdIssue): string {
 	let out = `${issue.id || "(no-id)"}: ${issue.title || "(no title)"}`;
 	const meta: string[] = [];
 	if (issue.status) meta.push(`status=${issue.status}`);
-	if (issue.priority !== undefined && issue.priority !== null) meta.push(`priority=${issue.priority}`);
+	if (issue.priority !== undefined && issue.priority !== null)
+		meta.push(`priority=${issue.priority}`);
 	if (issue.issue_type) meta.push(`type=${issue.issue_type}`);
 	if (meta.length > 0) out += `\n${meta.join("  ")}`;
 
@@ -207,7 +214,8 @@ function renderIssuesBlock(issues: BdIssue[], options: { expanded: boolean }, th
 	const all = issues || [];
 	const shown = options.expanded ? all : all.slice(0, 10);
 
-	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+	const separator =
+		"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
 	let out = theme.fg("dim", separator);
 	for (let i = 0; i < shown.length; i++) {
 		const issue = shown[i]!;
@@ -223,7 +231,8 @@ function renderTreeBlock(nodes: BdTreeNode[], options: { expanded: boolean }, th
 	const all = nodes || [];
 	const shown = options.expanded ? all : all.slice(0, 50);
 
-	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+	const separator =
+		"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
 	let out = theme.fg("dim", separator);
 	for (const node of shown) {
 		const depth = typeof node.depth === "number" ? node.depth : 0;
@@ -237,7 +246,8 @@ function renderTreeBlock(nodes: BdTreeNode[], options: { expanded: boolean }, th
 }
 
 function renderFallback(kind: string, text: string, theme: Theme): Text {
-	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+	const separator =
+		"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
 	let out = theme.fg("dim", separator);
 	const title = kind.replace("_", " ");
 	out += `\n${theme.fg("toolTitle", theme.bold(`bd ${title}`))}`;
@@ -255,7 +265,8 @@ type BdComment = {
 };
 
 function renderCommentsBlock(json: unknown, theme: Theme): Text {
-	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+	const separator =
+		"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
 	let out = theme.fg("dim", separator);
 
 	if (!json || (Array.isArray(json) && json.length === 0)) {
@@ -275,7 +286,8 @@ function renderCommentsBlock(json: unknown, theme: Theme): Text {
 }
 
 function renderDeleteBlock(json: unknown, theme: Theme): Text {
-	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+	const separator =
+		"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
 	let out = theme.fg("dim", separator);
 
 	if (!json) {
@@ -292,8 +304,10 @@ function renderDeleteBlock(json: unknown, theme: Theme): Text {
 	for (const item of items) {
 		if (item.deleted) {
 			out += `\n${theme.fg("success", "✔ Deleted issue:")} ${theme.fg("accent", item.deleted)}`;
-			if (item.dependencies_removed) out += `\n  - Removed ${item.dependencies_removed} dependencies`;
-			if (item.references_updated) out += `\n  - Updated ${item.references_updated} references`;
+			if (item.dependencies_removed)
+				out += `\n  - Removed ${item.dependencies_removed} dependencies`;
+			if (item.references_updated)
+				out += `\n  - Updated ${item.references_updated} references`;
 		}
 	}
 
@@ -301,7 +315,8 @@ function renderDeleteBlock(json: unknown, theme: Theme): Text {
 }
 
 function renderDepBlock(json: unknown, theme: Theme): Text {
-	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+	const separator =
+		"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
 	let out = theme.fg("dim", separator);
 
 	if (Array.isArray(json) && json.length === 0) {
@@ -309,9 +324,17 @@ function renderDepBlock(json: unknown, theme: Theme): Text {
 		return new Text(out, 0, 0);
 	}
 
-	const deps = (Array.isArray(json) ? json : [json]) as Array<{ status: string; type?: string; issue_id: string; depends_on_id: string }>;
+	const deps = (Array.isArray(json) ? json : [json]) as Array<{
+		status: string;
+		type?: string;
+		issue_id: string;
+		depends_on_id: string;
+	}>;
 	for (const dep of deps) {
-		const status = dep.status === "added" ? theme.fg("success", "✔ Added") : theme.fg("warning", "✘ Removed");
+		const status =
+			dep.status === "added"
+				? theme.fg("success", "✔ Added")
+				: theme.fg("warning", "✘ Removed");
 		const type = dep.type ? ` (${dep.type})` : "";
 		out += `\n${status} dependency: ${theme.fg("accent", dep.issue_id)} ➔ ${theme.fg("accent", dep.depends_on_id)}${type}`;
 	}
@@ -329,7 +352,8 @@ type DepShowItem = {
 };
 
 function renderDepShowBlock(json: unknown, theme: Theme, _issueId?: string): Text {
-	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+	const separator =
+		"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
 	let out = theme.fg("dim", separator);
 
 	// If it's an array, render as list of issues grouped by dependency type
@@ -493,7 +517,10 @@ function commandKind(args: string[]): RenderKind {
 		if (nonFlags[1] === "remove") return "dep_remove";
 		if (nonFlags[1] === "cycles") return "dep_cycles";
 		// If only an issue ID is provided (no subcommand), treat as dep_show
-		if (nonFlags[1] && !["list", "tree", "add", "remove", "cycles", "relate", "unrelate"].includes(nonFlags[1])) {
+		if (
+			nonFlags[1] &&
+			!["list", "tree", "add", "remove", "cycles", "relate", "unrelate"].includes(nonFlags[1])
+		) {
 			return "dep_show";
 		}
 	}
@@ -609,7 +636,12 @@ function buildArgs(command: string): { args: string[]; kind: RenderKind } {
 	return { args, kind };
 }
 
-async function runBd(pi: ExtensionAPI, command: string, signal?: AbortSignal, cwd?: string): Promise<BdToolDetails> {
+async function runBd(
+	pi: ExtensionAPI,
+	command: string,
+	signal?: AbortSignal,
+	cwd?: string,
+): Promise<BdToolDetails> {
 	const { args, kind } = buildArgs(command);
 	const res = await pi.exec("bd", args, {
 		...(signal ? { signal } : {}),
@@ -674,11 +706,13 @@ async function runBd(pi: ExtensionAPI, command: string, signal?: AbortSignal, cw
 
 function renderStatusBlock(json: unknown, theme: Theme): Text {
 	const summary = (json as { summary?: Record<string, unknown> }).summary || {};
-	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+	const separator =
+		"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
 	let out = theme.fg("dim", separator);
 	out += `\n${theme.fg("toolTitle", theme.bold("Beads Status"))}`;
 
-	const row = (label: string, value: unknown) => `\n  ${label.padEnd(20)}: ${theme.fg("toolOutput", String(value))}`;
+	const row = (label: string, value: unknown) =>
+		`\n  ${label.padEnd(20)}: ${theme.fg("toolOutput", String(value))}`;
 
 	out += row("Total Issues", summary["total_issues"]);
 	out += row("Open", summary["open_issues"]);
@@ -723,8 +757,14 @@ function renderBd(details: BdToolDetails, options: { expanded: boolean }, theme:
 
 	const json = details.json;
 	if (details.kind === "status") return renderStatusBlock(json, theme);
-	if (details.kind === "comment" || details.kind === "comments") return renderCommentsBlock(json, theme);
-	if (details.kind === "dep_add" || details.kind === "dep_remove" || details.kind === "dep_cycles") return renderDepBlock(json, theme);
+	if (details.kind === "comment" || details.kind === "comments")
+		return renderCommentsBlock(json, theme);
+	if (
+		details.kind === "dep_add" ||
+		details.kind === "dep_remove" ||
+		details.kind === "dep_cycles"
+	)
+		return renderDepBlock(json, theme);
 	if (details.kind === "dep_show") return renderDepShowBlock(json, theme);
 	if (details.kind === "delete") return renderDeleteBlock(json, theme);
 
@@ -752,7 +792,9 @@ function renderBd(details: BdToolDetails, options: { expanded: boolean }, theme:
 export default function initBeads(pi: ExtensionAPI, _state: TauState) {
 	// Keep /bd command outputs out of LLM context.
 	pi.on("context", async (event) => {
-		const filtered = event.messages.filter((m) => !(m?.role === "custom" && m?.customType === BD_MESSAGE_TYPE));
+		const filtered = event.messages.filter(
+			(m) => !(m?.role === "custom" && m?.customType === BD_MESSAGE_TYPE),
+		);
 		return { messages: filtered };
 	});
 
@@ -818,7 +860,10 @@ export default function initBeads(pi: ExtensionAPI, _state: TauState) {
 		handler: async (args, ctx) => {
 			const trimmed = (args || "").trim();
 			if (!trimmed || trimmed === "help") {
-				ctx.ui.notify("Usage: /bd init | /bd list | /bd ready | /bd blocked | /bd show <id> | /bd <anything>", "info");
+				ctx.ui.notify(
+					"Usage: /bd init | /bd list | /bd ready | /bd blocked | /bd show <id> | /bd <anything>",
+					"info",
+				);
 				return;
 			}
 
@@ -846,7 +891,6 @@ export default function initBeads(pi: ExtensionAPI, _state: TauState) {
 		},
 	});
 
-
 	pi.registerMessageRenderer<BdMessageDetails>(BD_MESSAGE_TYPE, (message, options, theme) => {
 		const details = message.details;
 		if (!details) return new Text(theme.fg("dim", "(no bd details)"), 0, 0);
@@ -857,7 +901,14 @@ export default function initBeads(pi: ExtensionAPI, _state: TauState) {
 		name: "bd",
 		label: "bd",
 		description:
-			"Wrapper around the `bd` (Beads) CLI created mainly to render output nicely for the user. Provide `command` and omit the leading `bd` (it will be stripped if present).\n\nCommon examples:\n- List all issues: `list`\n- List ready work (unblocked): `ready`\n- List blocked work: `blocked`\n- Show issue: `show tau-xxxx`\n- Create task: `create \"Title\" --type task --priority 2 --description \"...\"`\n- Create epic: `create \"Epic title\" --type epic --priority 1 --description \"...\"`\n- Update status: `update tau-xxxx --status in_progress`\n- Close issue: `close tau-xxxx --reason \"Done\"`\n- Init: `init`\n- Onboard: `onboard`\n- Sync: `sync`\n- Help: `help` (forwarded to `bd --help`) or `help show`",
+			'Wrapper around the `bd` (Beads) CLI created mainly to render output nicely for the user. Provide `command` and omit the leading `bd` (it will be stripped if present).\n\nCommon examples:\n- List all issues: `list`\n- List ready work (unblocked): `ready`\n- List blocked work: `blocked`\n- Show issue: `show tau-xxxx`\n- Create task: `create "Title" --type task --priority 2 --description "..."`\n- Create epic: `create "Epic title" --type epic --priority 1 --description "..."`\n- Update status: `update tau-xxxx --status in_progress`\n- Close issue: `close tau-xxxx --reason "Done"`\n- Init: `init`\n- Onboard: `onboard`\n- Sync: `sync`\n- Help: `help` (forwarded to `bd --help`) or `help show`',
+		promptSnippet:
+			"Git-backed issue tracker (Beads) for task planning, tracking, and persistent memory across sessions",
+		promptGuidelines: [
+			"Use the bd tool for ALL non-trivial task planning. Use it frequently to break down complex tasks, track progress, and plan before implementation.",
+			"When listing tasks to pick work, prefer ready/unblocked items whose dependencies are satisfied.",
+			"Mark tasks in-progress at start and done immediately when finished.",
+		],
 		parameters: bdParams,
 
 		async execute(_toolCallId, params, signal, _onUpdate, _ctx) {
@@ -876,7 +927,10 @@ export default function initBeads(pi: ExtensionAPI, _state: TauState) {
 				};
 			}
 
-			return { content: [{ type: "text", text: details.outputText || "(no output)" }], details };
+			return {
+				content: [{ type: "text", text: details.outputText || "(no output)" }],
+				details,
+			};
 		},
 
 		renderCall(args, theme) {

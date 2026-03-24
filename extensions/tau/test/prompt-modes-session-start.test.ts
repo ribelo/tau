@@ -12,7 +12,11 @@ import { PiAPILive } from "../src/effect/pi.js";
 import { resolvePromptModePresets, type PromptModeName } from "../src/prompt/modes.js";
 import { Persistence } from "../src/services/persistence.js";
 import { PromptModes, PromptModesLive } from "../src/services/prompt-modes.js";
-import { mergePersistedState, TAU_PERSISTED_STATE_TYPE, type TauPersistedState } from "../src/shared/state.js";
+import {
+	mergePersistedState,
+	TAU_PERSISTED_STATE_TYPE,
+	type TauPersistedState,
+} from "../src/shared/state.js";
 
 type SessionStartHandler = (event: unknown, ctx: ExtensionContext) => unknown;
 type ShortcutHandler = (ctx: ExtensionContext) => Promise<void> | void;
@@ -172,7 +176,10 @@ function makeSessionStartContext(
 	} as unknown as ExtensionContext;
 }
 
-async function setupPromptModes(stateRef: SubscriptionRef.SubscriptionRef<TauPersistedState>, pi: ExtensionAPI): Promise<void> {
+async function setupPromptModes(
+	stateRef: SubscriptionRef.SubscriptionRef<TauPersistedState>,
+	pi: ExtensionAPI,
+): Promise<void> {
 	const persistenceLayer = Layer.succeed(Persistence, {
 		getSnapshot: () => Effect.runSync(SubscriptionRef.get(stateRef)),
 		setSnapshot: (next: TauPersistedState) => {
@@ -191,7 +198,10 @@ async function setupPromptModes(stateRef: SubscriptionRef.SubscriptionRef<TauPer
 		yield* promptModes.setup;
 	});
 
-	const layer = PromptModesLive.pipe(Layer.provide(PiAPILive(pi)), Layer.provide(persistenceLayer));
+	const layer = PromptModesLive.pipe(
+		Layer.provide(PiAPILive(pi)),
+		Layer.provide(persistenceLayer),
+	);
 	await Effect.runPromise(setup.pipe(Effect.provide(layer)));
 }
 
@@ -352,9 +362,14 @@ describe("prompt-modes session_start", () => {
 				},
 			];
 			const ctx = makeSessionStartContext(cwd, entries);
-			await Promise.resolve(sessionSwitch?.({ type: "session_switch", reason: "resume" }, ctx));
+			await Promise.resolve(
+				sessionSwitch?.({ type: "session_switch", reason: "resume" }, ctx),
+			);
 
-			expect(mock.setModelCalls.at(-1)).toEqual({ provider: "kimi-coding", id: "kimi-k2-thinking" });
+			expect(mock.setModelCalls.at(-1)).toEqual({
+				provider: "kimi-coding",
+				id: "kimi-k2-thinking",
+			});
 
 			const rushPreset = resolvePromptModePresets(cwd).rush;
 			expect(mock.thinkingCalls.at(-1)).toBe(rushPreset.thinking);
@@ -491,7 +506,9 @@ describe("prompt-modes session_start", () => {
 			const tabShortcut = mock.shortcuts.get("tab");
 			expect(tabShortcut).toBeTypeOf("function");
 
-			await Promise.resolve(tabShortcut?.(makeSessionStartContext(cwd, [], true, { editorText: "" })));
+			await Promise.resolve(
+				tabShortcut?.(makeSessionStartContext(cwd, [], true, { editorText: "" })),
+			);
 
 			const deepPreset = resolvePromptModePresets(cwd).deep;
 			expect(mock.setModelCalls.at(-1)).toEqual(parseProviderModel(deepPreset.model));
@@ -544,7 +561,9 @@ describe("prompt-modes session_start", () => {
 			expect(tabShortcut).toBeTypeOf("function");
 
 			await Promise.resolve(
-				tabShortcut?.(makeSessionStartContext(cwd, [], true, { editorText: "draft message" })),
+				tabShortcut?.(
+					makeSessionStartContext(cwd, [], true, { editorText: "draft message" }),
+				),
 			);
 
 			expect(mock.setModelCalls).toHaveLength(0);

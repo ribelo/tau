@@ -66,10 +66,7 @@ class WorkedForSeparator implements Component {
 class WorkedForWidget implements Component {
 	private separator: WorkedForSeparator;
 
-	constructor(
-		durationText: string,
-		theme: Theme,
-	) {
+	constructor(durationText: string, theme: Theme) {
 		this.separator = new WorkedForSeparator(durationText, theme);
 	}
 
@@ -124,7 +121,10 @@ export default function initWorkedFor(pi: ExtensionAPI, state: TauState) {
 		lastRenderedDurationText = durationText;
 
 		// Widgets do not participate in LLM context and won't enqueue follow-ups.
-		ctx.ui.setWidget("worked-for-separator", (_tui, theme) => new WorkedForWidget(durationText, theme));
+		ctx.ui.setWidget(
+			"worked-for-separator",
+			(_tui, theme) => new WorkedForWidget(durationText, theme),
+		);
 	}
 
 	function startTick(ctx: ExtensionContext): void {
@@ -157,10 +157,14 @@ export default function initWorkedFor(pi: ExtensionAPI, state: TauState) {
 		if (ctx.hasUI) ctx.ui.setWidget("worked-for-separator", undefined);
 	}
 
-	pi.registerMessageRenderer<WorkedForDetails>(WORKED_FOR_MESSAGE_TYPE, (message, _options, theme) => {
-		const elapsedMs = typeof message.details?.elapsedMs === "number" ? message.details.elapsedMs : 0;
-		return new WorkedForSeparator(formatDuration(elapsedMs), theme);
-	});
+	pi.registerMessageRenderer<WorkedForDetails>(
+		WORKED_FOR_MESSAGE_TYPE,
+		(message, _options, theme) => {
+			const elapsedMs =
+				typeof message.details?.elapsedMs === "number" ? message.details.elapsedMs : 0;
+			return new WorkedForSeparator(formatDuration(elapsedMs), theme);
+		},
+	);
 
 	pi.on("context", async (event) => {
 		// Never send UI-only worked-for separators to the model (old sessions may contain them).
@@ -172,7 +176,8 @@ export default function initWorkedFor(pi: ExtensionAPI, state: TauState) {
 	});
 
 	pi.registerCommand("worked", {
-		description: "Show elapsed work time separators: /worked on|off|toggle | /worked tools on|off|toggle",
+		description:
+			"Show elapsed work time separators: /worked on|off|toggle | /worked tools on|off|toggle",
 		handler: async (args, ctx) => {
 			const parts = (args || "").trim().split(/\s+/).filter(Boolean);
 
@@ -190,7 +195,12 @@ export default function initWorkedFor(pi: ExtensionAPI, state: TauState) {
 					ctx.ui.notify("Usage: /worked tools on|off|toggle", "info");
 					return;
 				}
-				updatePersistedState(pi, state, { workedFor: { enabled: isEnabled(), toolsEnabled: next } satisfies WorkedForState });
+				updatePersistedState(pi, state, {
+					workedFor: {
+						enabled: isEnabled(),
+						toolsEnabled: next,
+					} satisfies WorkedForState,
+				});
 
 				if (agentRunning && isEnabled()) {
 					renderWorkedForWidget(ctx);
@@ -206,7 +216,9 @@ export default function initWorkedFor(pi: ExtensionAPI, state: TauState) {
 				return;
 			}
 
-			updatePersistedState(pi, state, { workedFor: { enabled: next, toolsEnabled: areToolsEnabled() } });
+			updatePersistedState(pi, state, {
+				workedFor: { enabled: next, toolsEnabled: areToolsEnabled() },
+			});
 
 			if (!next) {
 				stopTick();

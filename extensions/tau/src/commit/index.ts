@@ -14,7 +14,6 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 
-
 const COMMIT_FORMAT_GUIDE = `
 Commit message format guidelines:
 - Start with a short prefix followed by colon and space (feat:, fix:, docs:, refactor:, test:, chore:, etc.)
@@ -119,9 +118,14 @@ When in doubt, leave a file out.`;
 		description: `Create a git commit with user review and approval. Use this tool when the user should confirm and potentially edit the commit message before committing. For automated commits where no user confirmation is needed, use the regular git commit command via bash instead.
 
 ${COMMIT_FORMAT_GUIDE}`,
+		promptSnippet: "Create a git commit with user review and approval",
+		promptGuidelines: [
+			"Use git_commit_with_user_approval when the user should confirm and potentially edit the commit message before committing. For automated commits where no user confirmation is needed, use the regular git commit command via bash instead.",
+		],
 		parameters: Type.Object({
 			message: Type.String({
-				description: "Proposed commit message (subject line, optionally followed by blank line and body)",
+				description:
+					"Proposed commit message (subject line, optionally followed by blank line and body)",
 			}),
 			files: Type.Optional(
 				Type.Array(Type.String(), {
@@ -135,7 +139,12 @@ ${COMMIT_FORMAT_GUIDE}`,
 			const execOpts = signal ? { signal } : {};
 			if (!ctx.hasUI) {
 				return {
-					content: [{ type: "text", text: "Error: UI not available (running in non-interactive mode)" }],
+					content: [
+						{
+							type: "text",
+							text: "Error: UI not available (running in non-interactive mode)",
+						},
+					],
 					details: { committed: false, reason: "no-ui" },
 				};
 			}
@@ -145,8 +154,14 @@ ${COMMIT_FORMAT_GUIDE}`,
 				const stageResult = await pi.exec("git", ["add", "--", ...params.files], execOpts);
 				if (stageResult.code !== 0) {
 					return {
-						content: [{ type: "text", text: `Error staging files: ${stageResult.stderr}` }],
-						details: { committed: false, reason: "stage-failed", error: stageResult.stderr },
+						content: [
+							{ type: "text", text: `Error staging files: ${stageResult.stderr}` },
+						],
+						details: {
+							committed: false,
+							reason: "stage-failed",
+							error: stageResult.stderr,
+						},
 					};
 				}
 			}
@@ -177,12 +192,20 @@ ${COMMIT_FORMAT_GUIDE}`,
 			}
 
 			// Execute the commit
-			const commitResult = await pi.exec("git", ["commit", "-m", finalMessage.trim()], execOpts);
+			const commitResult = await pi.exec(
+				"git",
+				["commit", "-m", finalMessage.trim()],
+				execOpts,
+			);
 
 			if (commitResult.code !== 0) {
 				return {
 					content: [{ type: "text", text: `Commit failed: ${commitResult.stderr}` }],
-					details: { committed: false, reason: "commit-failed", error: commitResult.stderr },
+					details: {
+						committed: false,
+						reason: "commit-failed",
+						error: commitResult.stderr,
+					},
 				};
 			}
 
@@ -221,7 +244,13 @@ ${COMMIT_FORMAT_GUIDE}`,
 
 		renderResult(result, _options, theme) {
 			const details = result.details as
-				| { committed: boolean; reason?: string; hash?: string; message?: string; error?: string }
+				| {
+						committed: boolean;
+						reason?: string;
+						hash?: string;
+						message?: string;
+						error?: string;
+				  }
 				| undefined;
 
 			if (!details) {
@@ -242,7 +271,9 @@ ${COMMIT_FORMAT_GUIDE}`,
 
 			const subject = (details.message || "").split("\n")[0];
 			return new Text(
-				theme.fg("success", "✓ ") + theme.fg("accent", details.hash || "") + theme.fg("muted", ` ${subject}`),
+				theme.fg("success", "✓ ") +
+					theme.fg("accent", details.hash || "") +
+					theme.fg("muted", ` ${subject}`),
 				0,
 				0,
 			);

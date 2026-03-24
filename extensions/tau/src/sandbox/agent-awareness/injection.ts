@@ -21,9 +21,7 @@ export function buildAgentContextNotice(opts: AgentContextOpts): string {
 	return `AGENT_CONTEXT: ${count} other pi agent${plural} detected in overlapping directories${pidSuffix}`;
 }
 
-function asContentArray(
-	content: unknown,
-): (TextContent | ImageContent)[] {
+function asContentArray(content: unknown): (TextContent | ImageContent)[] {
 	if (content === undefined || content === null) return [];
 	if (typeof content === "string") return [{ type: "text", text: content }];
 	if (Array.isArray(content)) return content as (TextContent | ImageContent)[];
@@ -41,7 +39,9 @@ export function injectAgentContextIntoMessages<T extends MessageLike>(
 		if (msg && msg.role === "user") {
 			const contentArr = asContentArray(msg.content);
 			const firstText =
-				contentArr[0] && contentArr[0].type === "text" ? (contentArr[0] as TextContent).text : "";
+				contentArr[0] && contentArr[0].type === "text"
+					? (contentArr[0] as TextContent).text
+					: "";
 			if (firstText.trimStart().startsWith("AGENT_CONTEXT:")) return out;
 
 			const injected: TextContent = { type: "text", text: `${noticeText}\n\n` };
@@ -52,4 +52,3 @@ export function injectAgentContextIntoMessages<T extends MessageLike>(
 
 	return out;
 }
-

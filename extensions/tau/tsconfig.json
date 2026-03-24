@@ -1,14 +1,17 @@
 {
 	"$schema": "https://json.schemastore.org/tsconfig",
 	"compilerOptions": {
-		"target": "ES2022",
-		"lib": ["ES2022"],
+		"target": "ES2023",
+		"lib": ["ES2023"],
+		"types": ["node"],
 
 		"module": "NodeNext",
 		"moduleResolution": "NodeNext",
 		"moduleDetection": "force",
 		"verbatimModuleSyntax": true,
+		"rewriteRelativeImportExtensions": true,
 		"resolveJsonModule": true,
+		"isolatedModules": true,
 
 		"strict": true,
 		"noImplicitAny": true,
@@ -20,7 +23,6 @@
 		"noImplicitReturns": true,
 		"noFallthroughCasesInSwitch": true,
 
-		// Rust-like: unused vars should not fail builds. Use linting for warnings instead.
 		"noUnusedLocals": false,
 		"noUnusedParameters": false,
 
@@ -28,9 +30,15 @@
 		"skipLibCheck": true,
 		"noEmit": true,
 		"incremental": true,
+		"sourceMap": true,
 
-		"plugins": []
+		"plugins": [
+			{
+				"name": "@effect/language-service",
+				"transform": "@effect/language-service/transform",
+				"namespaceImportPackages": ["effect", "@effect/*"]
+			}
+		]
 	},
 	"include": ["src/**/*.ts", "test/**/*.ts"]
 }
-

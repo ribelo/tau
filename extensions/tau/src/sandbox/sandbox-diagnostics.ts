@@ -4,18 +4,18 @@ export type SandboxFailure =
 			subtype: "dns" | "blocked" | "connect";
 			evidence: string;
 			confidence: "high" | "medium";
-		}
+	  }
 	| {
 			kind: "filesystem";
 			subtype: "read" | "write";
 			evidence: string;
 			confidence: "high" | "medium";
-		}
+	  }
 	| {
 			kind: "unknown";
 			evidence: string;
 			confidence: "low";
-		};
+	  };
 
 function trimEvidence(str: string, maxLen = 200): string {
 	const s = str.trim();

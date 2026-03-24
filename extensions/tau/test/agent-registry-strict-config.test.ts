@@ -62,9 +62,7 @@ broken
 
 		vi.stubEnv("HOME", tempHome);
 
-		expect(() => AgentRegistry.load(tempProject)).toThrowError(
-			AgentRegistryConfigError,
-		);
+		expect(() => AgentRegistry.load(tempProject)).toThrowError(AgentRegistryConfigError);
 		expect(() => AgentRegistry.load(tempProject)).toThrow(/Invalid agent definition/);
 		expect(() => AgentRegistry.load(tempProject)).toThrow(/oracle\.md/);
 
@@ -93,10 +91,10 @@ broken
 
 		vi.stubEnv("HOME", tempHome);
 
-		expect(() => AgentRegistry.load(tempProject)).toThrowError(
-			AgentRegistryConfigError,
+		expect(() => AgentRegistry.load(tempProject)).toThrowError(AgentRegistryConfigError);
+		expect(() => AgentRegistry.load(tempProject)).toThrow(
+			/agents\.oracle\.models must be an array/,
 		);
-		expect(() => AgentRegistry.load(tempProject)).toThrow(/agents\.oracle\.models must be an array/);
 
 		fs.rmSync(tempHome, { recursive: true, force: true });
 		fs.rmSync(tempProject, { recursive: true, force: true });
@@ -172,9 +170,7 @@ broken
 
 		vi.stubEnv("HOME", tempHome);
 
-		expect(() => AgentRegistry.load(tempProject)).toThrowError(
-			AgentRegistryConfigError,
-		);
+		expect(() => AgentRegistry.load(tempProject)).toThrowError(AgentRegistryConfigError);
 		expect(() => AgentRegistry.load(tempProject)).toThrow(/Invalid agent definition/);
 
 		fs.rmSync(tempHome, { recursive: true, force: true });
@@ -192,9 +188,7 @@ broken
 
 		vi.stubEnv("HOME", tempHome);
 
-		expect(() => AgentRegistry.load(tempProject)).toThrowError(
-			AgentRegistryConfigError,
-		);
+		expect(() => AgentRegistry.load(tempProject)).toThrowError(AgentRegistryConfigError);
 		expect(() => AgentRegistry.load(tempProject)).toThrow(/mode agents .* virtual/);
 
 		fs.rmSync(tempHome, { recursive: true, force: true });

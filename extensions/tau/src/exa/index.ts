@@ -103,7 +103,10 @@ export const getExaConfig = (): Effect.Effect<ExaConfig, ExaConfigError> =>
 					"EXA_API_KEY is not set. Set it in your environment before using Exa tools (e.g. export EXA_API_KEY=...).",
 			});
 		}
-		const baseUrl = (process.env["EXA_API_BASE_URL"] ?? "https://api.exa.ai").replace(/\/+$/, "");
+		const baseUrl = (process.env["EXA_API_BASE_URL"] ?? "https://api.exa.ai").replace(
+			/\/+$/,
+			"",
+		);
 		return { baseUrl, apiKey };
 	});
 
@@ -111,7 +114,7 @@ export const getExaConfig = (): Effect.Effect<ExaConfig, ExaConfigError> =>
 // API Client
 // =============================================================================
 
-const exaPost = <S extends Schema.Top & { readonly DecodingServices: never }>(
+const exaPost = <S extends Schema.Decoder<unknown>>(
 	path: string,
 	body: unknown,
 	schema: S,
@@ -211,19 +214,25 @@ const compactSearchResults = (results: ReadonlyArray<ExaSearchResult>): Array<Ex
 	results.map((r) => ({
 		...r,
 		text: r.text != null ? truncate(r.text, MAX_TEXT_CHARS) : undefined,
-		highlights: r.highlights != null
-			? r.highlights.slice(0, MAX_HIGHLIGHTS).map((h) => truncate(oneLine(h), MAX_HIGHLIGHT_CHARS))
-			: undefined,
+		highlights:
+			r.highlights != null
+				? r.highlights
+						.slice(0, MAX_HIGHLIGHTS)
+						.map((h) => truncate(oneLine(h), MAX_HIGHLIGHT_CHARS))
+				: undefined,
 	}));
 
-const compactContentsResults = (results: ReadonlyArray<ExaContentsResult>): Array<ExaContentsResult> =>
+const compactContentsResults = (
+	results: ReadonlyArray<ExaContentsResult>,
+): Array<ExaContentsResult> =>
 	results.map((r) => ({
 		...r,
 		summary: r.summary != null ? truncate(oneLine(r.summary), 2000) : undefined,
 		text: r.text != null ? truncate(r.text, 6000) : undefined,
-		highlights: r.highlights != null
-			? r.highlights.slice(0, 8).map((h) => truncate(oneLine(h), MAX_HIGHLIGHT_CHARS))
-			: undefined,
+		highlights:
+			r.highlights != null
+				? r.highlights.slice(0, 8).map((h) => truncate(oneLine(h), MAX_HIGHLIGHT_CHARS))
+				: undefined,
 	}));
 
 // =============================================================================
@@ -253,20 +262,26 @@ export interface WebSearchParams {
 const makeSearchBody = (params: WebSearchParams): Record<string, unknown> => {
 	const body: Record<string, unknown> = { query: params.query };
 	if (params.type !== undefined) body["type"] = params.type;
-	if (params.additionalQueries !== undefined && params.additionalQueries.length > 0) body["additionalQueries"] = params.additionalQueries;
+	if (params.additionalQueries !== undefined && params.additionalQueries.length > 0)
+		body["additionalQueries"] = params.additionalQueries;
 	if (params.category !== undefined) body["category"] = params.category;
 	if (params.userLocation !== undefined) body["userLocation"] = params.userLocation;
 	if (params.numResults !== undefined) body["numResults"] = params.numResults;
 	if (params.text !== undefined) body["text"] = params.text;
 	if (params.context !== undefined) body["context"] = params.context;
-	if (params.includeDomains !== undefined && params.includeDomains.length > 0) body["includeDomains"] = params.includeDomains;
-	if (params.excludeDomains !== undefined && params.excludeDomains.length > 0) body["excludeDomains"] = params.excludeDomains;
+	if (params.includeDomains !== undefined && params.includeDomains.length > 0)
+		body["includeDomains"] = params.includeDomains;
+	if (params.excludeDomains !== undefined && params.excludeDomains.length > 0)
+		body["excludeDomains"] = params.excludeDomains;
 	if (params.startCrawlDate !== undefined) body["startCrawlDate"] = params.startCrawlDate;
 	if (params.endCrawlDate !== undefined) body["endCrawlDate"] = params.endCrawlDate;
-	if (params.startPublishedDate !== undefined) body["startPublishedDate"] = params.startPublishedDate;
+	if (params.startPublishedDate !== undefined)
+		body["startPublishedDate"] = params.startPublishedDate;
 	if (params.endPublishedDate !== undefined) body["endPublishedDate"] = params.endPublishedDate;
-	if (params.includeText !== undefined && params.includeText.length > 0) body["includeText"] = params.includeText;
-	if (params.excludeText !== undefined && params.excludeText.length > 0) body["excludeText"] = params.excludeText;
+	if (params.includeText !== undefined && params.includeText.length > 0)
+		body["includeText"] = params.includeText;
+	if (params.excludeText !== undefined && params.excludeText.length > 0)
+		body["excludeText"] = params.excludeText;
 	if (params.moderation !== undefined) body["moderation"] = params.moderation;
 	return body;
 };
@@ -298,7 +313,8 @@ const makeCrawlBody = (params: CrawlingParams): Record<string, unknown> => {
 	if (params.livecrawl !== undefined) body["livecrawl"] = params.livecrawl;
 	if (params.livecrawlTimeout !== undefined) body["livecrawlTimeout"] = params.livecrawlTimeout;
 	if (params.subpages !== undefined) body["subpages"] = params.subpages;
-	if (params.subpageTarget !== undefined && params.subpageTarget.length > 0) body["subpageTarget"] = params.subpageTarget;
+	if (params.subpageTarget !== undefined && params.subpageTarget.length > 0)
+		body["subpageTarget"] = params.subpageTarget;
 	return body;
 };
 
@@ -416,7 +432,8 @@ const WebSearchTypeBox = Type.Object({
 	),
 	context: Type.Optional(
 		Type.Boolean({
-			description: "If true, also return a combined context string for LLM/RAG usage (can be large).",
+			description:
+				"If true, also return a combined context string for LLM/RAG usage (can be large).",
 		}),
 	),
 	includeDomains: Type.Optional(
@@ -463,7 +480,9 @@ const WebSearchTypeBox = Type.Object({
 				"Strings that must NOT be present in the result page text (Exa currently supports 1 string of up to ~5 words).",
 		}),
 	),
-	moderation: Type.Optional(Type.Boolean({ description: "Enable content moderation to filter unsafe content." })),
+	moderation: Type.Optional(
+		Type.Boolean({ description: "Enable content moderation to filter unsafe content." }),
+	),
 });
 
 const CrawlingTypeBox = Type.Object({
@@ -473,7 +492,8 @@ const CrawlingTypeBox = Type.Object({
 	}),
 	text: Type.Optional(
 		Type.Boolean({
-			description: "If true, return extracted page text (can be large). If false, disable text.",
+			description:
+				"If true, return extracted page text (can be large). If false, disable text.",
 		}),
 	),
 	highlights: Type.Optional(
@@ -481,10 +501,13 @@ const CrawlingTypeBox = Type.Object({
 			description: "If true, include default highlights (relevant snippets) for each page.",
 		}),
 	),
-	summary: Type.Optional(Type.Boolean({ description: "If true, include a default summary for each page." })),
+	summary: Type.Optional(
+		Type.Boolean({ description: "If true, include a default summary for each page." }),
+	),
 	context: Type.Optional(
 		Type.Boolean({
-			description: "If true, include a combined context string (often useful for RAG, but can be very large).",
+			description:
+				"If true, include a combined context string (often useful for RAG, but can be very large).",
 		}),
 	),
 	livecrawl: Type.Optional(
@@ -641,19 +664,17 @@ const formatCrawlResultText = (r: ExaContentsResult, index: number): string => {
 	return out;
 };
 
-const renderSearchResult = (
-	result: ExaSearchResponse,
-	expanded: boolean,
-	theme: Theme,
-): string => {
+const renderSearchResult = (result: ExaSearchResponse, expanded: boolean, theme: Theme): string => {
 	const results = result.results;
 	const shown = expanded ? results : results.slice(0, 3);
 
-	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+	const separator =
+		"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
 	let out = theme.fg("dim", separator);
 
 	if (result.requestId != null || result.resolvedSearchType != null) {
-		if (result.requestId != null) out += `\n${theme.fg("muted", "requestId:")} ${theme.fg("dim", String(result.requestId))}`;
+		if (result.requestId != null)
+			out += `\n${theme.fg("muted", "requestId:")} ${theme.fg("dim", String(result.requestId))}`;
 		if (result.resolvedSearchType != null)
 			out += `\n${theme.fg("muted", "resolvedSearchType:")} ${theme.fg("dim", String(result.resolvedSearchType))}`;
 	}
@@ -692,10 +713,12 @@ const renderCrawlResult = (
 	const results = result.results;
 	const shown = expanded ? results : results.slice(0, 2);
 
-	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+	const separator =
+		"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
 	let out = theme.fg("dim", separator);
 
-	if (result.requestId != null) out += `\n${theme.fg("muted", "requestId:")} ${theme.fg("dim", String(result.requestId))}`;
+	if (result.requestId != null)
+		out += `\n${theme.fg("muted", "requestId:")} ${theme.fg("dim", String(result.requestId))}`;
 
 	for (let i = 0; i < shown.length; i++) {
 		const r = shown[i]!;
@@ -738,7 +761,8 @@ const renderCodeContextResult = (
 	const responseText = result.response ?? "";
 	if (!responseText) return theme.fg("dim", "(no response)");
 
-	const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+	const separator =
+		"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
 	if (expanded) {
 		return `${theme.fg("dim", separator)}\n${responseText}`;
 	}
@@ -761,6 +785,7 @@ export default function initExa(pi: ExtensionAPI): void {
 		label: "exa.web_search",
 		description:
 			"Search the Exa index (web, papers, GitHub, news, etc.). Use this to find relevant URLs. Best practices: keep numResults small (3-10), use filters (includeDomains/category/date ranges) to narrow results, and only request text when you need snippets.",
+		promptSnippet: "Search the Exa index (web, papers, GitHub, news, etc.)",
 		parameters: WebSearchTypeBox,
 
 		renderCall(args, theme) {
@@ -807,6 +832,7 @@ export default function initExa(pi: ExtensionAPI): void {
 		label: "exa.crawl",
 		description:
 			"Fetch page contents via Exa (/contents). Use this when you already have URLs and need text, highlights, or summaries. Best practice: request only what you need (summary/highlights vs full text) to keep tool output small.",
+		promptSnippet: "Fetch page contents via Exa (/contents) when you already have URLs",
 		parameters: CrawlingTypeBox,
 
 		renderCall(args, theme) {
@@ -827,7 +853,10 @@ export default function initExa(pi: ExtensionAPI): void {
 		},
 
 		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
-			onUpdate?.({ content: [{ type: "text", text: "Fetching contents from Exa…" }], details: {} });
+			onUpdate?.({
+				content: [{ type: "text", text: "Fetching contents from Exa…" }],
+				details: {},
+			});
 
 			const typedParams = params as CrawlingParams;
 			const program = ExaServiceLive.crawl(typedParams, signal);
@@ -851,6 +880,7 @@ export default function initExa(pi: ExtensionAPI): void {
 		label: "exa.code_context",
 		description:
 			"Get relevant code snippets and examples via Exa Context API (Exa Code). Best practice: start with tokensNum omitted (defaults to 'dynamic') for token-efficient results; use '5000' (or '10000' if needed) when you want a fixed size.",
+		promptSnippet: "Get relevant code snippets and examples via Exa Context API (Exa Code)",
 		parameters: CodeContextTypeBox,
 
 		renderCall(args, theme) {
@@ -877,7 +907,10 @@ export default function initExa(pi: ExtensionAPI): void {
 		},
 
 		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
-			onUpdate?.({ content: [{ type: "text", text: "Getting code context from Exa…" }], details: {} });
+			onUpdate?.({
+				content: [{ type: "text", text: "Getting code context from Exa…" }],
+				details: {},
+			});
 
 			const typedParams = params as CodeContextParams;
 			const program = ExaServiceLive.codeContext(typedParams, signal);

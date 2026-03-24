@@ -25,7 +25,10 @@ const canMutate = (
 			return true;
 		}
 		const parentMap = yield* Ref.get(parentMapRef);
-		const parentId = Option.getOrElse(HashMap.get(parentMap, targetId), () => ORCHESTRATOR_PARENT);
+		const parentId = Option.getOrElse(
+			HashMap.get(parentMap, targetId),
+			() => ORCHESTRATOR_PARENT,
+		);
 		return parentId === requesterAgentId;
 	});
 
@@ -158,9 +161,13 @@ export const AgentManagerLive = Layer.effect(
 						}
 
 						const depthMap = yield* Ref.get(depthMapRef);
-						const parentDepth = opts.parentAgentId !== undefined
-							? Option.getOrElse(HashMap.get(depthMap, opts.parentAgentId), () => 0)
-							: 0;
+						const parentDepth =
+							opts.parentAgentId !== undefined
+								? Option.getOrElse(
+										HashMap.get(depthMap, opts.parentAgentId),
+										() => 0,
+									)
+								: 0;
 						const depth = parentDepth + 1;
 
 						if (depth > config.maxDepth) {
@@ -185,14 +192,20 @@ export const AgentManagerLive = Layer.effect(
 						const parentAgentId = opts.parentAgentId;
 						yield* Ref.update(agentsRef, (map) => HashMap.set(map, id, agent));
 						yield* Ref.update(depthMapRef, (map) => HashMap.set(map, id, depth));
-						yield* Ref.update(lastActivityRef, (map) => HashMap.set(map, id, Date.now()));
+						yield* Ref.update(lastActivityRef, (map) =>
+							HashMap.set(map, id, Date.now()),
+						);
 						if (parentAgentId !== undefined) {
-							yield* Ref.update(parentMapRef, (map) => HashMap.set(map, id, parentAgentId));
+							yield* Ref.update(parentMapRef, (map) =>
+								HashMap.set(map, id, parentAgentId),
+							);
 						}
 
 						// Initial prompt
 						yield* agent.prompt(opts.message);
-						yield* Ref.update(lastActivityRef, (map) => HashMap.set(map, id, Date.now()));
+						yield* Ref.update(lastActivityRef, (map) =>
+							HashMap.set(map, id, Date.now()),
+						);
 
 						return id;
 					}),
@@ -220,7 +233,9 @@ export const AgentManagerLive = Layer.effect(
 					const infos: AgentInfo[] = [];
 					for (const agent of HashMap.values(agents)) {
 						const status = yield* agent.status;
-						const parentAgentId = Option.getOrUndefined(HashMap.get(parentMap, agent.id));
+						const parentAgentId = Option.getOrUndefined(
+							HashMap.get(parentMap, agent.id),
+						);
 						infos.push({
 							id: agent.id,
 							type: agent.type,
@@ -252,11 +267,18 @@ export const AgentManagerLive = Layer.effect(
 						}
 
 						const parentMap = yield* Ref.get(parentMapRef);
-						const parentId = Option.getOrElse(HashMap.get(parentMap, id), () => ORCHESTRATOR_PARENT);
+						const parentId = Option.getOrElse(
+							HashMap.get(parentMap, id),
+							() => ORCHESTRATOR_PARENT,
+						);
 						const allowed = yield* canMutate(parentMapRef, id, requesterAgentId);
 						if (!allowed && requesterAgentId !== undefined) {
 							return yield* Effect.fail(
-								new AgentAccessDenied({ id, requesterId: requesterAgentId, parentId }),
+								new AgentAccessDenied({
+									id,
+									requesterId: requesterAgentId,
+									parentId,
+								}),
 							);
 						}
 

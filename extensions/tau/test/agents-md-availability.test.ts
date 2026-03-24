@@ -67,8 +67,8 @@ describe("AGENTS.md availability", () => {
 
 			const { session } = await createAgentSession({
 				cwd,
-				authStorage: new AuthStorage(),
-				modelRegistry: new ModelRegistry(new AuthStorage()),
+				authStorage: AuthStorage.create(),
+				modelRegistry: new ModelRegistry(AuthStorage.create()),
 				resourceLoader,
 				settingsManager,
 				sessionManager: SessionManager.inMemory(cwd),
@@ -86,7 +86,10 @@ describe("AGENTS.md availability", () => {
 			const pi = {
 				on: (event: string, handler: unknown) => {
 					if (event === "before_agent_start") {
-						beforeAgentStartHandler = handler as (event: BeforeAgentStartEvent, ctx: ExtensionContext) => unknown;
+						beforeAgentStartHandler = handler as (
+							event: BeforeAgentStartEvent,
+							ctx: ExtensionContext,
+						) => unknown;
 					}
 				},
 				registerCommand: () => undefined,
@@ -131,7 +134,9 @@ describe("AGENTS.md availability", () => {
 				systemPrompt: basePrompt,
 			};
 
-			const result1 = beforeAgentStartHandler?.(event1, ctx) as { systemPrompt?: string } | undefined;
+			const result1 = beforeAgentStartHandler?.(event1, ctx) as
+				| { systemPrompt?: string }
+				| undefined;
 			const injected1 = result1?.systemPrompt;
 			expect(injected1).toBeTypeOf("string");
 			expect(injected1).toContain("AGENTS_TEST_MARKER");
@@ -144,7 +149,9 @@ describe("AGENTS.md availability", () => {
 				systemPrompt: injected1 ?? basePrompt,
 			};
 
-			const result2 = beforeAgentStartHandler?.(event2, ctx) as { systemPrompt?: string } | undefined;
+			const result2 = beforeAgentStartHandler?.(event2, ctx) as
+				| { systemPrompt?: string }
+				| undefined;
 			const injected2 = result2?.systemPrompt;
 			expect(injected2).toBeTypeOf("string");
 			expect(injected2).toContain("AGENTS_TEST_MARKER");
@@ -177,8 +184,8 @@ describe("AGENTS.md availability", () => {
 
 			const { session } = await createAgentSession({
 				cwd,
-				authStorage: new AuthStorage(),
-				modelRegistry: new ModelRegistry(new AuthStorage()),
+				authStorage: AuthStorage.create(),
+				modelRegistry: new ModelRegistry(AuthStorage.create()),
 				resourceLoader,
 				settingsManager,
 				sessionManager: SessionManager.inMemory(cwd),

@@ -1,13 +1,22 @@
 import { describe, expect, it } from "vitest";
 
-import { buildAgentContextNotice, injectAgentContextIntoMessages } from "../src/sandbox/agent-awareness/injection.js";
+import {
+	buildAgentContextNotice,
+	injectAgentContextIntoMessages,
+} from "../src/sandbox/agent-awareness/injection.js";
 import { isOverlapping } from "../src/sandbox/agent-awareness/detection.js";
 
 describe("agent-awareness", () => {
 	it("buildAgentContextNotice: formats 0 and >0", () => {
-		expect(buildAgentContextNotice({ count: 0 })).toBe("AGENT_CONTEXT: no other agents detected");
-		expect(buildAgentContextNotice({ count: 1 })).toContain("AGENT_CONTEXT: 1 other pi agent detected");
-		expect(buildAgentContextNotice({ count: 2 })).toContain("AGENT_CONTEXT: 2 other pi agents detected");
+		expect(buildAgentContextNotice({ count: 0 })).toBe(
+			"AGENT_CONTEXT: no other agents detected",
+		);
+		expect(buildAgentContextNotice({ count: 1 })).toContain(
+			"AGENT_CONTEXT: 1 other pi agent detected",
+		);
+		expect(buildAgentContextNotice({ count: 2 })).toContain(
+			"AGENT_CONTEXT: 2 other pi agents detected",
+		);
 	});
 
 	it("injectAgentContextIntoMessages: prepends last user message", () => {
@@ -17,7 +26,10 @@ describe("agent-awareness", () => {
 			{ role: "user", content: "do thing" },
 		];
 
-		const out = injectAgentContextIntoMessages(messages, "AGENT_CONTEXT: 1 other pi agent detected");
+		const out = injectAgentContextIntoMessages(
+			messages,
+			"AGENT_CONTEXT: 1 other pi agent detected",
+		);
 		expect(out).toHaveLength(3);
 		expect(out[2]?.role).toBe("user");
 		const content = out[2]?.content;
@@ -31,7 +43,10 @@ describe("agent-awareness", () => {
 		const messages = [
 			{
 				role: "user",
-				content: [{ type: "text", text: "AGENT_CONTEXT: already\n\n" }, { type: "text", text: "do thing" }],
+				content: [
+					{ type: "text", text: "AGENT_CONTEXT: already\n\n" },
+					{ type: "text", text: "do thing" },
+				],
 			},
 		];
 
@@ -48,4 +63,3 @@ describe("agent-awareness", () => {
 		expect(isOverlapping("/repo/a", "/repo", "/other")).toBe(false);
 	});
 });
-

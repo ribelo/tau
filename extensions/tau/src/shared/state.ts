@@ -147,12 +147,16 @@ function sanitizePersistedState(value: unknown): TauPersistedState {
 	return out;
 }
 
-export function loadPersistedState(ctx: { sessionManager: { getEntries: () => unknown[] } }): TauPersistedState {
+export function loadPersistedState(ctx: {
+	sessionManager: { getEntries: () => unknown[] };
+}): TauPersistedState {
 	const entries = ctx.sessionManager.getEntries();
 	const last = entries
 		.filter(
 			(e): e is { type: "custom"; customType: string; data: unknown } =>
-				isRecord(e) && e["type"] === "custom" && e["customType"] === TAU_PERSISTED_STATE_TYPE,
+				isRecord(e) &&
+				e["type"] === "custom" &&
+				e["customType"] === TAU_PERSISTED_STATE_TYPE,
 		)
 		.pop();
 

@@ -94,7 +94,7 @@ export type WrapCommandResult =
 
 /**
  * Wrap a bash command with bwrap sandbox restrictions.
- * 
+ *
  * Ported from erg/packages/core/src/sandbox/bwrap.ts
  */
 export async function wrapCommandWithSandbox(opts: {
@@ -110,7 +110,7 @@ export async function wrapCommandWithSandbox(opts: {
 		return {
 			success: true,
 			wrappedCommand: command,
-			home: os.homedir(), 
+			home: os.homedir(),
 		};
 	}
 
@@ -124,10 +124,7 @@ export async function wrapCommandWithSandbox(opts: {
 	const args: string[] = ["bwrap", "--die-with-parent"];
 
 	// Base bindings - use dev-bind to host devices to avoid mknod failures in restricted environments
-	args.push(
-		"--dev-bind", "/dev", "/dev",
-		"--proc", "/proc",
-	);
+	args.push("--dev-bind", "/dev", "/dev", "--proc", "/proc");
 
 	// /tmp handling: In workspace-write mode, bind the host /tmp so files persist
 	// across tool calls. In read-only mode, use ephemeral tmpfs (writable scratch
@@ -136,14 +133,26 @@ export async function wrapCommandWithSandbox(opts: {
 		// Bind all known temp directories writable so files persist between calls.
 		const tmpBinds = new Set<string>();
 		tmpBinds.add("/tmp");
-		try { tmpBinds.add(fs.realpathSync("/tmp")); } catch { /* ignore */ }
+		try {
+			tmpBinds.add(fs.realpathSync("/tmp"));
+		} catch {
+			/* ignore */
+		}
 		const osTmp = os.tmpdir();
 		tmpBinds.add(osTmp);
-		try { tmpBinds.add(fs.realpathSync(osTmp)); } catch { /* ignore */ }
+		try {
+			tmpBinds.add(fs.realpathSync(osTmp));
+		} catch {
+			/* ignore */
+		}
 		const envTmpDir = process.env["TMPDIR"];
 		if (envTmpDir) {
 			tmpBinds.add(envTmpDir);
-			try { tmpBinds.add(fs.realpathSync(envTmpDir)); } catch { /* ignore */ }
+			try {
+				tmpBinds.add(fs.realpathSync(envTmpDir));
+			} catch {
+				/* ignore */
+			}
 		}
 		for (const tmp of tmpBinds) {
 			if (exists(tmp)) {
@@ -157,7 +166,16 @@ export async function wrapCommandWithSandbox(opts: {
 	args.push("--tmpfs", "/run");
 
 	// NixOS and other systems
-	const bindPaths = ["/nix", "/bin", "/sbin", "/etc", "/run/current-system", "/lib64", "/usr", "/lib"];
+	const bindPaths = [
+		"/nix",
+		"/bin",
+		"/sbin",
+		"/etc",
+		"/run/current-system",
+		"/lib64",
+		"/usr",
+		"/lib",
+	];
 	for (const p of bindPaths) {
 		if (exists(p)) {
 			args.push("--ro-bind", p, p);
@@ -192,7 +210,7 @@ export async function wrapCommandWithSandbox(opts: {
 
 	// Keep HOME as real home directory (read-only in sandbox)
 	// Tools that try to write to ~/.config, ~/.cache will fail - that's intended
-	
+
 	// Final command assembly. Use single quotes to prevent host expansion of $vars.
 	const escapedCommand = command.replace(/'/g, "'\\''");
 	const wrapped = `${args.join(" ")} -- bash -c '${escapedCommand}'`;

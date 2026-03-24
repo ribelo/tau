@@ -1,9 +1,17 @@
 import { ServiceMap, Effect, Layer } from "effect";
 
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+	ExtensionContext,
+} from "@mariozechner/pi-coding-agent";
 
 import { PiAPI } from "../effect/pi.js";
-import { isPromptModeName, resolvePromptModePresets, type PromptModeName } from "../prompt/modes.js";
+import {
+	isPromptModeName,
+	resolvePromptModePresets,
+	type PromptModeName,
+} from "../prompt/modes.js";
 import type { TauPersistedState } from "../shared/state.js";
 import { loadPersistedState } from "../shared/state.js";
 import { Persistence } from "./persistence.js";
@@ -21,7 +29,9 @@ type PromptModePersistence = {
 
 type WithModelSelectSuppressed = <A>(run: () => Promise<A>) => Promise<A>;
 
-function resolvePersistedMode(state: { promptModes?: { activeMode?: PromptModeName } } | undefined): PromptModeName {
+function resolvePersistedMode(
+	state: { promptModes?: { activeMode?: PromptModeName } } | undefined,
+): PromptModeName {
 	const active = state?.promptModes?.activeMode;
 	return active ?? "smart";
 }
@@ -36,7 +46,9 @@ function nextPromptMode(mode: PromptModeName): PromptModeName {
 	return "smart";
 }
 
-function parseProviderModel(model: string): { readonly provider: string; readonly modelId: string } | undefined {
+function parseProviderModel(
+	model: string,
+): { readonly provider: string; readonly modelId: string } | undefined {
 	const idx = model.indexOf("/");
 	if (idx <= 0 || idx >= model.length - 1) {
 		return undefined;
@@ -100,7 +112,10 @@ async function applyModeSelection(
 		const model = ctx.modelRegistry.find(parsed.provider, parsed.modelId);
 		if (!model) {
 			if (candidate !== preset.model) {
-				ctx.ui.notify(`Mode ${mode}: assigned model not found, using preset (${preset.model})`, "warning");
+				ctx.ui.notify(
+					`Mode ${mode}: assigned model not found, using preset (${preset.model})`,
+					"warning",
+				);
 			} else {
 				ctx.ui.notify(`Mode ${mode}: model not found: ${candidate}`, "error");
 			}
@@ -112,7 +127,10 @@ async function applyModeSelection(
 			: await pi.setModel(model);
 		if (!ok) {
 			if (candidate !== preset.model) {
-				ctx.ui.notify(`Mode ${mode}: no auth for assigned model, using preset (${preset.model})`, "warning");
+				ctx.ui.notify(
+					`Mode ${mode}: no auth for assigned model, using preset (${preset.model})`,
+					"warning",
+				);
 				continue;
 			}
 			ctx.ui.notify(`Mode ${mode}: no auth available for ${candidate}`, "error");
@@ -209,14 +227,20 @@ export const PromptModesLive = Layer.effect(
 									return;
 								}
 
-								const choice = await ctx.ui.select("Mode", ["smart", "deep", "rush"]);
+								const choice = await ctx.ui.select("Mode", [
+									"smart",
+									"deep",
+									"rush",
+								]);
 								if (!choice) return;
 								if (!isPromptModeName(choice)) {
 									ctx.ui.notify(`Invalid mode: ${choice}`, "error");
 									return;
 								}
 
-								await applyMode(pi, persistence, choice, ctx, { withModelSelectSuppressed });
+								await applyMode(pi, persistence, choice, ctx, {
+									withModelSelectSuppressed,
+								});
 								return;
 							}
 
@@ -240,7 +264,9 @@ export const PromptModesLive = Layer.effect(
 								return;
 							}
 
-							await applyMode(pi, persistence, lower, ctx, { withModelSelectSuppressed });
+							await applyMode(pi, persistence, lower, ctx, {
+								withModelSelectSuppressed,
+							});
 						},
 					});
 
@@ -267,11 +293,15 @@ export const PromptModesLive = Layer.effect(
 					});
 
 					pi.on("session_start", async (_event, ctx) => {
-						await syncModeForSessionContext(pi, persistence, ctx, { withModelSelectSuppressed });
+						await syncModeForSessionContext(pi, persistence, ctx, {
+							withModelSelectSuppressed,
+						});
 					});
 
 					pi.on("session_switch", async (_event, ctx) => {
-						await syncModeForSessionContext(pi, persistence, ctx, { withModelSelectSuppressed });
+						await syncModeForSessionContext(pi, persistence, ctx, {
+							withModelSelectSuppressed,
+						});
 					});
 
 					pi.on("model_select", async (event, ctx) => {
@@ -282,7 +312,9 @@ export const PromptModesLive = Layer.effect(
 						}
 						const persistedSessionState = loadPersistedState(ctx);
 						const inMemoryState = persistence.getSnapshot();
-						const mode = persistedSessionState.promptModes?.activeMode ?? resolvePersistedMode(inMemoryState);
+						const mode =
+							persistedSessionState.promptModes?.activeMode ??
+							resolvePersistedMode(inMemoryState);
 						const selectedModel = `${event.model.provider}/${event.model.id}`;
 						persistModeState(persistence, mode, selectedModel);
 					});

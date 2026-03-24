@@ -9,12 +9,15 @@ import {
 } from "../shared/state.js";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 
-export class Persistence extends ServiceMap.Service<Persistence, {
+export class Persistence extends ServiceMap.Service<
+	Persistence,
+	{
 		readonly getSnapshot: () => TauPersistedState;
 		readonly setSnapshot: (next: TauPersistedState) => void;
 		readonly update: (patch: Partial<TauPersistedState>) => void;
 		readonly setup: Effect.Effect<void>;
-	}>()("Persistence") {}
+	}
+>()("Persistence") {}
 
 export const PersistenceLive = Layer.effect(
 	Persistence,

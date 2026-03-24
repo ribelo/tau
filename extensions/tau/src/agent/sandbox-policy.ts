@@ -1,4 +1,9 @@
-import type { ApprovalPolicy, FilesystemMode, NetworkMode, SandboxConfig } from "../sandbox/config.js";
+import type {
+	ApprovalPolicy,
+	FilesystemMode,
+	NetworkMode,
+	SandboxConfig,
+} from "../sandbox/config.js";
 
 const FILESYSTEM_RANK: Record<FilesystemMode, number> = {
 	"read-only": 0,
@@ -36,14 +41,26 @@ export function computeClampedWorkerSandboxConfig(options: {
 		filesystemMode: options.requested?.filesystemMode ?? options.parent.filesystemMode,
 		networkMode: options.requested?.networkMode ?? options.parent.networkMode,
 		approvalPolicy: options.requested?.approvalPolicy ?? options.parent.approvalPolicy,
-		approvalTimeoutSeconds: options.requested?.approvalTimeoutSeconds ?? options.parent.approvalTimeoutSeconds,
+		approvalTimeoutSeconds:
+			options.requested?.approvalTimeoutSeconds ?? options.parent.approvalTimeoutSeconds,
 		subagent: options.requested?.subagent ?? options.parent.subagent,
 	};
 
-	const filesystemMode = minByRank(requested.filesystemMode, options.parent.filesystemMode, FILESYSTEM_RANK);
+	const filesystemMode = minByRank(
+		requested.filesystemMode,
+		options.parent.filesystemMode,
+		FILESYSTEM_RANK,
+	);
 	const networkMode = minByRank(requested.networkMode, options.parent.networkMode, NETWORK_RANK);
-	const approvalPolicy = minByRank(requested.approvalPolicy, options.parent.approvalPolicy, APPROVAL_RANK);
-	const approvalTimeoutSeconds = Math.min(requested.approvalTimeoutSeconds, options.parent.approvalTimeoutSeconds);
+	const approvalPolicy = minByRank(
+		requested.approvalPolicy,
+		options.parent.approvalPolicy,
+		APPROVAL_RANK,
+	);
+	const approvalTimeoutSeconds = Math.min(
+		requested.approvalTimeoutSeconds,
+		options.parent.approvalTimeoutSeconds,
+	);
 
 	// Subagent mode: if parent is subagent, worker must be subagent.
 	// Otherwise worker defaults to subagent mode unless explicitly disabled.
@@ -57,4 +74,3 @@ export function computeClampedWorkerSandboxConfig(options: {
 		subagent,
 	};
 }
-

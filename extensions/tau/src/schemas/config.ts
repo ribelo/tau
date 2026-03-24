@@ -1,12 +1,21 @@
 import { Schema } from "effect";
 
-export const FilesystemMode = Schema.Literals(["read-only", "workspace-write", "danger-full-access"]);
+export const FilesystemMode = Schema.Literals([
+	"read-only",
+	"workspace-write",
+	"danger-full-access",
+]);
 export type FilesystemMode = Schema.Schema.Type<typeof FilesystemMode>;
 
 export const NetworkMode = Schema.Literals(["deny", "allow-all"]);
 export type NetworkMode = Schema.Schema.Type<typeof NetworkMode>;
 
-export const ApprovalPolicy = Schema.Literals(["never", "on-failure", "on-request", "unless-trusted"]);
+export const ApprovalPolicy = Schema.Literals([
+	"never",
+	"on-failure",
+	"on-request",
+	"unless-trusted",
+]);
 export type ApprovalPolicy = Schema.Schema.Type<typeof ApprovalPolicy>;
 
 export const ApprovalTimeoutSeconds = Schema.Number.check(
