@@ -592,16 +592,12 @@ export class AgentWorker implements Agent {
 								worker.sessionUnsubscribe = undefined;
 							}
 
-							const newSession = yield* Effect.tryPromise({
-								try: () =>
-									createSessionForModelAsync(
-										worker.infra,
-										spec,
-										worker.parentModel,
-										worker.infra.modelRegistry,
-									),
-								catch: (err) => err,
-							}).pipe(
+							const newSession = yield* createSessionForModel(
+								worker.infra,
+								spec,
+								worker.parentModel,
+								worker.infra.modelRegistry,
+							).pipe(
 								Effect.catch((err: unknown) => {
 									const reason = err instanceof Error ? err.message : String(err);
 									errors.push(`${spec.model}: ${reason}`);
@@ -794,38 +790,6 @@ function createSessionForModel(
 
 		return session;
 	});
-}
-
-/** Async version for use inside tryPromise (no Effect context). */
-async function createSessionForModelAsync(
-	infra: SessionInfra,
-	spec: ModelSpec,
-	parentModel: Model<Api> | undefined,
-	modelRegistry: ModelRegistry,
-): Promise<AgentSession> {
-	const resolvedModel =
-		spec.model !== "inherit"
-			? resolveModelPattern(spec.model, modelRegistry.getAll())
-			: parentModel;
-
-	const sessionOpts = {
-		cwd: infra.cwd,
-		authStorage: infra.authStorage,
-		modelRegistry,
-		sessionManager: SessionManager.inMemory(infra.cwd),
-		settingsManager: infra.settingsManager,
-		resourceLoader: infra.resourceLoader,
-		customTools: infra.customTools,
-		...(resolvedModel ? { model: resolvedModel } : {}),
-	};
-	const { session } = await createAgentSession(sessionOpts);
-
-	const thinkingLevel = spec.thinking;
-	if (thinkingLevel && thinkingLevel !== "inherit") {
-		session.setThinkingLevel(thinkingLevel as ThinkingLevel);
-	}
-
-	return session;
 }
 
 /** Wire sandbox config and approval broker onto a session. */
