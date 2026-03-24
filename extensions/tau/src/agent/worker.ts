@@ -310,7 +310,11 @@ export class AgentWorker implements Agent {
 				approvalBroker: opts.approvalBroker,
 			};
 
-			const agentTool = createWorkerAgentTool(opts.runPromise, agentContext);
+				const agentTool = createWorkerAgentTool(
+					opts.runPromise,
+					agentContext,
+					"Manage non-blocking agent tasks. Actions: spawn, send, wait, close, list.",
+				);
 
 			const customTools: ToolDefinition[] = [agentTool as ToolDefinition];
 

@@ -1,3 +1,4 @@
+import { Cause, Effect, Exit } from "effect";
 import { AgentRegistry, AgentRegistryConfigError } from "./agent-registry.js";
 
 interface StartupValidationHandlers {
@@ -16,13 +17,13 @@ function formatStartupValidationError(error: unknown): string {
 	return `pi failed to start: invalid agent definition markdown detected.\n${details}`;
 }
 
-export function validateAgentDefinitionsAtStartup(
+export async function validateAgentDefinitionsAtStartup(
 	cwd: string,
 	handlers?: Partial<StartupValidationHandlers>,
-): void {
-	try {
-		AgentRegistry.load(cwd);
-	} catch (error) {
+): Promise<void> {
+	const exit = await Effect.runPromiseExit(AgentRegistry.load(cwd));
+	if (Exit.isFailure(exit)) {
+		const error = Cause.squash(exit.cause);
 		const message = formatStartupValidationError(error);
 		(handlers?.log ?? console.error)(message);
 		(handlers?.exit ?? ((code: number): never => process.exit(code)))(1);

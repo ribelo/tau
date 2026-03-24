@@ -11,19 +11,23 @@
  * agent frontmatter.
  */
 
-import * as fs from "node:fs";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
+import { Data, Effect } from "effect";
 
-import { readJsonFileDetailed } from "../shared/fs.js";
 import { isRecord } from "../shared/json.js";
 import {
 	EXTENSION_AGENTS_DIR,
-	findNearestProjectPiDir,
 	getUserAgentsDir,
-	getUserSettingsPath,
 } from "../shared/discovery.js";
+import {
+	findNearestProjectPiDirEffect,
+	readProjectSettings,
+	readUserSettings,
+	SettingsError,
+} from "../shared/settings.js";
 import {
 	resolvePromptModePresets,
 	type PromptModeName,
@@ -32,145 +36,170 @@ import {
 import type { SandboxConfig } from "../sandbox/config.js";
 import { parseAgentDefinition } from "./parser.js";
 import type { AgentDefinition, Complexity, ModelSpec } from "./types.js";
+import { decodeAgentModelSpec } from "./model-spec.js";
 
 const MODE_AGENT_SANDBOX: SandboxConfig = {
 	preset: "full-access",
 };
 
-const THINKING_LEVELS = new Set<ThinkingLevel | "inherit">([
-	"off",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-	"inherit",
-]);
-
 const COMPLEXITY_LEVELS = ["low", "medium", "high"] as const;
 const ALLOWED_AGENT_SETTINGS_KEYS = new Set(["models", "complexity"]);
 const ALLOWED_COMPLEXITY_CONFIG_KEYS = new Set(["models"]);
 
-export class AgentRegistryConfigError extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "AgentRegistryConfigError";
+export class AgentRegistryConfigError extends Data.TaggedError("AgentRegistryConfigError")<{
+	readonly message: string;
+	readonly cause?: unknown;
+}> {}
+
+function errorMessage(error: unknown): string {
+	if (error instanceof Error) {
+		return error.message;
 	}
-}
-
-function buildModeAgentDefinition(mode: PromptModeName, cwd: string): AgentDefinition {
-	const presets = resolvePromptModePresets(cwd);
-	const preset = presets[mode];
-
-	const model: ModelSpec = {
-		model: preset.model,
-		thinking: preset.thinking as ThinkingLevel,
-	};
-
-	const description =
-		mode === "smart"
-			? "Smart agent. Uses the smart mode system prompt and preset model selection."
-			: mode === "deep"
-				? "Deep agent. Uses the deep mode system prompt and preset model selection."
-				: "Rush agent. Uses the rush mode system prompt and preset model selection.";
-
-	return {
-		name: mode,
-		description,
-		models: [model],
-		sandbox: MODE_AGENT_SANDBOX,
-		// Keep mode agents aligned with /mode behavior: use the same mode prompt markdown.
-		systemPrompt: preset.systemPrompt,
-	};
-}
-
-function isDirectory(p: string): boolean {
-	try {
-		return fs.statSync(p).isDirectory();
-	} catch {
-		return false;
+	if (
+		typeof error === "object" &&
+		error !== null &&
+		"message" in error &&
+		typeof error.message === "string"
+	) {
+		return error.message;
 	}
+	return String(error);
 }
 
-function isFile(p: string): boolean {
-	try {
-		return fs.statSync(p).isFile();
-	} catch {
-		return false;
-	}
+function buildModeAgentDefinition(
+	mode: PromptModeName,
+	cwd: string,
+): Effect.Effect<AgentDefinition, AgentRegistryConfigError | SettingsError> {
+	return resolvePromptModePresets(cwd).pipe(
+		Effect.map((presets) => {
+			const preset = presets[mode];
+
+			const model: ModelSpec = {
+				model: preset.model,
+				thinking: preset.thinking as ThinkingLevel,
+			};
+
+			const description =
+				mode === "smart"
+					? "Smart agent. Uses the smart mode system prompt and preset model selection."
+					: mode === "deep"
+						? "Deep agent. Uses the deep mode system prompt and preset model selection."
+						: "Rush agent. Uses the rush mode system prompt and preset model selection.";
+
+			return {
+				name: mode,
+				description,
+				models: [model],
+				sandbox: MODE_AGENT_SANDBOX,
+				systemPrompt: preset.systemPrompt,
+			};
+		}),
+		Effect.mapError((cause) =>
+			cause instanceof AgentRegistryConfigError
+				? cause
+				: new AgentRegistryConfigError({
+						message: `Failed to build mode agent "${mode}"`,
+						cause,
+					}),
+		),
+	);
 }
 
-function discoverAgentFiles(dir: string): Map<string, string> {
-	const result = new Map<string, string>();
-	if (!isDirectory(dir)) return result;
-
-	const files = fs.readdirSync(dir);
-	for (const file of files) {
-		if (!file.endsWith(".md")) continue;
-		const name = file.slice(0, -3);
-		if (isPromptModeName(name)) {
-			throw new AgentRegistryConfigError(
-				`Invalid agent file ${path.join(dir, file)}: mode agents (smart, deep, rush) are virtual and cannot be defined as .md files.`,
-			);
-		}
-		const filePath = path.join(dir, file);
-		if (isFile(filePath)) result.set(name, filePath);
-	}
-
-	return result;
+function discoverAgentFiles(
+	dir: string,
+): Effect.Effect<Map<string, string>, AgentRegistryConfigError> {
+	return Effect.tryPromise({
+		try: () => fs.readdir(dir, { withFileTypes: true }),
+		catch: (cause) => cause,
+	}).pipe(
+		Effect.catchIf(
+			(cause) =>
+				typeof cause === "object" &&
+				cause !== null &&
+				"code" in cause &&
+				cause.code === "ENOENT",
+			() => Effect.succeed([]),
+		),
+		Effect.mapError(
+			(cause) =>
+				new AgentRegistryConfigError({
+					message: `Failed to read agent directory ${dir}`,
+						cause,
+					}),
+		),
+		Effect.flatMap((entries) =>
+			Effect.gen(function* () {
+				const result = new Map<string, string>();
+				for (const entry of entries) {
+					if (!entry.isFile() || !entry.name.endsWith(".md")) {
+						continue;
+					}
+					const name = entry.name.slice(0, -3);
+					if (isPromptModeName(name)) {
+						return yield* Effect.fail(
+							new AgentRegistryConfigError({
+								message: `Invalid agent file ${path.join(dir, entry.name)}: mode agents (smart, deep, rush) are virtual and cannot be defined as .md files.`,
+							}),
+						);
+					}
+					result.set(name, path.join(dir, entry.name));
+				}
+				return result;
+			}),
+		),
+		Effect.mapError((cause) =>
+			cause instanceof AgentRegistryConfigError
+				? cause
+				: new AgentRegistryConfigError({
+						message: `Failed to discover agent files in ${dir}`,
+						cause,
+					}),
+		),
+	);
 }
 
-function parseModelsArray(arr: unknown, keyPath: string): ModelSpec[] | undefined {
-	if (arr === undefined) return undefined;
+function parseModelsArray(
+	arr: unknown,
+	keyPath: string,
+): Effect.Effect<readonly ModelSpec[] | undefined, AgentRegistryConfigError> {
+	if (arr === undefined) return Effect.succeed(undefined);
 	if (!Array.isArray(arr)) {
-		throw new AgentRegistryConfigError(`${keyPath} must be an array`);
+		return Effect.fail(new AgentRegistryConfigError({ message: `${keyPath} must be an array` }));
 	}
 	if (arr.length === 0) {
-		throw new AgentRegistryConfigError(`${keyPath} must contain at least one model`);
+		return Effect.fail(
+			new AgentRegistryConfigError({ message: `${keyPath} must contain at least one model` }),
+		);
 	}
 
-	const result: ModelSpec[] = [];
-	for (let i = 0; i < arr.length; i++) {
-		const entry = arr[i];
-		const entryPath = `${keyPath}[${i}]`;
+	return Effect.forEach(arr, (entry, index) => {
+		const entryPath = `${keyPath}[${index}]`;
 		if (!isRecord(entry)) {
-			throw new AgentRegistryConfigError(`${entryPath} must be an object`);
+			return Effect.fail(
+				new AgentRegistryConfigError({ message: `${entryPath} must be an object` }),
+			);
 		}
 
 		for (const key of Object.keys(entry)) {
 			if (key !== "model" && key !== "thinking") {
-				throw new AgentRegistryConfigError(
-					`${entryPath}.${key} is not supported (allowed keys: model, thinking)`,
+				return Effect.fail(
+					new AgentRegistryConfigError({
+						message: `${entryPath}.${key} is not supported (allowed keys: model, thinking)`,
+					}),
 				);
 			}
 		}
 
-		const model = entry["model"];
-		if (typeof model !== "string" || model.trim().length === 0) {
-			throw new AgentRegistryConfigError(`${entryPath}.model must be a non-empty string`);
-		}
-
-		const thinking = entry["thinking"];
-		let validatedThinking: ThinkingLevel | "inherit" | undefined;
-		if (thinking !== undefined) {
-			if (
-				typeof thinking !== "string" ||
-				!THINKING_LEVELS.has(thinking as ThinkingLevel | "inherit")
-			) {
-				throw new AgentRegistryConfigError(
-					`${entryPath}.thinking must be one of: off, minimal, low, medium, high, xhigh, inherit`,
-				);
-			}
-			validatedThinking = thinking as ThinkingLevel | "inherit";
-		}
-
-		const spec: ModelSpec =
-			validatedThinking === undefined ? { model } : { model, thinking: validatedThinking };
-
-		result.push(spec);
-	}
-
-	return result;
+		return decodeAgentModelSpec(entry, entryPath).pipe(
+			Effect.mapError(
+				(error) =>
+					new AgentRegistryConfigError({
+						message: error.message,
+						cause: error,
+					}),
+			),
+		);
+	});
 }
 
 interface ComplexityConfig {
@@ -186,153 +215,198 @@ interface AgentSettingsOverride {
 	};
 }
 
-function findNearestProjectSettingsPath(cwd: string): string | null {
-	const piDir = findNearestProjectPiDir(cwd);
-	if (!piDir) return null;
-	const candidate = path.join(piDir, "settings.json");
-	return isFile(candidate) ? candidate : null;
+function mergeSettingsOverride(
+	result: Map<string, AgentSettingsOverride>,
+	name: string,
+	override: AgentSettingsOverride,
+): Map<string, AgentSettingsOverride> {
+	const next = new Map(result);
+	const existing = next.get(name);
+	next.set(name, existing ? { ...existing, ...override } : override);
+	return next;
 }
 
-function loadAgentSettings(cwd: string): Map<string, AgentSettingsOverride> {
-	const result = new Map<string, AgentSettingsOverride>();
+function loadAgentSettingsFromJson(
+	settings: unknown,
+	context: string,
+	initial: Map<string, AgentSettingsOverride>,
+): Effect.Effect<Map<string, AgentSettingsOverride>, AgentRegistryConfigError> {
+	if (!isRecord(settings)) {
+		return Effect.fail(
+			new AgentRegistryConfigError({
+				message: `Invalid settings in ${context}: top-level value must be an object`,
+			}),
+		);
+	}
 
-	const applySettings = (settingsPath: string) => {
-		const jsonResult = readJsonFileDetailed(settingsPath);
-		if (jsonResult._tag === "missing") return;
-		if (jsonResult._tag === "invalid") {
-			throw new AgentRegistryConfigError(
-				`Invalid JSON in ${settingsPath}: ${jsonResult.reason}`,
-			);
-		}
+	const agents = settings["agents"];
+	if (agents === undefined) return Effect.succeed(initial);
+	if (!isRecord(agents)) {
+		return Effect.fail(
+			new AgentRegistryConfigError({
+				message: `Invalid settings in ${context}: agents must be an object`,
+			}),
+		);
+	}
 
-		const agents = jsonResult.data["agents"];
-		if (agents === undefined) return;
-		if (!isRecord(agents)) {
-			throw new AgentRegistryConfigError(
-				`Invalid settings in ${settingsPath}: agents must be an object`,
-			);
-		}
-
+	return Effect.gen(function* () {
+		let result = initial;
 		for (const [name, config] of Object.entries(agents)) {
-			const agentPath = `${settingsPath}#agents.${name}`;
+			const agentPath = `${context}#agents.${name}`;
 			if (isPromptModeName(name)) {
-				throw new AgentRegistryConfigError(
-					`Invalid settings in ${agentPath}: mode agents are configured under promptModes, not agents.`,
+				return yield* Effect.fail(
+					new AgentRegistryConfigError({
+						message: `Invalid settings in ${agentPath}: mode agents are configured under promptModes, not agents.`,
+					}),
 				);
 			}
 			if (!isRecord(config)) {
-				throw new AgentRegistryConfigError(
-					`Invalid settings in ${agentPath}: value must be an object`,
+				return yield* Effect.fail(
+					new AgentRegistryConfigError({
+						message: `Invalid settings in ${agentPath}: value must be an object`,
+					}),
 				);
 			}
 
 			for (const key of Object.keys(config)) {
 				if (!ALLOWED_AGENT_SETTINGS_KEYS.has(key)) {
-					throw new AgentRegistryConfigError(
-						`Invalid settings in ${agentPath}: ${key} is not supported (allowed keys: models, complexity)`,
+					return yield* Effect.fail(
+						new AgentRegistryConfigError({
+							message: `Invalid settings in ${agentPath}: ${key} is not supported (allowed keys: models, complexity)`,
+						}),
 					);
 				}
 			}
 
+			const models = yield* parseModelsArray(config["models"], `${agentPath}.models`);
 			const override: AgentSettingsOverride = {};
-			const models = parseModelsArray(config["models"], `${agentPath}.models`);
 			if (models) override.models = models;
 
 			const complexity = config["complexity"];
 			if (complexity !== undefined) {
 				if (!isRecord(complexity)) {
-					throw new AgentRegistryConfigError(
-						`Invalid settings in ${agentPath}.complexity: value must be an object`,
+					return yield* Effect.fail(
+						new AgentRegistryConfigError({
+							message: `Invalid settings in ${agentPath}.complexity: value must be an object`,
+						}),
 					);
 				}
 
-				override.complexity = {};
 				for (const key of Object.keys(complexity)) {
 					if (!COMPLEXITY_LEVELS.includes(key as "low" | "medium" | "high")) {
-						throw new AgentRegistryConfigError(
-							`Invalid settings in ${agentPath}.complexity: ${key} is not supported (allowed keys: low, medium, high)`,
+						return yield* Effect.fail(
+							new AgentRegistryConfigError({
+								message: `Invalid settings in ${agentPath}.complexity: ${key} is not supported (allowed keys: low, medium, high)`,
+							}),
 						);
 					}
 				}
 
+				const complexityOverride: NonNullable<AgentSettingsOverride["complexity"]> = {};
 				for (const level of COMPLEXITY_LEVELS) {
 					const levelConfig = complexity[level];
-					if (levelConfig === undefined) continue;
+					if (levelConfig === undefined) {
+						continue;
+					}
 					if (!isRecord(levelConfig)) {
-						throw new AgentRegistryConfigError(
-							`Invalid settings in ${agentPath}.complexity.${level}: value must be an object`,
+						return yield* Effect.fail(
+							new AgentRegistryConfigError({
+								message: `Invalid settings in ${agentPath}.complexity.${level}: value must be an object`,
+							}),
 						);
 					}
 
 					for (const key of Object.keys(levelConfig)) {
 						if (!ALLOWED_COMPLEXITY_CONFIG_KEYS.has(key)) {
-							throw new AgentRegistryConfigError(
-								`Invalid settings in ${agentPath}.complexity.${level}: ${key} is not supported (allowed keys: models)`,
+							return yield* Effect.fail(
+								new AgentRegistryConfigError({
+									message: `Invalid settings in ${agentPath}.complexity.${level}: ${key} is not supported (allowed keys: models)`,
+								}),
 							);
 						}
 					}
 
-					const levelModels = parseModelsArray(
+					const levelModels = yield* parseModelsArray(
 						levelConfig["models"],
 						`${agentPath}.complexity.${level}.models`,
 					);
-					if (!levelModels) {
-						throw new AgentRegistryConfigError(
-							`Invalid settings in ${agentPath}.complexity.${level}: models is required`,
+					if (levelModels === undefined) {
+						return yield* Effect.fail(
+							new AgentRegistryConfigError({
+								message: `Invalid settings in ${agentPath}.complexity.${level}: models is required`,
+							}),
 						);
 					}
-					override.complexity[level] = { models: levelModels };
+					complexityOverride[level] = { models: levelModels };
 				}
 
-				if (Object.keys(override.complexity).length === 0) {
-					throw new AgentRegistryConfigError(
-						`Invalid settings in ${agentPath}: complexity must define at least one of low, medium, high`,
+				if (Object.keys(complexityOverride).length === 0) {
+					return yield* Effect.fail(
+						new AgentRegistryConfigError({
+							message: `Invalid settings in ${agentPath}: complexity must define at least one of low, medium, high`,
+						}),
 					);
 				}
+
+				override.complexity = complexityOverride;
 			}
 
 			if (Object.keys(override).length > 0) {
-				const existing = result.get(name);
-				result.set(name, existing ? { ...existing, ...override } : override);
+				result = mergeSettingsOverride(result, name, override);
 			}
 		}
-	};
-
-	const globalSettings = getUserSettingsPath();
-	applySettings(globalSettings);
-
-	const projectSettings = findNearestProjectSettingsPath(cwd);
-	if (projectSettings) applySettings(projectSettings);
-
-	return result;
+		return result;
+	});
 }
 
-function parseAndValidateAgentFile(expectedName: string, filePath: string): AgentDefinition {
-	let content: string;
-	try {
-		content = fs.readFileSync(filePath, "utf-8");
-	} catch (error) {
-		throw new AgentRegistryConfigError(
-			`Failed to read agent definition ${filePath}: ${error instanceof Error ? error.message : String(error)}`,
-		);
-	}
+function loadAgentSettings(
+	cwd: string,
+): Effect.Effect<Map<string, AgentSettingsOverride>, AgentRegistryConfigError | SettingsError> {
+	return Effect.all({
+		userSettings: readUserSettings(),
+		projectSettings: readProjectSettings(cwd),
+	}).pipe(
+		Effect.flatMap(({ userSettings, projectSettings }) =>
+			loadAgentSettingsFromJson(userSettings ?? {}, "user settings", new Map()).pipe(
+				Effect.flatMap((result) =>
+					loadAgentSettingsFromJson(projectSettings ?? {}, "project settings", result),
+				),
+			),
+		),
+	);
+}
 
-	let definition: AgentDefinition;
-	try {
-		definition = parseAgentDefinition(content);
-	} catch (error) {
-		throw new AgentRegistryConfigError(
-			`Invalid agent definition ${filePath}: ${error instanceof Error ? error.message : String(error)}`,
-		);
-	}
-
-	if (definition.name !== expectedName) {
-		throw new AgentRegistryConfigError(
-			`Invalid agent definition ${filePath}: frontmatter name "${definition.name}" must match filename "${expectedName}.md"`,
-		);
-	}
-
-	return definition;
+function parseAndValidateAgentFile(
+	expectedName: string,
+	filePath: string,
+): Effect.Effect<AgentDefinition, AgentRegistryConfigError> {
+	return Effect.tryPromise({
+		try: () => fs.readFile(filePath, "utf-8"),
+		catch: (cause) =>
+			new AgentRegistryConfigError({
+				message: `Failed to read agent definition ${filePath}`,
+				cause,
+			}),
+	}).pipe(
+		Effect.flatMap((content) => parseAgentDefinition(content)),
+		Effect.mapError((cause) =>
+			cause instanceof AgentRegistryConfigError
+				? cause
+				: new AgentRegistryConfigError({
+						message: `Invalid agent definition ${filePath}: ${errorMessage(cause)}`,
+						cause,
+					}),
+		),
+		Effect.flatMap((definition) =>
+			definition.name !== expectedName
+				? Effect.fail(
+						new AgentRegistryConfigError({
+							message: `Invalid agent definition ${filePath}: frontmatter name "${definition.name}" must match filename "${expectedName}.md"`,
+						}),
+					)
+				: Effect.succeed(definition),
+		),
+	);
 }
 
 function formatValidationErrors(errors: readonly string[]): string {
@@ -368,72 +442,95 @@ export class AgentRegistry {
 		this.cwd = args.cwd;
 	}
 
-	static load(cwd: string): AgentRegistry {
-		const extensionAgents = discoverAgentFiles(EXTENSION_AGENTS_DIR);
-		const userAgentsDir = getUserAgentsDir();
-		const userAgents = discoverAgentFiles(userAgentsDir);
+	static load(
+		cwd: string,
+	): Effect.Effect<AgentRegistry, AgentRegistryConfigError | SettingsError> {
+		return Effect.gen(function* () {
+			const extensionAgents = yield* discoverAgentFiles(EXTENSION_AGENTS_DIR);
+			const userAgents = yield* discoverAgentFiles(getUserAgentsDir());
+			const projectPi = yield* findNearestProjectPiDirEffect(cwd);
+			const projectAgents =
+				projectPi === null
+					? new Map<string, string>()
+					: yield* discoverAgentFiles(path.join(projectPi, "agents"));
 
-		const projectPi = findNearestProjectPiDir(cwd);
-		const projectAgents =
-			projectPi === null
-				? new Map<string, string>()
-				: discoverAgentFiles(path.join(projectPi, "agents"));
+			const parsedByPath = new Map<string, AgentDefinition>();
+			const validationErrors: string[] = [];
+			const validateSource = (files: Map<string, string>) =>
+				Effect.forEach(Array.from(files.entries()), ([name, filePath]) =>
+					parseAndValidateAgentFile(name, filePath).pipe(
+						Effect.tap((definition) =>
+							Effect.sync(() => {
+								parsedByPath.set(filePath, definition);
+							}),
+						),
+						Effect.catch((error: AgentRegistryConfigError) =>
+							Effect.sync(() => {
+								validationErrors.push(error.message);
+							}),
+						),
+					),
+				).pipe(Effect.asVoid);
 
-		const parsedByPath = new Map<string, AgentDefinition>();
-		const validationErrors: string[] = [];
-		const validateSource = (files: Map<string, string>) => {
-			for (const [name, filePath] of files) {
-				try {
-					parsedByPath.set(filePath, parseAndValidateAgentFile(name, filePath));
-				} catch (error) {
-					validationErrors.push(error instanceof Error ? error.message : String(error));
-				}
-			}
-		};
+			yield* validateSource(extensionAgents);
+			yield* validateSource(userAgents);
+			yield* validateSource(projectAgents);
 
-		// Validate every discovered file (including overridden ones) so misconfiguration
-		// never gets silently ignored.
-		validateSource(extensionAgents);
-		validateSource(userAgents);
-		validateSource(projectAgents);
-
-		if (validationErrors.length > 0) {
-			throw new AgentRegistryConfigError(formatValidationErrors(validationErrors));
-		}
-
-		const mergedPaths = new Map<string, string>();
-		for (const [name, filePath] of extensionAgents) {
-			mergedPaths.set(name, filePath);
-		}
-		for (const [name, filePath] of userAgents) {
-			mergedPaths.set(name, filePath);
-		}
-		for (const [name, filePath] of projectAgents) {
-			mergedPaths.set(name, filePath);
-		}
-
-		const definitions = new Map<string, AgentDefinition>();
-		for (const [name, filePath] of mergedPaths) {
-			const definition = parsedByPath.get(filePath);
-			if (!definition) {
-				throw new AgentRegistryConfigError(
-					`Internal error: missing parsed agent definition for ${filePath}`,
+			if (validationErrors.length > 0) {
+				return yield* Effect.fail(
+					new AgentRegistryConfigError({
+						message: formatValidationErrors(validationErrors),
+					}),
 				);
 			}
-			definitions.set(name, definition);
-		}
 
-		const modeAgents = new Map<PromptModeName, AgentDefinition>();
-		for (const mode of ["smart", "deep", "rush"] as const) {
-			modeAgents.set(mode, buildModeAgentDefinition(mode, cwd));
-		}
+			const mergedPaths = new Map<string, string>();
+			for (const [name, filePath] of extensionAgents) {
+				mergedPaths.set(name, filePath);
+			}
+			for (const [name, filePath] of userAgents) {
+				mergedPaths.set(name, filePath);
+			}
+			for (const [name, filePath] of projectAgents) {
+				mergedPaths.set(name, filePath);
+			}
 
-		return new AgentRegistry({
-			definitions,
-			settingsOverrides: loadAgentSettings(cwd),
-			modeAgents,
-			cwd,
-		});
+			const definitions = new Map<string, AgentDefinition>();
+			for (const [name, filePath] of mergedPaths) {
+				const definition = parsedByPath.get(filePath);
+				if (!definition) {
+					return yield* Effect.fail(
+						new AgentRegistryConfigError({
+							message: `Internal error: missing parsed agent definition for ${filePath}`,
+						}),
+					);
+				}
+				definitions.set(name, definition);
+			}
+
+			const modeAgentEntries = yield* Effect.all(
+				(["smart", "deep", "rush"] as const).map((mode) =>
+					buildModeAgentDefinition(mode, cwd).pipe(Effect.map((definition) => [mode, definition] as const)),
+				),
+			);
+			const modeAgents = new Map<PromptModeName, AgentDefinition>(modeAgentEntries);
+
+			return new AgentRegistry({
+				definitions,
+				settingsOverrides: yield* loadAgentSettings(cwd),
+				modeAgents,
+				cwd,
+			});
+		}).pipe(
+			Effect.mapError((cause) =>
+				cause instanceof AgentRegistryConfigError || cause instanceof SettingsError
+					? cause
+					: new AgentRegistryConfigError({
+							message: "Failed to load agent registry",
+							cause,
+						}),
+			),
+		) as Effect.Effect<AgentRegistry, AgentRegistryConfigError | SettingsError>;
 	}
 
 	get(name: string): AgentDefinition | undefined {
@@ -463,7 +560,7 @@ export class AgentRegistry {
 	resolve(name: string, complexity: Complexity): AgentDefinition | undefined {
 		if (isPromptModeName(name)) {
 			// Mode agents ignore agent-level overrides; use prompt mode settings.
-			return buildModeAgentDefinition(name, this.cwd);
+			return this.modeAgents.get(name);
 		}
 
 		const def = this.get(name);

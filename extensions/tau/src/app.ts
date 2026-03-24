@@ -26,6 +26,8 @@ import {
 	type AgentRuntimeBridgeService,
 } from "./agent/runtime.js";
 import { makeLegacyStateBridge } from "./services/legacy-bridge.js";
+import { AgentRegistry } from "./agent/agent-registry.js";
+import { buildToolDescription } from "./agent/tool.js";
 
 const PersistenceLayer = PersistenceLive;
 const SandboxLayer = SandboxLive.pipe(
@@ -97,6 +99,8 @@ export const runTau = (pi: ExtensionAPI) => {
 			const sandbox = yield* Sandbox;
 			const footer = yield* Footer;
 			const promptModes = yield* PromptModes;
+			const agentRegistry = yield* AgentRegistry.load(process.cwd());
+			const agentToolDescription = buildToolDescription(agentRegistry);
 			const state = makeLegacyStateBridge({
 				getSnapshotSync: persistence.getSnapshot,
 				setSnapshotSync: persistence.setSnapshot,
@@ -118,7 +122,7 @@ export const runTau = (pi: ExtensionAPI) => {
 				initCommit(pi);
 				initEditor(pi, state);
 				initSkillMarker(pi, state);
-				initAgent(pi, agentRuntimeBridge);
+				initAgent(pi, agentRuntimeBridge, agentToolDescription);
 			});
 		}),
 	);

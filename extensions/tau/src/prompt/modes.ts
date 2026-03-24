@@ -1,11 +1,16 @@
-import * as fs from "node:fs";
+import * as fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
+import { Data, Effect } from "effect";
 
-import { readJsonFile } from "../shared/fs.js";
 import { isRecord } from "../shared/json.js";
-import { findNearestProjectPiDir, getUserSettingsPath } from "../shared/discovery.js";
+import { readProjectSettings, readUserSettings, type SettingsError } from "../shared/settings.js";
+import {
+	isPromptModeThinkingLevel,
+	validatePromptModeModelId,
+	type PromptModeThinkingLevel,
+} from "../agent/model-spec.js";
 
 export type PromptModeName = "smart" | "deep" | "rush";
 
@@ -15,11 +20,25 @@ type PromptModePreset = {
 	readonly systemPrompt: string;
 };
 
+export class PromptModeConfigError extends Data.TaggedError("PromptModeConfigError")<{
+	readonly message: string;
+	readonly cause?: unknown;
+}> {}
+
 const MODE_PROMPTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "modes");
 
-const loadModePrompt = (filename: "smart.md" | "deep.md" | "rush.md"): string => {
+const loadModePrompt = (
+	filename: "smart.md" | "deep.md" | "rush.md",
+): Effect.Effect<string, PromptModeConfigError> => {
 	const filePath = path.join(MODE_PROMPTS_DIR, filename);
-	return fs.readFileSync(filePath, "utf-8").trim();
+	return Effect.tryPromise({
+		try: () => fs.readFile(filePath, "utf-8"),
+		catch: (cause) =>
+			new PromptModeConfigError({
+				message: `Failed to read prompt mode file ${filePath}`,
+				cause,
+			}),
+	}).pipe(Effect.map((content) => content.trim()));
 };
 
 const DEFAULT_PROMPT_MODE_CONFIG: Record<
@@ -31,32 +50,50 @@ const DEFAULT_PROMPT_MODE_CONFIG: Record<
 	rush: { model: "kimi-coding/kimi-k2-thinking", thinking: "off", promptFile: "rush.md" },
 };
 
-let cachedDefaultPromptModePresets: Record<PromptModeName, PromptModePreset> | undefined;
+let cachedDefaultPromptModePresets:
+	| Promise<Record<PromptModeName, PromptModePreset>>
+	| undefined;
 
-function getDefaultPromptModePresets(): Record<PromptModeName, PromptModePreset> {
-	if (cachedDefaultPromptModePresets) {
-		return cachedDefaultPromptModePresets;
+function getDefaultPromptModePresets(): Effect.Effect<
+	Record<PromptModeName, PromptModePreset>,
+	PromptModeConfigError
+> {
+	if (!cachedDefaultPromptModePresets) {
+		cachedDefaultPromptModePresets = Effect.runPromise(
+			Effect.all({
+				smart: loadModePrompt(DEFAULT_PROMPT_MODE_CONFIG.smart.promptFile).pipe(
+					Effect.map((systemPrompt) => ({
+						model: DEFAULT_PROMPT_MODE_CONFIG.smart.model,
+						thinking: DEFAULT_PROMPT_MODE_CONFIG.smart.thinking,
+						systemPrompt,
+					})),
+				),
+				deep: loadModePrompt(DEFAULT_PROMPT_MODE_CONFIG.deep.promptFile).pipe(
+					Effect.map((systemPrompt) => ({
+						model: DEFAULT_PROMPT_MODE_CONFIG.deep.model,
+						thinking: DEFAULT_PROMPT_MODE_CONFIG.deep.thinking,
+						systemPrompt,
+					})),
+				),
+				rush: loadModePrompt(DEFAULT_PROMPT_MODE_CONFIG.rush.promptFile).pipe(
+					Effect.map((systemPrompt) => ({
+						model: DEFAULT_PROMPT_MODE_CONFIG.rush.model,
+						thinking: DEFAULT_PROMPT_MODE_CONFIG.rush.thinking,
+						systemPrompt,
+					})),
+				),
+			}),
+		);
 	}
 
-	cachedDefaultPromptModePresets = {
-		smart: {
-			model: DEFAULT_PROMPT_MODE_CONFIG.smart.model,
-			thinking: DEFAULT_PROMPT_MODE_CONFIG.smart.thinking,
-			systemPrompt: loadModePrompt(DEFAULT_PROMPT_MODE_CONFIG.smart.promptFile),
-		},
-		deep: {
-			model: DEFAULT_PROMPT_MODE_CONFIG.deep.model,
-			thinking: DEFAULT_PROMPT_MODE_CONFIG.deep.thinking,
-			systemPrompt: loadModePrompt(DEFAULT_PROMPT_MODE_CONFIG.deep.promptFile),
-		},
-		rush: {
-			model: DEFAULT_PROMPT_MODE_CONFIG.rush.model,
-			thinking: DEFAULT_PROMPT_MODE_CONFIG.rush.thinking,
-			systemPrompt: loadModePrompt(DEFAULT_PROMPT_MODE_CONFIG.rush.promptFile),
-		},
-	};
-
-	return cachedDefaultPromptModePresets;
+	return Effect.tryPromise({
+		try: () => cachedDefaultPromptModePresets as Promise<Record<PromptModeName, PromptModePreset>>,
+		catch: (cause) =>
+			new PromptModeConfigError({
+				message: "Failed to resolve default prompt mode presets",
+				cause,
+			}),
+	});
 }
 
 export const isPromptModeName = (value: string): value is PromptModeName =>
@@ -67,65 +104,65 @@ type PromptModePresetOverride = {
 	readonly thinking?: ThinkingLevel;
 };
 
-const THINKING_LEVELS: ReadonlySet<string> = new Set([
-	"off",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-]);
-
-function assertFullyQualifiedModelIdOrThrow(value: string, context: string): void {
-	const idx = value.indexOf("/");
-	if (idx <= 0 || idx >= value.length - 1) {
-		throw new Error(`${context}: model must be "provider/model-id"`);
-	}
-}
-
-function parsePresetOverride(value: unknown, context: string): PromptModePresetOverride | null {
-	if (value === undefined) return null;
+function parsePresetOverride(
+	value: unknown,
+	context: string,
+): Effect.Effect<PromptModePresetOverride | null, PromptModeConfigError> {
+	if (value === undefined) return Effect.succeed(null);
 	if (!isRecord(value)) {
-		throw new Error(`${context}: must be an object`);
+		return Effect.fail(new PromptModeConfigError({ message: `${context}: must be an object` }));
 	}
 
 	const modelRaw = value["model"];
 	const thinkingRaw = value["thinking"];
-
 	const override: { model?: string; thinking?: ThinkingLevel } = {};
 
-	if (modelRaw !== undefined) {
-		if (typeof modelRaw !== "string") {
-			throw new Error(`${context}.model: must be a string`);
-		}
-		assertFullyQualifiedModelIdOrThrow(modelRaw, `${context}.model`);
-		override.model = modelRaw;
-	}
+	const validateModel =
+		modelRaw === undefined
+			? Effect.void
+			: typeof modelRaw !== "string"
+				? Effect.fail(
+						new PromptModeConfigError({ message: `${context}.model: must be a string` }),
+					)
+				: validatePromptModeModelId(modelRaw, `${context}.model`).pipe(
+						Effect.mapError(
+							(error) =>
+								new PromptModeConfigError({
+									message: error.message,
+									cause: error,
+								}),
+						),
+						Effect.tap((model) =>
+							Effect.sync(() => {
+								override.model = model;
+							}),
+						),
+					);
 
-	if (thinkingRaw !== undefined) {
-		if (typeof thinkingRaw !== "string") {
-			throw new Error(`${context}.thinking: must be a string`);
-		}
-		if (!THINKING_LEVELS.has(thinkingRaw)) {
-			throw new Error(
-				`${context}.thinking: must be one of off, minimal, low, medium, high, xhigh`,
-			);
-		}
-		override.thinking = thinkingRaw as ThinkingLevel;
-	}
+	const validateThinking =
+		thinkingRaw === undefined
+			? Effect.void
+			: typeof thinkingRaw !== "string"
+				? Effect.fail(
+						new PromptModeConfigError({
+							message: `${context}.thinking: must be a string`,
+						}),
+					)
+				: isPromptModeThinkingLevel(thinkingRaw)
+					? Effect.sync(() => {
+							override.thinking = thinkingRaw as PromptModeThinkingLevel;
+						})
+					: Effect.fail(
+							new PromptModeConfigError({
+								message: `${context}.thinking: must be one of off, minimal, low, medium, high, xhigh`,
+							}),
+						);
 
-	if (override.model === undefined && override.thinking === undefined) {
-		return null;
-	}
-
-	return override;
-}
-
-function findNearestProjectSettingsPath(cwd: string): string | null {
-	const piDir = findNearestProjectPiDir(cwd);
-	if (!piDir) return null;
-	const candidate = path.join(piDir, "settings.json");
-	return readJsonFile(candidate) ? candidate : null;
+	return Effect.gen(function* () {
+		yield* validateModel;
+		yield* validateThinking;
+		return override.model === undefined && override.thinking === undefined ? null : override;
+	});
 }
 
 function readPromptModesNamespace(settings: unknown): unknown {
@@ -139,57 +176,73 @@ function readPromptModesNamespace(settings: unknown): unknown {
 	return legacy;
 }
 
-function readPromptModeOverridesFromSettingsFile(
-	filePath: string,
-): Partial<Record<PromptModeName, PromptModePresetOverride>> {
-	const json = readJsonFile(filePath);
-	if (!json) return {};
-
-	const ns = readPromptModesNamespace(json);
-	if (!isRecord(ns)) return {};
+function readPromptModeOverridesFromSettings(
+	settings: unknown,
+	context: string,
+): Effect.Effect<Partial<Record<PromptModeName, PromptModePresetOverride>>, PromptModeConfigError> {
+	const ns = readPromptModesNamespace(settings);
+	if (!isRecord(ns)) return Effect.succeed({});
 
 	const presets = ns["presets"];
-	if (!isRecord(presets)) return {};
+	if (!isRecord(presets)) return Effect.succeed({});
 
-	const out: Partial<Record<PromptModeName, PromptModePresetOverride>> = {};
-	for (const mode of ["smart", "deep", "rush"] as const) {
-		const override = parsePresetOverride(
-			presets[mode],
-			`${filePath}: promptModes.presets.${mode}`,
-		);
-		if (override) out[mode] = override;
-	}
-	return out;
+	return Effect.all({
+		smart: parsePresetOverride(presets["smart"], `${context}: promptModes.presets.smart`),
+		deep: parsePresetOverride(presets["deep"], `${context}: promptModes.presets.deep`),
+		rush: parsePresetOverride(presets["rush"], `${context}: promptModes.presets.rush`),
+	}).pipe(
+		Effect.map((overrides) => {
+			const out: Partial<Record<PromptModeName, PromptModePresetOverride>> = {};
+			if (overrides.smart) out.smart = overrides.smart;
+			if (overrides.deep) out.deep = overrides.deep;
+			if (overrides.rush) out.rush = overrides.rush;
+			return out;
+		}),
+	);
 }
 
-export function resolvePromptModePresets(cwd: string): Record<PromptModeName, PromptModePreset> {
-	const defaults = getDefaultPromptModePresets();
-	const globalPath = getUserSettingsPath();
-	const projectPath = findNearestProjectSettingsPath(cwd);
+export function resolvePromptModePresets(
+	cwd: string,
+): Effect.Effect<Record<PromptModeName, PromptModePreset>, PromptModeConfigError | SettingsError> {
+	return Effect.all({
+		defaults: getDefaultPromptModePresets(),
+		globalSettings: readUserSettings(),
+		projectSettings: readProjectSettings(cwd),
+	}).pipe(
+		Effect.flatMap(({ defaults, globalSettings, projectSettings }) =>
+			Effect.all({
+				globalOverrides:
+					globalSettings === null
+						? Effect.succeed({} as Partial<Record<PromptModeName, PromptModePresetOverride>>)
+						: readPromptModeOverridesFromSettings(globalSettings, "user settings"),
+				projectOverrides:
+					projectSettings === null
+						? Effect.succeed({} as Partial<Record<PromptModeName, PromptModePresetOverride>>)
+						: readPromptModeOverridesFromSettings(projectSettings, "project settings"),
+			}).pipe(
+				Effect.map(({ globalOverrides, projectOverrides }) => {
+					const resolved: Record<PromptModeName, PromptModePreset> = {
+						smart: { ...defaults.smart },
+						deep: { ...defaults.deep },
+						rush: { ...defaults.rush },
+					};
 
-	const globalOverrides = readPromptModeOverridesFromSettingsFile(globalPath);
-	const projectOverrides = projectPath
-		? readPromptModeOverridesFromSettingsFile(projectPath)
-		: {};
+					for (const mode of ["smart", "deep", "rush"] as const) {
+						const override = {
+							...globalOverrides[mode],
+							...projectOverrides[mode],
+						};
+						if (override.model !== undefined) {
+							resolved[mode] = { ...resolved[mode], model: override.model };
+						}
+						if (override.thinking !== undefined) {
+							resolved[mode] = { ...resolved[mode], thinking: override.thinking };
+						}
+					}
 
-	const resolved: Record<PromptModeName, PromptModePreset> = {
-		smart: { ...defaults.smart },
-		deep: { ...defaults.deep },
-		rush: { ...defaults.rush },
-	};
-
-	for (const mode of ["smart", "deep", "rush"] as const) {
-		const override = {
-			...globalOverrides[mode],
-			...projectOverrides[mode],
-		};
-		if (override.model !== undefined) {
-			resolved[mode] = { ...resolved[mode], model: override.model };
-		}
-		if (override.thinking !== undefined) {
-			resolved[mode] = { ...resolved[mode], thinking: override.thinking };
-		}
-	}
-
-	return resolved;
+					return resolved;
+				}),
+			),
+		),
+	);
 }

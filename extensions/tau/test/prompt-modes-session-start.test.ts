@@ -225,7 +225,7 @@ describe("prompt-modes session_start", () => {
 			const ctx = makeSessionStartContext(cwd, []);
 			await Promise.resolve(sessionStart?.({ type: "session_start" }, ctx));
 
-			const deepPreset = resolvePromptModePresets(cwd).deep;
+			const deepPreset = (await Effect.runPromise(resolvePromptModePresets(cwd))).deep;
 			const expectedModel = parseProviderModel(deepPreset.model);
 
 			expect(mock.setModelCalls.at(-1)).toEqual(expectedModel);
@@ -258,7 +258,7 @@ describe("prompt-modes session_start", () => {
 			const ctx = makeSessionStartContext(cwd, entries);
 			await Promise.resolve(sessionStart?.({ type: "session_start" }, ctx));
 
-			const smartPreset = resolvePromptModePresets(cwd).smart;
+			const smartPreset = (await Effect.runPromise(resolvePromptModePresets(cwd))).smart;
 			const expectedModel = parseProviderModel(smartPreset.model);
 
 			expect(mock.setModelCalls.at(-1)).toEqual(expectedModel);
@@ -301,7 +301,7 @@ describe("prompt-modes session_start", () => {
 				id: "gpt-5.3-codex",
 			});
 
-			const deepPreset = resolvePromptModePresets(cwd).deep;
+			const deepPreset = (await Effect.runPromise(resolvePromptModePresets(cwd))).deep;
 			expect(mock.thinkingCalls.at(-1)).toBe(deepPreset.thinking);
 			expect(mock.modeChangedEvents.at(-1)).toBe("deep");
 
@@ -376,7 +376,7 @@ describe("prompt-modes session_start", () => {
 				id: "kimi-k2-thinking",
 			});
 
-			const rushPreset = resolvePromptModePresets(cwd).rush;
+			const rushPreset = (await Effect.runPromise(resolvePromptModePresets(cwd))).rush;
 			expect(mock.thinkingCalls.at(-1)).toBe(rushPreset.thinking);
 			expect(mock.modeChangedEvents.at(-1)).toBe("rush");
 

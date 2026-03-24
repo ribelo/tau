@@ -14,7 +14,6 @@ import {
 	type ControlSpawnOptions,
 	type WaitResult,
 } from "./services.js";
-import { AgentRegistry } from "./agent-registry.js";
 import type { AgentId } from "./types.js";
 import { renderAgentCall, renderAgentResult } from "./render.js";
 import type { ApprovalBroker } from "./approval-broker.js";
@@ -84,9 +83,9 @@ export const AgentParams = Type.Object({
 	),
 });
 
-export function buildToolDescription(cwd?: string): string {
-	// Load registry to get available agents
-	const registry = AgentRegistry.load(cwd ?? process.cwd());
+export function buildToolDescription(registry: {
+	list: () => ReadonlyArray<{ readonly name: string; readonly description: string }>;
+}): string {
 	const agents = registry.list();
 
 	const lines: string[] = [];
@@ -237,11 +236,12 @@ export interface AgentToolDef {
 export function createAgentToolDef(
 	runEffect: <A, E>(effect: Effect.Effect<A, E, AgentControl>) => Promise<A>,
 	getContext: () => AgentToolContext,
+	description: string,
 ): AgentToolDef {
 	return {
 		name: "agent",
 		label: "agent",
-		description: buildToolDescription(),
+		description,
 		parameters: AgentParams,
 
 		async execute(_toolCallId, params, signal, onUpdate, _ctx) {

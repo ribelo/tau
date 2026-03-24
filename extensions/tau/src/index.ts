@@ -4,6 +4,7 @@ import { runTau } from "./app.js";
 import { validateAgentDefinitionsAtStartup } from "./agent/startup-validation.js";
 
 export default function tau(pi: ExtensionAPI) {
-	validateAgentDefinitionsAtStartup(process.cwd());
-	runTau(pi);
+	void validateAgentDefinitionsAtStartup(process.cwd()).then(() => {
+		runTau(pi);
+	});
 }

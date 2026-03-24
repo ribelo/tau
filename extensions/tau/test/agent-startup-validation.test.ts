@@ -38,7 +38,7 @@ describe("agent startup validation", () => {
 		vi.unstubAllEnvs();
 	});
 
-	it("allows startup when user agent markdown files are valid", () => {
+	it("allows startup when user agent markdown files are valid", async () => {
 		const tempHome = mkdtemp("tau-home-");
 		const tempProject = mkdtemp("tau-project-");
 
@@ -54,7 +54,7 @@ describe("agent startup validation", () => {
 			throw new Error(`EXIT:${code}`);
 		});
 
-		validateAgentDefinitionsAtStartup(tempProject, { log, exit });
+		await validateAgentDefinitionsAtStartup(tempProject, { log, exit });
 
 		expect(log).not.toHaveBeenCalled();
 		expect(exit).not.toHaveBeenCalled();
@@ -63,7 +63,7 @@ describe("agent startup validation", () => {
 		fs.rmSync(tempProject, { recursive: true, force: true });
 	});
 
-	it("exits startup with corrupted file paths when markdown is invalid", () => {
+	it("exits startup with corrupted file paths when markdown is invalid", async () => {
 		const tempHome = mkdtemp("tau-home-");
 		const tempProject = mkdtemp("tau-project-");
 
@@ -86,9 +86,9 @@ describe("agent startup validation", () => {
 			throw new Error(`EXIT:${code}`);
 		});
 
-		expect(() => {
-			validateAgentDefinitionsAtStartup(tempProject, { log, exit });
-		}).toThrow("EXIT:1");
+		await expect(
+			validateAgentDefinitionsAtStartup(tempProject, { log, exit }),
+		).rejects.toThrow("EXIT:1");
 
 		expect(exit).toHaveBeenCalledWith(1);
 		expect(logged).toContain("pi failed to start: invalid agent definition markdown detected.");

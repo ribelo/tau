@@ -14,6 +14,21 @@ import { isFinal } from "./status.js";
 import type { AgentId, Complexity } from "./types.js";
 import { Sandbox } from "../services/sandbox.js";
 
+function errorMessage(error: unknown): string {
+	if (error instanceof Error) {
+		return error.message;
+	}
+	if (
+		typeof error === "object" &&
+		error !== null &&
+		"message" in error &&
+		typeof error.message === "string"
+	) {
+		return error.message;
+	}
+	return String(error);
+}
+
 export const AgentControlLive = Layer.effect(
 	AgentControl,
 	Effect.gen(function* () {
@@ -25,7 +40,7 @@ export const AgentControlLive = Layer.effect(
 		return AgentControl.of({
 			spawn: (opts: ControlSpawnOptions) =>
 				Effect.gen(function* () {
-					const registry = AgentRegistry.load(opts.cwd);
+					const registry = yield* AgentRegistry.load(opts.cwd);
 					const complexity = (opts.complexity || "medium") as Complexity;
 					const definition = registry.resolve(opts.agent, complexity);
 
@@ -52,7 +67,16 @@ export const AgentControlLive = Layer.effect(
 						modelRegistry: opts.modelRegistry,
 						resultSchema: opts.result_schema,
 					} satisfies SpawnOptions as SpawnOptions);
-				}),
+				}).pipe(
+					Effect.mapError(
+						(error) =>
+							error instanceof AgentError
+							? error
+								: new AgentError({
+										message: errorMessage(error),
+									}),
+					),
+				),
 			send: (id: AgentId, message: string, interrupt?: boolean, requesterAgentId?: AgentId) =>
 				Effect.gen(function* () {
 					const agent = yield* manager.get(id);

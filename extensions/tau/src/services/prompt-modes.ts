@@ -86,7 +86,7 @@ async function applyModeSelection(
 	},
 ): Promise<void> {
 	const state = persistence.getSnapshot();
-	const presets = resolvePromptModePresets(ctx.cwd);
+	const presets = await Effect.runPromise(resolvePromptModePresets(ctx.cwd));
 	const preset = presets[mode];
 	const candidates = resolveModeModelCandidates(state, mode, preset.model);
 
@@ -237,7 +237,7 @@ export const PromptModesLive = Layer.effect(
 							if (trimmed === "list") {
 								const state = persistence.getSnapshot();
 								const active = resolvePersistedMode(state);
-								const presets = resolvePromptModePresets(ctx.cwd);
+								const presets = await Effect.runPromise(resolvePromptModePresets(ctx.cwd));
 								const lines = [
 									"Modes:",
 									`- smart${active === "smart" ? " [active]" : ""}: ${state.promptModes?.modelsByMode?.smart ?? presets.smart.model} (${presets.smart.thinking})`,
@@ -287,13 +287,13 @@ export const PromptModesLive = Layer.effect(
 						persistModeState(persistence, mode, selectedModel);
 					});
 
-					pi.on("before_agent_start", (event, ctx) => {
+					pi.on("before_agent_start", async (event, ctx) => {
 						// pi may call before_agent_start multiple times (e.g. model switches). Always rebuild
 						// from the original base prompt so the mode prompt is injected exactly once.
 						if (baseSystemPrompt === undefined) baseSystemPrompt = event.systemPrompt;
 
 						const mode = resolvePersistedMode(persistence.getSnapshot());
-						const presets = resolvePromptModePresets(ctx.cwd);
+						const presets = await Effect.runPromise(resolvePromptModePresets(ctx.cwd));
 						const preset = presets[mode];
 						return { systemPrompt: `${baseSystemPrompt}\n\n${preset.systemPrompt}` };
 					});

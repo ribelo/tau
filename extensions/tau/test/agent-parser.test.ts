@@ -1,11 +1,12 @@
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
+import { Effect } from "effect";
 import { parseAgentDefinition, loadAgentDefinition } from "../src/agent/parser.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 
 describe("agent-parser", () => {
-	it("should parse valid agent definition with models array", () => {
+	it("should parse valid agent definition with models array", async () => {
 		const content = `---
 name: oracle
 description: The oracle agent
@@ -21,7 +22,7 @@ approval_timeout: 45
 ---
 You are the oracle.`;
 
-		const def = parseAgentDefinition(content);
+		const def = await Effect.runPromise(parseAgentDefinition(content));
 		expect(def.name).toBe("oracle");
 		expect(def.description).toBe("The oracle agent");
 		expect(def.models).toHaveLength(2);
@@ -31,7 +32,7 @@ You are the oracle.`;
 		expect(def.systemPrompt).toBe("You are the oracle.");
 	});
 
-	it("should parse xhigh thinking level", () => {
+	it("should parse xhigh thinking level", async () => {
 		const content = `---
 name: oracle
 description: The oracle agent
@@ -45,12 +46,12 @@ approval_timeout: 60
 ---
 Deep reasoning.`;
 
-		const def = parseAgentDefinition(content);
+		const def = await Effect.runPromise(parseAgentDefinition(content));
 		expect(def.models).toHaveLength(1);
 		expect(def.models[0]).toEqual({ model: "openai-codex/gpt-5.3-codex", thinking: "xhigh" });
 	});
 
-	it("should parse inherit model", () => {
+	it("should parse inherit model", async () => {
 		const content = `---
 name: finder
 description: Finder agent
@@ -64,12 +65,12 @@ approval_timeout: 60
 ---
 Find stuff.`;
 
-		const def = parseAgentDefinition(content);
+		const def = await Effect.runPromise(parseAgentDefinition(content));
 		expect(def.models).toHaveLength(1);
 		expect(def.models[0]).toEqual({ model: "inherit", thinking: "inherit" });
 	});
 
-	it("should parse models without thinking", () => {
+	it("should parse models without thinking", async () => {
 		const content = `---
 name: rush
 description: Fast agent
@@ -83,13 +84,13 @@ approval_timeout: 60
 ---
 Go fast.`;
 
-		const def = parseAgentDefinition(content);
+		const def = await Effect.runPromise(parseAgentDefinition(content));
 		expect(def.models).toHaveLength(2);
 		expect(def.models[0]).toEqual({ model: "groq/llama-4-scout" });
 		expect(def.models[1]).toEqual({ model: "anthropic/claude-haiku-4-5" });
 	});
 
-	it("should throw on missing models", () => {
+	it("should throw on missing models", async () => {
 		const content = `---
 name: oracle
 description: The oracle agent
@@ -100,10 +101,10 @@ approval_timeout: 60
 ---
 Prompt`;
 
-		expect(() => parseAgentDefinition(content)).toThrow(/\["models"\]/);
+		await expect(Effect.runPromise(parseAgentDefinition(content))).rejects.toThrow(/\["models"\]/);
 	});
 
-	it("should throw on empty models array", () => {
+	it("should throw on empty models array", async () => {
 		const content = `---
 name: oracle
 description: The oracle agent
@@ -115,15 +116,17 @@ approval_timeout: 60
 ---
 Prompt`;
 
-		expect(() => parseAgentDefinition(content)).toThrow(/\["models"\]/);
+		await expect(Effect.runPromise(parseAgentDefinition(content))).rejects.toThrow(/\["models"\]/);
 	});
 
-	it("should throw on missing frontmatter", () => {
+	it("should throw on missing frontmatter", async () => {
 		const content = "No frontmatter here";
-		expect(() => parseAgentDefinition(content)).toThrow("Missing YAML frontmatter");
+		await expect(Effect.runPromise(parseAgentDefinition(content))).rejects.toThrow(
+			"Missing YAML frontmatter",
+		);
 	});
 
-	it("should throw on non-positive approval_timeout", () => {
+	it("should throw on non-positive approval_timeout", async () => {
 		const content = `---
 name: oracle
 description: The oracle agent
@@ -135,10 +138,10 @@ approval_policy: on-failure
 approval_timeout: 0
 ---
 Prompt`;
-		expect(() => parseAgentDefinition(content)).toThrow();
+		await expect(Effect.runPromise(parseAgentDefinition(content))).rejects.toThrow();
 	});
 
-	it("should throw on fractional approval_timeout", () => {
+	it("should throw on fractional approval_timeout", async () => {
 		const content = `---
 name: oracle
 description: The oracle agent
@@ -150,23 +153,25 @@ approval_policy: on-failure
 approval_timeout: 1.5
 ---
 Prompt`;
-		expect(() => parseAgentDefinition(content)).toThrow();
+		await expect(Effect.runPromise(parseAgentDefinition(content))).rejects.toThrow();
 	});
 
-	it("should throw on invalid frontmatter", () => {
+	it("should throw on invalid frontmatter", async () => {
 		const content = `---
 invalid
 --- 
 Prompt`;
-		expect(() => parseAgentDefinition(content)).toThrow();
+		await expect(Effect.runPromise(parseAgentDefinition(content))).rejects.toThrow();
 	});
 
-	it("should throw on missing required fields", () => {
+	it("should throw on missing required fields", async () => {
 		const content = `---
 name: only-name
 ---
 Prompt`;
-		expect(() => parseAgentDefinition(content)).toThrow(/\["description"\]/);
+		await expect(Effect.runPromise(parseAgentDefinition(content))).rejects.toThrow(
+			/\["description"\]/,
+		);
 	});
 
 	describe("loadAgentDefinition", () => {
@@ -199,8 +204,8 @@ Test prompt`,
 			fs.rmSync(tempDir, { recursive: true, force: true });
 		});
 
-		it("should load agent from project .pi/agents", () => {
-			const def = loadAgentDefinition("test-agent", tempDir);
+		it("should load agent from project .pi/agents", async () => {
+			const def = await Effect.runPromise(loadAgentDefinition("test-agent", tempDir));
 			expect(def).not.toBeNull();
 			expect(def?.name).toBe("test-agent");
 			expect(def?.description).toBe("A test agent");
@@ -208,8 +213,8 @@ Test prompt`,
 			expect(def?.models[0]).toEqual({ model: "inherit", thinking: "low" });
 		});
 
-		it("should return null if agent not found", () => {
-			const def = loadAgentDefinition("non-existent", tempDir);
+		it("should return null if agent not found", async () => {
+			const def = await Effect.runPromise(loadAgentDefinition("non-existent", tempDir));
 			expect(def).toBeNull();
 		});
 	});

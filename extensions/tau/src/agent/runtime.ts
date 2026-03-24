@@ -33,9 +33,11 @@ export const AgentRuntimeBridgeLive = (runPromise: RunAgentControlPromise) =>
 export function createWorkerAgentTool(
 	runPromise: RunAgentControlPromise,
 	context: AgentToolContext,
+	description: string,
 ): AgentToolDef {
 	return createAgentToolDef(
 		(effect) => runPromise(effect),
 		() => context,
+		description,
 	);
 }

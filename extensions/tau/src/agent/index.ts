@@ -3,9 +3,13 @@ import { renderAgentCall, renderAgentResult } from "./render.js";
 import { createUiApprovalBroker } from "./approval-broker.js";
 import type { AgentRuntimeBridgeService } from "./runtime.js";
 import { installAgentProcessGuards } from "./process-guards.js";
-import { AgentParams, buildToolDescription, createAgentToolDef } from "./tool.js";
+import { AgentParams, createAgentToolDef } from "./tool.js";
 
-export default function initAgent(pi: ExtensionAPI, runtime: AgentRuntimeBridgeService) {
+export default function initAgent(
+	pi: ExtensionAPI,
+	runtime: AgentRuntimeBridgeService,
+	description: string,
+) {
 	// Guard against unhandled errors inside background agent loops (e.g., auth expiration)
 	installAgentProcessGuards(pi, runtime.closeAll);
 
@@ -17,7 +21,7 @@ export default function initAgent(pi: ExtensionAPI, runtime: AgentRuntimeBridgeS
 	pi.registerTool({
 		name: "agent",
 		label: "agent",
-		description: buildToolDescription(),
+		description,
 		promptSnippet: "Manage non-blocking agent tasks (spawn, send, wait, close, list)",
 		promptGuidelines: [
 			"Use all the tools available to you.",
@@ -41,6 +45,7 @@ export default function initAgent(pi: ExtensionAPI, runtime: AgentRuntimeBridgeS
 					cwd: ctx.cwd,
 					approvalBroker,
 				}),
+				description,
 			);
 
 			return toolDef.execute(toolCallId, params, signal, onUpdate, ctx);
@@ -54,4 +59,3 @@ export default function initAgent(pi: ExtensionAPI, runtime: AgentRuntimeBridgeS
 		},
 	});
 }
-

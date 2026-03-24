@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Effect } from "effect";
 
 import { AgentRegistry, AgentRegistryConfigError } from "../src/agent/agent-registry.js";
 
@@ -38,7 +39,7 @@ describe("agent-registry strict validation", () => {
 		vi.unstubAllEnvs();
 	});
 
-	it("fails when a discovered agent file is invalid", () => {
+	it("fails when a discovered agent file is invalid", async () => {
 		const tempHome = mkdtemp("tau-home-");
 		const tempProject = mkdtemp("tau-project-");
 
@@ -62,15 +63,21 @@ broken
 
 		vi.stubEnv("HOME", tempHome);
 
-		expect(() => AgentRegistry.load(tempProject)).toThrowError(AgentRegistryConfigError);
-		expect(() => AgentRegistry.load(tempProject)).toThrow(/Invalid agent definition/);
-		expect(() => AgentRegistry.load(tempProject)).toThrow(/oracle\.md/);
+		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrowError(
+			AgentRegistryConfigError,
+		);
+		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrow(
+			/Invalid agent definition/,
+		);
+		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrow(
+			/oracle\.md/,
+		);
 
 		fs.rmSync(tempHome, { recursive: true, force: true });
 		fs.rmSync(tempProject, { recursive: true, force: true });
 	});
 
-	it("fails when user agent settings are malformed", () => {
+	it("fails when user agent settings are malformed", async () => {
 		const tempHome = mkdtemp("tau-home-");
 		const tempProject = mkdtemp("tau-project-");
 
@@ -91,8 +98,10 @@ broken
 
 		vi.stubEnv("HOME", tempHome);
 
-		expect(() => AgentRegistry.load(tempProject)).toThrowError(AgentRegistryConfigError);
-		expect(() => AgentRegistry.load(tempProject)).toThrow(
+		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrowError(
+			AgentRegistryConfigError,
+		);
+		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrow(
 			/agents\.oracle\.models must be an array/,
 		);
 
@@ -100,7 +109,7 @@ broken
 		fs.rmSync(tempProject, { recursive: true, force: true });
 	});
 
-	it("accepts xhigh in user agent settings", () => {
+	it("accepts xhigh in user agent settings", async () => {
 		const tempHome = mkdtemp("tau-home-");
 		const tempProject = mkdtemp("tau-project-");
 
@@ -130,7 +139,7 @@ broken
 
 		vi.stubEnv("HOME", tempHome);
 
-		const registry = AgentRegistry.load(tempProject);
+		const registry = await Effect.runPromise(AgentRegistry.load(tempProject));
 		const resolved = registry.resolve("oracle", "medium");
 		expect(resolved?.models[0]).toEqual({
 			model: "openai-codex/gpt-5.3-codex",
@@ -141,7 +150,7 @@ broken
 		fs.rmSync(tempProject, { recursive: true, force: true });
 	});
 
-	it("fails even when invalid lower-priority agent is overridden", () => {
+	it("fails even when invalid lower-priority agent is overridden", async () => {
 		const tempHome = mkdtemp("tau-home-");
 		const tempProject = mkdtemp("tau-project-");
 
@@ -170,14 +179,18 @@ broken
 
 		vi.stubEnv("HOME", tempHome);
 
-		expect(() => AgentRegistry.load(tempProject)).toThrowError(AgentRegistryConfigError);
-		expect(() => AgentRegistry.load(tempProject)).toThrow(/Invalid agent definition/);
+		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrowError(
+			AgentRegistryConfigError,
+		);
+		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrow(
+			/Invalid agent definition/,
+		);
 
 		fs.rmSync(tempHome, { recursive: true, force: true });
 		fs.rmSync(tempProject, { recursive: true, force: true });
 	});
 
-	it("fails when mode agents are defined as markdown files", () => {
+	it("fails when mode agents are defined as markdown files", async () => {
 		const tempHome = mkdtemp("tau-home-");
 		const tempProject = mkdtemp("tau-project-");
 
@@ -188,8 +201,12 @@ broken
 
 		vi.stubEnv("HOME", tempHome);
 
-		expect(() => AgentRegistry.load(tempProject)).toThrowError(AgentRegistryConfigError);
-		expect(() => AgentRegistry.load(tempProject)).toThrow(/mode agents .* virtual/);
+		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrowError(
+			AgentRegistryConfigError,
+		);
+		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrow(
+			/mode agents .* virtual/,
+		);
 
 		fs.rmSync(tempHome, { recursive: true, force: true });
 		fs.rmSync(tempProject, { recursive: true, force: true });

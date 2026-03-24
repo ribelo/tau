@@ -145,7 +145,7 @@ describe("AGENTS.md availability", () => {
 				systemPrompt: basePrompt,
 			};
 
-			const result1 = beforeAgentStartHandler?.(event1, ctx) as
+			const result1 = (await Promise.resolve(beforeAgentStartHandler?.(event1, ctx))) as
 				| { systemPrompt?: string }
 				| undefined;
 			const injected1 = result1?.systemPrompt;
@@ -160,7 +160,7 @@ describe("AGENTS.md availability", () => {
 				systemPrompt: injected1 ?? basePrompt,
 			};
 
-			const result2 = beforeAgentStartHandler?.(event2, ctx) as
+			const result2 = (await Promise.resolve(beforeAgentStartHandler?.(event2, ctx))) as
 				| { systemPrompt?: string }
 				| undefined;
 			const injected2 = result2?.systemPrompt;
