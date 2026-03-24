@@ -4,8 +4,7 @@ import { visibleWidth, type Component } from "@mariozechner/pi-tui";
 import type { Message } from "@mariozechner/pi-ai";
 
 import { formatDuration } from "../shared/format-duration.js";
-import type { TauState } from "../shared/state.js";
-import { updatePersistedState } from "../shared/state.js";
+import type { TauPersistedState } from "../shared/state.js";
 
 const WORKED_FOR_MESSAGE_TYPE = "tau:worked-for";
 
@@ -77,13 +76,18 @@ function parseToggleArg(mode: string, current: boolean): boolean | undefined {
 	return undefined;
 }
 
-export default function initWorkedFor(pi: ExtensionAPI, state: TauState) {
+interface PersistedAccess {
+	readonly getSnapshot: () => TauPersistedState;
+	readonly update: (patch: Partial<TauPersistedState>) => void;
+}
+
+export default function initWorkedFor(pi: ExtensionAPI, persistence: PersistedAccess) {
 	function isEnabled(): boolean {
-		return state.persisted?.workedFor?.enabled ?? true;
+		return persistence.getSnapshot().workedFor?.enabled ?? true;
 	}
 
 	function areToolsEnabled(): boolean {
-		return state.persisted?.workedFor?.toolsEnabled ?? true;
+		return persistence.getSnapshot().workedFor?.toolsEnabled ?? true;
 	}
 
 	// Start time for the current user prompt (one agent run).
@@ -185,7 +189,7 @@ export default function initWorkedFor(pi: ExtensionAPI, state: TauState) {
 					ctx.ui.notify("Usage: /worked tools on|off|toggle", "info");
 					return;
 				}
-				updatePersistedState(pi, state, {
+				persistence.update({
 					workedFor: {
 						enabled: isEnabled(),
 						toolsEnabled: next,
@@ -206,7 +210,7 @@ export default function initWorkedFor(pi: ExtensionAPI, state: TauState) {
 				return;
 			}
 
-			updatePersistedState(pi, state, {
+			persistence.update({
 				workedFor: { enabled: next, toolsEnabled: areToolsEnabled() },
 			});
 

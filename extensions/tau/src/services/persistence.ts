@@ -28,38 +28,31 @@ export const PersistenceLive = Layer.effect(
 	Effect.gen(function* () {
 		const pi = yield* PiAPI;
 		const ref = yield* SubscriptionRef.make<TauPersistedState>({});
-		let currentSnapshot: TauPersistedState = {};
 
-		const publishSnapshot = (next: TauPersistedState): void => {
-			currentSnapshot = next;
-			Effect.runFork(SubscriptionRef.set(ref, next));
-		};
-
-		const replaceSnapshot = (next: TauPersistedState): void => {
-			publishSnapshot(next);
+		const setSnapshot = (next: TauPersistedState): void => {
+			Effect.runSync(SubscriptionRef.set(ref, next));
 		};
 
 		const mergeFromContext = (ctx: ExtensionContext): void => {
 			const persisted = loadPersistedState(ctx);
-			publishSnapshot(mergePersistedState(currentSnapshot, persisted));
+			Effect.runSync(SubscriptionRef.update(ref, (current) => mergePersistedState(current, persisted)));
 		};
 
 		const updateSnapshot = (patch: Partial<TauPersistedState>): TauPersistedState => {
-			const next = mergePersistedState(currentSnapshot, patch);
-			publishSnapshot(next);
+			const next = Effect.runSync(SubscriptionRef.updateAndGet(ref, (current) => mergePersistedState(current, patch)));
 			pi.appendEntry(TAU_PERSISTED_STATE_TYPE, next);
 			return next;
 		};
 
 		return Persistence.of({
-			getSnapshot: () => currentSnapshot,
-			setSnapshot: replaceSnapshot,
+			getSnapshot: () => SubscriptionRef.getUnsafe(ref),
+			setSnapshot,
 			update: (patch) => {
 				updateSnapshot(patch);
 			},
-			getSnapshotEffect: Effect.sync(() => currentSnapshot),
-			setSnapshotEffect: (next) => Effect.sync(() => replaceSnapshot(next)),
-			updateEffect: (patch) => Effect.sync(() => updateSnapshot(patch)),
+			getSnapshotEffect: SubscriptionRef.get(ref),
+			setSnapshotEffect: (next) => SubscriptionRef.set(ref, next),
+			updateEffect: (patch) => SubscriptionRef.updateAndGet(ref, (current) => mergePersistedState(current, patch)),
 			changes: SubscriptionRef.changes(ref),
 			setup: Effect.sync(() => {
 				const mergePersistedFromContext = (_event: unknown, ctx: ExtensionContext) => {

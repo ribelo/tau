@@ -25,25 +25,12 @@ export const SandboxLive = Layer.effect(
 		const pi = yield* PiAPI;
 		const state = yield* SandboxState;
 		const persistence = yield* Persistence;
-		let currentConfig = yield* SubscriptionRef.get(state);
-
-		const replaceConfig = (next: SandboxConfigRequired): Effect.Effect<void> =>
-			Effect.gen(function* () {
-				currentConfig = next;
-				yield* SubscriptionRef.set(state, next);
-			});
 
 		return Sandbox.of({
-			getConfig: Effect.sync(() => currentConfig),
+			getConfig: SubscriptionRef.get(state),
 			changes: SubscriptionRef.changes(state),
 			setConfig: (patch) =>
-				Effect.gen(function* () {
-					const next: SandboxConfigRequired = {
-						...currentConfig,
-						...patch,
-					};
-					yield* replaceConfig(next);
-				}),
+				SubscriptionRef.update(state, (current) => ({ ...current, ...patch })),
 			setup: Effect.gen(function* () {
 				yield* Effect.sync(() => {
 					initSandboxLegacy(
@@ -57,8 +44,7 @@ export const SandboxLive = Layer.effect(
 					pi.events.on("tau:sandbox:changed", (config: unknown) => {
 						const decoded = decodeSandboxConfigRequired(config);
 						if (Exit.isSuccess(decoded)) {
-							currentConfig = decoded.value;
-							Effect.runFork(SubscriptionRef.set(state, decoded.value));
+							Effect.runSync(SubscriptionRef.set(state, decoded.value));
 						}
 					});
 				});

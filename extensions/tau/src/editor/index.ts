@@ -2,44 +2,47 @@ import type { ExtensionAPI, KeybindingsManager } from "@mariozechner/pi-coding-a
 import { CustomEditor } from "@mariozechner/pi-coding-agent";
 import type { AutocompleteProvider, EditorTheme, TUI } from "@mariozechner/pi-tui";
 
-import type { TauState } from "../shared/state.js";
+import type { TauPersistedState } from "../shared/state.js";
 import {
 	shouldAutoTriggerSkillAutocomplete,
 	wrapAutocompleteProvider,
+	type SkillMarkerRuntime,
 } from "../skill-marker/index.js";
 import { wrapEditorRender } from "../terminal-prompt/index.js";
 
-// Runtime access to private Editor method
 type EditorWithPrivates = {
 	tryTriggerAutocomplete: (explicitTab?: boolean) => void;
 };
 
+interface EditorDeps {
+	readonly getSnapshot: () => TauPersistedState;
+	readonly skillMarker: SkillMarkerRuntime;
+}
+
 class TauEditor extends CustomEditor {
 	private baseAutocompleteProvider?: AutocompleteProvider;
-	private tauState: TauState;
+	private readonly deps: EditorDeps;
 
-	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, tauState: TauState) {
+	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, deps: EditorDeps) {
 		super(tui, theme, keybindings);
-		this.tauState = tauState;
+		this.deps = deps;
 	}
 
 	override setAutocompleteProvider(provider: AutocompleteProvider): void {
 		this.baseAutocompleteProvider = provider;
-		super.setAutocompleteProvider(wrapAutocompleteProvider(this.tauState, provider, this));
+		super.setAutocompleteProvider(wrapAutocompleteProvider(this.deps.skillMarker, provider));
 	}
 
 	override handleInput(data: string): void {
 		super.handleInput(data);
 
-		// Auto-trigger autocomplete for $skill markers
-		// (pi's Editor only auto-triggers for / and @, not $)
 		if (shouldAutoTriggerSkillAutocomplete(this, data)) {
 			(this as unknown as EditorWithPrivates).tryTriggerAutocomplete();
 		}
 	}
 
 	override render(width: number): string[] {
-		return wrapEditorRender(this.tauState, width, (w: number) => super.render(w));
+		return wrapEditorRender(this.deps.getSnapshot, width, (w: number) => super.render(w));
 	}
 
 	rewrapAutocompleteProvider(): void {
@@ -48,13 +51,12 @@ class TauEditor extends CustomEditor {
 	}
 }
 
-export default function initEditor(pi: ExtensionAPI, state: TauState) {
+export default function initEditor(pi: ExtensionAPI, deps: EditorDeps) {
 	pi.on("session_start", async (_event, ctx) => {
 		if (!ctx.hasUI) return;
-		// Prefer to run after any other editor installs (legacy extensions may still be present).
 		setTimeout(() => {
 			ctx.ui.setEditorComponent(
-				(tui, theme, keybindings) => new TauEditor(tui, theme, keybindings, state),
+				(tui, theme, keybindings) => new TauEditor(tui, theme, keybindings, deps),
 			);
 		}, 1);
 	});

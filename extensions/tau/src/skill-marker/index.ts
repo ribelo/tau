@@ -11,7 +11,6 @@ import {
 import type { AutocompleteProvider } from "@mariozechner/pi-tui";
 import { readFile } from "node:fs/promises";
 
-import type { TauState } from "../shared/state.js";
 import { SkillMarkerAutocompleteProvider, type SkillCandidate } from "./autocomplete.js";
 
 // Re-export for use by editor
@@ -88,17 +87,13 @@ class SkillRegistry {
 	}
 }
 
-type SkillMarkerState = {
+export type SkillMarkerRuntime = {
 	registry: SkillRegistry;
 	wrapper?: SkillMarkerAutocompleteProvider;
 };
 
-function ensureSkillMarkerState(state: TauState): SkillMarkerState {
-	const existing = state.skillMarker as SkillMarkerState | undefined;
-	if (existing?.registry) return existing;
-	const next: SkillMarkerState = { registry: new SkillRegistry() };
-	state.skillMarker = next;
-	return next;
+export function createSkillMarkerRuntime(): SkillMarkerRuntime {
+	return { registry: new SkillRegistry() };
 }
 
 function collectMentionedSkills(prompt: string): string[] {
@@ -123,34 +118,30 @@ function escapeXml(str: string): string {
 		.replace(/'/g, "&apos;");
 }
 
-async function reloadSkills(state: SkillMarkerState, cwd: string) {
+async function reloadSkills(runtime: SkillMarkerRuntime, cwd: string) {
 	const agentDir = getAgentDir();
 	const { skills } = loadSkills({ cwd, agentDir });
-	state.registry.refresh(skills);
+	runtime.registry.refresh(skills);
 }
 
 export function wrapAutocompleteProvider(
-	state: TauState,
+	runtime: SkillMarkerRuntime,
 	provider: AutocompleteProvider,
-	_editor: unknown,
 ): AutocompleteProvider {
-	const s = ensureSkillMarkerState(state);
-	if (!s.wrapper) {
-		s.wrapper = new SkillMarkerAutocompleteProvider(provider, () => s.registry.getCandidates());
+	if (!runtime.wrapper) {
+		runtime.wrapper = new SkillMarkerAutocompleteProvider(provider, () => runtime.registry.getCandidates());
 	} else {
-		s.wrapper.setBase(provider);
+		runtime.wrapper.setBase(provider);
 	}
-	return s.wrapper;
+	return runtime.wrapper;
 }
 
-export default function initSkillMarker(pi: ExtensionAPI, state: TauState) {
+export default function initSkillMarker(pi: ExtensionAPI, runtime: SkillMarkerRuntime) {
 	if (!ENABLED) return;
-
-	const s = ensureSkillMarkerState(state);
 
 	pi.on("session_start", async (_event, ctx) => {
 		try {
-			await reloadSkills(s, ctx.cwd);
+			await reloadSkills(runtime, ctx.cwd);
 		} catch (err) {
 			if (ctx.hasUI) {
 				ctx.ui.notify(
@@ -162,10 +153,9 @@ export default function initSkillMarker(pi: ExtensionAPI, state: TauState) {
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
-		// Best-effort: ensure we have skills loaded
-		if (s.registry.getAllNames().length === 0) {
+		if (runtime.registry.getAllNames().length === 0) {
 			try {
-				await reloadSkills(s, ctx.cwd);
+				await reloadSkills(runtime, ctx.cwd);
 			} catch {
 				// ignore
 			}
@@ -179,13 +169,13 @@ export default function initSkillMarker(pi: ExtensionAPI, state: TauState) {
 		const failed: Array<{ name: string; error: string }> = [];
 
 		for (const name of mentioned) {
-			if (!s.registry.get(name)) {
+			if (!runtime.registry.get(name)) {
 				missing.push(name);
 				continue;
 			}
 
 			try {
-				const body = await s.registry.getBody(name);
+				const body = await runtime.registry.getBody(name);
 				if (!body) {
 					missing.push(name);
 					continue;

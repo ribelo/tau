@@ -1,8 +1,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { visibleWidth } from "@mariozechner/pi-tui";
 
-import type { TauState } from "../shared/state.js";
-import { updatePersistedState } from "../shared/state.js";
+import type { TauPersistedState } from "../shared/state.js";
 import { stripAnsi } from "../shared/strip-ansi.js";
 
 // Codex-style composer look:
@@ -79,19 +78,24 @@ function renderTerminalPrompt(width: number, next: (w: number) => string[]): str
 }
 
 export function wrapEditorRender(
-	state: TauState,
+	getSnapshot: () => TauPersistedState,
 	width: number,
 	next: (w: number) => string[],
 ): string[] {
-	const enabled = state.persisted?.terminalPrompt?.enabled ?? true;
+	const enabled = getSnapshot().terminalPrompt?.enabled ?? true;
 	return enabled ? renderTerminalPrompt(width, next) : next(width);
 }
 
-export default function initTerminalPrompt(pi: ExtensionAPI, state: TauState) {
+interface PersistedAccess {
+	readonly getSnapshot: () => TauPersistedState;
+	readonly update: (patch: Partial<TauPersistedState>) => void;
+}
+
+export default function initTerminalPrompt(pi: ExtensionAPI, persistence: PersistedAccess) {
 	pi.registerCommand("tau", {
 		description: "Tau settings: /tau prompt on|off|toggle",
 		handler: async (args, ctx) => {
-			let enabled = state.persisted?.terminalPrompt?.enabled ?? true;
+			let enabled = persistence.getSnapshot().terminalPrompt?.enabled ?? true;
 			const trimmed = (args || "").trim();
 			const parts = trimmed.split(/\s+/).filter(Boolean);
 
@@ -117,7 +121,7 @@ export default function initTerminalPrompt(pi: ExtensionAPI, state: TauState) {
 				return;
 			}
 
-			updatePersistedState(pi, state, { terminalPrompt: { enabled } });
+			persistence.update({ terminalPrompt: { enabled } });
 			ctx.ui.notify(`Tau prompt: ${enabled ? "on" : "off"}`, "info");
 		},
 	});

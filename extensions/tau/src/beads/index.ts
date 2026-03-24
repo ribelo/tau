@@ -4,8 +4,6 @@ import { Markdown, Text, type AutocompleteItem } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { Schema } from "effect";
 
-import type { TauState } from "../shared/state.js";
-
 type Theme = {
 	fg: (key: string, s: string) => string;
 	bold: (s: string) => string;
@@ -755,7 +753,7 @@ function renderBd(details: BdToolDetails, options: { expanded: boolean }, theme:
 	return renderFallback("unknown", JSON.stringify(json, null, 2), theme);
 }
 
-export default function initBeads(pi: ExtensionAPI, _state: TauState) {
+export default function initBeads(pi: ExtensionAPI) {
 	// Keep /bd command outputs out of LLM context.
 	pi.on("context", async (event) => {
 		const filtered = event.messages.filter(

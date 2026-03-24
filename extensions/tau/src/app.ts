@@ -21,13 +21,12 @@ import initAgent from "./agent/index.js";
 import { AgentConfig, AgentControl } from "./agent/services.js";
 import { AgentControlLive } from "./agent/control.js";
 import { AgentManagerLive } from "./agent/manager.js";
-import {
-	AgentRuntimeBridgeLive,
+import { AgentRuntimeBridgeLive,
 	type AgentRuntimeBridgeService,
 } from "./agent/runtime.js";
-import { makeLegacyStateBridge } from "./services/legacy-bridge.js";
 import { AgentRegistry } from "./agent/agent-registry.js";
 import { buildToolDescription } from "./agent/tool.js";
+import { createSkillMarkerRuntime } from "./skill-marker/index.js";
 
 const PersistenceLayer = PersistenceLive;
 const SandboxLayer = SandboxLive.pipe(
@@ -101,27 +100,33 @@ export const runTau = (pi: ExtensionAPI) => {
 			const promptModes = yield* PromptModes;
 			const agentRegistry = yield* AgentRegistry.load(process.cwd());
 			const agentToolDescription = buildToolDescription(agentRegistry);
-			const state = makeLegacyStateBridge({
-				getSnapshotSync: persistence.getSnapshot,
-				setSnapshotSync: persistence.setSnapshot,
-			});
+			const skillMarker = createSkillMarkerRuntime();
 
 			yield* persistence.setup;
 			yield* sandbox.setup;
 			yield* footer.setup;
 			yield* promptModes.setup;
 			yield* Effect.sync(() => {
-				initBeads(pi, state);
+				initBeads(pi);
 				initExa(pi);
-				initTerminalPrompt(pi, state);
-				initWorkedFor(pi, state);
+				initTerminalPrompt(pi, {
+					getSnapshot: persistence.getSnapshot,
+					update: persistence.update,
+				});
+				initWorkedFor(pi, {
+					getSnapshot: persistence.getSnapshot,
+					update: persistence.update,
+				});
 				initStatus(pi, {
 					getSnapshot: () => persistence.getSnapshot(),
 					update: (patch) => persistence.update(patch),
 				});
 				initCommit(pi);
-				initEditor(pi, state);
-				initSkillMarker(pi, state);
+				initEditor(pi, {
+					getSnapshot: persistence.getSnapshot,
+					skillMarker,
+				});
+				initSkillMarker(pi, skillMarker);
 				initAgent(pi, agentRuntimeBridge, agentToolDescription);
 			});
 		}),
