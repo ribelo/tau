@@ -5,8 +5,7 @@ import type { SandboxConfig } from "../sandbox/config.js";
 import { SandboxConfigRequired } from "../schemas/config.js";
 import { SandboxState } from "./state.js";
 import { Persistence } from "./persistence.js";
-import { makeLegacyStateBridge } from "./legacy-bridge.js";
-import initSandboxLegacy from "../sandbox/index.js";
+import initSandbox from "../sandbox/index.js";
 
 const decodeSandboxConfigRequired = Schema.decodeUnknownExit(SandboxConfigRequired);
 
@@ -33,13 +32,10 @@ export const SandboxLive = Layer.effect(
 				SubscriptionRef.update(state, (current) => ({ ...current, ...patch })),
 			setup: Effect.gen(function* () {
 				yield* Effect.sync(() => {
-					initSandboxLegacy(
-						pi,
-						makeLegacyStateBridge({
-							getSnapshotSync: persistence.getSnapshot,
-							setSnapshotSync: persistence.setSnapshot,
-						}),
-					);
+					initSandbox(pi, {
+						getSnapshot: persistence.getSnapshot,
+						update: persistence.update,
+					});
 
 					pi.events.on("tau:sandbox:changed", (config: unknown) => {
 						const decoded = decodeSandboxConfigRequired(config);

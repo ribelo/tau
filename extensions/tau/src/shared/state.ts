@@ -1,4 +1,3 @@
-import type { TauConfig } from "./config.js";
 import { deepMerge, isRecord } from "./json.js";
 
 export const TAU_PERSISTED_STATE_TYPE = "tau:state";
@@ -19,27 +18,6 @@ export type TauPersistedState = {
 		lastAgentCount?: number;
 	};
 };
-
-export type TauState = {
-	config: TauConfig;
-	persisted: TauPersistedState;
-
-	// Placeholder state buckets; migrated features should store their state here.
-	editor?: unknown;
-	beads?: unknown;
-	exa?: unknown;
-	sandbox?: unknown;
-	task?: unknown;
-	skillMarker?: unknown;
-	commit?: unknown;
-};
-
-export function createState(config: TauConfig = {}): TauState {
-	return {
-		config,
-		persisted: {},
-	};
-}
 
 export function mergePersistedState(
 	base: TauPersistedState,
@@ -161,13 +139,4 @@ export function loadPersistedState(ctx: {
 		.pop();
 
 	return sanitizePersistedState(last?.data);
-}
-
-export function updatePersistedState(
-	pi: { appendEntry: (customType: string, data: unknown) => void },
-	state: TauState,
-	patch: Partial<TauPersistedState>,
-): void {
-	state.persisted = mergePersistedState(state.persisted, patch);
-	pi.appendEntry(TAU_PERSISTED_STATE_TYPE, state.persisted);
 }

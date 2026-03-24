@@ -33,8 +33,8 @@ import { detectMissingSandboxDeps, formatMissingDepsMessage } from "./sandbox-pr
 import { discoverWorkspaceRoot } from "./workspace-root.js";
 
 import { isRecord } from "../shared/json.js";
-import type { TauState } from "../shared/state.js";
-import { loadPersistedState, updatePersistedState } from "../shared/state.js";
+import type { TauPersistedState } from "../shared/state.js";
+import { loadPersistedState } from "../shared/state.js";
 import { type ApprovalBroker, getWorkerApprovalBroker } from "../agent/approval-broker.js";
 import { SANDBOX_PRESET_NAMES } from "../shared/policy.js";
 
@@ -47,79 +47,14 @@ type SandboxStateInternal = {
 	approvalBroker?: ApprovalBroker | undefined;
 };
 
-const isSandboxFactory = (
-	value: unknown,
-): value is (ctx: ExtensionContext, escalate: boolean) => BashOperations =>
-	typeof value === "function";
+let runtimeState: SandboxStateInternal = {};
 
-const isApprovalBroker = (value: unknown): value is ApprovalBroker =>
-	isRecord(value) && typeof value["confirm"] === "function";
-
-function getSandboxRuntimeState(state: TauState): SandboxStateInternal | undefined {
-	if (!isRecord(state.sandbox)) return undefined;
-
-	const create = state.sandbox["createSandboxedBashOperations"];
-	const workspaceRoot = state.sandbox["workspaceRoot"];
-	const effectiveConfig = state.sandbox["effectiveConfig"];
-	const approvalBroker = state.sandbox["approvalBroker"];
-
-	const next: SandboxStateInternal = {};
-	if (isSandboxFactory(create)) next.createSandboxedBashOperations = create;
-	if (typeof workspaceRoot === "string") next.workspaceRoot = workspaceRoot;
-	if (isRecord(effectiveConfig)) {
-		const preset = effectiveConfig["preset"];
-		const filesystemMode = effectiveConfig["filesystemMode"];
-		const networkMode = effectiveConfig["networkMode"];
-		const approvalPolicy = effectiveConfig["approvalPolicy"];
-		const approvalTimeoutSeconds = effectiveConfig["approvalTimeoutSeconds"];
-		const subagent = effectiveConfig["subagent"];
-
-		const validPreset =
-			preset === "read-only" || preset === "default" || preset === "full-access";
-		const validFilesystemMode =
-			filesystemMode === "read-only" ||
-			filesystemMode === "workspace-write" ||
-			filesystemMode === "danger-full-access";
-		const validNetworkMode = networkMode === "deny" || networkMode === "allow-all";
-		const validApprovalPolicy =
-			approvalPolicy === "never" ||
-			approvalPolicy === "on-failure" ||
-			approvalPolicy === "on-request" ||
-			approvalPolicy === "unless-trusted";
-		const validTimeout =
-			typeof approvalTimeoutSeconds === "number" &&
-			Number.isFinite(approvalTimeoutSeconds) &&
-			approvalTimeoutSeconds > 0;
-
-		if (
-			validPreset &&
-			validFilesystemMode &&
-			validNetworkMode &&
-			validApprovalPolicy &&
-			validTimeout &&
-			typeof subagent === "boolean"
-		) {
-			next.effectiveConfig = {
-				preset,
-				filesystemMode,
-				networkMode,
-				approvalPolicy,
-				approvalTimeoutSeconds,
-				subagent,
-			};
-		}
-	}
-	if (isApprovalBroker(approvalBroker)) next.approvalBroker = approvalBroker;
-
-	return next;
+function getSandboxRuntimeState(): SandboxStateInternal {
+	return runtimeState;
 }
 
-function updateSandboxRuntimeState(state: TauState, patch: Partial<SandboxStateInternal>): void {
-	const current = getSandboxRuntimeState(state) ?? {};
-	state.sandbox = {
-		...current,
-		...patch,
-	};
+function updateSandboxRuntimeState(patch: Partial<SandboxStateInternal>): void {
+	runtimeState = { ...runtimeState, ...patch };
 }
 
 /**
@@ -210,8 +145,8 @@ function sessionStateToPersisted(state: SessionState): Record<string, unknown> {
 	return out;
 }
 
-function loadSessionState(state: TauState): SessionState | undefined {
-	const raw = state.persisted?.sandbox;
+function loadSessionState(persisted: TauPersistedState | undefined): SessionState | undefined {
+	const raw = persisted?.sandbox;
 	if (!isRecord(raw)) return undefined;
 
 	const result: SessionState = {};
@@ -252,7 +187,12 @@ function buildSourceHint(): string {
 	return "applies to this session";
 }
 
-export default function initSandbox(pi: ExtensionAPI, state: TauState) {
+interface SandboxPersistedAccess {
+	readonly getSnapshot: () => TauPersistedState;
+	readonly update: (patch: Partial<TauPersistedState>) => void;
+}
+
+export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersistedAccess) {
 	// Register CLI flags
 	pi.registerFlag("sandbox-mode", {
 		description: "Sandbox preset (read-only, default, full-access)",
@@ -276,10 +216,9 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 
 	function refreshConfig(ctx: ExtensionContext) {
 		workspaceRoot = discoverWorkspaceRoot(ctx.cwd);
-		// Keep state.persisted in sync with the latest tau:state entry, even if another
-		// component (e.g. task runner) appends tau:state directly.
-		state.persisted = loadPersistedState(ctx);
-		sessionState = loadSessionState(state) ?? {};
+		const persisted = loadPersistedState(ctx);
+		persistence.update(persisted);
+		sessionState = loadSessionState(persisted) ?? {};
 
 		// Session overrides come from tau:state; CLI flags override both session and file-based settings.
 		const mergedOverride: SandboxConfig = {
@@ -294,7 +233,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 
 		const sessionId = ctx.sessionManager.getSessionId();
 
-		updateSandboxRuntimeState(state, {
+		updateSandboxRuntimeState({
 			workspaceRoot,
 			effectiveConfig,
 			approvalBroker: getWorkerApprovalBroker(sessionId),
@@ -304,7 +243,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 	}
 
 	function persistState() {
-		updatePersistedState(pi, state, { sandbox: sessionStateToPersisted(sessionState) });
+		persistence.update({ sandbox: sessionStateToPersisted(sessionState) });
 	}
 
 	function sendSandboxChangeHistoryEntry(text: string): void {
@@ -465,7 +404,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 		if (sessionState.sandboxUnavailableDecision === "allow") return true;
 		if (sessionState.sandboxUnavailableDecision === "deny") return false;
 
-		const broker = getSandboxRuntimeState(state)?.approvalBroker;
+		const broker = getSandboxRuntimeState().approvalBroker;
 		if (!ctx.hasUI && !broker) {
 			// Headless: default deny.
 			sessionState.sandboxUnavailableDecision = "deny";
@@ -528,7 +467,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 				const currentConfig = effectiveConfig;
 				const currentWorkspace = workspaceRoot;
 				const approvalTimeout = currentConfig.approvalTimeoutSeconds;
-				const broker = getSandboxRuntimeState(state)?.approvalBroker;
+				const broker = getSandboxRuntimeState().approvalBroker;
 
 				// Check approval based on policy (using captured ctx)
 				const approval = await checkBashApproval(
@@ -708,7 +647,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 					looksLikePolicyViolation(result.output)
 				) {
 					try {
-						const broker = getSandboxRuntimeState(state)?.approvalBroker;
+						const broker = getSandboxRuntimeState().approvalBroker;
 						const retryApproval = await requestApprovalAfterFailure(
 							ctx,
 							command,
@@ -742,7 +681,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 		};
 	}
 
-	updateSandboxRuntimeState(state, {
+	updateSandboxRuntimeState({
 		createSandboxedBashOperations: createSandboxedBashOperationsInternal,
 	});
 
@@ -931,7 +870,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 					filesystemMode: effectiveConfig.filesystemMode,
 				});
 				if (!check.allowed) {
-					const broker = getSandboxRuntimeState(state)?.approvalBroker;
+					const broker = getSandboxRuntimeState().approvalBroker;
 					const approval = await checkFilesystemApproval(
 						ctx,
 						effectiveConfig.approvalPolicy,
@@ -976,7 +915,7 @@ export default function initSandbox(pi: ExtensionAPI, state: TauState) {
 					filesystemMode: effectiveConfig.filesystemMode,
 				});
 				if (!check.allowed) {
-					const broker = getSandboxRuntimeState(state)?.approvalBroker;
+					const broker = getSandboxRuntimeState().approvalBroker;
 					const approval = await checkFilesystemApproval(
 						ctx,
 						effectiveConfig.approvalPolicy,

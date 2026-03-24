@@ -240,7 +240,7 @@ export class AgentWorker implements Agent {
 	}
 
 	private publishStatus(status: Status): void {
-		Effect.runFork(SubscriptionRef.set(this.statusRef, status));
+		Effect.runSync(SubscriptionRef.set(this.statusRef, status));
 	}
 
 	private publishRunningStatus(): void {
