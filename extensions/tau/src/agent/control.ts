@@ -1,4 +1,5 @@
 import { Effect, Layer, Result, Schedule, Stream } from "effect";
+import { errorMessage } from "../shared/error-message.js";
 import {
 	AgentControl,
 	AgentManager,
@@ -13,21 +14,6 @@ import { AgentRegistry } from "./agent-registry.js";
 import { isFinal } from "./status.js";
 import type { AgentId, Complexity } from "./types.js";
 import { Sandbox } from "../services/sandbox.js";
-
-function errorMessage(error: unknown): string {
-	if (error instanceof Error) {
-		return error.message;
-	}
-	if (
-		typeof error === "object" &&
-		error !== null &&
-		"message" in error &&
-		typeof error.message === "string"
-	) {
-		return error.message;
-	}
-	return String(error);
-}
 
 export const AgentControlLive = Layer.effect(
 	AgentControl,

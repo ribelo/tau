@@ -14,6 +14,7 @@ import { spawn } from "node:child_process";
 import { classifySandboxFailure } from "./sandbox-diagnostics.js";
 import { isSafeCommand } from "./safe-commands.js";
 import type { ApprovalBroker } from "../agent/approval-broker.js";
+import { stripAnsi } from "../shared/strip-ansi.js";
 
 /** Result of an approval check */
 type ApprovalResult =
@@ -32,15 +33,6 @@ function canPrompt(ctx: ExtensionContext, broker: ApprovalBroker | undefined): b
 
 function denial(reason: string): ApprovalResult {
 	return { approved: false, reason };
-}
-
-/** Strip ANSI escape codes to prevent TUI rendering crashes */
-function stripAnsi(str: string): string {
-	// eslint-disable-next-line no-control-regex
-	return str.replace(
-		/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g,
-		"",
-	);
 }
 
 /**

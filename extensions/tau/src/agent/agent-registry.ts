@@ -15,8 +15,9 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
-import { Data, Effect } from "effect";
+import { Data, Effect, Result } from "effect";
 
+import { errorMessage } from "../shared/error-message.js";
 import { isRecord } from "../shared/json.js";
 import {
 	EXTENSION_AGENTS_DIR,
@@ -50,21 +51,6 @@ export class AgentRegistryConfigError extends Data.TaggedError("AgentRegistryCon
 	readonly message: string;
 	readonly cause?: unknown;
 }> {}
-
-function errorMessage(error: unknown): string {
-	if (error instanceof Error) {
-		return error.message;
-	}
-	if (
-		typeof error === "object" &&
-		error !== null &&
-		"message" in error &&
-		typeof error.message === "string"
-	) {
-		return error.message;
-	}
-	return String(error);
-}
 
 function buildModeAgentDefinition(
 	mode: PromptModeName,
@@ -454,27 +440,30 @@ export class AgentRegistry {
 					? new Map<string, string>()
 					: yield* discoverAgentFiles(path.join(projectPi, "agents"));
 
-			const parsedByPath = new Map<string, AgentDefinition>();
-			const validationErrors: string[] = [];
 			const validateSource = (files: Map<string, string>) =>
 				Effect.forEach(Array.from(files.entries()), ([name, filePath]) =>
 					parseAndValidateAgentFile(name, filePath).pipe(
-						Effect.tap((definition) =>
-							Effect.sync(() => {
-								parsedByPath.set(filePath, definition);
-							}),
-						),
-						Effect.catch((error: AgentRegistryConfigError) =>
-							Effect.sync(() => {
-								validationErrors.push(error.message);
-							}),
-						),
+						Effect.map((definition) => [filePath, definition] as const),
+						Effect.result,
 					),
-				).pipe(Effect.asVoid);
+				);
 
-			yield* validateSource(extensionAgents);
-			yield* validateSource(userAgents);
-			yield* validateSource(projectAgents);
+			const allResults = [
+				...(yield* validateSource(extensionAgents)),
+				...(yield* validateSource(userAgents)),
+				...(yield* validateSource(projectAgents)),
+			];
+
+			const validationErrors: string[] = [];
+			const parsedByPath = new Map<string, AgentDefinition>();
+			for (const result of allResults) {
+				if (Result.isFailure(result)) {
+					validationErrors.push(result.failure.message);
+				} else {
+					const [filePath, definition] = result.success;
+					parsedByPath.set(filePath, definition);
+				}
+			}
 
 			if (validationErrors.length > 0) {
 				return yield* Effect.fail(

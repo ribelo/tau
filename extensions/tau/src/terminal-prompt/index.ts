@@ -3,18 +3,13 @@ import { visibleWidth } from "@mariozechner/pi-tui";
 
 import type { TauState } from "../shared/state.js";
 import { updatePersistedState } from "../shared/state.js";
+import { stripAnsi } from "../shared/strip-ansi.js";
 
 // Codex-style composer look:
 // - bold "›" prompt
 // - 1 empty row above + below (Y padding)
 // - dim background for input area
 const BG = "\x1b[48;5;236m";
-
-function stripAnsi(text: string): string {
-	// Good-enough ANSI SGR strip for our border detection.
-	// eslint-disable-next-line no-control-regex
-	return text.replace(/\x1b\[[0-9;]*m/g, "");
-}
 
 function isHorizontalBorderLine(line: string): boolean {
 	const plain = stripAnsi(line);

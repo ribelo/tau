@@ -524,6 +524,150 @@ export class AgentWorker implements Agent {
 		});
 	}
 
+	private switchToModel(
+		spec: ModelSpec,
+	): Effect.Effect<void, string> {
+		// eslint-disable-next-line @typescript-eslint/no-this-alias
+		const worker = this;
+		return Effect.gen(function* () {
+			yield* Effect.promise(() => worker.session.abort()).pipe(Effect.ignore);
+			if (worker.sessionUnsubscribe) {
+				worker.sessionUnsubscribe();
+				worker.sessionUnsubscribe = undefined;
+			}
+
+			const newSession = yield* createSessionForModel(
+				worker.infra,
+				spec,
+				worker.parentModel,
+				worker.infra.modelRegistry,
+			).pipe(
+				Effect.mapError((err) =>
+					err instanceof Error ? err.message : String(err),
+				),
+			);
+
+			worker.session = newSession;
+			worker.agentContext.parentSessionId = newSession.sessionId;
+			wireSession(
+				newSession,
+				worker.infra.sandboxConfig,
+				worker.infra.approvalBroker,
+			);
+			if (worker.infra.resultSchema) {
+				newSession.agent.streamFn =
+					toolOnlyStreamFn as unknown as typeof newSession.agent.streamFn;
+			}
+			worker.subscribeToSession(newSession);
+		});
+	}
+
+	private promptSession(
+		message: string,
+		modelLabel: string,
+	): Effect.Effect<void, string> {
+		// eslint-disable-next-line @typescript-eslint/no-this-alias
+		const worker = this;
+		return Effect.gen(function* () {
+			if (worker.session.isStreaming) {
+				yield* Effect.tryPromise({
+					try: () =>
+						worker.session.prompt(message, {
+							source: "extension",
+							streamingBehavior: "steer",
+						}),
+					catch: (err) =>
+						`${modelLabel}: ${err instanceof Error ? err.message : String(err)}`,
+				});
+				return;
+			}
+
+			yield* Effect.tryPromise({
+				try: () =>
+					worker.session.prompt(message, {
+						source: "extension",
+						streamingBehavior: "steer",
+					}),
+				catch: (err) =>
+					`${modelLabel}: ${err instanceof Error ? err.message : String(err)}`,
+			});
+
+			const last = worker.session.messages[worker.session.messages.length - 1];
+			const assistantMsg =
+				last && last.role === "assistant"
+					? (last as {
+							role: "assistant";
+							content?: Array<{ type: string; text?: string }>;
+							stopReason?: string;
+							errorMessage?: string;
+						})
+					: undefined;
+
+			if (assistantMsg?.stopReason === "error") {
+				const reason =
+					assistantMsg.errorMessage ||
+					assistantMsg.content
+						?.filter(
+							(p): p is { type: "text"; text: string } =>
+								p.type === "text" && typeof p.text === "string",
+						)
+						.map((p) => p.text)
+						.join("\n") ||
+					"Agent ended with error";
+				return yield* Effect.fail(`${modelLabel}: ${reason}`);
+			}
+		});
+	}
+
+	private tryModelAtIndex(
+		message: string,
+		index: number,
+	): Effect.Effect<void, string> {
+		// eslint-disable-next-line @typescript-eslint/no-this-alias
+		const worker = this;
+		const spec = worker.models[index];
+		if (!spec) return Effect.fail("No model spec at index");
+		const modelLabel = spec.model;
+
+		if (index === 0) {
+			return worker.promptSession(message, modelLabel);
+		}
+
+		return worker.switchToModel(spec).pipe(
+			Effect.flatMap(() => worker.promptSession(message, modelLabel)),
+		);
+	}
+
+	private tryModelsFrom(
+		message: string,
+		index: number,
+		accErrors: readonly string[],
+	): Effect.Effect<void> {
+		// eslint-disable-next-line @typescript-eslint/no-this-alias
+		const worker = this;
+
+		if (index >= worker.models.length) {
+			const reason =
+				accErrors.length === 1
+					? (accErrors[0] ?? "Unknown error")
+					: `All models failed:\n${accErrors.map((e) => `  - ${e}`).join("\n")}`;
+			return SubscriptionRef.set(worker.statusRef, {
+				state: "failed" as const,
+				reason,
+				turns: worker.turns,
+				toolCalls: worker.toolCalls,
+				workedMs: worker.workedMs,
+				tools: worker.tools,
+			});
+		}
+
+		return worker.tryModelAtIndex(message, index).pipe(
+			Effect.catch((error: string) =>
+				worker.tryModelsFrom(message, index + 1, [...accErrors, error]),
+			),
+		);
+	}
+
 	prompt(message: string): Effect.Effect<string, AgentError> {
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const worker = this;
@@ -532,144 +676,8 @@ export class AgentWorker implements Agent {
 
 			yield* SubscriptionRef.set(worker.statusRef, worker.currentRunningStatus());
 
-			// Fire-and-forget: try each model in sequence until one succeeds
 			Effect.runFork(
-				Effect.gen(function* () {
-					const errors: string[] = [];
-
-					for (let i = 0; i < worker.models.length; i++) {
-						const spec = worker.models[i];
-						if (!spec) continue;
-
-						// For attempts after the first, create a new session
-						if (i > 0) {
-							yield* Effect.promise(() => worker.session.abort()).pipe(Effect.ignore);
-							if (worker.sessionUnsubscribe) {
-								worker.sessionUnsubscribe();
-								worker.sessionUnsubscribe = undefined;
-							}
-
-							const newSession = yield* createSessionForModel(
-								worker.infra,
-								spec,
-								worker.parentModel,
-								worker.infra.modelRegistry,
-							).pipe(
-								Effect.catch((err: unknown) => {
-									const reason = err instanceof Error ? err.message : String(err);
-									errors.push(`${spec.model}: ${reason}`);
-									return Effect.fail("skip" as const);
-								}),
-							);
-
-							if (typeof newSession === "string") continue; // skip sentinel
-
-							worker.session = newSession;
-							worker.agentContext.parentSessionId = newSession.sessionId;
-							wireSession(
-								newSession,
-								worker.infra.sandboxConfig,
-								worker.infra.approvalBroker,
-							);
-							if (worker.infra.resultSchema) {
-								newSession.agent.streamFn =
-									toolOnlyStreamFn as unknown as typeof newSession.agent.streamFn;
-							}
-							worker.subscribeToSession(newSession);
-						}
-
-						// If this worker is already streaming, send as steer message.
-						// Main-agent -> subagent traffic should interrupt/redirect current work.
-						if (worker.session.isStreaming) {
-							const queued = yield* Effect.tryPromise({
-								try: () =>
-									worker.session.prompt(message, {
-										source: "extension",
-										streamingBehavior: "steer",
-									}),
-								catch: (err) => err,
-							}).pipe(
-								Effect.catch((err: unknown) => {
-									const reason = err instanceof Error ? err.message : String(err);
-									errors.push(`${spec.model}: ${reason}`);
-									return Effect.succeed("failed" as const);
-								}),
-							);
-
-							if (queued !== "failed") {
-								return;
-							}
-							continue;
-						}
-
-						// Try prompting with this model's session.
-						// Important: session.prompt() may resolve successfully even if the underlying
-						// assistant message ended with stopReason === "error". We treat that as a
-						// failed attempt and transparently fall back to the next model/provider.
-						const promptResult = yield* Effect.tryPromise({
-							try: () =>
-								worker.session.prompt(message, {
-									source: "extension",
-									streamingBehavior: "steer",
-								}),
-							catch: (err) => err,
-						}).pipe(
-							Effect.catch((err: unknown) => {
-								const reason = err instanceof Error ? err.message : String(err);
-								errors.push(`${spec.model}: ${reason}`);
-								return Effect.succeed("failed" as const);
-							}),
-						);
-
-						if (promptResult === "failed") {
-							// Try next model
-							continue;
-						}
-
-						const last = worker.session.messages[worker.session.messages.length - 1];
-						const assistantMsg =
-							last && last.role === "assistant"
-								? (last as {
-										role: "assistant";
-										content?: Array<{ type: string; text?: string }>;
-										stopReason?: string;
-										errorMessage?: string;
-									})
-								: undefined;
-
-						if (assistantMsg?.stopReason === "error") {
-							const reason =
-								assistantMsg.errorMessage ||
-								assistantMsg.content
-									?.filter(
-										(p): p is { type: "text"; text: string } =>
-											p.type === "text" && typeof p.text === "string",
-									)
-									.map((p) => p.text)
-									.join("\n") ||
-								"Agent ended with error";
-							errors.push(`${spec.model}: ${reason}`);
-							// Try next model
-							continue;
-						}
-
-						// Success - session events will handle status update
-						return;
-					}
-
-					// All models failed
-					yield* SubscriptionRef.set(worker.statusRef, {
-						state: "failed",
-						reason:
-							errors.length === 1
-								? (errors[0] ?? "Unknown error")
-								: `All models failed:\n${errors.map((e) => `  - ${e}`).join("\n")}`,
-						turns: worker.turns,
-						toolCalls: worker.toolCalls,
-						workedMs: worker.workedMs,
-						tools: worker.tools,
-					});
-				}).pipe(
+				worker.tryModelsFrom(message, 0, []).pipe(
 					Effect.catch((err: unknown) => {
 						const reason = err instanceof Error ? err.message : String(err);
 						return SubscriptionRef.set(worker.statusRef, {

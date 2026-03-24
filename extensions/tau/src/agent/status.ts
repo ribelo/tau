@@ -1,5 +1,7 @@
 import { Schema } from "effect";
 
+export { formatDuration } from "../shared/format-duration.js";
+
 const NonNegativeFiniteInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
 export const ToolRecord = Schema.Struct({
@@ -46,13 +48,3 @@ export type Status = Schema.Schema.Type<typeof Status>;
 export const isFinal = (status: Status): boolean =>
 	status.state === "completed" || status.state === "failed" || status.state === "shutdown";
 
-export function formatDuration(ms: number): string {
-	const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-	const hours = Math.floor(totalSeconds / 3600);
-	const minutes = Math.floor((totalSeconds % 3600) / 60);
-	const seconds = totalSeconds % 60;
-
-	if (hours > 0) return `${hours}h ${minutes}m`;
-	if (minutes > 0) return `${minutes}m ${seconds}s`;
-	return `${seconds}s`;
-}

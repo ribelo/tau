@@ -15,6 +15,7 @@ import {
 import type { TauPersistedState } from "../shared/state.js";
 import { loadPersistedState } from "../shared/state.js";
 import { Persistence } from "./persistence.js";
+import { parseProviderModel } from "../shared/model-id.js";
 
 export interface PromptModes {
 	readonly setup: Effect.Effect<void>;
@@ -34,16 +35,6 @@ function resolvePersistedMode(
 ): PromptModeName {
 	const active = state?.promptModes?.activeMode;
 	return active ?? "smart";
-}
-
-function parseProviderModel(
-	model: string,
-): { readonly provider: string; readonly modelId: string } | undefined {
-	const idx = model.indexOf("/");
-	if (idx <= 0 || idx >= model.length - 1) {
-		return undefined;
-	}
-	return { provider: model.slice(0, idx), modelId: model.slice(idx + 1) };
 }
 
 function resolveModeModelCandidates(

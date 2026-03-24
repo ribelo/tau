@@ -3,6 +3,7 @@ import { Theme } from "@mariozechner/pi-coding-agent";
 import { visibleWidth, type Component } from "@mariozechner/pi-tui";
 import type { Message } from "@mariozechner/pi-ai";
 
+import { formatDuration } from "../shared/format-duration.js";
 import type { TauState } from "../shared/state.js";
 import { updatePersistedState } from "../shared/state.js";
 
@@ -16,17 +17,6 @@ type WorkedForState = {
 	enabled?: boolean;
 	toolsEnabled?: boolean;
 };
-
-function formatDuration(ms: number): string {
-	const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-	const hours = Math.floor(totalSeconds / 3600);
-	const minutes = Math.floor((totalSeconds % 3600) / 60);
-	const seconds = totalSeconds % 60;
-
-	if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
-	if (minutes > 0) return `${minutes}m ${seconds}s`;
-	return `${seconds}s`;
-}
 
 class WorkedForSeparator implements Component {
 	private cachedWidth = -1;

@@ -2,6 +2,9 @@ import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import { Data, Effect, Schema } from "effect";
 
 import type { ModelSpec } from "./types.js";
+import { isFullyQualifiedModelId } from "../shared/model-id.js";
+
+export { isFullyQualifiedModelId } from "../shared/model-id.js";
 
 export class ModelSpecError extends Data.TaggedError("ModelSpecError")<{
 	readonly message: string;
@@ -31,11 +34,6 @@ export type PromptModeThinkingLevel = Schema.Schema.Type<typeof PromptModeThinki
 
 export function isPromptModeThinkingLevel(value: string): value is PromptModeThinkingLevel {
 	return PROMPT_MODE_THINKING_LEVELS.includes(value as PromptModeThinkingLevel);
-}
-
-export function isFullyQualifiedModelId(value: string): boolean {
-	const idx = value.indexOf("/");
-	return idx > 0 && idx < value.length - 1;
 }
 
 export function validatePromptModeModelId(
