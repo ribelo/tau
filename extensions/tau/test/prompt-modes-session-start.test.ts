@@ -500,7 +500,7 @@ describe("prompt-modes session_start", () => {
 		});
 	});
 
-	it("cycles mode with tab shortcut when editor is empty", async () => {
+	it("does not register a tab shortcut that conflicts with pi built-ins", async () => {
 		await withTempDir(async (cwd) => {
 			const stateRef = await Effect.runPromise(
 				SubscriptionRef.make<TauPersistedState>({ promptModes: { activeMode: "smart" } }),
@@ -508,75 +508,9 @@ describe("prompt-modes session_start", () => {
 			const mock = makePiMock();
 			await setupPromptModes(stateRef, mock.pi);
 
-			const tabShortcut = mock.shortcuts.get("tab");
-			expect(tabShortcut).toBeTypeOf("function");
+			void cwd;
 
-			await Promise.resolve(
-				tabShortcut?.(makeSessionStartContext(cwd, [], true, { editorText: "" })),
-			);
-
-			const deepPreset = resolvePromptModePresets(cwd).deep;
-			expect(mock.setModelCalls.at(-1)).toEqual(parseProviderModel(deepPreset.model));
-			expect(mock.thinkingCalls.at(-1)).toBe(deepPreset.thinking);
-			expect(mock.modeChangedEvents.at(-1)).toBe("deep");
-
-			const persisted = Effect.runSync(SubscriptionRef.get(stateRef));
-			expect(persisted.promptModes?.activeMode).toBe("deep");
-		});
-	});
-
-	it("keeps mode-to-model assignments stable when tab switching emits model_select", async () => {
-		await withTempDir(async (cwd) => {
-			const stateRef = await Effect.runPromise(
-				SubscriptionRef.make<TauPersistedState>({ promptModes: { activeMode: "smart" } }),
-			);
-			let currentCtx: ExtensionContext | undefined = undefined;
-			const mock = makePiMock({
-				emitModelSelectOnSet: true,
-				getSetModelContext: () => currentCtx,
-			});
-			await setupPromptModes(stateRef, mock.pi);
-
-			const tabShortcut = mock.shortcuts.get("tab");
-			expect(tabShortcut).toBeTypeOf("function");
-
-			currentCtx = makeSessionStartContext(cwd, [], true, { editorText: "" });
-			await Promise.resolve(tabShortcut?.(currentCtx));
-			await Promise.resolve(tabShortcut?.(currentCtx));
-			await Promise.resolve(tabShortcut?.(currentCtx));
-
-			const presets = resolvePromptModePresets(cwd);
-			const persisted = Effect.runSync(SubscriptionRef.get(stateRef));
-			expect(persisted.promptModes?.activeMode).toBe("smart");
-			expect(persisted.promptModes?.modelsByMode?.smart).toBe(presets.smart.model);
-			expect(persisted.promptModes?.modelsByMode?.deep).toBe(presets.deep.model);
-			expect(persisted.promptModes?.modelsByMode?.rush).toBe(presets.rush.model);
-		});
-	});
-
-	it("ignores tab shortcut when editor contains text", async () => {
-		await withTempDir(async (cwd) => {
-			const stateRef = await Effect.runPromise(
-				SubscriptionRef.make<TauPersistedState>({ promptModes: { activeMode: "smart" } }),
-			);
-			const mock = makePiMock();
-			await setupPromptModes(stateRef, mock.pi);
-
-			const tabShortcut = mock.shortcuts.get("tab");
-			expect(tabShortcut).toBeTypeOf("function");
-
-			await Promise.resolve(
-				tabShortcut?.(
-					makeSessionStartContext(cwd, [], true, { editorText: "draft message" }),
-				),
-			);
-
-			expect(mock.setModelCalls).toHaveLength(0);
-			expect(mock.thinkingCalls).toHaveLength(0);
-			expect(mock.modeChangedEvents).toHaveLength(0);
-
-			const persisted = Effect.runSync(SubscriptionRef.get(stateRef));
-			expect(persisted.promptModes?.activeMode).toBe("smart");
+			expect(mock.shortcuts.has("tab")).toBe(false);
 		});
 	});
 

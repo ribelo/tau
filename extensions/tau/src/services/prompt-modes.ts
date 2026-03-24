@@ -36,16 +36,6 @@ function resolvePersistedMode(
 	return active ?? "smart";
 }
 
-function nextPromptMode(mode: PromptModeName): PromptModeName {
-	if (mode === "smart") {
-		return "deep";
-	}
-	if (mode === "deep") {
-		return "rush";
-	}
-	return "smart";
-}
-
 function parseProviderModel(
 	model: string,
 ): { readonly provider: string; readonly modelId: string } | undefined {
@@ -270,30 +260,6 @@ export const PromptModesLive = Layer.effect(
 						},
 					});
 
-					pi.registerShortcut("tab", {
-						description: "Cycle mode (smart → deep → rush)",
-						handler: async (ctx) => {
-							if (!ctx.hasUI) {
-								return;
-							}
-							if (!ctx.isIdle() || ctx.hasPendingMessages()) {
-								return;
-							}
-							if (ctx.ui.getEditorText().trim().length > 0) {
-								return;
-							}
-
-							const currentMode = resolvePersistedMode(
-								persistence.getSnapshot(),
-							);
-							const nextMode = nextPromptMode(currentMode);
-							await applyModeSelection(pi, persistence, nextMode, ctx, {
-								notifyOnSuccess: true,
-								withModelSelectSuppressed,
-							});
-						},
-					});
-
 					pi.on("session_start", async (_event, ctx) => {
 						await syncModeForSessionContext(pi, persistence, ctx, {
 							withModelSelectSuppressed,
@@ -307,7 +273,7 @@ export const PromptModesLive = Layer.effect(
 					});
 
 					pi.on("model_select", async (event, ctx) => {
-						// /mode and tab switch mode+model atomically and persist after selection.
+						// /mode switches mode+model atomically and persists after selection.
 						// Ignore those internal "set" events so they do not overwrite the previous mode mapping.
 						if (event.source === "set" && suppressModelSelectEvents > 0) {
 							return;
