@@ -1,12 +1,43 @@
 import * as fs from "node:fs";
+import * as fsPromises from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Data, Effect } from "effect";
 import { isRecord, type AnyRecord } from "./json.js";
 
 type JsonFileReadResult =
 	| { readonly _tag: "missing" }
 	| { readonly _tag: "invalid"; readonly reason: string }
 	| { readonly _tag: "ok"; readonly data: AnyRecord };
+
+export class JsonFileError extends Data.TaggedError("JsonFileError")<{
+	readonly message: string;
+	readonly cause?: unknown;
+}> {}
+
+export function parseJsonObject(
+	raw: string,
+	filePath: string,
+): Effect.Effect<AnyRecord, JsonFileError> {
+	return Effect.try({
+		try: () => JSON.parse(raw) as unknown,
+		catch: (cause) =>
+			new JsonFileError({
+				message: `Invalid JSON in ${filePath}`,
+				cause,
+			}),
+	}).pipe(
+		Effect.flatMap((json) =>
+			isRecord(json)
+				? Effect.succeed(json)
+				: Effect.fail(
+						new JsonFileError({
+							message: `Invalid JSON in ${filePath}: top-level JSON value must be an object`,
+						}),
+					),
+		),
+	);
+}
 
 export function readJsonFileDetailed(filePath: string): JsonFileReadResult {
 	if (!fs.existsSync(filePath)) {
@@ -31,6 +62,40 @@ export function readJsonFileDetailed(filePath: string): JsonFileReadResult {
 export function readJsonFile(filePath: string): AnyRecord | null {
 	const result = readJsonFileDetailed(filePath);
 	return result._tag === "ok" ? result.data : null;
+}
+
+export function readJsonObjectFileEffect(
+	filePath: string,
+): Effect.Effect<AnyRecord | null, JsonFileError> {
+	return Effect.tryPromise({
+		try: () => fsPromises.readFile(filePath, "utf-8"),
+		catch: (cause) => cause,
+	}).pipe(
+		Effect.flatMap((raw) => parseJsonObject(raw, filePath)),
+		Effect.catchIf(
+			(cause) =>
+				typeof cause === "object" &&
+				cause !== null &&
+				"code" in cause &&
+				cause.code === "ENOENT",
+			() => Effect.succeed(null),
+		),
+		Effect.mapError((cause) =>
+			cause instanceof JsonFileError
+				? cause
+				: new JsonFileError({
+						message: `Failed to read JSON file ${filePath}`,
+						cause,
+					}),
+		),
+	);
+}
+
+export function readJsonObjectFileOrThrow(filePath: string): AnyRecord {
+	const result = readJsonFileDetailed(filePath);
+	if (result._tag === "missing") return {};
+	if (result._tag === "ok") return result.data;
+	throw new Error(`Invalid JSON at ${filePath}: ${result.reason}`);
 }
 
 export function writeJsonFile(filePath: string, obj: unknown): void {
