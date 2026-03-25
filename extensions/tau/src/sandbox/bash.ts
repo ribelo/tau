@@ -159,6 +159,14 @@ export async function wrapCommandWithSandbox(opts: {
 		args.push("--ro-bind", resolvedHome, resolvedHome);
 		// Workspace binding comes after home so it takes precedence (writable overlay)
 		args.push("--bind", resolvedWorkspace, resolvedWorkspace);
+		// Protect sensitive subpaths as read-only within the writable workspace
+		const protectedSubpaths = [".pi", ".git/hooks"];
+		for (const sub of protectedSubpaths) {
+			const subpath = path.join(resolvedWorkspace, sub);
+			if (exists(subpath)) {
+				args.push("--ro-bind", subpath, subpath);
+			}
+		}
 	} else if (filesystemMode === "danger-full-access") {
 		args.push("--bind", "/", "/");
 	}
