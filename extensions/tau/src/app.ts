@@ -98,8 +98,6 @@ export const runTau = (pi: ExtensionAPI) => {
 			const sandbox = yield* Sandbox;
 			const footer = yield* Footer;
 			const promptModes = yield* PromptModes;
-			const agentRegistry = yield* AgentRegistry.load(process.cwd());
-			const agentToolDescription = buildToolDescription(agentRegistry);
 			const skillMarker = createSkillMarkerRuntime();
 
 			yield* persistence.setup;
@@ -127,6 +125,11 @@ export const runTau = (pi: ExtensionAPI) => {
 					skillMarker,
 				});
 				initSkillMarker(pi, skillMarker);
+			});
+
+			const agentRegistry = yield* AgentRegistry.load(process.cwd());
+			const agentToolDescription = buildToolDescription(agentRegistry);
+			yield* Effect.sync(() => {
 				initAgent(pi, agentRuntimeBridge, agentToolDescription);
 			});
 		}),
