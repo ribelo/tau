@@ -274,33 +274,17 @@ export const FooterLive = Layer.effect(
 										const modeLabel =
 											persisted.promptModes?.activeMode ?? "smart";
 
-										// Status dots
-										const dots: string[] = [];
-
-										// FS Dot
+										// Single sandbox mode dot (matches codex behavior)
 										const fsMode =
 											sandboxConfig.filesystemMode ??
 											DEFAULT_SANDBOX_CONFIG.filesystemMode;
-										const fsColor =
+										const dotColor =
 											fsMode === "danger-full-access"
 												? ("error" as const)
-												: fsMode === "workspace-write"
-													? ("warning" as const)
-													: ("success" as const);
-										dots.push(theme.fg(fsColor, "•"));
-
-										// Net Dot
-										const netMode =
-											sandboxConfig.networkMode ??
-											DEFAULT_SANDBOX_CONFIG.networkMode;
-										const netColor =
-											netMode === "allow-all"
-												? ("error" as const)
-												: ("success" as const);
-										dots.push(theme.fg(netColor, "•"));
-
-										// App Dot (running)
-										dots.push(theme.fg("success", "•"));
+												: fsMode === "read-only"
+													? ("success" as const)
+													: ("warning" as const);
+										const dots = [theme.fg(dotColor, "•")];
 
 										const repoName = path.basename(ctx.cwd);
 										const branch = footerData.getGitBranch();
