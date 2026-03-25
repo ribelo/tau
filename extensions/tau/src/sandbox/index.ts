@@ -217,7 +217,6 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 	function refreshConfig(ctx: ExtensionContext) {
 		workspaceRoot = discoverWorkspaceRoot(ctx.cwd);
 		const persisted = loadPersistedState(ctx);
-		persistence.update(persisted);
 		sessionState = loadSessionState(persisted) ?? {};
 
 		// Session overrides come from tau:state; CLI flags override both session and file-based settings.
@@ -443,13 +442,16 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 					});
 				}
 
-				// Git commands always run unsandboxed (needs ~/.gnupg for signing, ~/.gitconfig, etc.)
+				// Git commands need unsandboxed access for signing (~/.gnupg) and config (~/.gitconfig).
+				// Only bypass sandbox for commands that are *purely* git — no chains, pipes, or subshells
+				// that could smuggle arbitrary commands outside the sandbox.
 				const trimmedCmd = command.trim();
-				const isGitCommand =
-					/^git\s/.test(trimmedCmd) ||
-					/;\s*git\s/.test(trimmedCmd) ||
-					/&&\s*git\s/.test(trimmedCmd);
-				if (isGitCommand) {
+				const hasChaining =
+					/[;&|]/.test(trimmedCmd) ||
+					/\$\(/.test(trimmedCmd) ||
+					/`/.test(trimmedCmd);
+				const isGitOnly = !hasChaining && /^git\s/.test(trimmedCmd);
+				if (isGitOnly) {
 					// Subagent mode: git commands are blocked (orchestrator owns git)
 					if (effectiveConfig.subagent) {
 						const errorMsg =
