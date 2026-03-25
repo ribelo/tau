@@ -37,7 +37,7 @@ const SAFE_COMMANDS = new Set([
 	"uniq",
 	"cut",
 	"tr",
-	"sed", // only with -n flag checked separately
+	"sed", // only with -n + range pattern checked separately
 	"jq",
 	"yq",
 
@@ -64,15 +64,6 @@ const SAFE_COMMANDS = new Set([
 	"xxd",
 	"od",
 	"hexdump",
-
-	// Rust/Node/Python (read-only subcommands checked separately)
-	"cargo",
-	"npm",
-	"yarn",
-	"pnpm",
-	"pip",
-	"python",
-	"node",
 ]);
 
 /** Git subcommands that are safe (read-only) */
@@ -81,7 +72,7 @@ const SAFE_GIT_SUBCOMMANDS = new Set([
 	"log",
 	"diff",
 	"show",
-	"branch",
+	"cat-file",
 	"tag",
 	"remote",
 	"ls-files",
@@ -91,14 +82,35 @@ const SAFE_GIT_SUBCOMMANDS = new Set([
 	"shortlog",
 	"blame",
 	"reflog",
-	"stash", // stash list is safe
 ]);
 
-/** Cargo subcommands that are safe */
+/** Git flags that can execute arbitrary commands — reject if present */
+const UNSAFE_GIT_FLAGS = new Set([
+	"-c",
+	"--config-env",
+	"--output",
+	"--ext-diff",
+	"--textconv",
+	"--exec",
+	"--paginate",
+]);
+
+/** Git branch flags that keep it read-only */
+const SAFE_GIT_BRANCH_FLAGS = new Set([
+	"--list",
+	"-l",
+	"--show-current",
+	"-a",
+	"--all",
+	"-r",
+	"--remotes",
+	"-v",
+	"-vv",
+	"--verbose",
+]);
+
+/** Cargo subcommands that are truly read-only (no build script execution) */
 const SAFE_CARGO_SUBCOMMANDS = new Set([
-	"check",
-	"clippy",
-	"fmt",
 	"tree",
 	"metadata",
 	"version",
@@ -112,9 +124,16 @@ const SAFE_NPM_SUBCOMMANDS = new Set([
 	"view",
 	"info",
 	"outdated",
-	"audit",
 	"--version",
 	"-v",
+]);
+
+/** rg flags that execute external commands */
+const UNSAFE_RG_FLAGS = new Set([
+	"--pre",
+	"--hostname-bin",
+	"-z",
+	"--search-zip",
 ]);
 
 /** Find options that make it unsafe */
@@ -188,22 +207,36 @@ export function isSafeCommand(command: string): boolean {
 		return segments.every((seg) => isSafeCommand(seg));
 	}
 
-	// Git - check subcommand
+	// Git - check subcommand and reject dangerous flags
 	if (baseName === "git") {
+		if (args.some((a) => UNSAFE_GIT_FLAGS.has(a.toLowerCase()) || a.startsWith("--config-env="))) {
+			return false;
+		}
 		const subcommand = args[0]?.toLowerCase();
-		return subcommand ? SAFE_GIT_SUBCOMMANDS.has(subcommand) : false;
+		if (!subcommand) return false;
+		// git branch is only safe with listing flags (not create/delete)
+		if (subcommand === "branch") {
+			const branchArgs = args.slice(1);
+			return branchArgs.every((a) => SAFE_GIT_BRANCH_FLAGS.has(a) || a.startsWith("--format="));
+		}
+		return SAFE_GIT_SUBCOMMANDS.has(subcommand);
 	}
 
-	// Cargo - check subcommand
+	// Cargo - check subcommand (check/clippy/build run build scripts — not safe)
 	if (baseName === "cargo") {
 		const subcommand = args[0]?.toLowerCase();
 		return subcommand ? SAFE_CARGO_SUBCOMMANDS.has(subcommand) : false;
 	}
 
-	// npm/yarn/pnpm - check subcommand
+	// npm/yarn/pnpm - check subcommand (audit/run can execute arbitrary code)
 	if (baseName === "npm" || baseName === "yarn" || baseName === "pnpm") {
 		const subcommand = args[0]?.toLowerCase();
 		return subcommand ? SAFE_NPM_SUBCOMMANDS.has(subcommand) : false;
+	}
+
+	// rg - check for flags that execute external commands
+	if (baseName === "rg") {
+		return !args.some((a) => UNSAFE_RG_FLAGS.has(a.toLowerCase()));
 	}
 
 	// Find - check for unsafe options
@@ -211,18 +244,16 @@ export function isSafeCommand(command: string): boolean {
 		return !args.some((arg) => UNSAFE_FIND_OPTIONS.has(arg.toLowerCase()));
 	}
 
-	// sed - only safe with -n (print mode)
+	// sed - only safe with -n and a range print pattern (e.g. sed -n '1,5p')
 	if (baseName === "sed") {
-		return args.includes("-n");
+		if (!args.includes("-n")) return false;
+		const scriptArgs = args.filter((a) => a !== "-n" && !a.startsWith("-"));
+		return scriptArgs.length <= 1 && scriptArgs.every((a) => /^'?\d+(,\d+)?p'?$/.test(a));
 	}
 
-	// python/node - only safe with --version or -c for simple expressions
+	// python/node - only --version is safe
 	if (baseName === "python" || baseName === "python3" || baseName === "node") {
-		if (args.includes("--version") || args.includes("-V")) {
-			return true;
-		}
-		// Very conservative - most python/node commands could have side effects
-		return false;
+		return args.includes("--version") || args.includes("-V");
 	}
 
 	// Check base safe commands
