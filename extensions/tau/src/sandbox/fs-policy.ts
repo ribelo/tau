@@ -40,6 +40,25 @@ function isGitHooksPath(targetPath: string, workspaceRoot: string): boolean {
 }
 
 /**
+ * Check if a path is within the .pi directory at workspace root.
+ * Writes here could tamper with sandbox config for subsequent sessions.
+ */
+function isPiConfigPath(targetPath: string, workspaceRoot: string): boolean {
+	const resolved = safeRealpath(targetPath);
+	const piDir = path.join(workspaceRoot, ".pi");
+
+	try {
+		const resolvedPiDir = safeRealpath(piDir);
+		return isPathInsideRoot(resolved, resolvedPiDir);
+	} catch {
+		return (
+			resolved.includes(`${path.sep}.pi${path.sep}`) ||
+			resolved.endsWith(`${path.sep}.pi`)
+		);
+	}
+}
+
+/**
  * Check if a write operation is allowed based on filesystem mode.
  */
 export function checkWriteAllowed(opts: {
@@ -50,11 +69,17 @@ export function checkWriteAllowed(opts: {
 	const { targetPath, workspaceRoot, filesystemMode } = opts;
 	const resolved = safeRealpath(targetPath);
 
-	// Always deny .git/hooks unless danger-full-access
+	// Always deny .git/hooks and .pi/ unless danger-full-access
 	if (filesystemMode !== "danger-full-access" && isGitHooksPath(resolved, workspaceRoot)) {
 		return {
 			allowed: false,
 			reason: `Write to .git/hooks is blocked for security (path: ${resolved}). Use /sandbox to enable danger-full-access mode if needed.`,
+		};
+	}
+	if (filesystemMode !== "danger-full-access" && isPiConfigPath(resolved, workspaceRoot)) {
+		return {
+			allowed: false,
+			reason: `Write to .pi/ is blocked to prevent sandbox config tampering (path: ${resolved}). Use /sandbox to enable danger-full-access mode if needed.`,
 		};
 	}
 
