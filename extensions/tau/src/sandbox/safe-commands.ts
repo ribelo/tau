@@ -38,7 +38,6 @@ const SAFE_COMMANDS = new Set([
 	"cut",
 	"tr",
 	"sed", // only with -n flag checked separately
-	"awk",
 	"jq",
 	"yq",
 
@@ -85,7 +84,6 @@ const SAFE_GIT_SUBCOMMANDS = new Set([
 	"branch",
 	"tag",
 	"remote",
-	"config",
 	"ls-files",
 	"ls-tree",
 	"rev-parse",
@@ -153,6 +151,11 @@ export function isSafeCommand(command: string): boolean {
 	);
 	if (shellMatch && shellMatch[1]) {
 		cmdToCheck = shellMatch[1];
+	}
+
+	// Reject command substitution and subshells — they can smuggle arbitrary commands
+	if (/\$\(/.test(cmdToCheck) || /`/.test(cmdToCheck) || /\$\{/.test(cmdToCheck)) {
+		return false;
 	}
 
 	// Split into words (simple split, doesn't handle all quoting)
