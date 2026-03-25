@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 import { Markdown, Text, type AutocompleteItem } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
-import { Schema } from "effect";
+import { Option, Schema } from "effect";
 
 type Theme = {
 	fg: (key: string, s: string) => string;
@@ -624,9 +624,13 @@ async function runBd(
 	const tryParse = (s: string) => {
 		try {
 			const parsed = JSON.parse(s);
-			parsedJson = Schema.decodeUnknownSync(BdCliJsonOutputSchema)(parsed);
-			isJson = true;
-			return true;
+			const decoded = Schema.decodeUnknownOption(BdCliJsonOutputSchema)(parsed);
+			if (Option.isSome(decoded)) {
+				parsedJson = decoded.value;
+				isJson = true;
+				return true;
+			}
+			return false;
 		} catch {
 			return false;
 		}

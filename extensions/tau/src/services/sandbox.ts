@@ -1,4 +1,4 @@
-import { Effect, Exit, Layer, Queue, Schema, ServiceMap, Stream, SubscriptionRef } from "effect";
+import { Effect, Exit, Layer, Queue, Schema, Scope, ServiceMap, Stream, SubscriptionRef } from "effect";
 
 import { PiAPI } from "../effect/pi.js";
 import { SandboxConfigRequired } from "../schemas/config.js";
@@ -11,7 +11,7 @@ const decodeSandboxConfigRequired = Schema.decodeUnknownExit(SandboxConfigRequir
 export interface Sandbox {
 	readonly getConfig: Effect.Effect<SandboxConfigRequired>;
 	readonly changes: Stream.Stream<SandboxConfigRequired>;
-	readonly setup: Effect.Effect<void>;
+	readonly setup: Effect.Effect<void, never, Scope.Scope>;
 }
 
 export const Sandbox = ServiceMap.Service<Sandbox>("Sandbox");
@@ -39,7 +39,7 @@ export const SandboxLive = Layer.effect(
 			getConfig: Effect.sync(() => currentConfig),
 			changes: SubscriptionRef.changes(state),
 			setup: Effect.gen(function* () {
-				yield* Effect.forkDetach(drainSyncQueue);
+				yield* Effect.forkScoped(drainSyncQueue);
 
 				yield* Effect.sync(() => {
 					initSandbox(pi, {

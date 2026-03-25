@@ -47,7 +47,7 @@ async function setupPersistence(pi: ExtensionAPI): Promise<{
 		return persistence;
 	});
 	const layer = PersistenceLive.pipe(Layer.provide(PiAPILive(pi)));
-	return Effect.runPromise(program.pipe(Effect.provide(layer)));
+	return Effect.runPromise(Effect.scoped(program.pipe(Effect.provide(layer))));
 }
 
 describe("persistence session_start", () => {

@@ -1,4 +1,4 @@
-import { ServiceMap, Effect, Layer, Queue, Stream, SubscriptionRef } from "effect";
+import { Effect, Layer, Queue, Scope, ServiceMap, Stream, SubscriptionRef } from "effect";
 
 import { PiAPI } from "../effect/pi.js";
 import {
@@ -20,7 +20,7 @@ export class Persistence extends ServiceMap.Service<
 		readonly setSnapshotEffect: (next: TauPersistedState) => Effect.Effect<void>;
 		readonly updateEffect: (patch: Partial<TauPersistedState>) => Effect.Effect<TauPersistedState>;
 		readonly changes: Stream.Stream<TauPersistedState>;
-		readonly setup: Effect.Effect<void>;
+		readonly setup: Effect.Effect<void, never, Scope.Scope>;
 	}
 >()("Persistence") {}
 
@@ -74,7 +74,7 @@ export const PersistenceLive = Layer.effect(
 			updateEffect: (patch) => Effect.sync(() => updateSnapshot(patch)),
 			changes: SubscriptionRef.changes(ref),
 			setup: Effect.gen(function* () {
-				yield* Effect.forkDetach(drainSyncQueue);
+				yield* Effect.forkScoped(drainSyncQueue);
 
 				const mergePersistedFromContext = (_event: unknown, ctx: ExtensionContext) => {
 					hydrateSnapshot(loadPersistedState(ctx));
