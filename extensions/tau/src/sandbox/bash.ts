@@ -108,7 +108,7 @@ export async function wrapCommandWithSandbox(opts: {
 
 	// Minimal synthetic /dev (null, zero, full, random, urandom, tty) instead of
 	// exposing all host devices. Isolate user/pid namespaces and mount fresh /proc.
-	args.push("--dev", "/dev", "--proc", "/proc", "--unshare-user", "--unshare-pid");
+	args.push("--dev", "/dev", "--proc", "/proc", "--unshare-user", "--unshare-pid", "--unshare-ipc");
 
 	// /tmp handling: In workspace-write mode, bind the host /tmp so files persist
 	// across tool calls. In read-only mode, use ephemeral tmpfs (writable scratch
@@ -160,7 +160,7 @@ export async function wrapCommandWithSandbox(opts: {
 		// Workspace binding comes after home so it takes precedence (writable overlay)
 		args.push("--bind", resolvedWorkspace, resolvedWorkspace);
 		// Protect sensitive subpaths as read-only within the writable workspace
-		const protectedSubpaths = [".pi", ".git/hooks"];
+		const protectedSubpaths = [".pi", ".git"];
 		for (const sub of protectedSubpaths) {
 			const subpath = path.join(resolvedWorkspace, sub);
 			if (exists(subpath)) {

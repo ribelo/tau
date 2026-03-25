@@ -20,21 +20,20 @@ function isInTempDir(targetPath: string): boolean {
 }
 
 /**
- * Check if a path is within .git/hooks directory.
- * This is dangerous because git hooks can execute arbitrary code.
+ * Check if a path is within the .git directory at workspace root.
+ * Protects config, hooks, and all git internals from agent writes.
  */
-function isGitHooksPath(targetPath: string, workspaceRoot: string): boolean {
+function isGitPath(targetPath: string, workspaceRoot: string): boolean {
 	const resolved = safeRealpath(targetPath);
-	const hooksDir = path.join(workspaceRoot, ".git", "hooks");
+	const gitDir = path.join(workspaceRoot, ".git");
 
 	try {
-		const resolvedHooksDir = safeRealpath(hooksDir);
-		return isPathInsideRoot(resolved, resolvedHooksDir);
+		const resolvedGitDir = safeRealpath(gitDir);
+		return isPathInsideRoot(resolved, resolvedGitDir);
 	} catch {
-		// .git/hooks doesn't exist - check pattern match
 		return (
-			resolved.includes(`${path.sep}.git${path.sep}hooks${path.sep}`) ||
-			resolved.endsWith(`${path.sep}.git${path.sep}hooks`)
+			resolved.includes(`${path.sep}.git${path.sep}`) ||
+			resolved.endsWith(`${path.sep}.git`)
 		);
 	}
 }
@@ -69,11 +68,11 @@ export function checkWriteAllowed(opts: {
 	const { targetPath, workspaceRoot, filesystemMode } = opts;
 	const resolved = safeRealpath(targetPath);
 
-	// Always deny .git/hooks and .pi/ unless danger-full-access
-	if (filesystemMode !== "danger-full-access" && isGitHooksPath(resolved, workspaceRoot)) {
+	// Always deny .git/ and .pi/ unless danger-full-access
+	if (filesystemMode !== "danger-full-access" && isGitPath(resolved, workspaceRoot)) {
 		return {
 			allowed: false,
-			reason: `Write to .git/hooks is blocked for security (path: ${resolved}). Use /sandbox to enable danger-full-access mode if needed.`,
+			reason: `Write to .git/ is blocked for security (path: ${resolved}). Use /sandbox to enable danger-full-access mode if needed.`,
 		};
 	}
 	if (filesystemMode !== "danger-full-access" && isPiConfigPath(resolved, workspaceRoot)) {
