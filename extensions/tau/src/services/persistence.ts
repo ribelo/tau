@@ -1,4 +1,4 @@
-import { ServiceMap, Effect, Layer, Stream, SubscriptionRef } from "effect";
+import { ServiceMap, Effect, Layer, Queue, Stream, SubscriptionRef } from "effect";
 
 import { PiAPI } from "../effect/pi.js";
 import {
@@ -14,6 +14,7 @@ export class Persistence extends ServiceMap.Service<
 	{
 		readonly getSnapshot: () => TauPersistedState;
 		readonly setSnapshot: (next: TauPersistedState) => void;
+		readonly hydrate: (patch: Partial<TauPersistedState>) => void;
 		readonly update: (patch: Partial<TauPersistedState>) => void;
 		readonly getSnapshotEffect: Effect.Effect<TauPersistedState>;
 		readonly setSnapshotEffect: (next: TauPersistedState) => Effect.Effect<void>;
@@ -28,39 +29,61 @@ export const PersistenceLive = Layer.effect(
 	Effect.gen(function* () {
 		const pi = yield* PiAPI;
 		const ref = yield* SubscriptionRef.make<TauPersistedState>({});
+		const syncQueue = yield* Queue.unbounded<TauPersistedState>();
+		let snapshot: TauPersistedState = {};
 
-		const setSnapshot = (next: TauPersistedState): void => {
-			Effect.runSync(SubscriptionRef.set(ref, next));
+		const publishSnapshot = (next: TauPersistedState): TauPersistedState => {
+			snapshot = next;
+			Queue.offerUnsafe(syncQueue, next);
+			return next;
 		};
 
-		const mergeFromContext = (ctx: ExtensionContext): void => {
-			const persisted = loadPersistedState(ctx);
-			Effect.runSync(SubscriptionRef.update(ref, (current) => mergePersistedState(current, persisted)));
+		const setSnapshot = (next: TauPersistedState): void => {
+			publishSnapshot(next);
+		};
+
+		const hydrateSnapshot = (patch: Partial<TauPersistedState>): TauPersistedState => {
+			return publishSnapshot(mergePersistedState(snapshot, patch));
 		};
 
 		const updateSnapshot = (patch: Partial<TauPersistedState>): TauPersistedState => {
-			const next = Effect.runSync(SubscriptionRef.updateAndGet(ref, (current) => mergePersistedState(current, patch)));
+			const next = hydrateSnapshot(patch);
 			pi.appendEntry(TAU_PERSISTED_STATE_TYPE, next);
 			return next;
 		};
 
+		const drainSyncQueue = Queue.take(syncQueue).pipe(
+			Effect.flatMap((next) => SubscriptionRef.set(ref, next)),
+			Effect.forever,
+		);
+
 		return Persistence.of({
-			getSnapshot: () => SubscriptionRef.getUnsafe(ref),
+			getSnapshot: () => snapshot,
 			setSnapshot,
+			hydrate: (patch) => {
+				hydrateSnapshot(patch);
+			},
 			update: (patch) => {
 				updateSnapshot(patch);
 			},
-			getSnapshotEffect: SubscriptionRef.get(ref),
-			setSnapshotEffect: (next) => SubscriptionRef.set(ref, next),
-			updateEffect: (patch) => SubscriptionRef.updateAndGet(ref, (current) => mergePersistedState(current, patch)),
+			getSnapshotEffect: Effect.sync(() => snapshot),
+			setSnapshotEffect: (next) =>
+				Effect.sync(() => {
+					setSnapshot(next);
+				}),
+			updateEffect: (patch) => Effect.sync(() => updateSnapshot(patch)),
 			changes: SubscriptionRef.changes(ref),
-			setup: Effect.sync(() => {
+			setup: Effect.gen(function* () {
+				yield* Effect.forkDetach(drainSyncQueue);
+
 				const mergePersistedFromContext = (_event: unknown, ctx: ExtensionContext) => {
-					mergeFromContext(ctx);
+					hydrateSnapshot(loadPersistedState(ctx));
 				};
 
-				pi.on("session_start", mergePersistedFromContext);
-				pi.on("session_switch", mergePersistedFromContext);
+				yield* Effect.sync(() => {
+					pi.on("session_start", mergePersistedFromContext);
+					pi.on("session_switch", mergePersistedFromContext);
+				});
 			}),
 		});
 	}),

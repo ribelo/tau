@@ -1,7 +1,6 @@
-import { Effect, Exit, Layer, Schema, ServiceMap, Stream, SubscriptionRef } from "effect";
+import { Effect, Exit, Layer, Queue, Schema, ServiceMap, Stream, SubscriptionRef } from "effect";
 
 import { PiAPI } from "../effect/pi.js";
-import type { SandboxConfig } from "../sandbox/config.js";
 import { SandboxConfigRequired } from "../schemas/config.js";
 import { SandboxState } from "./state.js";
 import { Persistence } from "./persistence.js";
@@ -12,7 +11,6 @@ const decodeSandboxConfigRequired = Schema.decodeUnknownExit(SandboxConfigRequir
 export interface Sandbox {
 	readonly getConfig: Effect.Effect<SandboxConfigRequired>;
 	readonly changes: Stream.Stream<SandboxConfigRequired>;
-	readonly setConfig: (config: Partial<SandboxConfig>) => Effect.Effect<void>;
 	readonly setup: Effect.Effect<void>;
 }
 
@@ -24,13 +22,25 @@ export const SandboxLive = Layer.effect(
 		const pi = yield* PiAPI;
 		const state = yield* SandboxState;
 		const persistence = yield* Persistence;
+		const syncQueue = yield* Queue.unbounded<SandboxConfigRequired>();
+		let currentConfig = SubscriptionRef.getUnsafe(state);
+
+		const publishConfig = (next: SandboxConfigRequired): void => {
+			currentConfig = next;
+			Queue.offerUnsafe(syncQueue, next);
+		};
+
+		const drainSyncQueue = Queue.take(syncQueue).pipe(
+			Effect.flatMap((next) => SubscriptionRef.set(state, next)),
+			Effect.forever,
+		);
 
 		return Sandbox.of({
-			getConfig: SubscriptionRef.get(state),
+			getConfig: Effect.sync(() => currentConfig),
 			changes: SubscriptionRef.changes(state),
-			setConfig: (patch) =>
-				SubscriptionRef.update(state, (current) => ({ ...current, ...patch })),
 			setup: Effect.gen(function* () {
+				yield* Effect.forkDetach(drainSyncQueue);
+
 				yield* Effect.sync(() => {
 					initSandbox(pi, {
 						getSnapshot: persistence.getSnapshot,
@@ -40,7 +50,7 @@ export const SandboxLive = Layer.effect(
 					pi.events.on("tau:sandbox:changed", (config: unknown) => {
 						const decoded = decodeSandboxConfigRequired(config);
 						if (Exit.isSuccess(decoded)) {
-							Effect.runSync(SubscriptionRef.set(state, decoded.value));
+							publishConfig(decoded.value);
 						}
 					});
 				});

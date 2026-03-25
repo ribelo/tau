@@ -185,6 +185,11 @@ async function setupPromptModes(
 		setSnapshot: (next: TauPersistedState) => {
 			Effect.runSync(SubscriptionRef.set(stateRef, next));
 		},
+		hydrate: (patch: Partial<TauPersistedState>) => {
+			Effect.runSync(
+				SubscriptionRef.update(stateRef, (current) => mergePersistedState(current, patch)),
+			);
+		},
 		update: (patch: Partial<TauPersistedState>) => {
 				Effect.runSync(
 					SubscriptionRef.update(stateRef, (current) => mergePersistedState(current, patch)),

@@ -3,58 +3,19 @@ import * as path from "node:path";
 import { Data, Effect } from "effect";
 
 import { getProjectSettingsPath, getUserSettingsPath } from "./discovery.js";
-import { isRecord, type AnyRecord } from "./json.js";
+import { JsonFileError, readJsonObjectFileEffect } from "./fs.js";
+import type { AnyRecord } from "./json.js";
 
 export class SettingsError extends Data.TaggedError("SettingsError")<{
 	readonly message: string;
 	readonly cause?: unknown;
 }> {}
 
-function parseJsonObject(raw: string, filePath: string): Effect.Effect<AnyRecord, SettingsError> {
-	return Effect.try({
-		try: () => JSON.parse(raw) as unknown,
-		catch: (cause) =>
-			new SettingsError({
-				message: `Invalid JSON in ${filePath}`,
-				cause,
-			}),
-	}).pipe(
-		Effect.flatMap((json) =>
-			isRecord(json)
-				? Effect.succeed(json)
-				: Effect.fail(
-						new SettingsError({
-							message: `Invalid JSON in ${filePath}: top-level JSON value must be an object`,
-						}),
-					),
-		),
-	);
-}
-
-function readJsonObjectFile(filePath: string): Effect.Effect<AnyRecord | null, SettingsError> {
-	return Effect.tryPromise({
-		try: () => fs.readFile(filePath, "utf-8"),
-		catch: (cause) => cause,
-	}).pipe(
-		Effect.flatMap((raw) => parseJsonObject(raw, filePath)),
-		Effect.catchIf(
-			(cause) =>
-				typeof cause === "object" &&
-				cause !== null &&
-				"code" in cause &&
-				cause.code === "ENOENT",
-			() => Effect.succeed(null),
-		),
-		Effect.mapError((cause) =>
-			cause instanceof SettingsError
-				? cause
-				: new SettingsError({
-						message: `Failed to read settings file ${filePath}`,
-						cause,
-					}),
-		),
-	);
-}
+const mapJsonFileError = (cause: JsonFileError): SettingsError =>
+	new SettingsError({
+		message: cause.message,
+		cause,
+	});
 
 export function findNearestProjectPiDirEffect(
 	cwd: string,
@@ -91,7 +52,9 @@ export function findNearestProjectPiDirEffect(
 }
 
 export function readUserSettings(): Effect.Effect<AnyRecord | null, SettingsError> {
-	return readJsonObjectFile(getUserSettingsPath());
+	return readJsonObjectFileEffect(getUserSettingsPath()).pipe(
+		Effect.mapError(mapJsonFileError),
+	);
 }
 
 export function readProjectSettings(
@@ -101,7 +64,9 @@ export function readProjectSettings(
 		Effect.flatMap((projectPiDir) =>
 			projectPiDir === null
 				? Effect.succeed(null)
-				: readJsonObjectFile(getProjectSettingsPath(projectPiDir)),
+				: readJsonObjectFileEffect(getProjectSettingsPath(projectPiDir)).pipe(
+						Effect.mapError(mapJsonFileError),
+					),
 		),
 	);
 }

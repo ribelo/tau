@@ -104,6 +104,9 @@ describe("AGENTS.md availability", () => {
 				setSnapshot: (next) => {
 					persisted = next;
 				},
+				hydrate: (patch) => {
+					persisted = mergePersistedState(persisted, patch);
+				},
 				update: (patch) => {
 					persisted = mergePersistedState(persisted, patch);
 				},

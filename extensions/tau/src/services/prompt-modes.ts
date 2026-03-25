@@ -25,13 +25,14 @@ export const PromptModes = ServiceMap.Service<PromptModes>("PromptModes");
 
 type PromptModePersistence = {
 	readonly getSnapshot: () => TauPersistedState;
+	readonly hydrate: (patch: Partial<TauPersistedState>) => void;
 	readonly update: (patch: Partial<TauPersistedState>) => void;
 };
 
 type WithModelSelectSuppressed = <A>(run: () => Promise<A>) => Promise<A>;
 
 function resolvePersistedMode(
-	state: { promptModes?: { activeMode?: PromptModeName } } | undefined,
+	state: { promptModes?: { activeMode?: PromptModeName | undefined } | undefined } | undefined,
 ): PromptModeName {
 	const active = state?.promptModes?.activeMode;
 	return active ?? "smart";
@@ -161,7 +162,7 @@ async function syncModeForSessionContext(
 
 	const sessionState = loadPersistedState(ctx);
 	if (sessionState.promptModes) {
-		persistence.update({ promptModes: sessionState.promptModes });
+		persistence.hydrate({ promptModes: sessionState.promptModes });
 	}
 
 	const mode = resolvePersistedMode(persistence.getSnapshot());
@@ -200,11 +201,6 @@ export const PromptModesLive = Layer.effect(
 
 							if (!trimmed) {
 								if (!ctx.hasUI) {
-									const state = persistence.getSnapshot();
-									ctx.ui.notify(
-										`Mode: ${resolvePersistedMode(state)}. Usage: /mode smart|deep|rush|list`,
-										"info",
-									);
 									return;
 								}
 

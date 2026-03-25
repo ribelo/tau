@@ -1,7 +1,7 @@
 import { Exit, Schema } from "effect";
 import * as path from "node:path";
 import { SandboxConfig as SandboxConfigSchema } from "../schemas/config.js";
-import { readJsonFileDetailed, writeJsonFile } from "../shared/fs.js";
+import { readJsonObjectFileOrThrow, writeJsonFile } from "../shared/fs.js";
 import { getUserSettingsPath } from "../shared/discovery.js";
 import { deepMerge, isRecord, type AnyRecord } from "../shared/json.js";
 import {
@@ -104,10 +104,12 @@ function readSandboxNamespace(settings: AnyRecord, settingsPath: string): Sandbo
 }
 
 function readSettingsFileOrThrow(settingsPath: string): AnyRecord {
-	const result = readJsonFileDetailed(settingsPath);
-	if (result._tag === "missing") return {};
-	if (result._tag === "ok") return result.data;
-	throw new Error(`Invalid settings JSON at ${settingsPath}: ${result.reason}`);
+	try {
+		return readJsonObjectFileOrThrow(settingsPath);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		throw new Error(message.replace(/^Invalid JSON at /, "Invalid settings JSON at "));
+	}
 }
 
 function getProjectSettingsPath(workspaceRoot: string): string {

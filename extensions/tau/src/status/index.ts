@@ -1,8 +1,11 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Theme } from "@mariozechner/pi-coding-agent";
 import { Text, visibleWidth, type Component } from "@mariozechner/pi-tui";
-import { Data, Effect, Result, Schema } from "effect";
-import https from "node:https";
+import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
+import { Data, Effect, Layer, Result, Schema } from "effect";
+
+import type { TauPersistedState } from "../shared/state.js";
 
 const STATUS_MESSAGE_TYPE = "tau:status";
 
@@ -15,16 +18,6 @@ class StatusBoundaryError extends Data.TaggedError("StatusBoundaryError")<{
 	readonly message: string;
 	readonly cause?: unknown;
 }> {}
-
-function decodeOrFail<S extends Schema.Decoder<unknown>>(
-	schema: S,
-	input: unknown,
-	message: string,
-): Effect.Effect<S["Type"], StatusBoundaryError> {
-	return Schema.decodeUnknownEffect(schema)(input).pipe(
-		Effect.mapError((cause) => new StatusBoundaryError({ message, cause })),
-	);
-}
 
 function parseJsonOrNull(text: string): unknown | null {
 	try {
@@ -567,87 +560,108 @@ function parseGoogleProjectToken(apiKey: string): { token: string; projectId: st
 // HTTP fetch as Effect
 // ---------------------------------------------------------------------------
 
-function fetchJson(
-	url: string,
-	init: RequestInit,
+const RemoteHttpClientLive = NodeHttpClient.layerUndici;
+const LocalHttpsClientLive = NodeHttpClient.layerNodeHttpNoAgent.pipe(
+	Layer.provide(NodeHttpClient.layerAgentOptions({ rejectUnauthorized: false })),
+);
+
+function executeJsonRequest<S extends Schema.Decoder<unknown>>(
+	request: HttpClientRequest.HttpClientRequest,
+	schema: S,
 	label: string,
-): Effect.Effect<unknown, StatusBoundaryError> {
+) {
 	return Effect.gen(function* () {
-		const res = yield* Effect.tryPromise({
-			try: () => fetch(url, init),
-			catch: (err) =>
-				new StatusBoundaryError({ message: `${label} fetch failed`, cause: err }),
-		});
-		const text = yield* Effect.tryPromise({
-			try: () => res.text(),
-			catch: () => new StatusBoundaryError({ message: `${label}: failed to read body` }),
-		});
-		if (!res.ok) {
+		const client = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
+		const response = yield* client.execute(request).pipe(
+			Effect.mapError(
+				(cause) =>
+					new StatusBoundaryError({
+						message: `${label} request failed`,
+						cause,
+					}),
+			),
+		);
+
+		const json = yield* response.json.pipe(
+			Effect.mapError(
+				(cause) =>
+					new StatusBoundaryError({
+						message: `${label}: failed to parse response body`,
+						cause,
+					}),
+			),
+		);
+
+		const decoded = Schema.decodeUnknownExit(schema)(json);
+		if (decoded._tag === "Failure") {
 			return yield* Effect.fail(
 				new StatusBoundaryError({
-					message: `HTTP ${res.status}${text ? `: ${text}` : ""}`,
+					message: `${label} response failed schema validation`,
+					cause: decoded.cause,
 				}),
 			);
 		}
-		const parsed = parseJsonOrNull(text);
-		if (parsed === null) {
-			return yield* Effect.fail(
-				new StatusBoundaryError({
-					message: `${label} returned invalid JSON`,
-					cause: text,
-				}),
-			);
-		}
-		return parsed;
+
+		return decoded.value;
 	});
+}
+
+function executeRemoteJsonRequest<S extends Schema.Decoder<unknown>>(
+	request: HttpClientRequest.HttpClientRequest,
+	schema: S,
+	label: string,
+): Effect.Effect<S["Type"], StatusBoundaryError> {
+	return executeJsonRequest(request, schema, label).pipe(Effect.provide(RemoteHttpClientLive));
+}
+
+function executeLocalJsonRequest<S extends Schema.Decoder<unknown>>(
+	request: HttpClientRequest.HttpClientRequest,
+	schema: S,
+	label: string,
+): Effect.Effect<S["Type"], StatusBoundaryError> {
+	return executeJsonRequest(request, schema, label).pipe(Effect.provide(LocalHttpsClientLive));
 }
 
 function fetchGeminiQuota(
 	token: string,
 	projectId: string,
 ): Effect.Effect<GeminiQuotaResponse, StatusBoundaryError> {
-	const url = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota";
-	return fetchJson(
-		url,
-		{
-			method: "POST",
-			headers: {
-				Authorization: `Bearer ${token}`,
-				"Content-Type": "application/json",
-				"User-Agent": "google-api-nodejs-client/9.15.1",
-				"X-Goog-Api-Client": "gl-node/22.17.0",
-				"Client-Metadata":
-					"ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI",
-			},
-			body: JSON.stringify({ project: projectId }),
-		},
-		"Gemini quota",
+	const request = HttpClientRequest.post(
+		"https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
 	).pipe(
-		Effect.flatMap((json) =>
-			decodeOrFail(GeminiQuotaResponseSchema, json, "Gemini quota response failed schema validation"),
+		HttpClientRequest.acceptJson,
+		HttpClientRequest.bearerToken(token),
+		HttpClientRequest.setHeader("User-Agent", "google-api-nodejs-client/9.15.1"),
+		HttpClientRequest.setHeader("X-Goog-Api-Client", "gl-node/22.17.0"),
+		HttpClientRequest.setHeader(
+			"Client-Metadata",
+			"ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI",
 		),
+		HttpClientRequest.bodyJsonUnsafe({ project: projectId }),
 	);
+
+	return executeRemoteJsonRequest(request, GeminiQuotaResponseSchema, "Gemini quota");
 }
 
 function fetchOpenAiUsage(
 	token: string,
 	options: { accountId?: string | undefined },
 ): Effect.Effect<OpenAiUsagePayload, StatusBoundaryError> {
-	return fetchJson(
-		"https://chatgpt.com/backend-api/wham/usage",
-		{
-			headers: {
-				Authorization: `Bearer ${token}`,
-				...(options.accountId ? { "ChatGPT-Account-Id": options.accountId } : {}),
-				"User-Agent": "pi",
-			},
-		},
-		"OpenAI usage",
-	).pipe(
-		Effect.flatMap((json) =>
-			decodeOrFail(OpenAiUsagePayloadSchema, json, "OpenAI usage response failed schema validation"),
-		),
+	let request = HttpClientRequest.get("https://chatgpt.com/backend-api/wham/usage").pipe(
+		HttpClientRequest.acceptJson,
+		HttpClientRequest.bearerToken(token),
+		HttpClientRequest.setHeader("User-Agent", "pi"),
 	);
+
+	if (options.accountId) {
+		request = HttpClientRequest.setHeader(
+			request,
+			"ChatGPT-Account-Id",
+			options.accountId,
+		);
+	}
+
+	return executeRemoteJsonRequest(request, OpenAiUsagePayloadSchema, "OpenAI usage");
 }
 
 // ---------------------------------------------------------------------------
@@ -818,80 +832,22 @@ function fetchAntigravityUserStatusFromPort(
 	port: number,
 	csrfToken: string,
 ): Effect.Effect<AntigravityUserStatus, StatusBoundaryError> {
-	const body = JSON.stringify({
-		metadata: {
-			ideName: "codex",
-			extensionName: "codex",
-			locale: "en",
-		},
-	});
-
-	return Effect.callback<unknown, StatusBoundaryError>((resume) => {
-		const req = https.request(
-			{
-				host: "127.0.0.1",
-				port,
-				path: "/exa.language_server_pb.LanguageServerService/GetUserStatus",
-				method: "POST",
-				rejectUnauthorized: false,
-				headers: {
-					"Content-Type": "application/json",
-					"Connect-Protocol-Version": "1",
-					"X-Codeium-Csrf-Token": csrfToken,
-				},
-				timeout: 5000,
+	const request = HttpClientRequest.post(
+		`https://127.0.0.1:${port}/exa.language_server_pb.LanguageServerService/GetUserStatus`,
+	).pipe(
+		HttpClientRequest.acceptJson,
+		HttpClientRequest.setHeader("Connect-Protocol-Version", "1"),
+		HttpClientRequest.setHeader("X-Codeium-Csrf-Token", csrfToken),
+		HttpClientRequest.bodyJsonUnsafe({
+			metadata: {
+				ideName: "codex",
+				extensionName: "codex",
+				locale: "en",
 			},
-			(res) => {
-				const chunks: Buffer[] = [];
-				res.on("data", (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(String(c))));
-				res.on("end", () => {
-					const text = Buffer.concat(chunks).toString("utf-8");
-					if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-						const parsed = parseJsonOrNull(text);
-						if (parsed === null) {
-							resume(
-								Effect.fail(
-									new StatusBoundaryError({
-										message:
-											"Invalid JSON response from Antigravity status endpoint",
-									}),
-								),
-							);
-							return;
-						}
-						resume(Effect.succeed(parsed));
-						return;
-					}
-					resume(
-						Effect.fail(
-							new StatusBoundaryError({ message: `HTTP ${res.statusCode ?? 0}` }),
-						),
-					);
-				});
-			},
-		);
-
-		req.on("error", (error) =>
-			resume(
-				Effect.fail(new StatusBoundaryError({ message: String(error), cause: error })),
-			),
-		);
-		req.on("timeout", () => {
-			req.destroy();
-			resume(Effect.fail(new StatusBoundaryError({ message: "timeout" })));
-		});
-
-		req.write(body);
-		req.end();
-	}).pipe(
-		Effect.flatMap((json) =>
-			decodeOrFail(
-				AntigravityUserStatusSchema,
-				json,
-				"Antigravity status response failed schema validation",
-			),
-		),
+		}),
 	);
+
+	return executeLocalJsonRequest(request, AntigravityUserStatusSchema, "Antigravity status");
 }
 
 function fetchAntigravityStatus(
@@ -1234,8 +1190,8 @@ function formatPlanType(planType: string | undefined): string | undefined {
 // ---------------------------------------------------------------------------
 
 export type StatusPersistence = {
-	readonly getSnapshot: () => { status?: StatusState };
-	readonly update: (patch: { status?: StatusState }) => void;
+	readonly getSnapshot: () => TauPersistedState;
+	readonly update: (patch: Partial<TauPersistedState>) => void;
 };
 
 export function initStatus(pi: ExtensionAPI, persistence: StatusPersistence): void {
@@ -1262,7 +1218,6 @@ export function initStatus(pi: ExtensionAPI, persistence: StatusPersistence): vo
 		description: "Show quotas and limits (OpenAI, Gemini CLI, Antigravity)",
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) {
-				ctx.ui.notify("status requires interactive mode", "error");
 				return;
 			}
 
@@ -1271,16 +1226,7 @@ export function initStatus(pi: ExtensionAPI, persistence: StatusPersistence): vo
 				await ctx.waitForIdle();
 
 				const fetchedAt = Date.now();
-				const persisted = persistence.getSnapshot();
-				const prevState = (() => {
-					const data = persisted.status;
-					if (!data || typeof data !== "object") return undefined;
-					const candidate = data as { fetchedAt?: unknown; values?: unknown };
-					if (typeof candidate.fetchedAt !== "number") return undefined;
-					if (!candidate.values || typeof candidate.values !== "object")
-						return undefined;
-					return candidate as StatusState;
-				})();
+				const prevState = persistence.getSnapshot().status;
 
 				const nextState: StatusState = { fetchedAt, values: {} };
 

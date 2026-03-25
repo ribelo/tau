@@ -99,6 +99,10 @@ export const runTau = (pi: ExtensionAPI) => {
 			const footer = yield* Footer;
 			const promptModes = yield* PromptModes;
 			const skillMarker = createSkillMarkerRuntime();
+			const persistedAccess = {
+				getSnapshot: persistence.getSnapshot,
+				update: persistence.update,
+			};
 
 			yield* persistence.setup;
 			yield* sandbox.setup;
@@ -107,18 +111,9 @@ export const runTau = (pi: ExtensionAPI) => {
 			yield* Effect.sync(() => {
 				initBeads(pi);
 				initExa(pi);
-				initTerminalPrompt(pi, {
-					getSnapshot: persistence.getSnapshot,
-					update: persistence.update,
-				});
-				initWorkedFor(pi, {
-					getSnapshot: persistence.getSnapshot,
-					update: persistence.update,
-				});
-				initStatus(pi, {
-					getSnapshot: () => persistence.getSnapshot(),
-					update: (patch) => persistence.update(patch),
-				});
+				initTerminalPrompt(pi, persistedAccess);
+				initWorkedFor(pi, persistedAccess);
+				initStatus(pi, persistedAccess);
 				initCommit(pi);
 				initEditor(pi, {
 					getSnapshot: persistence.getSnapshot,

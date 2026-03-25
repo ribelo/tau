@@ -50,49 +50,27 @@ const DEFAULT_PROMPT_MODE_CONFIG: Record<
 	rush: { model: "kimi-coding/kimi-k2-thinking", thinking: "off", promptFile: "rush.md" },
 };
 
-let cachedDefaultPromptModePresets:
-	| Promise<Record<PromptModeName, PromptModePreset>>
-	| undefined;
+function buildDefaultPromptModePreset(
+	mode: PromptModeName,
+): Effect.Effect<PromptModePreset, PromptModeConfigError> {
+	const config = DEFAULT_PROMPT_MODE_CONFIG[mode];
+	return loadModePrompt(config.promptFile).pipe(
+		Effect.map((systemPrompt) => ({
+			model: config.model,
+			thinking: config.thinking,
+			systemPrompt,
+		})),
+	);
+}
 
 function getDefaultPromptModePresets(): Effect.Effect<
 	Record<PromptModeName, PromptModePreset>,
 	PromptModeConfigError
 > {
-	if (!cachedDefaultPromptModePresets) {
-		cachedDefaultPromptModePresets = Effect.runPromise(
-			Effect.all({
-				smart: loadModePrompt(DEFAULT_PROMPT_MODE_CONFIG.smart.promptFile).pipe(
-					Effect.map((systemPrompt) => ({
-						model: DEFAULT_PROMPT_MODE_CONFIG.smart.model,
-						thinking: DEFAULT_PROMPT_MODE_CONFIG.smart.thinking,
-						systemPrompt,
-					})),
-				),
-				deep: loadModePrompt(DEFAULT_PROMPT_MODE_CONFIG.deep.promptFile).pipe(
-					Effect.map((systemPrompt) => ({
-						model: DEFAULT_PROMPT_MODE_CONFIG.deep.model,
-						thinking: DEFAULT_PROMPT_MODE_CONFIG.deep.thinking,
-						systemPrompt,
-					})),
-				),
-				rush: loadModePrompt(DEFAULT_PROMPT_MODE_CONFIG.rush.promptFile).pipe(
-					Effect.map((systemPrompt) => ({
-						model: DEFAULT_PROMPT_MODE_CONFIG.rush.model,
-						thinking: DEFAULT_PROMPT_MODE_CONFIG.rush.thinking,
-						systemPrompt,
-					})),
-				),
-			}),
-		);
-	}
-
-	return Effect.tryPromise({
-		try: () => cachedDefaultPromptModePresets as Promise<Record<PromptModeName, PromptModePreset>>,
-		catch: (cause) =>
-			new PromptModeConfigError({
-				message: "Failed to resolve default prompt mode presets",
-				cause,
-			}),
+	return Effect.all({
+		smart: buildDefaultPromptModePreset("smart"),
+		deep: buildDefaultPromptModePreset("deep"),
+		rush: buildDefaultPromptModePreset("rush"),
 	});
 }
 

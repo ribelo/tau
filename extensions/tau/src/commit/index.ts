@@ -32,7 +32,6 @@ export default function initCommit(pi: ExtensionAPI) {
 		description: "Draft and create a git commit with LLM assistance",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI) {
-				ctx.ui.notify("commit requires interactive mode", "error");
 				return;
 			}
 

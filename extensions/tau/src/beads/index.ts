@@ -770,7 +770,6 @@ export default function initBeads(pi: ExtensionAPI) {
 
 	const bdInitFlow = async (ctx: ExtensionContext): Promise<void> => {
 		if (!ctx.hasUI) {
-			ctx.ui.notify("/bd init requires interactive mode", "error");
 			return;
 		}
 

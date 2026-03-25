@@ -535,6 +535,7 @@ export class AgentWorker implements Agent {
 				worker.sessionUnsubscribe();
 				worker.sessionUnsubscribe = undefined;
 			}
+			setWorkerApprovalBroker(worker.session.sessionId, undefined);
 
 			const newSession = yield* createSessionForModel(
 				worker.infra,
@@ -619,53 +620,56 @@ export class AgentWorker implements Agent {
 		});
 	}
 
-	private tryModelAtIndex(
-		message: string,
-		index: number,
-	): Effect.Effect<void, string> {
-		// eslint-disable-next-line @typescript-eslint/no-this-alias
-		const worker = this;
-		const spec = worker.models[index];
-		if (!spec) return Effect.fail("No model spec at index");
-		const modelLabel = spec.model;
+	private failAllModels(errors: readonly string[]): Effect.Effect<void> {
+		const reason =
+			errors.length === 1
+				? (errors[0] ?? "Unknown error")
+				: `All models failed:\n${errors.map((e) => `  - ${e}`).join("\n")}`;
 
-		if (index === 0) {
-			return worker.promptSession(message, modelLabel);
-		}
-
-		return worker.switchToModel(spec).pipe(
-			Effect.flatMap(() => worker.promptSession(message, modelLabel)),
-		);
+		return SubscriptionRef.set(this.statusRef, {
+			state: "failed",
+			reason,
+			turns: this.turns,
+			toolCalls: this.toolCalls,
+			workedMs: this.workedMs,
+			tools: this.tools,
+		});
 	}
 
-	private tryModelsFrom(
+	private tryModelSpec(
 		message: string,
+		spec: ModelSpec,
 		index: number,
-		accErrors: readonly string[],
-	): Effect.Effect<void> {
+	): Effect.Effect<void, string> {
+		return index === 0
+			? this.promptSession(message, spec.model)
+			: this.switchToModel(spec).pipe(
+					Effect.flatMap(() => this.promptSession(message, spec.model)),
+				);
+	}
+
+	private runWithModelFallback(message: string): Effect.Effect<void> {
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const worker = this;
+		return Effect.gen(function* () {
+			const errors: string[] = [];
+			let done = false;
 
-		if (index >= worker.models.length) {
-			const reason =
-				accErrors.length === 1
-					? (accErrors[0] ?? "Unknown error")
-					: `All models failed:\n${accErrors.map((e) => `  - ${e}`).join("\n")}`;
-			return SubscriptionRef.set(worker.statusRef, {
-				state: "failed" as const,
-				reason,
-				turns: worker.turns,
-				toolCalls: worker.toolCalls,
-				workedMs: worker.workedMs,
-				tools: worker.tools,
-			});
-		}
+			for (let index = 0; index < worker.models.length && !done; index++) {
+				const spec = worker.models[index];
+				if (!spec) continue;
+				const result = yield* Effect.result(worker.tryModelSpec(message, spec, index));
+				if (result._tag === "Success") {
+					done = true;
+				} else {
+					errors.push(result.failure);
+				}
+			}
 
-		return worker.tryModelAtIndex(message, index).pipe(
-			Effect.catch((error: string) =>
-				worker.tryModelsFrom(message, index + 1, [...accErrors, error]),
-			),
-		);
+			if (!done) {
+				yield* worker.failAllModels(errors);
+			}
+		});
 	}
 
 	prompt(message: string): Effect.Effect<string, AgentError> {
@@ -677,7 +681,7 @@ export class AgentWorker implements Agent {
 			yield* SubscriptionRef.set(worker.statusRef, worker.currentRunningStatus());
 
 			Effect.runFork(
-				worker.tryModelsFrom(message, 0, []).pipe(
+				worker.runWithModelFallback(message).pipe(
 					Effect.catch((err: unknown) => {
 						const reason = err instanceof Error ? err.message : String(err);
 						return SubscriptionRef.set(worker.statusRef, {
@@ -709,6 +713,7 @@ export class AgentWorker implements Agent {
 				worker.sessionUnsubscribe();
 				worker.sessionUnsubscribe = undefined;
 			}
+			setWorkerApprovalBroker(worker.session.sessionId, undefined);
 			yield* SubscriptionRef.set(worker.statusRef, { state: "shutdown" });
 		});
 	}
