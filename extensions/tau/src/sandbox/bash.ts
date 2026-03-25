@@ -104,10 +104,11 @@ export async function wrapCommandWithSandbox(opts: {
 	cleanupWorkspaceArtifacts(workspaceRoot);
 
 	const resolvedWorkspace = safeRealpath(workspaceRoot);
-	const args: string[] = ["bwrap", "--die-with-parent"];
+	const args: string[] = ["bwrap", "--new-session", "--die-with-parent"];
 
-	// Base bindings - use dev-bind to host devices to avoid mknod failures in restricted environments
-	args.push("--dev-bind", "/dev", "/dev", "--proc", "/proc");
+	// Minimal synthetic /dev (null, zero, full, random, urandom, tty) instead of
+	// exposing all host devices. Isolate user/pid namespaces and mount fresh /proc.
+	args.push("--dev", "/dev", "--proc", "/proc", "--unshare-user", "--unshare-pid");
 
 	// /tmp handling: In workspace-write mode, bind the host /tmp so files persist
 	// across tool calls. In read-only mode, use ephemeral tmpfs (writable scratch
