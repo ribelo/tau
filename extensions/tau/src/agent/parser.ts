@@ -29,7 +29,7 @@ const AgentDefinitionFrontmatterSchema = Schema.Struct({
 	description: Schema.String,
 	models: Schema.NonEmptyArray(Schema.Unknown),
 	tools: Schema.optional(Schema.Array(Schema.Unknown)),
-	sandbox_preset: Schema.optional(SandboxPresetSchema),
+	sandbox: Schema.optional(SandboxPresetSchema),
 	// Legacy fields still accepted for back-compat
 	sandbox_fs: Schema.optional(FilesystemModeSchema),
 	sandbox_net: Schema.optional(NetworkModeSchema),
@@ -104,7 +104,7 @@ export function parseAgentDefinition(
 					}).pipe(
 						Effect.map((tools): AgentDefinition => {
 							const sandbox: SandboxConfig = {
-								preset: parsedFrontmatter.sandbox_preset ?? inferPresetFromModes({
+								preset: parsedFrontmatter.sandbox ?? inferPresetFromModes({
 									filesystemMode: parsedFrontmatter.sandbox_fs,
 									networkMode: parsedFrontmatter.sandbox_net,
 									approvalPolicy: parsedFrontmatter.approval_policy,

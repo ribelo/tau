@@ -57,7 +57,7 @@ pi system prompt. If empty, only the default prompt is used.
 | Field | Description |
 |-------|-------------|
 | `tools` | Exact allowlist of tool names this agent may use |
-| `sandbox_preset` | Preferred shorthand for sandbox configuration |
+| `sandbox` | Preferred shorthand for sandbox configuration |
 
 ### Model Configuration
 
@@ -100,13 +100,13 @@ Typical examples:
 
 | Field | Values | Description |
 |-------|--------|-------------|
-| `sandbox_preset` | `read-only`, `workspace-write`, `full-access` | Preferred sandbox preset |
+| `sandbox` | `read-only`, `workspace-write`, `full-access` | Sandbox preset |
 | `sandbox_fs` | `read-only`, `workspace-write`, `danger-full-access` | Legacy filesystem mode |
 | `sandbox_net` | `deny`, `allow-all` | Network access |
 | `approval_policy` | `never`, `on-failure`, `on-request`, `unless-trusted` | Approval policy |
 | `approval_timeout` | positive integer seconds | Auto-deny timeout |
 
-Prefer `sandbox_preset` for new agents unless you need the legacy split fields.
+Prefer `sandbox` for new agents unless you need the legacy split fields.
 
 ## System Prompt Body
 
@@ -135,7 +135,7 @@ models:
 tools:
   - read
   - bash
-sandbox_preset: read-only
+sandbox: read-only
 ---
 
 Analyze code for concrete security issues. Return findings with severity
@@ -160,7 +160,7 @@ tools:
   - bash
   - edit
   - write
-sandbox_preset: workspace-write
+sandbox: workspace-write
 ---
 
 Follow these project conventions:
@@ -185,7 +185,7 @@ tools:
   - edit
   - write
   - agent
-sandbox_preset: workspace-write
+sandbox: workspace-write
 ---
 
 Use the `agent` tool when you need a finder subagent to map the codebase
