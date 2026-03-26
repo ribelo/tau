@@ -49,12 +49,6 @@ export const AgentParams = Type.Object({
 		}),
 	),
 	message: Type.Optional(Type.String({ description: "Task instructions for the agent" })),
-	complexity: Type.Optional(
-		StringEnum(["low", "medium", "high"] as const, {
-			description:
-				"Model selection: low (fast/cheap), medium (default), high (capable/expensive)",
-		}),
-	),
 	result_schema: Type.Optional(
 		Type.Any({
 			description:
@@ -276,7 +270,6 @@ export function createAgentToolDef(
 						const id = yield* control.spawn({
 							agent: p.agent,
 							message: p.message,
-							complexity: p.complexity,
 							result_schema: p.result_schema,
 							approvalBroker: context.approvalBroker,
 							parentSessionId: context.parentSessionId,

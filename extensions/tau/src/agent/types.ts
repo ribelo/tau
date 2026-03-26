@@ -3,8 +3,6 @@ import type { SandboxConfig } from "../sandbox/config.js";
 
 export type AgentId = string;
 
-export type Complexity = "low" | "medium" | "high";
-
 export interface ModelSpec {
 	readonly model: string; // "provider/model-id" or "inherit"
 	readonly thinking?: ThinkingLevel | "inherit" | undefined;

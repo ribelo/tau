@@ -38,7 +38,7 @@ import {
 import type { SandboxConfig } from "../sandbox/config.js";
 import { parseAgentDefinition } from "./parser.js";
 import { parseConfiguredToolNames } from "./tool-allowlist.js";
-import type { AgentDefinition, Complexity, ModelSpec } from "./types.js";
+import type { AgentDefinition, ModelSpec } from "./types.js";
 import { decodeAgentModelSpec, isPromptModeThinkingLevel, validatePromptModeModelId } from "./model-spec.js";
 
 const MODE_AGENT_SANDBOX: SandboxConfig = {
@@ -581,7 +581,7 @@ export class AgentRegistry {
 		});
 	}
 
-	resolve(name: string, _complexity: Complexity): AgentDefinition | undefined {
+	resolve(name: string): AgentDefinition | undefined {
 		if (isPromptModePresetName(name)) {
 			const def = this.modeAgents.get(name);
 			if (!def) return undefined;

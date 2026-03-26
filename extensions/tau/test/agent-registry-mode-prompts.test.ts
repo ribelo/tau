@@ -21,10 +21,10 @@ describe("agent-registry: mode agents", () => {
 			const registry = await Effect.runPromise(AgentRegistry.load(process.cwd()));
 			const presets = await Effect.runPromise(resolvePromptModePresets(process.cwd()));
 
-			const smart = registry.resolve("smart", "medium");
-			const deep = registry.resolve("deep", "medium");
-			const rush = registry.resolve("rush", "medium");
-			const defaultMode = registry.resolve("default", "medium");
+			const smart = registry.resolve("smart");
+			const deep = registry.resolve("deep");
+			const rush = registry.resolve("rush");
+			const defaultMode = registry.resolve("default");
 			const expectedTools = [
 				"read",
 				"bash",

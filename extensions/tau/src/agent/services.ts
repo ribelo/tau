@@ -96,7 +96,6 @@ export class AgentManager extends ServiceMap.Service<
 export interface ControlSpawnOptions {
 	readonly agent: string;
 	readonly message: string;
-	readonly complexity?: string | undefined;
 	readonly result_schema?: unknown;
 	readonly approvalBroker?: ApprovalBroker | undefined;
 	readonly parentSessionId: string;

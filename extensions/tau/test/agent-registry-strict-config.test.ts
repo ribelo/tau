@@ -135,7 +135,7 @@ broken
 		vi.stubEnv("HOME", tempHome);
 
 		const registry = await Effect.runPromise(AgentRegistry.load(tempProject));
-		const resolved = registry.resolve("oracle", "medium");
+		const resolved = registry.resolve("oracle");
 		expect(resolved?.models).toEqual([{ model: "anthropic/claude-sonnet-4" }]);
 
 		fs.rmSync(tempHome, { recursive: true, force: true });
@@ -173,7 +173,7 @@ broken
 		vi.stubEnv("HOME", tempHome);
 
 		const registry = await Effect.runPromise(AgentRegistry.load(tempProject));
-		const resolved = registry.resolve("oracle", "medium");
+		const resolved = registry.resolve("oracle");
 		expect(resolved?.models[0]).toEqual({
 			model: "openai-codex/gpt-5.3-codex",
 			thinking: "xhigh",
@@ -206,7 +206,7 @@ broken
 		vi.stubEnv("HOME", tempHome);
 
 		const registry = await Effect.runPromise(AgentRegistry.load(tempProject));
-		const resolved = registry.resolve("oracle", "medium");
+		const resolved = registry.resolve("oracle");
 		expect(resolved?.models).toEqual([{ model: "openai/gpt-5" }]);
 
 		fs.rmSync(tempHome, { recursive: true, force: true });
@@ -239,7 +239,7 @@ broken
 		vi.stubEnv("HOME", tempHome);
 
 		const registry = await Effect.runPromise(AgentRegistry.load(tempProject));
-		const resolved = registry.resolve("oracle", "medium");
+		const resolved = registry.resolve("oracle");
 		expect(resolved?.tools).toEqual(["read", "bash"]);
 
 		fs.rmSync(tempHome, { recursive: true, force: true });
@@ -421,7 +421,7 @@ broken
 		vi.stubEnv("HOME", tempHome);
 
 		const registry = await Effect.runPromise(AgentRegistry.load(tempProject));
-		const resolved = registry.resolve("smart", "medium");
+		const resolved = registry.resolve("smart");
 		expect(resolved?.tools).toEqual(["read", "bash"]);
 
 		fs.rmSync(tempHome, { recursive: true, force: true });

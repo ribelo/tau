@@ -12,7 +12,7 @@ import {
 } from "./services.js";
 import { AgentRegistry } from "./agent-registry.js";
 import { isFinal } from "./status.js";
-import type { AgentId, Complexity } from "./types.js";
+import type { AgentId } from "./types.js";
 import { Sandbox } from "../services/sandbox.js";
 
 export const AgentControlLive = Layer.effect(
@@ -27,8 +27,7 @@ export const AgentControlLive = Layer.effect(
 			spawn: (opts: ControlSpawnOptions) =>
 				Effect.gen(function* () {
 					const registry = yield* AgentRegistry.load(opts.cwd);
-					const complexity = (opts.complexity || "medium") as Complexity;
-					const definition = registry.resolve(opts.agent, complexity);
+					const definition = registry.resolve(opts.agent);
 
 					if (!definition) {
 						return yield* Effect.fail(
