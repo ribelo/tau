@@ -968,16 +968,10 @@ export function createApplyPatchToolDefinition(
 				throw new Error(errorMessage(error));
 			}
 		},
-		renderResult(result, _options, theme, context) {
-			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			if (context.isError) {
-				text.setText("");
-				return text;
-			}
+		renderResult(result, _options, theme) {
 			const summary = (result as { details?: ApplyPatchSummary }).details;
 			if (!summary?.diffs?.length) {
-				text.setText("");
-				return text;
+				return new Text("", 0, 0);
 			}
 			const parts: string[] = [];
 			for (const fileDiff of summary.diffs) {
@@ -985,8 +979,7 @@ export function createApplyPatchToolDefinition(
 					parts.push(renderColoredDiff(fileDiff.diff, theme));
 				}
 			}
-			text.setText(parts.length > 0 ? `\n${parts.join("\n\n")}` : "");
-			return text;
+			return new Text(parts.length > 0 ? `\n${parts.join("\n\n")}` : "", 0, 0);
 		},
 	};
 }
