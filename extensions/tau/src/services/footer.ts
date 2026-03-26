@@ -185,11 +185,12 @@ export const FooterLive = Layer.effect(
 		let currentTotalCost = 0;
 		let currentSandboxConfig = yield* sandbox.getConfig;
 		let currentPersisted = persistence.getSnapshot();
+		let currentCwd = process.cwd();
 
 		const emitFooterChanged = () => pi.events.emit("tau:footer:changed", null);
 
 		const refreshFooterHygieneOnce = Effect.gen(function* () {
-			const cwd = process.cwd();
+			const cwd = currentCwd;
 			const gitLineDelta = yield* Effect.promise(() => collectGitLineDelta(pi, cwd));
 
 			const issuesPath = yield* findBeadsJsonlPath(fs, cwd);
@@ -215,14 +216,22 @@ export const FooterLive = Layer.effect(
 			yield* Effect.sync(() => emitFooterChanged());
 		});
 
-		const refreshFooterHygieneLoop = refreshFooterHygieneOnce.pipe(
+		const refreshFooterHygieneSafe = refreshFooterHygieneOnce.pipe(
 			Effect.catch(() => Effect.void),
+		);
+
+		const triggerFooterHygieneRefresh = () => {
+			Effect.runFork(refreshFooterHygieneSafe);
+		};
+
+		const refreshFooterHygieneLoop = refreshFooterHygieneSafe.pipe(
 			Effect.repeat(Schedule.spaced("5 seconds")),
 		);
 
 		return Footer.of({
 			setup: Effect.gen(function* () {
 				yield* refreshFooterHygieneLoop.pipe(Effect.forkScoped);
+				triggerFooterHygieneRefresh();
 				yield* sandbox.changes.pipe(
 					Stream.runForEach((config) =>
 						Effect.sync(() => {
@@ -244,7 +253,9 @@ export const FooterLive = Layer.effect(
 
 				yield* Effect.sync(() => {
 					const updateSessionFooterState = (_event: unknown, ctx: ExtensionContext) => {
+						currentCwd = ctx.cwd;
 						currentTotalCost = computeTotalCost(ctx);
+						triggerFooterHygieneRefresh();
 						emitFooterChanged();
 					};
 
@@ -403,7 +414,9 @@ export const FooterLive = Layer.effect(
 					});
 
 					pi.on("turn_end", (_event: unknown, ctx: ExtensionContext) => {
+						currentCwd = ctx.cwd;
 						currentTotalCost = computeTotalCost(ctx);
+						triggerFooterHygieneRefresh();
 						emitFooterChanged();
 					});
 					pi.on("session_tree", () => emitFooterChanged());

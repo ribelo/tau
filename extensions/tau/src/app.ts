@@ -127,6 +127,8 @@ export const runTau = (pi: ExtensionAPI) => {
 			yield* Effect.sync(() => {
 				initAgent(pi, agentRuntimeBridge, agentToolDescription);
 			});
+
+			yield* Effect.never;
 		}),
 	);
 
