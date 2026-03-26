@@ -22,6 +22,12 @@ export class AgentLimitReached extends Data.TaggedError("AgentLimitReached")<{
 export class AgentDepthExceeded extends Data.TaggedError("AgentDepthExceeded")<{
 	readonly max: number;
 }> {}
+export class AgentSpawnRestricted extends Data.TaggedError("AgentSpawnRestricted")<{
+	readonly parentId: AgentId;
+	readonly parentType: string;
+	readonly requestedAgent: string;
+	readonly allowedSpawns: readonly string[];
+}> {}
 export class AgentError extends Data.TaggedError("AgentError")<{
 	readonly message: string;
 }> {}
@@ -49,6 +55,7 @@ export interface Agent {
 	readonly id: AgentId;
 	readonly type: string;
 	readonly depth: number;
+	readonly definition: AgentDefinition;
 	readonly prompt: (message: string) => Effect.Effect<string, AgentError>; // returns submission_id
 	readonly interrupt: () => Effect.Effect<void>;
 	readonly shutdown: () => Effect.Effect<void>;
@@ -76,7 +83,10 @@ export class AgentManager extends ServiceMap.Service<
 	{
 		readonly spawn: (
 			opts: SpawnOptions,
-		) => Effect.Effect<AgentId, AgentLimitReached | AgentDepthExceeded | AgentError>;
+		) => Effect.Effect<
+			AgentId,
+			AgentLimitReached | AgentDepthExceeded | AgentSpawnRestricted | AgentError
+		>;
 		readonly get: (id: AgentId) => Effect.Effect<Agent, AgentNotFound>;
 		readonly touch: (id: AgentId) => Effect.Effect<void>;
 		readonly list: Effect.Effect<AgentInfo[]>;
@@ -120,7 +130,10 @@ export class AgentControl extends ServiceMap.Service<
 	{
 		readonly spawn: (
 			opts: ControlSpawnOptions,
-		) => Effect.Effect<AgentId, AgentLimitReached | AgentDepthExceeded | AgentError>;
+		) => Effect.Effect<
+			AgentId,
+			AgentLimitReached | AgentDepthExceeded | AgentSpawnRestricted | AgentError
+		>;
 		readonly send: (
 			id: AgentId,
 			message: string,

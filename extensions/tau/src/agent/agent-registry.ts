@@ -57,7 +57,7 @@ const MODE_AGENT_TOOLS = [
 	"get_code_context_exa",
 ] as const;
 
-const ALLOWED_AGENT_SETTINGS_KEYS = new Set(["models", "model", "thinking", "tools"]);
+const ALLOWED_AGENT_SETTINGS_KEYS = new Set(["models", "model", "thinking", "tools", "spawns"]);
 
 export class AgentRegistryConfigError extends Data.TaggedError("AgentRegistryConfigError")<{
 	readonly message: string;
@@ -215,6 +215,38 @@ function parseToolsArray(
 	});
 }
 
+function parseSpawnsRestriction(
+	value: unknown,
+	keyPath: string,
+): Effect.Effect<readonly string[] | "*" | undefined, AgentRegistryConfigError> {
+	if (value === undefined) {
+		return Effect.succeed(undefined);
+	}
+	if (value === "*") {
+		return Effect.succeed("*");
+	}
+	if (!Array.isArray(value)) {
+		return Effect.fail(
+			new AgentRegistryConfigError({
+				message: `${keyPath} must be "*" or an array of strings`,
+			}),
+		);
+	}
+
+	const spawns: string[] = [];
+	for (const entry of value) {
+		if (typeof entry !== "string") {
+			return Effect.fail(
+				new AgentRegistryConfigError({
+					message: `${keyPath} must be "*" or an array of strings`,
+				}),
+			);
+		}
+		spawns.push(entry);
+	}
+	return Effect.succeed(spawns);
+}
+
 function parseModelShorthand(
 	value: unknown,
 	thinkingValue: unknown,
@@ -277,6 +309,7 @@ function parseModelShorthand(
 interface AgentSettingsOverride {
 	models?: readonly ModelSpec[];
 	tools?: readonly string[];
+	spawns?: readonly string[] | "*";
 }
 
 function mergeSettingsOverride(
@@ -326,18 +359,25 @@ function loadAgentSettingsFromJson(
 			}
 			if (isPromptModePresetName(name)) {
 				for (const key of Object.keys(config)) {
-					if (key !== "tools") {
+					if (key !== "tools" && key !== "spawns") {
 						return yield* Effect.fail(
 							new AgentRegistryConfigError({
-								message: `Invalid settings in ${agentPath}: mode agents only support tools here; prompt mode model settings belong under promptModes`,
+								message: `Invalid settings in ${agentPath}: mode agents only support tools and spawns here; prompt mode model settings belong under promptModes`,
 							}),
 						);
 					}
 				}
 
 				const tools = yield* parseToolsArray(config["tools"], `${agentPath}.tools`);
-				if (tools !== undefined) {
-					result = mergeSettingsOverride(result, name, { tools });
+				const spawns = yield* parseSpawnsRestriction(
+					config["spawns"],
+					`${agentPath}.spawns`,
+				);
+				if (tools !== undefined || spawns !== undefined) {
+					result = mergeSettingsOverride(result, name, {
+						...(tools !== undefined ? { tools } : {}),
+						...(spawns !== undefined ? { spawns } : {}),
+					});
 				}
 				continue;
 			}
@@ -353,7 +393,7 @@ function loadAgentSettingsFromJson(
 				if (!ALLOWED_AGENT_SETTINGS_KEYS.has(key)) {
 					return yield* Effect.fail(
 						new AgentRegistryConfigError({
-							message: `Invalid settings in ${agentPath}: ${key} is not supported (allowed keys: model, thinking, models, tools)`,
+							message: `Invalid settings in ${agentPath}: ${key} is not supported (allowed keys: model, thinking, models, tools, spawns)`,
 						}),
 					);
 				}
@@ -380,9 +420,11 @@ function loadAgentSettingsFromJson(
 					? yield* parseModelShorthand(config["model"], config["thinking"], `${agentPath}.model`)
 					: yield* parseModelsArray(config["models"], `${agentPath}.models`);
 			const tools = yield* parseToolsArray(config["tools"], `${agentPath}.tools`);
+			const spawns = yield* parseSpawnsRestriction(config["spawns"], `${agentPath}.spawns`);
 			const override: AgentSettingsOverride = {};
 			if (models) override.models = models;
 			if (tools !== undefined) override.tools = tools;
+			if (spawns !== undefined) override.spawns = spawns;
 
 			if (Object.keys(override).length > 0) {
 				result = mergeSettingsOverride(result, name, override);
@@ -606,7 +648,12 @@ export class AgentRegistry {
 			const def = this.modeAgents.get(name);
 			if (!def) return undefined;
 			const override = this.settingsOverrides.get(name);
-			return override?.tools !== undefined ? { ...def, tools: override.tools } : def;
+			if (!override) return def;
+			return {
+				...def,
+				...(override.tools !== undefined ? { tools: override.tools } : {}),
+				...(override.spawns !== undefined ? { spawns: override.spawns } : {}),
+			};
 		}
 
 		if (name === "default") {
@@ -626,6 +673,7 @@ export class AgentRegistry {
 			...def,
 			models,
 			...(override.tools !== undefined ? { tools: override.tools } : {}),
+			...(override.spawns !== undefined ? { spawns: override.spawns } : {}),
 		};
 	}
 }

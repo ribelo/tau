@@ -5,6 +5,7 @@ import {
 	AgentManager,
 	AgentError,
 	AgentAccessDenied,
+	AgentSpawnRestricted,
 	type Status,
 	type ControlSpawnOptions,
 	type SpawnOptions,
@@ -53,13 +54,12 @@ export const AgentControlLive = Layer.effect(
 						resultSchema: opts.result_schema,
 					} satisfies SpawnOptions as SpawnOptions);
 				}).pipe(
-					Effect.mapError(
-						(error) =>
-							error instanceof AgentError
+					Effect.mapError((error) =>
+						error instanceof AgentError || error instanceof AgentSpawnRestricted
 							? error
-								: new AgentError({
-										message: errorMessage(error),
-									}),
+							: new AgentError({
+									message: errorMessage(error),
+								}),
 					),
 				),
 			send: (id: AgentId, message: string, interrupt?: boolean, requesterAgentId?: AgentId) =>

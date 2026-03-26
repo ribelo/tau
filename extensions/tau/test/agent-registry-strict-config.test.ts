@@ -309,6 +309,39 @@ broken
 		fs.rmSync(tempProject, { recursive: true, force: true });
 	});
 
+	it("accepts spawn restrictions in user settings", async () => {
+		const tempHome = mkdtemp("tau-home-");
+		const tempProject = mkdtemp("tau-project-");
+
+		writeFile(
+			path.join(tempHome, ".pi", "agent", "agents", "oracle.md"),
+			validAgentMarkdown("oracle"),
+		);
+		writeFile(
+			path.join(tempHome, ".pi", "agent", "settings.json"),
+			JSON.stringify(
+				{
+					agents: {
+						oracle: {
+							spawns: ["finder", "review"],
+						},
+					},
+				},
+				null,
+				2,
+			),
+		);
+
+		vi.stubEnv("HOME", tempHome);
+
+		const registry = await Effect.runPromise(AgentRegistry.load(tempProject));
+		const resolved = registry.resolve("oracle");
+		expect(resolved?.spawns).toEqual(["finder", "review"]);
+
+		fs.rmSync(tempHome, { recursive: true, force: true });
+		fs.rmSync(tempProject, { recursive: true, force: true });
+	});
+
 	it("fails when tool allowlist overrides are malformed", async () => {
 		const tempHome = mkdtemp("tau-home-");
 		const tempProject = mkdtemp("tau-project-");
@@ -339,6 +372,42 @@ broken
 		);
 		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrow(
 			/agents\.oracle\.tools\[1\] duplicates "read"/,
+		);
+
+		fs.rmSync(tempHome, { recursive: true, force: true });
+		fs.rmSync(tempProject, { recursive: true, force: true });
+	});
+
+	it("fails when spawn restrictions are malformed", async () => {
+		const tempHome = mkdtemp("tau-home-");
+		const tempProject = mkdtemp("tau-project-");
+
+		writeFile(
+			path.join(tempHome, ".pi", "agent", "agents", "oracle.md"),
+			validAgentMarkdown("oracle"),
+		);
+		writeFile(
+			path.join(tempHome, ".pi", "agent", "settings.json"),
+			JSON.stringify(
+				{
+					agents: {
+						oracle: {
+							spawns: ["finder", 42],
+						},
+					},
+				},
+				null,
+				2,
+			),
+		);
+
+		vi.stubEnv("HOME", tempHome);
+
+		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrowError(
+			AgentRegistryConfigError,
+		);
+		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrow(
+			/agents\.oracle\.spawns must be "\*" or an array of strings/,
 		);
 
 		fs.rmSync(tempHome, { recursive: true, force: true });
@@ -415,7 +484,7 @@ broken
 			AgentRegistryConfigError,
 		);
 		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrow(
-			/complexity is not supported \(allowed keys: model, thinking, models, tools\)/,
+			/complexity is not supported \(allowed keys: model, thinking, models, tools, spawns\)/,
 		);
 
 		fs.rmSync(tempHome, { recursive: true, force: true });
@@ -489,6 +558,35 @@ broken
 		fs.rmSync(tempProject, { recursive: true, force: true });
 	});
 
+	it("accepts spawn restrictions for virtual mode agents", async () => {
+		const tempHome = mkdtemp("tau-home-");
+		const tempProject = mkdtemp("tau-project-");
+
+		writeFile(
+			path.join(tempHome, ".pi", "agent", "settings.json"),
+			JSON.stringify(
+				{
+					agents: {
+						smart: {
+							spawns: [],
+						},
+					},
+				},
+				null,
+				2,
+			),
+		);
+
+		vi.stubEnv("HOME", tempHome);
+
+		const registry = await Effect.runPromise(AgentRegistry.load(tempProject));
+		const resolved = registry.resolve("smart");
+		expect(resolved?.spawns).toEqual([]);
+
+		fs.rmSync(tempHome, { recursive: true, force: true });
+		fs.rmSync(tempProject, { recursive: true, force: true });
+	});
+
 	it("fails when virtual mode agents override unsupported keys", async () => {
 		const tempHome = mkdtemp("tau-home-");
 		const tempProject = mkdtemp("tau-project-");
@@ -519,7 +617,7 @@ broken
 			AgentRegistryConfigError,
 		);
 		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrow(
-			/mode agents only support tools here/,
+			/mode agents only support tools and spawns here/,
 		);
 
 		fs.rmSync(tempHome, { recursive: true, force: true });

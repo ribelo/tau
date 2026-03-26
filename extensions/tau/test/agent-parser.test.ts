@@ -101,6 +101,25 @@ Find stuff.`;
 		expect(def.tools).toEqual(["read", "bash"]);
 	});
 
+	it("should parse spawn restrictions", async () => {
+		const content = `---
+name: reviewer
+description: Review agent
+models:
+  - model: inherit
+    thinking: inherit
+spawns:
+  - finder
+  - oracle
+sandbox: read-only
+approval_timeout: 60
+---
+Review stuff.`;
+
+		const def = await Effect.runPromise(parseAgentDefinition(content));
+		expect(def.spawns).toEqual(["finder", "oracle"]);
+	});
+
 	it("should throw on unknown frontmatter keys", async () => {
 		const content = `---
 name: finder

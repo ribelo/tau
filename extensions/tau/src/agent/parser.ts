@@ -24,6 +24,7 @@ const AGENT_DEFINITION_FRONTMATTER_KEYS = [
 	"description",
 	"models",
 	"tools",
+	"spawns",
 	"sandbox",
 	"approval_timeout",
 ] as const;
@@ -37,6 +38,9 @@ const AgentDefinitionFrontmatterSchema = Schema.Struct({
 	description: Schema.String,
 	models: Schema.NonEmptyArray(Schema.Unknown),
 	tools: Schema.optional(Schema.Array(Schema.Unknown)),
+	spawns: Schema.optional(
+		Schema.Union([Schema.Literal("*"), Schema.Array(Schema.String)]),
+	),
 	sandbox: Schema.optional(SandboxPresetSchema),
 	approval_timeout: Schema.optional(ApprovalTimeoutSeconds),
 });
@@ -142,6 +146,9 @@ export function parseAgentDefinition(
 								description: parsedFrontmatter.description,
 								models: models as ReadonlyArray<ModelSpec>,
 								...(tools !== undefined ? { tools } : {}),
+								...(parsedFrontmatter.spawns !== undefined
+									? { spawns: parsedFrontmatter.spawns }
+									: {}),
 								sandbox,
 								systemPrompt: systemPromptRaw.trim(),
 							};

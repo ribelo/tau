@@ -8,6 +8,7 @@ import {
 	AgentDepthExceeded,
 	AgentNotFound,
 	AgentAccessDenied,
+	AgentSpawnRestricted,
 } from "./services.js";
 import { AgentRuntimeBridge } from "./runtime.js";
 import type { AgentId } from "./types.js";
@@ -176,6 +177,27 @@ export const AgentManagerLive = Layer.effect(
 							return yield* Effect.fail(
 								new AgentDepthExceeded({ max: config.maxDepth }),
 							);
+						}
+
+						if (opts.parentAgentId !== undefined) {
+							const parentAgent = HashMap.get(agents, opts.parentAgentId);
+							if (Option.isSome(parentAgent)) {
+								const allowedSpawns = parentAgent.value.definition.spawns;
+								if (
+									allowedSpawns !== undefined &&
+									allowedSpawns !== "*" &&
+									!allowedSpawns.includes(opts.definition.name)
+								) {
+									return yield* Effect.fail(
+										new AgentSpawnRestricted({
+											parentId: opts.parentAgentId,
+											parentType: parentAgent.value.type,
+											requestedAgent: opts.definition.name,
+											allowedSpawns,
+										}),
+									);
+								}
+							}
 						}
 
 						const agent = yield* AgentWorker.make({

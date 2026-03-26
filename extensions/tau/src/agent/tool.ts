@@ -10,6 +10,7 @@ import {
 	AgentDepthExceeded,
 	AgentNotFound,
 	AgentAccessDenied,
+	AgentSpawnRestricted,
 	AgentError,
 	type ControlSpawnOptions,
 	type WaitResult,
@@ -254,6 +255,7 @@ export function createAgentToolDef(
 				| AgentDepthExceeded
 				| AgentNotFound
 				| AgentAccessDenied
+				| AgentSpawnRestricted
 				| AgentError
 				| Error,
 				AgentControl
@@ -356,6 +358,12 @@ export function createAgentToolDef(
 								Effect.fail(
 									new Error(
 										`Access denied for agent ${err.requesterId}: cannot mutate ${err.id} (parent: ${err.parentId}).`,
+									),
+								),
+							AgentSpawnRestricted: (err: AgentSpawnRestricted) =>
+								Effect.fail(
+									new Error(
+										`Agent ${err.parentType} cannot spawn "${err.requestedAgent}". Allowed spawns: ${err.allowedSpawns.length === 0 ? "none" : err.allowedSpawns.join(", ")}.`,
 									),
 								),
 							AgentError: (err: AgentError) => Effect.fail(new Error(err.message)),

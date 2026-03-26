@@ -13,6 +13,7 @@ export interface AgentDefinition {
 	readonly description: string;
 	readonly models: readonly ModelSpec[];
 	readonly tools?: readonly string[];
+	readonly spawns?: readonly string[] | "*";
 	readonly sandbox: SandboxConfig;
 	readonly systemPrompt: string;
 }
