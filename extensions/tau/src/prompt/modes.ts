@@ -9,10 +9,10 @@ import { readProjectSettings, readUserSettings, type SettingsError } from "../sh
 import {
 	isPromptModeThinkingLevel,
 	validatePromptModeModelId,
-	type PromptModeThinkingLevel,
 } from "../agent/model-spec.js";
 
-export type PromptModeName = "smart" | "deep" | "rush";
+export type PromptModePresetName = "smart" | "deep" | "rush";
+export type PromptModeName = "default" | PromptModePresetName;
 
 type PromptModePreset = {
 	readonly model: string;
@@ -42,7 +42,7 @@ const loadModePrompt = (
 };
 
 const DEFAULT_PROMPT_MODE_CONFIG: Record<
-	PromptModeName,
+	PromptModePresetName,
 	{ readonly model: string; readonly thinking: ThinkingLevel; readonly promptFile: "smart.md" | "deep.md" | "rush.md" }
 > = {
 	smart: { model: "anthropic/claude-opus-4-5", thinking: "medium", promptFile: "smart.md" },
@@ -51,7 +51,7 @@ const DEFAULT_PROMPT_MODE_CONFIG: Record<
 };
 
 function buildDefaultPromptModePreset(
-	mode: PromptModeName,
+	mode: PromptModePresetName,
 ): Effect.Effect<PromptModePreset, PromptModeConfigError> {
 	const config = DEFAULT_PROMPT_MODE_CONFIG[mode];
 	return loadModePrompt(config.promptFile).pipe(
@@ -64,7 +64,7 @@ function buildDefaultPromptModePreset(
 }
 
 function getDefaultPromptModePresets(): Effect.Effect<
-	Record<PromptModeName, PromptModePreset>,
+	Record<PromptModePresetName, PromptModePreset>,
 	PromptModeConfigError
 > {
 	return Effect.all({
@@ -74,8 +74,11 @@ function getDefaultPromptModePresets(): Effect.Effect<
 	});
 }
 
-export const isPromptModeName = (value: string): value is PromptModeName =>
+export const isPromptModePresetName = (value: string): value is PromptModePresetName =>
 	value === "smart" || value === "deep" || value === "rush";
+
+export const isPromptModeName = (value: string): value is PromptModeName =>
+	value === "default" || isPromptModePresetName(value);
 
 type PromptModePresetOverride = {
 	readonly model?: string;
@@ -128,7 +131,7 @@ function parsePresetOverride(
 					)
 				: isPromptModeThinkingLevel(thinkingRaw)
 					? Effect.sync(() => {
-							override.thinking = thinkingRaw as PromptModeThinkingLevel;
+							override.thinking = thinkingRaw;
 						})
 					: Effect.fail(
 							new PromptModeConfigError({
@@ -157,7 +160,7 @@ function readPromptModesNamespace(settings: unknown): unknown {
 function readPromptModeOverridesFromSettings(
 	settings: unknown,
 	context: string,
-): Effect.Effect<Partial<Record<PromptModeName, PromptModePresetOverride>>, PromptModeConfigError> {
+): Effect.Effect<Partial<Record<PromptModePresetName, PromptModePresetOverride>>, PromptModeConfigError> {
 	const ns = readPromptModesNamespace(settings);
 	if (!isRecord(ns)) return Effect.succeed({});
 
@@ -170,7 +173,7 @@ function readPromptModeOverridesFromSettings(
 		rush: parsePresetOverride(presets["rush"], `${context}: promptModes.presets.rush`),
 	}).pipe(
 		Effect.map((overrides) => {
-			const out: Partial<Record<PromptModeName, PromptModePresetOverride>> = {};
+			const out: Partial<Record<PromptModePresetName, PromptModePresetOverride>> = {};
 			if (overrides.smart) out.smart = overrides.smart;
 			if (overrides.deep) out.deep = overrides.deep;
 			if (overrides.rush) out.rush = overrides.rush;
@@ -181,7 +184,7 @@ function readPromptModeOverridesFromSettings(
 
 export function resolvePromptModePresets(
 	cwd: string,
-): Effect.Effect<Record<PromptModeName, PromptModePreset>, PromptModeConfigError | SettingsError> {
+): Effect.Effect<Record<PromptModePresetName, PromptModePreset>, PromptModeConfigError | SettingsError> {
 	return Effect.all({
 		defaults: getDefaultPromptModePresets(),
 		globalSettings: readUserSettings(),
@@ -191,15 +194,19 @@ export function resolvePromptModePresets(
 			Effect.all({
 				globalOverrides:
 					globalSettings === null
-						? Effect.succeed({} as Partial<Record<PromptModeName, PromptModePresetOverride>>)
+						? Effect.succeed(
+								{} as Partial<Record<PromptModePresetName, PromptModePresetOverride>>,
+							)
 						: readPromptModeOverridesFromSettings(globalSettings, "user settings"),
 				projectOverrides:
 					projectSettings === null
-						? Effect.succeed({} as Partial<Record<PromptModeName, PromptModePresetOverride>>)
+						? Effect.succeed(
+								{} as Partial<Record<PromptModePresetName, PromptModePresetOverride>>,
+							)
 						: readPromptModeOverridesFromSettings(projectSettings, "project settings"),
 			}).pipe(
 				Effect.map(({ globalOverrides, projectOverrides }) => {
-					const resolved: Record<PromptModeName, PromptModePreset> = {
+					const resolved: Record<PromptModePresetName, PromptModePreset> = {
 						smart: { ...defaults.smart },
 						deep: { ...defaults.deep },
 						rush: { ...defaults.rush },

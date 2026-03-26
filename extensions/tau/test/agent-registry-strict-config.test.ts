@@ -340,7 +340,29 @@ broken
 			AgentRegistryConfigError,
 		);
 		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrow(
-			/mode agents .* virtual/,
+			/prompt mode names .* reserved/,
+		);
+
+		fs.rmSync(tempHome, { recursive: true, force: true });
+		fs.rmSync(tempProject, { recursive: true, force: true });
+	});
+
+	it("fails when default is defined as a markdown agent", async () => {
+		const tempHome = mkdtemp("tau-home-");
+		const tempProject = mkdtemp("tau-project-");
+
+		writeFile(
+			path.join(tempHome, ".pi", "agent", "agents", "default.md"),
+			validAgentMarkdown("default"),
+		);
+
+		vi.stubEnv("HOME", tempHome);
+
+		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrowError(
+			AgentRegistryConfigError,
+		);
+		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrow(
+			/default is not spawnable/,
 		);
 
 		fs.rmSync(tempHome, { recursive: true, force: true });

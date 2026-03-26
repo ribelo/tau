@@ -3,7 +3,7 @@ import { deepMerge, isRecord } from "./json.js";
 
 export const TAU_PERSISTED_STATE_TYPE = "tau:state";
 
-type PromptModeName = "smart" | "deep" | "rush";
+type PromptModeName = "default" | "smart" | "deep" | "rush";
 
 export type TauPersistedState = {
 	terminalPrompt?: { enabled?: boolean } | undefined;
@@ -51,7 +51,7 @@ const TauPersistedStateSchema = Schema.Struct({
 	),
 	promptModes: Schema.optional(
 		Schema.Struct({
-			activeMode: Schema.optional(Schema.Literals(["smart", "deep", "rush"])),
+			activeMode: Schema.optional(Schema.Literals(["default", "smart", "deep", "rush"])),
 			modelsByMode: Schema.optional(
 				Schema.Struct({
 					smart: Schema.optional(Schema.String),

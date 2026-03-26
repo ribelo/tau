@@ -127,7 +127,12 @@ function makePiMock(options?: PiMockOptions): PiMock {
 					typeof (payload as { mode?: unknown }).mode === "string"
 				) {
 					const mode = (payload as { mode: string }).mode;
-					if (mode === "smart" || mode === "deep" || mode === "rush") {
+					if (
+						mode === "default" ||
+						mode === "smart" ||
+						mode === "deep" ||
+						mode === "rush"
+					) {
 						modeChangedEvents.push(mode);
 					}
 				}
@@ -502,6 +507,37 @@ describe("prompt-modes session_start", () => {
 				provider: "openai-codex",
 				id: "gpt-5.3-codex",
 			});
+		});
+	});
+
+	it("does not override model or thinking when default mode is active", async () => {
+		await withTempDir(async (cwd) => {
+			const stateRef = await Effect.runPromise(
+				SubscriptionRef.make<TauPersistedState>({
+					promptModes: {
+						activeMode: "default",
+						modelsByMode: {
+							smart: "anthropic/claude-opus-4-5",
+						},
+					},
+				}),
+			);
+			const mock = makePiMock();
+			await setupPromptModes(stateRef, mock.pi);
+
+			const sessionStart = mock.handlers.get("session_start")?.[0];
+			expect(sessionStart).toBeTypeOf("function");
+
+			const ctx = makeSessionStartContext(cwd, []);
+			await Promise.resolve(sessionStart?.({ type: "session_start" }, ctx));
+
+			expect(mock.setModelCalls).toHaveLength(0);
+			expect(mock.thinkingCalls).toHaveLength(0);
+			expect(mock.modeChangedEvents.at(-1)).toBe("default");
+
+			const persisted = Effect.runSync(SubscriptionRef.get(stateRef));
+			expect(persisted.promptModes?.activeMode).toBe("default");
+			expect(persisted.promptModes?.modelsByMode?.smart).toBe("anthropic/claude-opus-4-5");
 		});
 	});
 

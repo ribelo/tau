@@ -9,8 +9,10 @@ import type {
 import { PiAPI } from "../effect/pi.js";
 import {
 	isPromptModeName,
+	isPromptModePresetName,
 	resolvePromptModePresets,
 	type PromptModeName,
+	type PromptModePresetName,
 } from "../prompt/modes.js";
 import type { TauPersistedState } from "../shared/state.js";
 import { loadPersistedState } from "../shared/state.js";
@@ -40,7 +42,7 @@ function resolvePersistedMode(
 
 function resolveModeModelCandidates(
 	state: TauPersistedState,
-	mode: PromptModeName,
+	mode: PromptModePresetName,
 	presetModel: string,
 ): readonly string[] {
 	const assigned = state.promptModes?.modelsByMode?.[mode];
@@ -51,8 +53,17 @@ function resolveModeModelCandidates(
 function persistModeState(
 	persistence: PromptModePersistence,
 	mode: PromptModeName,
-	selectedModel: string,
+	selectedModel?: string,
 ): void {
+	if (!isPromptModePresetName(mode) || selectedModel === undefined) {
+		persistence.update({
+			promptModes: {
+				activeMode: mode,
+			},
+		});
+		return;
+	}
+
 	const current = persistence.getSnapshot();
 	const modelsByMode: Partial<Record<PromptModeName, string>> = {
 		...current.promptModes?.modelsByMode,
@@ -77,6 +88,15 @@ async function applyModeSelection(
 		readonly withModelSelectSuppressed?: WithModelSelectSuppressed;
 	},
 ): Promise<void> {
+	if (!isPromptModePresetName(mode)) {
+		persistModeState(persistence, mode);
+		pi.events.emit("tau:mode:changed", { mode });
+		if (options.notifyOnSuccess) {
+			ctx.ui.notify(`Mode: ${mode}`, "info");
+		}
+		return;
+	}
+
 	const state = persistence.getSnapshot();
 	const presets = await Effect.runPromise(resolvePromptModePresets(ctx.cwd));
 	const preset = presets[mode];
@@ -195,7 +215,7 @@ export const PromptModesLive = Layer.effect(
 					};
 
 					pi.registerCommand("mode", {
-						description: "Prompt mode: /mode [smart|deep|rush|list]",
+						description: "Prompt mode: /mode [default|smart|deep|rush|list]",
 						handler: async (args, ctx) => {
 							const trimmed = (args || "").trim();
 
@@ -205,6 +225,7 @@ export const PromptModesLive = Layer.effect(
 								}
 
 								const choice = await ctx.ui.select("Mode", [
+									"default",
 									"smart",
 									"deep",
 									"rush",
@@ -227,6 +248,7 @@ export const PromptModesLive = Layer.effect(
 								const presets = await Effect.runPromise(resolvePromptModePresets(ctx.cwd));
 								const lines = [
 									"Modes:",
+									`- default${active === "default" ? " [active]" : ""}`,
 									`- smart${active === "smart" ? " [active]" : ""}: ${state.promptModes?.modelsByMode?.smart ?? presets.smart.model} (${presets.smart.thinking})`,
 									`- deep${active === "deep" ? " [active]" : ""}: ${state.promptModes?.modelsByMode?.deep ?? presets.deep.model} (${presets.deep.thinking})`,
 									`- rush${active === "rush" ? " [active]" : ""}: ${state.promptModes?.modelsByMode?.rush ?? presets.rush.model} (${presets.rush.thinking})`,
@@ -237,7 +259,7 @@ export const PromptModesLive = Layer.effect(
 
 							const lower = trimmed.toLowerCase();
 							if (!isPromptModeName(lower)) {
-								ctx.ui.notify("Usage: /mode smart|deep|rush|list", "info");
+								ctx.ui.notify("Usage: /mode default|smart|deep|rush|list", "info");
 								return;
 							}
 
@@ -260,8 +282,6 @@ export const PromptModesLive = Layer.effect(
 					});
 
 					pi.on("model_select", async (event, ctx) => {
-						// /mode switches mode+model atomically and persists after selection.
-						// Ignore those internal "set" events so they do not overwrite the previous mode mapping.
 						if (event.source === "set" && suppressModelSelectEvents > 0) {
 							return;
 						}
@@ -275,11 +295,13 @@ export const PromptModesLive = Layer.effect(
 					});
 
 					pi.on("before_agent_start", async (event, ctx) => {
-						// pi may call before_agent_start multiple times (e.g. model switches). Always rebuild
-						// from the original base prompt so the mode prompt is injected exactly once.
 						if (baseSystemPrompt === undefined) baseSystemPrompt = event.systemPrompt;
 
 						const mode = resolvePersistedMode(persistence.getSnapshot());
+						if (!isPromptModePresetName(mode)) {
+							return { systemPrompt: baseSystemPrompt };
+						}
+
 						const presets = await Effect.runPromise(resolvePromptModePresets(ctx.cwd));
 						const preset = presets[mode];
 						return { systemPrompt: `${baseSystemPrompt}\n\n${preset.systemPrompt}` };

@@ -30,9 +30,10 @@ import {
 	SettingsError,
 } from "../shared/settings.js";
 import {
-	resolvePromptModePresets,
-	type PromptModeName,
 	isPromptModeName,
+	isPromptModePresetName,
+	resolvePromptModePresets,
+	type PromptModePresetName,
 } from "../prompt/modes.js";
 import type { SandboxConfig } from "../sandbox/config.js";
 import { parseAgentDefinition } from "./parser.js";
@@ -66,7 +67,7 @@ export class AgentRegistryConfigError extends Data.TaggedError("AgentRegistryCon
 }> {}
 
 function buildModeAgentDefinition(
-	mode: PromptModeName,
+	mode: PromptModePresetName,
 	cwd: string,
 ): Effect.Effect<AgentDefinition, AgentRegistryConfigError | SettingsError> {
 	return resolvePromptModePresets(cwd).pipe(
@@ -138,7 +139,7 @@ function discoverAgentFiles(
 					if (isPromptModeName(name)) {
 						return yield* Effect.fail(
 							new AgentRegistryConfigError({
-								message: `Invalid agent file ${path.join(dir, entry.name)}: mode agents (smart, deep, rush) are virtual and cannot be defined as .md files.`,
+								message: `Invalid agent file ${path.join(dir, entry.name)}: prompt mode names (default, smart, deep, rush) are reserved; smart, deep, and rush are virtual agents, and default is not spawnable.`,
 							}),
 						);
 					}
@@ -275,7 +276,7 @@ function loadAgentSettingsFromJson(
 					}),
 				);
 			}
-			if (isPromptModeName(name)) {
+			if (isPromptModePresetName(name)) {
 				for (const key of Object.keys(config)) {
 					if (key !== "tools") {
 						return yield* Effect.fail(
@@ -291,6 +292,13 @@ function loadAgentSettingsFromJson(
 					result = mergeSettingsOverride(result, name, { tools });
 				}
 				continue;
+			}
+			if (name === "default") {
+				return yield* Effect.fail(
+					new AgentRegistryConfigError({
+						message: `Invalid settings in ${agentPath}: default mode is not a spawnable agent and does not accept agent settings`,
+					}),
+				);
 			}
 
 			for (const key of Object.keys(config)) {
@@ -454,13 +462,13 @@ interface AgentSummary {
 export class AgentRegistry {
 	private readonly definitions: Map<string, AgentDefinition>;
 	private readonly settingsOverrides: Map<string, AgentSettingsOverride>;
-	private readonly modeAgents: Map<PromptModeName, AgentDefinition>;
+	private readonly modeAgents: Map<PromptModePresetName, AgentDefinition>;
 	private readonly cwd: string;
 
 	private constructor(args: {
 		definitions: Map<string, AgentDefinition>;
 		settingsOverrides: Map<string, AgentSettingsOverride>;
-		modeAgents: Map<PromptModeName, AgentDefinition>;
+		modeAgents: Map<PromptModePresetName, AgentDefinition>;
 		cwd: string;
 	}) {
 		this.definitions = args.definitions;
@@ -543,7 +551,7 @@ export class AgentRegistry {
 					buildModeAgentDefinition(mode, cwd).pipe(Effect.map((definition) => [mode, definition] as const)),
 				),
 			);
-			const modeAgents = new Map<PromptModeName, AgentDefinition>(modeAgentEntries);
+			const modeAgents = new Map<PromptModePresetName, AgentDefinition>(modeAgentEntries);
 
 			return new AgentRegistry({
 				definitions,
@@ -564,15 +572,23 @@ export class AgentRegistry {
 	}
 
 	get(name: string): AgentDefinition | undefined {
-		if (isPromptModeName(name)) {
+		if (isPromptModePresetName(name)) {
 			return this.modeAgents.get(name);
+		}
+
+		if (name === "default") {
+			return undefined;
 		}
 
 		return this.definitions.get(name);
 	}
 
 	has(name: string): boolean {
-		return isPromptModeName(name) ? this.modeAgents.has(name) : this.definitions.has(name);
+		if (isPromptModePresetName(name)) {
+			return this.modeAgents.has(name);
+		}
+
+		return name === "default" ? false : this.definitions.has(name);
 	}
 
 	names(): string[] {
@@ -588,11 +604,15 @@ export class AgentRegistry {
 	}
 
 	resolve(name: string, complexity: Complexity): AgentDefinition | undefined {
-		if (isPromptModeName(name)) {
+		if (isPromptModePresetName(name)) {
 			const def = this.modeAgents.get(name);
 			if (!def) return undefined;
 			const override = this.settingsOverrides.get(name);
 			return override?.tools !== undefined ? { ...def, tools: override.tools } : def;
+		}
+
+		if (name === "default") {
+			return undefined;
 		}
 
 		const def = this.get(name);

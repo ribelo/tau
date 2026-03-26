@@ -24,6 +24,7 @@ describe("agent-registry: mode agents", () => {
 			const smart = registry.resolve("smart", "medium");
 			const deep = registry.resolve("deep", "medium");
 			const rush = registry.resolve("rush", "medium");
+			const defaultMode = registry.resolve("default", "medium");
 			const expectedTools = [
 				"read",
 				"bash",
@@ -39,6 +40,9 @@ describe("agent-registry: mode agents", () => {
 			expect(smart?.systemPrompt).toBe(presets.smart.systemPrompt);
 			expect(deep?.systemPrompt).toBe(presets.deep.systemPrompt);
 			expect(rush?.systemPrompt).toBe(presets.rush.systemPrompt);
+			expect(defaultMode).toBeUndefined();
+			expect(registry.has("default")).toBe(false);
+			expect(registry.names()).not.toContain("default");
 			expect(smart?.tools).toEqual(expectedTools);
 			expect(deep?.tools).toEqual(expectedTools);
 			expect(rush?.tools).toEqual(expectedTools);

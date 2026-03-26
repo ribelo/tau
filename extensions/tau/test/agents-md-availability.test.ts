@@ -179,6 +179,112 @@ describe("AGENTS.md availability", () => {
 		});
 	});
 
+	it("leaves the base system prompt unchanged in default mode", async () => {
+		await withTempDir(async (cwd) => {
+			const agentsPath = path.join(cwd, "AGENTS.md");
+			await fs.writeFile(agentsPath, "AGENTS_TEST_MARKER\n", "utf8");
+
+			const settingsManager = SettingsManager.inMemory();
+			const resourceLoader = new DefaultResourceLoader({
+				cwd,
+				agentDir: path.join(cwd, ".agent"),
+				settingsManager,
+				noExtensions: true,
+				noSkills: true,
+				noPromptTemplates: true,
+				noThemes: true,
+			});
+			await resourceLoader.reload();
+
+			const { session } = await createAgentSession({
+				cwd,
+				authStorage: AuthStorage.create(),
+				modelRegistry: new ModelRegistry(AuthStorage.create()),
+				resourceLoader,
+				settingsManager,
+				sessionManager: SessionManager.inMemory(cwd),
+			});
+
+			const basePrompt = session.systemPrompt;
+			expect(basePrompt).toContain(agentsPath);
+			expect(basePrompt).toContain("AGENTS_TEST_MARKER");
+
+			let beforeAgentStartHandler:
+				| ((event: BeforeAgentStartEvent, ctx: ExtensionContext) => unknown)
+				| undefined;
+
+			const pi = {
+				on: (event: string, handler: unknown) => {
+					if (event === "before_agent_start") {
+						beforeAgentStartHandler = handler as (
+							event: BeforeAgentStartEvent,
+							ctx: ExtensionContext,
+						) => unknown;
+					}
+				},
+				registerCommand: () => undefined,
+				registerShortcut: () => undefined,
+			} as unknown as ExtensionAPI;
+
+			let persisted: TauPersistedState = { promptModes: { activeMode: "default" } };
+
+			const persistenceLayer = Layer.succeed(Persistence, {
+				getSnapshot: () => persisted,
+				setSnapshot: (next) => {
+					persisted = next;
+				},
+				hydrate: (patch) => {
+					persisted = mergePersistedState(persisted, patch);
+				},
+				update: (patch) => {
+					persisted = mergePersistedState(persisted, patch);
+				},
+				getSnapshotEffect: Effect.sync(() => persisted),
+				setSnapshotEffect: (next) =>
+					Effect.sync(() => {
+						persisted = next;
+					}),
+				updateEffect: (patch) =>
+					Effect.sync(() => {
+						persisted = mergePersistedState(persisted, patch);
+						return persisted;
+					}),
+				changes: Stream.empty,
+				setup: Effect.void,
+			});
+
+			const setup = Effect.gen(function* () {
+				const pm = yield* PromptModes;
+				yield* pm.setup;
+			});
+
+			const layer = PromptModesLive.pipe(
+				Layer.provide(PiAPILive(pi)),
+				Layer.provide(persistenceLayer),
+			);
+
+			await Effect.runPromise(setup.pipe(Effect.provide(layer)));
+
+			expect(beforeAgentStartHandler).toBeTypeOf("function");
+
+			const ctx = {
+				cwd,
+			} as unknown as ExtensionContext;
+
+			const event: BeforeAgentStartEvent = {
+				type: "before_agent_start",
+				prompt: "hello",
+				systemPrompt: basePrompt,
+			};
+
+			const result = (await Promise.resolve(beforeAgentStartHandler?.(event, ctx))) as
+				| { systemPrompt?: string }
+				| undefined;
+			expect(result?.systemPrompt).toBe(basePrompt);
+			expect(countOccurrences(result?.systemPrompt ?? "", "AGENTS_TEST_MARKER")).toBe(1);
+		});
+	});
+
 	it("is available in agent sessions created for subagents", async () => {
 		await withTempDir(async (cwd) => {
 			const agentsPath = path.join(cwd, "AGENTS.md");
