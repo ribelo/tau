@@ -2,6 +2,11 @@ import type { AgentSession } from "@mariozechner/pi-coding-agent";
 import { Effect } from "effect";
 import { AgentError } from "./services.js";
 import type { AgentDefinition } from "./types.js";
+import {
+	getLegacyMutationToolSelection,
+	rewriteMutationToolNames,
+	shouldUseApplyPatchForProvider,
+} from "../sandbox/mutation-tools.js";
 
 export const STRUCTURED_OUTPUT_TOOL_NAME = "submit_result";
 
@@ -35,6 +40,14 @@ export function parseConfiguredToolNames(
 	}
 
 	return toolNames;
+}
+
+function sameToolNames(left: readonly string[], right: readonly string[]): boolean {
+	if (left.length !== right.length) return false;
+	for (const [index, value] of left.entries()) {
+		if (right[index] !== value) return false;
+	}
+	return true;
 }
 
 function getActiveToolNames(options: {
@@ -77,15 +90,20 @@ export function applyAgentToolAllowlist(
 	return Effect.try({
 		try: () => {
 			const availableToolNames = session.getAllTools().map((tool) => tool.name);
-			const activeToolNames = getActiveToolNames({
+			const configuredActiveToolNames = getActiveToolNames({
 				agentName: definition.name,
 				configuredTools: definition.tools,
 				availableToolNames,
 				structuredOutputRequired: resultSchema !== undefined,
 			});
+			const baseToolNames = configuredActiveToolNames ?? session.getActiveToolNames();
+			const routedToolNames = rewriteMutationToolNames(baseToolNames, {
+				useApplyPatch: shouldUseApplyPatchForProvider(session.model?.provider),
+				legacySelection: getLegacyMutationToolSelection(baseToolNames),
+			});
 
-			if (activeToolNames !== undefined) {
-				session.setActiveToolsByName([...activeToolNames]);
+			if (configuredActiveToolNames !== undefined || !sameToolNames(routedToolNames, baseToolNames)) {
+				session.setActiveToolsByName(routedToolNames);
 			}
 		},
 		catch: (cause) =>

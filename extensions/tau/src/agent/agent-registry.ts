@@ -50,6 +50,7 @@ const MODE_AGENT_TOOLS = [
 	"bash",
 	"edit",
 	"write",
+	"apply_patch",
 	"agent",
 	"bd",
 	"web_search_exa",

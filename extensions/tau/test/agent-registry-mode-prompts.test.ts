@@ -30,6 +30,7 @@ describe("agent-registry: mode agents", () => {
 				"bash",
 				"edit",
 				"write",
+				"apply_patch",
 				"agent",
 				"bd",
 				"web_search_exa",

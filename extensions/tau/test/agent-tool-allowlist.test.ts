@@ -55,6 +55,19 @@ const submitResultToolDefinition: ToolDefinition = {
 	},
 };
 
+const applyPatchToolDefinition: ToolDefinition = {
+	name: "apply_patch",
+	label: "apply_patch",
+	description: "Apply Codex-style patches",
+	parameters: Type.Object({ input: Type.String() }),
+	async execute() {
+		return {
+			content: [{ type: "text" as const, text: "patched" }],
+			details: { ok: true },
+		};
+	},
+};
+
 function buildDefinition(tools: readonly string[] | undefined): AgentDefinition {
 	return {
 		name: "test-agent",
@@ -88,7 +101,7 @@ describe("agent tool allowlist", () => {
 				resourceLoader,
 				settingsManager,
 				sessionManager: SessionManager.inMemory(cwd),
-				customTools: [agentToolDefinition, submitResultToolDefinition],
+				customTools: [agentToolDefinition, submitResultToolDefinition, applyPatchToolDefinition],
 			});
 
 			await Effect.runPromise(
@@ -120,7 +133,7 @@ describe("agent tool allowlist", () => {
 				resourceLoader,
 				settingsManager,
 				sessionManager: SessionManager.inMemory(cwd),
-				customTools: [agentToolDefinition, submitResultToolDefinition],
+				customTools: [agentToolDefinition, submitResultToolDefinition, applyPatchToolDefinition],
 			});
 
 			await Effect.runPromise(
@@ -132,6 +145,125 @@ describe("agent tool allowlist", () => {
 			);
 
 			expect(session.getActiveToolNames()).toEqual(["read", "submit_result"]);
+		});
+	});
+
+	it("routes edit/write to apply_patch for openai-family agent sessions", async () => {
+		await withTempDir(async (cwd) => {
+			const settingsManager = SettingsManager.inMemory();
+			const resourceLoader = new DefaultResourceLoader({
+				cwd,
+				agentDir: path.join(cwd, ".agent"),
+				settingsManager,
+				noExtensions: true,
+				noSkills: true,
+				noPromptTemplates: true,
+				noThemes: true,
+			});
+			await resourceLoader.reload();
+
+			const modelRegistry = new ModelRegistry(AuthStorage.create());
+			const model = modelRegistry.find("openai", "gpt-5");
+			expect(model).toBeDefined();
+
+			const { session } = await createAgentSession({
+				cwd,
+				authStorage: AuthStorage.create(),
+				modelRegistry,
+				resourceLoader,
+				settingsManager,
+				sessionManager: SessionManager.inMemory(cwd),
+				customTools: [agentToolDefinition, applyPatchToolDefinition],
+				...(model ? { model } : {}),
+			});
+
+			await Effect.runPromise(
+				applyAgentToolAllowlist(
+					session,
+					buildDefinition(["read", "edit", "write", "apply_patch"]),
+					undefined,
+				),
+			);
+
+			expect(session.getActiveToolNames()).toEqual(["read", "apply_patch"]);
+		});
+	});
+
+	it("keeps edit/write for non-openai agent sessions", async () => {
+		await withTempDir(async (cwd) => {
+			const settingsManager = SettingsManager.inMemory();
+			const resourceLoader = new DefaultResourceLoader({
+				cwd,
+				agentDir: path.join(cwd, ".agent"),
+				settingsManager,
+				noExtensions: true,
+				noSkills: true,
+				noPromptTemplates: true,
+				noThemes: true,
+			});
+			await resourceLoader.reload();
+
+			const modelRegistry = new ModelRegistry(AuthStorage.create());
+			const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
+			expect(model).toBeDefined();
+
+			const { session } = await createAgentSession({
+				cwd,
+				authStorage: AuthStorage.create(),
+				modelRegistry,
+				resourceLoader,
+				settingsManager,
+				sessionManager: SessionManager.inMemory(cwd),
+				customTools: [agentToolDefinition, applyPatchToolDefinition],
+				...(model ? { model } : {}),
+			});
+
+			await Effect.runPromise(
+				applyAgentToolAllowlist(
+					session,
+					buildDefinition(["read", "edit", "write", "apply_patch"]),
+					undefined,
+				),
+			);
+
+			expect(session.getActiveToolNames()).toEqual(["read", "edit", "write"]);
+		});
+	});
+
+	it("routes default worker tools when an agent definition omits tools", async () => {
+		await withTempDir(async (cwd) => {
+			const settingsManager = SettingsManager.inMemory();
+			const resourceLoader = new DefaultResourceLoader({
+				cwd,
+				agentDir: path.join(cwd, ".agent"),
+				settingsManager,
+				noExtensions: true,
+				noSkills: true,
+				noPromptTemplates: true,
+				noThemes: true,
+			});
+			await resourceLoader.reload();
+
+			const modelRegistry = new ModelRegistry(AuthStorage.create());
+			const model = modelRegistry.find("openai-codex", "gpt-5.3-codex");
+			expect(model).toBeDefined();
+
+			const { session } = await createAgentSession({
+				cwd,
+				authStorage: AuthStorage.create(),
+				modelRegistry,
+				resourceLoader,
+				settingsManager,
+				sessionManager: SessionManager.inMemory(cwd),
+				customTools: [agentToolDefinition, applyPatchToolDefinition],
+				...(model ? { model } : {}),
+			});
+
+			await Effect.runPromise(applyAgentToolAllowlist(session, buildDefinition(undefined), undefined));
+
+			expect(session.getActiveToolNames()).toContain("apply_patch");
+			expect(session.getActiveToolNames()).not.toContain("edit");
+			expect(session.getActiveToolNames()).not.toContain("write");
 		});
 	});
 
@@ -156,7 +288,7 @@ describe("agent tool allowlist", () => {
 				resourceLoader,
 				settingsManager,
 				sessionManager: SessionManager.inMemory(cwd),
-				customTools: [agentToolDefinition],
+				customTools: [agentToolDefinition, applyPatchToolDefinition],
 			});
 
 			await expect(

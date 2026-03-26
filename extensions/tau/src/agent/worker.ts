@@ -21,6 +21,7 @@ import type { ResolvedSandboxConfig } from "../sandbox/config.js";
 import { TAU_PERSISTED_STATE_TYPE, loadPersistedState } from "../shared/state.js";
 import { withWorkerSandboxOverride } from "./worker-sandbox.js";
 import { setWorkerApprovalBroker } from "./approval-broker.js";
+import { createApplyPatchToolDefinition } from "../sandbox/apply-patch.js";
 
 import type { ApprovalBroker } from "./approval-broker.js";
 import { createWorkerAgentTool, type RunAgentControlPromise } from "./runtime.js";
@@ -349,7 +350,10 @@ export class AgentWorker implements Agent {
 					"Manage non-blocking agent tasks. Actions: spawn, send, wait, close, list.",
 				);
 
-			const customTools: ToolDefinition[] = [agentTool as ToolDefinition];
+			const customTools: ToolDefinition[] = [
+				agentTool as ToolDefinition,
+				createApplyPatchToolDefinition(),
+			];
 
 			// submit_result tool placeholder - needs agent reference, set after construction
 			let agent: AgentWorker;
