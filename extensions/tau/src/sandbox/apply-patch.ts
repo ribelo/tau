@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 
 import type { ExtensionContext, ToolDefinition } from "@mariozechner/pi-coding-agent";
@@ -15,17 +15,40 @@ import { checkWriteAllowed } from "./fs-policy.js";
 import { APPLY_PATCH_TOOL_NAME } from "./mutation-tools.js";
 import { discoverWorkspaceRoot } from "./workspace-root.js";
 
-let _withFileMutationQueue:
-	| ((filePath: string, fn: () => Promise<unknown>) => Promise<unknown>)
-	| undefined;
+const FILE_MUTATION_QUEUE_KEY = Symbol.for("@mariozechner/pi-coding-agent:file-mutation-queues");
 
-async function getWithFileMutationQueue(): Promise<
-	(filePath: string, fn: () => Promise<unknown>) => Promise<unknown>
-> {
-	if (_withFileMutationQueue) return _withFileMutationQueue;
-	const mod = await import("@mariozechner/pi-coding-agent");
-	_withFileMutationQueue = mod.withFileMutationQueue;
-	return _withFileMutationQueue;
+const _global = globalThis as unknown as Record<symbol, Map<string, Promise<void>> | undefined>;
+const fileMutationQueues: Map<string, Promise<void>> =
+	_global[FILE_MUTATION_QUEUE_KEY] ??
+	(_global[FILE_MUTATION_QUEUE_KEY] = new Map<string, Promise<void>>());
+
+async function getMutationQueueKey(filePath: string): Promise<string> {
+	const resolvedPath = path.resolve(filePath);
+	try {
+		return await realpath(resolvedPath);
+	} catch {
+		return resolvedPath;
+	}
+}
+
+async function withFileMutationQueue<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
+	const key = await getMutationQueueKey(filePath);
+	const currentQueue = fileMutationQueues.get(key) ?? Promise.resolve();
+	let releaseNext!: () => void;
+	const nextQueue = new Promise<void>((resolve) => {
+		releaseNext = resolve;
+	});
+	const chainedQueue = currentQueue.then(() => nextQueue);
+	fileMutationQueues.set(key, chainedQueue);
+	await currentQueue;
+	try {
+		return await fn();
+	} finally {
+		releaseNext();
+		if (fileMutationQueues.get(key) === chainedQueue) {
+			fileMutationQueues.delete(key);
+		}
+	}
 }
 
 const BEGIN_PATCH_MARKER = "*** Begin Patch";
@@ -648,14 +671,13 @@ async function withMutationQueues<A>(
 	paths: readonly string[],
 	effect: () => Promise<A>,
 ): Promise<A> {
-	const withQueue = await getWithFileMutationQueue();
 	const sortedPaths = [...new Set(paths)].sort();
 	const run = async (index: number): Promise<A> => {
 		const targetPath = sortedPaths[index];
 		if (targetPath === undefined) {
 			return effect();
 		}
-		return withQueue(targetPath, async () => run(index + 1)) as Promise<A>;
+		return withFileMutationQueue(targetPath, async () => run(index + 1));
 	};
 	return run(0);
 }
