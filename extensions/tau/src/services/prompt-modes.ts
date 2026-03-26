@@ -33,6 +33,13 @@ type PromptModePersistence = {
 
 type WithModelSelectSuppressed = <A>(run: () => Promise<A>) => Promise<A>;
 
+const MODE_PROMPT_SENTINEL = "<!-- tau:mode-prompt -->";
+
+function stripInjectedModePrompt(systemPrompt: string): string {
+	const sentinelIndex = systemPrompt.indexOf(MODE_PROMPT_SENTINEL);
+	return sentinelIndex === -1 ? systemPrompt : systemPrompt.slice(0, sentinelIndex).trimEnd();
+}
+
 function resolvePersistedMode(
 	state: { promptModes?: { activeMode?: PromptModeName | undefined } | undefined } | undefined,
 ): PromptModeName {
@@ -203,7 +210,6 @@ export const PromptModesLive = Layer.effect(
 		return PromptModes.of({
 			setup: Effect.gen(function* () {
 				yield* Effect.sync(() => {
-					let baseSystemPrompt: string | undefined = undefined;
 					let suppressModelSelectEvents = 0;
 					const withModelSelectSuppressed: WithModelSelectSuppressed = async (run) => {
 						suppressModelSelectEvents += 1;
@@ -295,8 +301,7 @@ export const PromptModesLive = Layer.effect(
 					});
 
 					pi.on("before_agent_start", async (event, ctx) => {
-						if (baseSystemPrompt === undefined) baseSystemPrompt = event.systemPrompt;
-
+						const baseSystemPrompt = stripInjectedModePrompt(event.systemPrompt);
 						const mode = resolvePersistedMode(persistence.getSnapshot());
 						if (!isPromptModePresetName(mode)) {
 							return { systemPrompt: baseSystemPrompt };
@@ -304,7 +309,9 @@ export const PromptModesLive = Layer.effect(
 
 						const presets = await Effect.runPromise(resolvePromptModePresets(ctx.cwd));
 						const preset = presets[mode];
-						return { systemPrompt: `${baseSystemPrompt}\n\n${preset.systemPrompt}` };
+						return {
+							systemPrompt: `${baseSystemPrompt}\n\n${MODE_PROMPT_SENTINEL}\n${preset.systemPrompt}`,
+						};
 					});
 				});
 			}),

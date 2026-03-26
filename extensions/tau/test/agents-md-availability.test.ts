@@ -179,6 +179,100 @@ describe("AGENTS.md availability", () => {
 		});
 	});
 
+	it("uses the latest base system prompt on later before_agent_start calls", async () => {
+		await withTempDir(async (cwd) => {
+			let beforeAgentStartHandler:
+				| ((event: BeforeAgentStartEvent, ctx: ExtensionContext) => unknown)
+				| undefined;
+
+			const pi = {
+				on: (event: string, handler: unknown) => {
+					if (event === "before_agent_start") {
+						beforeAgentStartHandler = handler as (
+							event: BeforeAgentStartEvent,
+							ctx: ExtensionContext,
+						) => unknown;
+					}
+				},
+				registerCommand: () => undefined,
+				registerShortcut: () => undefined,
+			} as unknown as ExtensionAPI;
+
+			let persisted: TauPersistedState = { promptModes: { activeMode: "smart" } };
+
+			const persistenceLayer = Layer.succeed(Persistence, {
+				getSnapshot: () => persisted,
+				setSnapshot: (next) => {
+					persisted = next;
+				},
+				hydrate: (patch) => {
+					persisted = mergePersistedState(persisted, patch);
+				},
+				update: (patch) => {
+					persisted = mergePersistedState(persisted, patch);
+				},
+				getSnapshotEffect: Effect.sync(() => persisted),
+				setSnapshotEffect: (next) =>
+					Effect.sync(() => {
+						persisted = next;
+					}),
+				updateEffect: (patch) =>
+					Effect.sync(() => {
+						persisted = mergePersistedState(persisted, patch);
+						return persisted;
+					}),
+				changes: Stream.empty,
+				setup: Effect.void,
+			});
+
+			const setup = Effect.gen(function* () {
+				const pm = yield* PromptModes;
+				yield* pm.setup;
+			});
+
+			const layer = PromptModesLive.pipe(
+				Layer.provide(PiAPILive(pi)),
+				Layer.provide(persistenceLayer),
+			);
+
+			await Effect.runPromise(setup.pipe(Effect.provide(layer)));
+
+			expect(beforeAgentStartHandler).toBeTypeOf("function");
+
+			const ctx = {
+				cwd,
+			} as unknown as ExtensionContext;
+
+			const firstBasePrompt = "BASE_PROMPT_ONE";
+			const firstResult = (await Promise.resolve(
+				beforeAgentStartHandler?.(
+					{
+						type: "before_agent_start",
+						prompt: "hello",
+						systemPrompt: firstBasePrompt,
+					},
+					ctx,
+				),
+			)) as { systemPrompt?: string } | undefined;
+			expect(firstResult?.systemPrompt).toContain(firstBasePrompt);
+
+			const secondBasePrompt = "BASE_PROMPT_TWO";
+			const secondResult = (await Promise.resolve(
+				beforeAgentStartHandler?.(
+					{
+						type: "before_agent_start",
+						prompt: "hello",
+						systemPrompt: secondBasePrompt,
+					},
+					ctx,
+				),
+			)) as { systemPrompt?: string } | undefined;
+
+			expect(secondResult?.systemPrompt).toContain(secondBasePrompt);
+			expect(secondResult?.systemPrompt).not.toContain(firstBasePrompt);
+		});
+	});
+
 	it("leaves the base system prompt unchanged in default mode", async () => {
 		await withTempDir(async (cwd) => {
 			const agentsPath = path.join(cwd, "AGENTS.md");
