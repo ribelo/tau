@@ -93,4 +93,72 @@ describe("apply_patch", () => {
 			).toThrow(/file paths must be relative/);
 		});
 	});
+
+	it("preserves leading @ in scoped-package paths", async () => {
+		await withTempDir(async (cwd) => {
+			const operations = __test__.rewriteInputToOperations(
+				cwd,
+				[
+					"*** Begin Patch",
+					"*** Add File: @types/node/index.d.ts",
+					"+declare module 'node';",
+					"*** End Patch",
+				].join("\n"),
+			);
+
+			const summary = await __test__.applyResolvedPatch(operations, cwd);
+			expect(summary).toEqual({ added: ["@types/node/index.d.ts"], modified: [], deleted: [] });
+			expect(
+				await fs.readFile(path.join(cwd, "@types/node/index.d.ts"), "utf8"),
+			).toBe("declare module 'node';\n");
+		});
+	});
+
+	it("inserts lines at context position, not EOF", async () => {
+		await withTempDir(async (cwd) => {
+			await fs.writeFile(
+				path.join(cwd, "src.ts"),
+				["import { a } from 'a';", "", "const x = 1;", ""].join("\n"),
+				"utf8",
+			);
+
+			const operations = __test__.rewriteInputToOperations(
+				cwd,
+				[
+					"*** Begin Patch",
+					"*** Update File: src.ts",
+					"@@ import { a } from 'a';",
+					"+import { b } from 'b';",
+					"*** End Patch",
+				].join("\n"),
+			);
+
+			const summary = await __test__.applyResolvedPatch(operations, cwd);
+			expect(summary.modified).toEqual(["src.ts"]);
+			const contents = await fs.readFile(path.join(cwd, "src.ts"), "utf8");
+			const lines = contents.split("\n");
+			expect(lines[1]).toBe("import { b } from 'b';");
+		});
+	});
+
+	it("rejects add-file when target already exists", async () => {
+		await withTempDir(async (cwd) => {
+			await fs.writeFile(path.join(cwd, "existing.txt"), "original\n", "utf8");
+
+			const operations = __test__.rewriteInputToOperations(
+				cwd,
+				[
+					"*** Begin Patch",
+					"*** Add File: existing.txt",
+					"+overwritten",
+					"*** End Patch",
+				].join("\n"),
+			);
+
+			await expect(__test__.applyResolvedPatch(operations, cwd)).rejects.toThrow(
+				/file already exists/,
+			);
+			expect(await fs.readFile(path.join(cwd, "existing.txt"), "utf8")).toBe("original\n");
+		});
+	});
 });

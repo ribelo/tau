@@ -1,8 +1,7 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 
 import type { ExtensionContext, ToolDefinition } from "@mariozechner/pi-coding-agent";
-import { withFileMutationQueue } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
 import { getWorkerApprovalBroker } from "../agent/approval-broker.js";
@@ -15,6 +14,37 @@ import { checkFilesystemApproval } from "./approval.js";
 import { checkWriteAllowed } from "./fs-policy.js";
 import { APPLY_PATCH_TOOL_NAME } from "./mutation-tools.js";
 import { discoverWorkspaceRoot } from "./workspace-root.js";
+
+const fileMutationQueues = new Map<string, Promise<void>>();
+
+async function getMutationQueueKey(filePath: string): Promise<string> {
+	const resolvedPath = path.resolve(filePath);
+	try {
+		return await realpath(resolvedPath);
+	} catch {
+		return resolvedPath;
+	}
+}
+
+async function withFileMutationQueue<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
+	const key = await getMutationQueueKey(filePath);
+	const currentQueue = fileMutationQueues.get(key) ?? Promise.resolve();
+	let releaseNext!: () => void;
+	const nextQueue = new Promise<void>((resolve) => {
+		releaseNext = resolve;
+	});
+	const chainedQueue = currentQueue.then(() => nextQueue);
+	fileMutationQueues.set(key, chainedQueue);
+	await currentQueue;
+	try {
+		return await fn();
+	} finally {
+		releaseNext();
+		if (fileMutationQueues.get(key) === chainedQueue) {
+			fileMutationQueues.delete(key);
+		}
+	}
+}
 
 const BEGIN_PATCH_MARKER = "*** Begin Patch";
 const END_PATCH_MARKER = "*** End Patch";
@@ -141,16 +171,12 @@ function normalizePatchPath(rawPath: string, lineNumber: number): string {
 	if (trimmed.length === 0) {
 		throw new Error(`Invalid patch hunk at line ${lineNumber}: file path must not be empty`);
 	}
-	const withoutAtPrefix = trimmed.startsWith("@") ? trimmed.slice(1) : trimmed;
-	if (withoutAtPrefix.length === 0) {
-		throw new Error(`Invalid patch hunk at line ${lineNumber}: file path must not be empty`);
-	}
-	if (path.isAbsolute(withoutAtPrefix)) {
+	if (path.isAbsolute(trimmed)) {
 		throw new Error(
-			`Invalid patch hunk at line ${lineNumber}: file paths must be relative, got "${withoutAtPrefix}"`,
+			`Invalid patch hunk at line ${lineNumber}: file paths must be relative, got "${trimmed}"`,
 		);
 	}
-	return withoutAtPrefix;
+	return trimmed;
 }
 
 function splitPatchLines(patch: string): string[] {
@@ -500,10 +526,8 @@ function computeReplacements(
 		}
 
 		if (chunk.oldLines.length === 0) {
-			const insertionIndex =
-				originalLines[originalLines.length - 1] === "" ? originalLines.length - 1 : originalLines.length;
 			replacements.push({
-				startIndex: insertionIndex,
+				startIndex: lineIndex,
 				oldLength: 0,
 				newSegment: chunk.newLines,
 			});
@@ -668,6 +692,12 @@ async function applyResolvedPatch(
 	await withMutationQueues(collectMutationPaths(operations), async () => {
 		for (const operation of operations) {
 			if (operation.type === "add") {
+				const exists = await access(operation.absolutePath).then(() => true, () => false);
+				if (exists) {
+					throw new Error(
+						`Cannot add file ${path.relative(cwd, operation.absolutePath) || path.basename(operation.absolutePath)}: file already exists`,
+					);
+				}
 				await mkdir(path.dirname(operation.absolutePath), { recursive: true });
 				await writeFile(operation.absolutePath, operation.contents, "utf8");
 				added.push(path.relative(cwd, operation.absolutePath) || path.basename(operation.absolutePath));
