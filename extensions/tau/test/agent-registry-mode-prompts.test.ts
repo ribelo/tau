@@ -24,10 +24,24 @@ describe("agent-registry: mode agents", () => {
 			const smart = registry.resolve("smart", "medium");
 			const deep = registry.resolve("deep", "medium");
 			const rush = registry.resolve("rush", "medium");
+			const expectedTools = [
+				"read",
+				"bash",
+				"edit",
+				"write",
+				"agent",
+				"bd",
+				"web_search_exa",
+				"crawling_exa",
+				"get_code_context_exa",
+			];
 
 			expect(smart?.systemPrompt).toBe(presets.smart.systemPrompt);
 			expect(deep?.systemPrompt).toBe(presets.deep.systemPrompt);
 			expect(rush?.systemPrompt).toBe(presets.rush.systemPrompt);
+			expect(smart?.tools).toEqual(expectedTools);
+			expect(deep?.tools).toEqual(expectedTools);
+			expect(rush?.tools).toEqual(expectedTools);
 		} finally {
 			fs.rmSync(tempHome, { recursive: true, force: true });
 		}

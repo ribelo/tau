@@ -14,6 +14,7 @@ export interface AgentDefinition {
 	readonly name: string;
 	readonly description: string;
 	readonly models: readonly ModelSpec[];
+	readonly tools?: readonly string[];
 	readonly sandbox: SandboxConfig;
 	readonly systemPrompt: string;
 }

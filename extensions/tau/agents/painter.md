@@ -5,6 +5,13 @@ description: |
 models:
   - model: inherit
     thinking: inherit
+tools:
+  - read
+  - bash
+  - edit
+  - write
+  - bd
+  - agent
 sandbox_fs: workspace-write
 sandbox_net: allow-all
 approval_policy: never
@@ -37,7 +44,7 @@ Tool usage:
 - Use `rg` to find similar implementations in the codebase
 - Use `edit` or `write` for file changes
 - Use shell commands for running builds, tests, and dev servers
-- Use the `agent --type finder` if you need to locate relevant files quickly
+- Use the `agent` tool to spawn `finder` if you need to locate relevant files quickly
 
 Workflow:
 1. Briefly explain what you're going to do

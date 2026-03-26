@@ -36,6 +36,7 @@ import {
 } from "../prompt/modes.js";
 import type { SandboxConfig } from "../sandbox/config.js";
 import { parseAgentDefinition } from "./parser.js";
+import { parseConfiguredToolNames } from "./tool-allowlist.js";
 import type { AgentDefinition, Complexity, ModelSpec } from "./types.js";
 import { decodeAgentModelSpec } from "./model-spec.js";
 
@@ -43,8 +44,20 @@ const MODE_AGENT_SANDBOX: SandboxConfig = {
 	preset: "full-access",
 };
 
+const MODE_AGENT_TOOLS = [
+	"read",
+	"bash",
+	"edit",
+	"write",
+	"agent",
+	"bd",
+	"web_search_exa",
+	"crawling_exa",
+	"get_code_context_exa",
+] as const;
+
 const COMPLEXITY_LEVELS = ["low", "medium", "high"] as const;
-const ALLOWED_AGENT_SETTINGS_KEYS = new Set(["models", "complexity"]);
+const ALLOWED_AGENT_SETTINGS_KEYS = new Set(["models", "tools", "complexity"]);
 const ALLOWED_COMPLEXITY_CONFIG_KEYS = new Set(["models"]);
 
 export class AgentRegistryConfigError extends Data.TaggedError("AgentRegistryConfigError")<{
@@ -76,6 +89,7 @@ function buildModeAgentDefinition(
 				name: mode,
 				description,
 				models: [model],
+				tools: MODE_AGENT_TOOLS,
 				sandbox: MODE_AGENT_SANDBOX,
 				systemPrompt: preset.systemPrompt,
 			};
@@ -188,12 +202,27 @@ function parseModelsArray(
 	});
 }
 
+function parseToolsArray(
+	value: unknown,
+	keyPath: string,
+): Effect.Effect<readonly string[] | undefined, AgentRegistryConfigError> {
+	return Effect.try({
+		try: () => parseConfiguredToolNames(value, keyPath),
+		catch: (cause) =>
+			new AgentRegistryConfigError({
+				message: cause instanceof Error ? cause.message : `Invalid tools in ${keyPath}`,
+				cause,
+			}),
+	});
+}
+
 interface ComplexityConfig {
 	models?: readonly ModelSpec[];
 }
 
 interface AgentSettingsOverride {
 	models?: readonly ModelSpec[];
+	tools?: readonly string[];
 	complexity?: {
 		low?: ComplexityConfig;
 		medium?: ComplexityConfig;
@@ -239,13 +268,6 @@ function loadAgentSettingsFromJson(
 		let result = initial;
 		for (const [name, config] of Object.entries(agents)) {
 			const agentPath = `${context}#agents.${name}`;
-			if (isPromptModeName(name)) {
-				return yield* Effect.fail(
-					new AgentRegistryConfigError({
-						message: `Invalid settings in ${agentPath}: mode agents are configured under promptModes, not agents.`,
-					}),
-				);
-			}
 			if (!isRecord(config)) {
 				return yield* Effect.fail(
 					new AgentRegistryConfigError({
@@ -253,20 +275,39 @@ function loadAgentSettingsFromJson(
 					}),
 				);
 			}
+			if (isPromptModeName(name)) {
+				for (const key of Object.keys(config)) {
+					if (key !== "tools") {
+						return yield* Effect.fail(
+							new AgentRegistryConfigError({
+								message: `Invalid settings in ${agentPath}: mode agents only support tools here; prompt mode model settings belong under promptModes`,
+							}),
+						);
+					}
+				}
+
+				const tools = yield* parseToolsArray(config["tools"], `${agentPath}.tools`);
+				if (tools !== undefined) {
+					result = mergeSettingsOverride(result, name, { tools });
+				}
+				continue;
+			}
 
 			for (const key of Object.keys(config)) {
 				if (!ALLOWED_AGENT_SETTINGS_KEYS.has(key)) {
 					return yield* Effect.fail(
 						new AgentRegistryConfigError({
-							message: `Invalid settings in ${agentPath}: ${key} is not supported (allowed keys: models, complexity)`,
+							message: `Invalid settings in ${agentPath}: ${key} is not supported (allowed keys: models, tools, complexity)`,
 						}),
 					);
 				}
 			}
 
 			const models = yield* parseModelsArray(config["models"], `${agentPath}.models`);
+			const tools = yield* parseToolsArray(config["tools"], `${agentPath}.tools`);
 			const override: AgentSettingsOverride = {};
 			if (models) override.models = models;
+			if (tools !== undefined) override.tools = tools;
 
 			const complexity = config["complexity"];
 			if (complexity !== undefined) {
@@ -548,8 +589,10 @@ export class AgentRegistry {
 
 	resolve(name: string, complexity: Complexity): AgentDefinition | undefined {
 		if (isPromptModeName(name)) {
-			// Mode agents ignore agent-level overrides; use prompt mode settings.
-			return this.modeAgents.get(name);
+			const def = this.modeAgents.get(name);
+			if (!def) return undefined;
+			const override = this.settingsOverrides.get(name);
+			return override?.tools !== undefined ? { ...def, tools: override.tools } : def;
 		}
 
 		const def = this.get(name);
@@ -566,6 +609,10 @@ export class AgentRegistry {
 			models = complexityConfig.models;
 		}
 
-		return { ...def, models };
+		return {
+			...def,
+			models,
+			...(override.tools !== undefined ? { tools: override.tools } : {}),
+		};
 	}
 }

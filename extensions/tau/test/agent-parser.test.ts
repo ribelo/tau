@@ -90,6 +90,27 @@ Go fast.`;
 		expect(def.models[1]).toEqual({ model: "anthropic/claude-haiku-4-5" });
 	});
 
+	it("should parse tool allowlist", async () => {
+		const content = `---
+name: finder
+description: Finder agent
+models:
+  - model: inherit
+    thinking: inherit
+tools:
+  - read
+  - bash
+sandbox_fs: read-only
+sandbox_net: deny
+approval_policy: never
+approval_timeout: 60
+---
+Find stuff.`;
+
+		const def = await Effect.runPromise(parseAgentDefinition(content));
+		expect(def.tools).toEqual(["read", "bash"]);
+	});
+
 	it("should throw on missing models", async () => {
 		const content = `---
 name: oracle
@@ -102,6 +123,28 @@ approval_timeout: 60
 Prompt`;
 
 		await expect(Effect.runPromise(parseAgentDefinition(content))).rejects.toThrow(/\["models"\]/);
+	});
+
+	it("should throw on duplicate tools", async () => {
+		const content = `---
+name: oracle
+description: The oracle agent
+models:
+  - model: inherit
+    thinking: inherit
+tools:
+  - read
+  - read
+sandbox_fs: read-only
+sandbox_net: deny
+approval_policy: never
+approval_timeout: 60
+---
+Prompt`;
+
+		await expect(Effect.runPromise(parseAgentDefinition(content))).rejects.toThrow(
+			/tools\[1\] duplicates "read"/,
+		);
 	});
 
 	it("should throw on empty models array", async () => {

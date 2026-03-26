@@ -150,6 +150,75 @@ broken
 		fs.rmSync(tempProject, { recursive: true, force: true });
 	});
 
+	it("accepts tool allowlist overrides in user settings", async () => {
+		const tempHome = mkdtemp("tau-home-");
+		const tempProject = mkdtemp("tau-project-");
+
+		writeFile(
+			path.join(tempHome, ".pi", "agent", "agents", "oracle.md"),
+			validAgentMarkdown("oracle"),
+		);
+		writeFile(
+			path.join(tempHome, ".pi", "agent", "settings.json"),
+			JSON.stringify(
+				{
+					agents: {
+						oracle: {
+							tools: ["read", "bash"],
+						},
+					},
+				},
+				null,
+				2,
+			),
+		);
+
+		vi.stubEnv("HOME", tempHome);
+
+		const registry = await Effect.runPromise(AgentRegistry.load(tempProject));
+		const resolved = registry.resolve("oracle", "medium");
+		expect(resolved?.tools).toEqual(["read", "bash"]);
+
+		fs.rmSync(tempHome, { recursive: true, force: true });
+		fs.rmSync(tempProject, { recursive: true, force: true });
+	});
+
+	it("fails when tool allowlist overrides are malformed", async () => {
+		const tempHome = mkdtemp("tau-home-");
+		const tempProject = mkdtemp("tau-project-");
+
+		writeFile(
+			path.join(tempHome, ".pi", "agent", "agents", "oracle.md"),
+			validAgentMarkdown("oracle"),
+		);
+		writeFile(
+			path.join(tempHome, ".pi", "agent", "settings.json"),
+			JSON.stringify(
+				{
+					agents: {
+						oracle: {
+							tools: ["read", "read"],
+						},
+					},
+				},
+				null,
+				2,
+			),
+		);
+
+		vi.stubEnv("HOME", tempHome);
+
+		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrowError(
+			AgentRegistryConfigError,
+		);
+		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrow(
+			/agents\.oracle\.tools\[1\] duplicates "read"/,
+		);
+
+		fs.rmSync(tempHome, { recursive: true, force: true });
+		fs.rmSync(tempProject, { recursive: true, force: true });
+	});
+
 	it("fails even when invalid lower-priority agent is overridden", async () => {
 		const tempHome = mkdtemp("tau-home-");
 		const tempProject = mkdtemp("tau-project-");
@@ -184,6 +253,72 @@ broken
 		);
 		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrow(
 			/Invalid agent definition/,
+		);
+
+		fs.rmSync(tempHome, { recursive: true, force: true });
+		fs.rmSync(tempProject, { recursive: true, force: true });
+	});
+
+	it("accepts tool allowlist overrides for virtual mode agents", async () => {
+		const tempHome = mkdtemp("tau-home-");
+		const tempProject = mkdtemp("tau-project-");
+
+		writeFile(
+			path.join(tempHome, ".pi", "agent", "settings.json"),
+			JSON.stringify(
+				{
+					agents: {
+						smart: {
+							tools: ["read", "bash"],
+						},
+					},
+				},
+				null,
+				2,
+			),
+		);
+
+		vi.stubEnv("HOME", tempHome);
+
+		const registry = await Effect.runPromise(AgentRegistry.load(tempProject));
+		const resolved = registry.resolve("smart", "medium");
+		expect(resolved?.tools).toEqual(["read", "bash"]);
+
+		fs.rmSync(tempHome, { recursive: true, force: true });
+		fs.rmSync(tempProject, { recursive: true, force: true });
+	});
+
+	it("fails when virtual mode agents override unsupported keys", async () => {
+		const tempHome = mkdtemp("tau-home-");
+		const tempProject = mkdtemp("tau-project-");
+
+		writeFile(
+			path.join(tempHome, ".pi", "agent", "settings.json"),
+			JSON.stringify(
+				{
+					agents: {
+						smart: {
+							models: [
+								{
+									model: "inherit",
+									thinking: "inherit",
+								},
+							],
+						},
+					},
+				},
+				null,
+				2,
+			),
+		);
+
+		vi.stubEnv("HOME", tempHome);
+
+		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrowError(
+			AgentRegistryConfigError,
+		);
+		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrow(
+			/mode agents only support tools here/,
 		);
 
 		fs.rmSync(tempHome, { recursive: true, force: true });

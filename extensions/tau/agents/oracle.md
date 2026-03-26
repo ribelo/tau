@@ -5,6 +5,13 @@ description: |
 models:
   - model: inherit
     thinking: inherit
+tools:
+  - read
+  - bash
+  - bd
+  - web_search_exa
+  - crawling_exa
+  - get_code_context_exa
 sandbox_fs: read-only
 sandbox_net: allow-all
 approval_policy: never

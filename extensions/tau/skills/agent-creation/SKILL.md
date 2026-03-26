@@ -5,7 +5,7 @@ description: Guide for creating custom agent definitions. This skill should be u
 
 # Agent Creation
 
-Create specialized agents by writing `.md` definition files. Agents are discovered from these locations (in priority order):
+Create specialized agents by writing `.md` definition files. Agents are discovered from these locations in priority order:
 
 | Location | Priority | Scope |
 |----------|----------|-------|
@@ -13,11 +13,11 @@ Create specialized agents by writing `.md` definition files. Agents are discover
 | `~/.pi/agent/agents/*.md` | Medium | Global (all projects) |
 | `extensions/tau/agents/*.md` | Lowest | Bundled defaults |
 
-Project agents override global, global override bundled.
+Project agents override global agents, and global agents override bundled agents.
 
 ## Agent Definition File
 
-Create a `.md` file with YAML frontmatter and optional system prompt:
+Create a `.md` file with YAML frontmatter and an optional system prompt body:
 
 ```markdown
 ---
@@ -25,8 +25,12 @@ name: my-agent
 description: |
   Short description (~500 chars max). Explain when to use this agent,
   what it does, and what it should NOT be used for.
-model: inherit
-thinking: medium
+models:
+  - model: inherit
+    thinking: inherit
+tools:
+  - read
+  - bash
 sandbox_fs: workspace-write
 sandbox_net: allow-all
 approval_policy: never
@@ -43,53 +47,76 @@ pi system prompt. If empty, only the default prompt is used.
 
 | Field | Description |
 |-------|-------------|
-| `name` | Agent identifier (used in `spawn <name>`) |
-| `description` | When/how to use this agent. Shown in tool description. |
-| `model` | Model ID or `inherit` to use the parent model. |
-| `thinking` | Thinking level (`low`, `medium`, `high`, or `inherit`). |
-| `sandbox_fs` | Filesystem access level for the agent sandbox. |
-| `sandbox_net` | Network access for the agent sandbox. |
-| `approval_policy` | When to prompt for approval. |
-| `approval_timeout` | Timeout in seconds before auto-deny. |
+| `name` | Agent identifier used in `agent spawn <name>` |
+| `description` | When and how to use the agent |
+| `models` | Non-empty list of model specs |
+| `sandbox_fs` / `sandbox_net` / `approval_policy` / `approval_timeout` | Legacy sandbox fields still supported |
+
+### Optional
+
+| Field | Description |
+|-------|-------------|
+| `tools` | Exact allowlist of tool names this agent may use |
+| `sandbox_preset` | Preferred shorthand for sandbox configuration |
 
 ### Model Configuration
 
+`models` is an ordered fallback list. Each entry has:
+
 | Field | Values | Description |
 |-------|--------|-------------|
-| `model` | `inherit`, `provider/model-id` | Which model to use. `inherit` uses parent's model. |
-| `thinking` | `low`, `medium`, `high`, `inherit` | Extended thinking level. |
+| `model` | `inherit`, `provider/model-id` | Which model to use |
+| `thinking` | `low`, `medium`, `high`, `xhigh`, `inherit` | Thinking level |
 
 Examples:
-- `model: inherit` - use whatever model the parent agent uses
-- `model: anthropic/claude-sonnet-4-20250514` - specific model
-- `model: openai/gpt-4.1` - OpenAI model
+- `model: inherit` keeps the parent model.
+- `model: anthropic/claude-sonnet-4-20250514` selects a specific model.
+- Multiple entries provide ordered fallback choices.
+
+### Tool Allowlist
+
+Use `tools` to define the exact tool set available to the agent.
+
+```yaml
+tools:
+  - read
+  - bash
+  - bd
+```
+
+Rules:
+- If `tools` is omitted, the agent gets tau's default tool set.
+- If `tools` is present, only those tools are enabled.
+- Tool names must be unique and must not have leading/trailing whitespace.
+- `submit_result` is managed internally for structured-output workers and does not need to be listed.
+
+Typical examples:
+- Read-only research agent: `read`, `bash`, `web_search_exa`, `crawling_exa`
+- Code review agent: `read`, `bash`
+- Implementation agent: `read`, `bash`, `edit`, `write`
+- Delegating agent: add `agent`
 
 ### Sandbox Configuration
 
 | Field | Values | Description |
 |-------|--------|-------------|
-| `sandbox_fs` | `read-only`, `workspace-write`, `danger-full-access` | Filesystem access level |
+| `sandbox_preset` | `read-only`, `workspace-write`, `full-access` | Preferred sandbox preset |
+| `sandbox_fs` | `read-only`, `workspace-write`, `danger-full-access` | Legacy filesystem mode |
 | `sandbox_net` | `deny`, `allow-all` | Network access |
-| `approval_policy` | `never`, `on-failure`, `on-request`, `unless-trusted` | When to ask for approval |
-| `approval_timeout` | number (seconds) | Auto-deny after timeout |
+| `approval_policy` | `never`, `on-failure`, `on-request`, `unless-trusted` | Approval policy |
+| `approval_timeout` | positive integer seconds | Auto-deny timeout |
 
-**Sandbox filesystem meanings**:
-- `read-only`: Can read files, cannot modify anything
-- `workspace-write`: Can read/write within project directory
-- `danger-full-access`: Full filesystem access (use with caution)
+Prefer `sandbox_preset` for new agents unless you need the legacy split fields.
 
-## System Prompt (Body)
+## System Prompt Body
 
-The content after `---` is the system prompt. It's appended to pi's default prompt.
+The markdown body after the frontmatter is appended to pi's default prompt.
 
-**If empty**: Agent uses only the default pi prompt (like `general` agent).
-
-**Guidelines for system prompts**:
-- Focus on what makes this agent specialized
-- Include specific instructions, workflows, or constraints
-- Reference tools the agent should use
-- Specify output format if important
-- End with "Only your last message is returned" if agent is used for analysis
+Guidelines:
+- Focus on what makes the agent specialized.
+- Include repo-specific workflows or constraints.
+- Mention output format if it matters.
+- If the agent is analysis-only, state that only the final message is returned.
 
 ## Examples
 
@@ -100,25 +127,19 @@ The content after `---` is the system prompt. It's appended to pi's default prom
 name: security-audit
 description: |
   Security analysis agent (read-only). Scans code for vulnerabilities,
-  injection risks, auth issues. Use for: security reviews, dependency
-  audits. Don't use for: code changes. Prompt example: "Audit src/auth/
-  for security vulnerabilities."
-model: inherit
-thinking: high
-sandbox_fs: read-only
-sandbox_net: deny
-approval_policy: never
-approval_timeout: 60
+  auth issues, and unsafe patterns. Use for: security reviews.
+  Don't use for: code changes.
+models:
+  - model: inherit
+    thinking: high
+tools:
+  - read
+  - bash
+sandbox_preset: read-only
 ---
 
-Analyze code for security vulnerabilities. Focus on:
-- SQL/NoSQL injection
-- XSS and CSRF vulnerabilities
-- Authentication/authorization flaws
-- Insecure dependencies
-- Secrets in code
-
-Output findings with severity (Critical/High/Medium/Low) and remediation steps.
+Analyze code for concrete security issues. Return findings with severity
+and remediation steps.
 
 IMPORTANT: Only your last message is returned to the main agent.
 ```
@@ -129,78 +150,103 @@ IMPORTANT: Only your last message is returned to the main agent.
 ---
 name: rust-impl
 description: |
-  Rust implementation agent (workspace-write). Specialized for this
-  project's patterns. Use for: implementing features, fixing bugs in
-  Rust code. Don't use for: other languages, architecture decisions.
-model: inherit
-thinking: medium
-sandbox_fs: workspace-write
-sandbox_net: allow-all
-approval_policy: never
-approval_timeout: 60
+  Rust implementation agent for this project. Use for feature work and
+  bug fixes in Rust code. Don't use for architecture decisions.
+models:
+  - model: inherit
+    thinking: medium
+tools:
+  - read
+  - bash
+  - edit
+  - write
+sandbox_preset: workspace-write
 ---
 
 Follow these project conventions:
 - Use `thiserror` for error types
 - Prefer `?` over `.unwrap()`
-- Run `cargo clippy` before completing
-- Add tests for new functionality
-
-After changes, run: `cargo check && cargo clippy && cargo test`
+- Run `cargo check && cargo test` before finishing
 ```
 
-### Minimal Agent (Default Prompt Only)
+### Delegating Agent
 
 ```markdown
 ---
-name: helper
+name: ui-lead
 description: |
-  General helper agent with workspace-write access. Uses default pi
-  prompt with no specialization. For tasks that don't need custom
-  instructions.
-model: inherit
-thinking: inherit
-sandbox_fs: workspace-write
-sandbox_net: allow-all
-approval_policy: never
-approval_timeout: 60
+  Frontend agent that can implement UI work and delegate file discovery.
+models:
+  - model: inherit
+    thinking: inherit
+tools:
+  - read
+  - bash
+  - edit
+  - write
+  - agent
+sandbox_preset: workspace-write
 ---
+
+Use the `agent` tool when you need a finder subagent to map the codebase
+before editing.
 ```
 
 ## Settings Overrides
 
-Override model/thinking per complexity level in `.pi/settings.json` or `~/.pi/agent/settings.json`:
+Override models or tools in `.pi/settings.json` or `~/.pi/agent/settings.json`:
 
 ```json
 {
   "agents": {
     "my-agent": {
-      "model": "anthropic/claude-sonnet-4-20250514",
-      "thinking": "medium",
+      "models": [
+        {
+          "model": "anthropic/claude-sonnet-4-20250514",
+          "thinking": "medium"
+        }
+      ],
+      "tools": ["read", "bash", "bd"],
       "complexity": {
-        "low": { "model": "anthropic/claude-haiku-3-5-20241022" },
-        "high": { "model": "anthropic/claude-sonnet-4-20250514", "thinking": "high" }
+        "low": {
+          "models": [
+            {
+              "model": "anthropic/claude-haiku-3-5-20241022",
+              "thinking": "low"
+            }
+          ]
+        },
+        "high": {
+          "models": [
+            {
+              "model": "anthropic/claude-sonnet-4-20250514",
+              "thinking": "high"
+            }
+          ]
+        }
       }
     }
   }
 }
 ```
 
-This allows routing to different models based on `complexity` parameter when spawning.
+Notes:
+- `tools` is a top-level override only.
+- Complexity overrides currently affect models only.
 
 ## Creating a New Agent
 
-1. Decide scope: project (`.pi/agents/`) or global (`~/.pi/agent/agents/`)
-2. Create `<name>.md` file with frontmatter
-3. Write description: when to use, when NOT to use, example prompt
-4. Set appropriate sandbox policy (prefer minimal access)
-5. Add system prompt if needed (or leave empty for default)
-6. Restart pi to load new agent
+1. Choose scope: project (`.pi/agents/`) or global (`~/.pi/agent/agents/`).
+2. Create `<name>.md` with frontmatter and optional body.
+3. Write a precise description: use cases, non-goals, example prompt.
+4. Pick the smallest tool allowlist that can do the job.
+5. Pick the smallest sandbox preset that can do the job.
+6. Add system prompt instructions only for the specialization.
 
 ## Best Practices
 
-- **Descriptions**: Keep under 500 chars. Include "Use for" and "Don't use for".
-- **Sandbox**: Use minimum required access. Prefer `read-only` for analysis agents.
-- **System prompts**: Focus on specialization. Don't repeat general coding advice.
-- **Model**: Use `inherit` unless specific model is required.
-- **Naming**: Use lowercase, descriptive names (e.g., `rust-impl`, `security-audit`).
+- Keep descriptions short and concrete.
+- Use `inherit` unless a specific model is required.
+- Prefer `read-only` for analysis agents.
+- Prefer narrow `tools` lists over broad defaults.
+- Use lowercase, descriptive names such as `rust-impl` or `security-audit`.

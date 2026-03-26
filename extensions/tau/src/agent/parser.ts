@@ -9,6 +9,7 @@ import { APPROVAL_POLICIES, FILESYSTEM_MODES, NETWORK_MODES, SANDBOX_PRESET_NAME
 import { EXTENSION_AGENTS_DIR, getUserAgentsDir } from "../shared/discovery.js";
 import { findNearestProjectPiDirEffect } from "../shared/settings.js";
 import { decodeAgentModelSpec } from "./model-spec.js";
+import { parseConfiguredToolNames } from "./tool-allowlist.js";
 
 export class AgentDefinitionError extends Data.TaggedError("AgentDefinitionError")<{
 	readonly message: string;
@@ -27,6 +28,7 @@ const AgentDefinitionFrontmatterSchema = Schema.Struct({
 	name: Schema.String,
 	description: Schema.String,
 	models: Schema.NonEmptyArray(Schema.Unknown),
+	tools: Schema.optional(Schema.Array(Schema.Unknown)),
 	sandbox_preset: Schema.optional(SandboxPresetSchema),
 	// Legacy fields still accepted for back-compat
 	sandbox_fs: Schema.optional(FilesystemModeSchema),
@@ -88,23 +90,38 @@ export function parseAgentDefinition(
 					),
 				),
 			).pipe(
-				Effect.map((models): AgentDefinition => {
-					const sandbox: SandboxConfig = {
-						preset: parsedFrontmatter.sandbox_preset ?? inferPresetFromModes({
-							filesystemMode: parsedFrontmatter.sandbox_fs,
-							networkMode: parsedFrontmatter.sandbox_net,
-							approvalPolicy: parsedFrontmatter.approval_policy,
-						}),
-					};
+				Effect.flatMap((models) =>
+					Effect.try({
+						try: () => parseConfiguredToolNames(parsedFrontmatter.tools, "tools"),
+						catch: (cause) =>
+							new AgentDefinitionError({
+								message:
+									cause instanceof Error
+										? cause.message
+										: `Invalid agent tools: ${String(cause)}`,
+								cause,
+							}),
+					}).pipe(
+						Effect.map((tools): AgentDefinition => {
+							const sandbox: SandboxConfig = {
+								preset: parsedFrontmatter.sandbox_preset ?? inferPresetFromModes({
+									filesystemMode: parsedFrontmatter.sandbox_fs,
+									networkMode: parsedFrontmatter.sandbox_net,
+									approvalPolicy: parsedFrontmatter.approval_policy,
+								}),
+							};
 
-					return {
-						name: parsedFrontmatter.name,
-						description: parsedFrontmatter.description,
-						models: models as ReadonlyArray<ModelSpec>,
-						sandbox,
-						systemPrompt: systemPromptRaw.trim(),
-					};
-				}),
+							return {
+								name: parsedFrontmatter.name,
+								description: parsedFrontmatter.description,
+								models: models as ReadonlyArray<ModelSpec>,
+								...(tools !== undefined ? { tools } : {}),
+								sandbox,
+								systemPrompt: systemPromptRaw.trim(),
+							};
+						}),
+					),
+				),
 			),
 		),
 	);

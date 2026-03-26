@@ -5,6 +5,10 @@ description: |
 models:
   - model: inherit
     thinking: inherit
+tools:
+  - read
+  - bash
+  - bd
 sandbox_fs: read-only
 sandbox_net: allow-all
 approval_policy: never

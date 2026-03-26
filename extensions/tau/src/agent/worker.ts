@@ -23,6 +23,7 @@ import { setWorkerApprovalBroker } from "./approval-broker.js";
 
 import type { ApprovalBroker } from "./approval-broker.js";
 import { createWorkerAgentTool, type RunAgentControlPromise } from "./runtime.js";
+import { applyAgentToolAllowlist } from "./tool-allowlist.js";
 
 function truncateStr(s: string, max: number): string {
 	if (s.length <= max) return s;
@@ -194,6 +195,7 @@ interface SessionInfra {
 	readonly appendPrompts: string[];
 	readonly cwd: string;
 	readonly approvalBroker: ApprovalBroker | undefined;
+	readonly definition: AgentDefinition;
 	readonly resultSchema: unknown | undefined;
 }
 
@@ -370,6 +372,7 @@ export class AgentWorker implements Agent {
 				appendPrompts,
 				cwd: opts.cwd,
 				approvalBroker: opts.approvalBroker,
+				definition: opts.definition,
 				resultSchema: opts.resultSchema,
 			};
 
@@ -751,6 +754,8 @@ function createSessionForModel(
 			...(resolvedModel ? { model: resolvedModel } : {}),
 		};
 		const { session } = yield* Effect.promise(() => createAgentSession(sessionOpts));
+
+		yield* applyAgentToolAllowlist(session, infra.definition, infra.resultSchema);
 
 		// Apply thinking level
 		const thinkingLevel = spec.thinking;
