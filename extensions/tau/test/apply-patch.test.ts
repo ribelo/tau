@@ -30,7 +30,11 @@ describe("apply_patch", () => {
 			);
 
 			const summary = await __test__.applyResolvedPatch(operations, cwd);
-			expect(summary).toEqual({ added: ["hello.txt"], modified: [], deleted: [] });
+			expect(summary.added).toEqual(["hello.txt"]);
+			expect(summary.modified).toEqual([]);
+			expect(summary.deleted).toEqual([]);
+			expect(summary.diffs).toHaveLength(1);
+			expect(summary.diffs[0]?.filePath).toBe("hello.txt");
 			expect(await fs.readFile(path.join(cwd, "hello.txt"), "utf8")).toBe("hello\nworld\n");
 		});
 	});
@@ -53,7 +57,11 @@ describe("apply_patch", () => {
 			);
 
 			const summary = await __test__.applyResolvedPatch(operations, cwd);
-			expect(summary).toEqual({ added: [], modified: ["dst.txt"], deleted: [] });
+			expect(summary.added).toEqual([]);
+			expect(summary.modified).toEqual(["dst.txt"]);
+			expect(summary.deleted).toEqual([]);
+			expect(summary.diffs).toHaveLength(1);
+			expect(summary.diffs[0]?.filePath).toBe("dst.txt");
 			expect(await fs.readFile(path.join(cwd, "dst.txt"), "utf8")).toBe("line2\n");
 			await expect(fs.stat(path.join(cwd, "src.txt"))).rejects.toThrow();
 		});
@@ -73,7 +81,11 @@ describe("apply_patch", () => {
 			);
 
 			const summary = await __test__.applyResolvedPatch(operations, cwd);
-			expect(summary).toEqual({ added: [], modified: [], deleted: ["dead.txt"] });
+			expect(summary.added).toEqual([]);
+			expect(summary.modified).toEqual([]);
+			expect(summary.deleted).toEqual(["dead.txt"]);
+			expect(summary.diffs).toHaveLength(1);
+			expect(summary.diffs[0]?.filePath).toBe("dead.txt");
 			await expect(fs.stat(path.join(cwd, "dead.txt"))).rejects.toThrow();
 		});
 	});
@@ -107,7 +119,11 @@ describe("apply_patch", () => {
 			);
 
 			const summary = await __test__.applyResolvedPatch(operations, cwd);
-			expect(summary).toEqual({ added: ["@types/node/index.d.ts"], modified: [], deleted: [] });
+			expect(summary.added).toEqual(["@types/node/index.d.ts"]);
+			expect(summary.modified).toEqual([]);
+			expect(summary.deleted).toEqual([]);
+			expect(summary.diffs).toHaveLength(1);
+			expect(summary.diffs[0]?.filePath).toBe("@types/node/index.d.ts");
 			expect(
 				await fs.readFile(path.join(cwd, "@types/node/index.d.ts"), "utf8"),
 			).toBe("declare module 'node';\n");

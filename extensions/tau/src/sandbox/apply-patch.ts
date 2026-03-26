@@ -2,7 +2,9 @@ import { access, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promis
 import * as path from "node:path";
 
 import type { ExtensionContext, ToolDefinition } from "@mariozechner/pi-coding-agent";
+import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
+import * as Diff from "diff";
 
 import { getWorkerApprovalBroker } from "../agent/approval-broker.js";
 import { errorMessage } from "../shared/error-message.js";
@@ -123,10 +125,16 @@ type ResolvedPatchOperation =
 	| ResolvedDeleteOperation
 	| ResolvedUpdateOperation;
 
+type FileDiff = {
+	readonly filePath: string;
+	readonly diff: string;
+};
+
 type ApplyPatchSummary = {
 	readonly added: readonly string[];
 	readonly modified: readonly string[];
 	readonly deleted: readonly string[];
+	readonly diffs: readonly FileDiff[];
 };
 
 type SessionSandboxContext = {
@@ -693,6 +701,7 @@ async function applyResolvedPatch(
 	const added: string[] = [];
 	const modified: string[] = [];
 	const deleted: string[] = [];
+	const diffs: FileDiff[] = [];
 
 	await withMutationQueues(collectMutationPaths(operations), async () => {
 		for (const operation of operations) {
@@ -705,31 +714,126 @@ async function applyResolvedPatch(
 				}
 				await mkdir(path.dirname(operation.absolutePath), { recursive: true });
 				await writeFile(operation.absolutePath, operation.contents, "utf8");
-				added.push(path.relative(cwd, operation.absolutePath) || path.basename(operation.absolutePath));
+				const relPath = path.relative(cwd, operation.absolutePath) || path.basename(operation.absolutePath);
+				added.push(relPath);
+				diffs.push({ filePath: relPath, diff: generateDiffString("", operation.contents) });
 				continue;
 			}
 
 			if (operation.type === "delete") {
+				const oldContents = await readFile(operation.absolutePath, "utf8").catch(() => "");
 				await rm(operation.absolutePath);
-				deleted.push(path.relative(cwd, operation.absolutePath) || path.basename(operation.absolutePath));
+				const relPath = path.relative(cwd, operation.absolutePath) || path.basename(operation.absolutePath);
+				deleted.push(relPath);
+				diffs.push({ filePath: relPath, diff: generateDiffString(oldContents, "") });
 				continue;
 			}
 
+			const oldContents = await readFile(operation.absolutePath, "utf8");
 			const nextContents = await deriveUpdatedFileContents(operation.absolutePath, operation.chunks);
 			if (operation.movePath !== undefined) {
 				await mkdir(path.dirname(operation.movePath), { recursive: true });
 				await writeFile(operation.movePath, nextContents, "utf8");
 				await rm(operation.absolutePath);
-				modified.push(path.relative(cwd, operation.movePath) || path.basename(operation.movePath));
+				const relPath = path.relative(cwd, operation.movePath) || path.basename(operation.movePath);
+				modified.push(relPath);
+				diffs.push({ filePath: relPath, diff: generateDiffString(oldContents, nextContents) });
 				continue;
 			}
 
 			await writeFile(operation.absolutePath, nextContents, "utf8");
-			modified.push(path.relative(cwd, operation.absolutePath) || path.basename(operation.absolutePath));
+			const relPath = path.relative(cwd, operation.absolutePath) || path.basename(operation.absolutePath);
+			modified.push(relPath);
+			diffs.push({ filePath: relPath, diff: generateDiffString(oldContents, nextContents) });
 		}
 	});
 
-	return { added, modified, deleted };
+	return { added, modified, deleted, diffs };
+}
+
+function generateDiffString(
+	oldContent: string,
+	newContent: string,
+	contextLines = 4,
+): string {
+	const parts = Diff.diffLines(oldContent, newContent);
+	const output: string[] = [];
+
+	const oldLines = oldContent.split("\n");
+	const newLines = newContent.split("\n");
+	const maxLineNum = Math.max(oldLines.length, newLines.length);
+	const lineNumWidth = String(maxLineNum).length;
+
+	let oldLineNum = 1;
+	let newLineNum = 1;
+	let lastWasChange = false;
+
+	for (let i = 0; i < parts.length; i++) {
+		const part = parts[i];
+		if (part === undefined) continue;
+		const raw = part.value.split("\n");
+		if (raw[raw.length - 1] === "") {
+			raw.pop();
+		}
+
+		if (part.added || part.removed) {
+			for (const line of raw) {
+				if (part.added) {
+					output.push(`+${String(newLineNum).padStart(lineNumWidth, " ")} ${line}`);
+					newLineNum++;
+				} else {
+					output.push(`-${String(oldLineNum).padStart(lineNumWidth, " ")} ${line}`);
+					oldLineNum++;
+				}
+			}
+			lastWasChange = true;
+		} else {
+			const nextPartIsChange =
+				i < parts.length - 1 &&
+				(parts[i + 1]?.added === true || parts[i + 1]?.removed === true);
+
+			if (lastWasChange || nextPartIsChange) {
+				let linesToShow = raw;
+				let skipStart = 0;
+				let skipEnd = 0;
+
+				if (!lastWasChange) {
+					skipStart = Math.max(0, raw.length - contextLines);
+					linesToShow = raw.slice(skipStart);
+				}
+
+				if (!nextPartIsChange && linesToShow.length > contextLines) {
+					skipEnd = linesToShow.length - contextLines;
+					linesToShow = linesToShow.slice(0, contextLines);
+				}
+
+				if (skipStart > 0) {
+					output.push(` ${"".padStart(lineNumWidth, " ")} ...`);
+					oldLineNum += skipStart;
+					newLineNum += skipStart;
+				}
+
+				for (const line of linesToShow) {
+					output.push(` ${String(oldLineNum).padStart(lineNumWidth, " ")} ${line}`);
+					oldLineNum++;
+					newLineNum++;
+				}
+
+				if (skipEnd > 0) {
+					output.push(` ${"".padStart(lineNumWidth, " ")} ...`);
+					oldLineNum += skipEnd;
+					newLineNum += skipEnd;
+				}
+			} else {
+				oldLineNum += raw.length;
+				newLineNum += raw.length;
+			}
+
+			lastWasChange = false;
+		}
+	}
+
+	return output.join("\n");
 }
 
 function formatSummary(summary: ApplyPatchSummary): string {
@@ -760,6 +864,74 @@ const APPLY_PATCH_DESCRIPTION = [
 	"*** End Patch",
 	"Use relative paths only.",
 ].join("\n");
+
+type DiffTheme = {
+	fg: (color: "toolDiffAdded" | "toolDiffRemoved" | "toolDiffContext", text: string) => string;
+	inverse: (text: string) => string;
+};
+
+function renderColoredDiff(diffText: string, theme: DiffTheme): string {
+	const lines = diffText.split("\n");
+	const result: string[] = [];
+
+	let i = 0;
+	while (i < lines.length) {
+		const line = lines[i];
+		if (line === undefined) {
+			i++;
+			continue;
+		}
+		const prefix = line[0];
+
+		if (prefix === "-") {
+			const removedLines: string[] = [];
+			while (i < lines.length && lines[i]?.[0] === "-") {
+				removedLines.push(lines[i] ?? "");
+				i++;
+			}
+			const addedLines: string[] = [];
+			while (i < lines.length && lines[i]?.[0] === "+") {
+				addedLines.push(lines[i] ?? "");
+				i++;
+			}
+
+			if (removedLines.length === 1 && addedLines.length === 1) {
+				const removedContent = (removedLines[0] ?? "").replace(/^-\s*\d*\s/, "");
+				const addedContent = (addedLines[0] ?? "").replace(/^\+\s*\d*\s/, "");
+				const wordDiff = Diff.diffWords(removedContent, addedContent);
+				let removedRendered = (removedLines[0] ?? "").replace(removedContent, "");
+				let addedRendered = (addedLines[0] ?? "").replace(addedContent, "");
+				for (const part of wordDiff) {
+					if (part.removed) {
+						removedRendered += theme.inverse(part.value);
+					} else if (part.added) {
+						addedRendered += theme.inverse(part.value);
+					} else {
+						removedRendered += part.value;
+						addedRendered += part.value;
+					}
+				}
+				result.push(theme.fg("toolDiffRemoved", removedRendered));
+				result.push(theme.fg("toolDiffAdded", addedRendered));
+			} else {
+				for (const line of removedLines) {
+					result.push(theme.fg("toolDiffRemoved", line));
+				}
+				for (const line of addedLines) {
+					result.push(theme.fg("toolDiffAdded", line));
+				}
+			}
+		} else if (prefix === "+") {
+			result.push(theme.fg("toolDiffAdded", line));
+			i++;
+		} else {
+			result.push(theme.fg("toolDiffContext", line));
+			i++;
+		}
+	}
+
+	return result.join("\n");
+}
 
 export function createApplyPatchToolDefinition(
 	options?: ApplyPatchToolOptions,
@@ -795,6 +967,26 @@ export function createApplyPatchToolDefinition(
 			} catch (error) {
 				throw new Error(errorMessage(error));
 			}
+		},
+		renderResult(result, _options, theme, context) {
+			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			if (context.isError) {
+				text.setText("");
+				return text;
+			}
+			const summary = (result as { details?: ApplyPatchSummary }).details;
+			if (!summary?.diffs?.length) {
+				text.setText("");
+				return text;
+			}
+			const parts: string[] = [];
+			for (const fileDiff of summary.diffs) {
+				if (fileDiff.diff) {
+					parts.push(renderColoredDiff(fileDiff.diff, theme));
+				}
+			}
+			text.setText(parts.length > 0 ? `\n${parts.join("\n\n")}` : "");
+			return text;
 		},
 	};
 }
