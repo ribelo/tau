@@ -1,7 +1,20 @@
 ---
 name: review
 description: |
-  Code review agent (read-only). Reviews diffs for bugs, security issues, improvements. Returns prioritized findings (P0-P3). Prompt patterns: "Review uncommitted changes", "Review changes against main branch", "Review commit {sha}". Don't use for: code changes, general questions. Prompt example: "Review current staged changes for security issues and bugs."
+  Code review agent (read-only). Reviews diffs for bugs, security issues, improvements. Returns prioritized findings (P0-P3).
+  Typical flow:
+  - Spawn the reviewer with a review target.
+  - Reuse it with `send` when follow-up review depends on the same context.
+  - Wait for it to finish.
+  - Close it when you have the result.
+  Input contract:
+  - "Review uncommitted changes"
+  - "Review changes against main branch"
+  - "Review commit {sha}"
+  - Free-form review instructions.
+  Behavior:
+  - The reviewer returns findings first and does not implement fixes itself.
+  - The reviewer is intended for review-only work, not general coding tasks.
 models:
   - model: inherit
     thinking: inherit
