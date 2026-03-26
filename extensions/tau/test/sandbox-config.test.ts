@@ -74,14 +74,14 @@ describe("sandbox-config", () => {
 		fs.rmSync(workspaceRoot, { recursive: true, force: true });
 	});
 
-	it("defaults to 'default' preset", () => {
+	it("defaults to 'workspace-write' preset", () => {
 		const workspaceRoot = makeTempDir();
 		const settingsPath = path.join(workspaceRoot, "user-settings.json");
 		fs.writeFileSync(settingsPath, JSON.stringify({}), "utf8");
 		process.env["TAU_SANDBOX_USER_SETTINGS_PATH"] = settingsPath;
 
 		const config = computeEffectiveConfig({ workspaceRoot });
-		expect(config.preset).toBe("default");
+		expect(config.preset).toBe("workspace-write");
 		expect(config.filesystemMode).toBe("workspace-write");
 		expect(config.networkMode).toBe("deny");
 		expect(config.approvalPolicy).toBe("on-request");
@@ -96,7 +96,7 @@ describe("sandbox-config", () => {
 		const settingsPath = path.join(workspaceRoot, "user-settings.json");
 		fs.writeFileSync(
 			settingsPath,
-			JSON.stringify({ tau: { sandbox: { preset: "default" } } }),
+			JSON.stringify({ tau: { sandbox: { preset: "workspace-write" } } }),
 			"utf8",
 		);
 		process.env["TAU_SANDBOX_USER_SETTINGS_PATH"] = settingsPath;

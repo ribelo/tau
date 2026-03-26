@@ -24,7 +24,7 @@ describe("sandbox-change", () => {
 
 		const out = injectSandboxNoticeIntoMessages(
 			messages,
-			"SANDBOX_STATE: preset=default subagent=false",
+			"SANDBOX_STATE: preset=workspace-write subagent=false",
 		);
 		const textBlocks = getTextBlocks(out[0]?.content);
 
@@ -39,7 +39,7 @@ describe("sandbox-change", () => {
 				content: [
 					{
 						type: "text",
-						text: "SANDBOX_STATE: preset=default subagent=false\n\n",
+						text: "SANDBOX_STATE: preset=workspace-write subagent=false\n\n",
 					},
 					{ type: "text", text: "continue" },
 				],
@@ -72,7 +72,7 @@ describe("sandbox-change", () => {
 
 		const out = injectSandboxNoticeIntoMessages(
 			messages,
-			"SANDBOX_STATE: preset=default subagent=false",
+			"SANDBOX_STATE: preset=workspace-write subagent=false",
 		);
 		const textBlocks = getTextBlocks(out[0]?.content);
 
@@ -89,12 +89,12 @@ describe("sandbox-change", () => {
 		);
 		const twice = injectSandboxNoticeIntoMessages(
 			once,
-			"SANDBOX_STATE: preset=default subagent=false",
+			"SANDBOX_STATE: preset=workspace-write subagent=false",
 		);
 		const textBlocks = getTextBlocks(twice[0]?.content);
 		const sandboxHeaders = textBlocks.filter((text) => text.trimStart().startsWith("SANDBOX_"));
 
 		expect(sandboxHeaders).toHaveLength(1);
-		expect(sandboxHeaders[0]).toContain("default");
+		expect(sandboxHeaders[0]).toContain("workspace-write");
 	});
 });

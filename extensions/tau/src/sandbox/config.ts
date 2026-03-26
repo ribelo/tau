@@ -32,7 +32,7 @@ export type ResolvedSandboxConfig = {
 };
 
 export const DEFAULT_SANDBOX_CONFIG: ResolvedSandboxConfig = {
-	preset: "default",
+	preset: "workspace-write",
 	filesystemMode: "workspace-write",
 	networkMode: "deny",
 	approvalPolicy: "on-request",

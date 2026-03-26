@@ -2,14 +2,14 @@ export type FilesystemMode = "read-only" | "workspace-write" | "danger-full-acce
 export type NetworkMode = "deny" | "allow-all";
 export type ApprovalPolicy = "never" | "on-failure" | "on-request" | "unless-trusted";
 
-export type SandboxPreset = "read-only" | "default" | "full-access";
+export type SandboxPreset = "read-only" | "workspace-write" | "full-access";
 
 export const SANDBOX_PRESETS: Record<
 	SandboxPreset,
 	{ filesystemMode: FilesystemMode; networkMode: NetworkMode; approvalPolicy: ApprovalPolicy }
 > = {
 	"read-only": { filesystemMode: "read-only", networkMode: "deny", approvalPolicy: "on-request" },
-	default: {
+	"workspace-write": {
 		filesystemMode: "workspace-write",
 		networkMode: "deny",
 		approvalPolicy: "on-request",
@@ -23,7 +23,7 @@ export const SANDBOX_PRESETS: Record<
 
 export const SANDBOX_PRESET_NAMES: readonly SandboxPreset[] = [
 	"read-only",
-	"default",
+	"workspace-write",
 	"full-access",
 ] as const;
 
@@ -63,5 +63,5 @@ export function inferPresetFromModes(opts: {
 	const fs = opts.filesystemMode ?? "workspace-write";
 	if (fs === "danger-full-access") return "full-access";
 	if (fs === "read-only") return "read-only";
-	return "default";
+	return "workspace-write";
 }

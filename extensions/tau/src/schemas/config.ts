@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 
-const SandboxPreset = Schema.Literals(["read-only", "default", "full-access"]);
+const SandboxPreset = Schema.Literals(["read-only", "workspace-write", "full-access"]);
 type SandboxPreset = Schema.Schema.Type<typeof SandboxPreset>;
 
 const FilesystemMode = Schema.Literals([

@@ -7,7 +7,7 @@ import { resolvePreset } from "../shared/policy.js";
 
 const PRESET_RANK: Record<SandboxPreset, number> = {
 	"read-only": 0,
-	default: 1,
+	"workspace-write": 1,
 	"full-access": 2,
 };
 

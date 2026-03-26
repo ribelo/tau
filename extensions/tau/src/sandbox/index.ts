@@ -80,7 +80,7 @@ const PRESET_VALUES: readonly SandboxPreset[] = SANDBOX_PRESET_NAMES;
 
 const PRESET_LABELS: Record<SandboxPreset, string> = {
 	"read-only": "Read Only",
-	default: "Default (Agent)",
+	"workspace-write": "Workspace Write",
 	"full-access": "Full Access",
 };
 
@@ -115,7 +115,7 @@ function readSessionOverride(value: unknown): SandboxConfig | undefined {
 	const next: SandboxConfig = {};
 
 	const preset = value["preset"];
-	if (preset === "read-only" || preset === "default" || preset === "full-access") {
+	if (preset === "read-only" || preset === "workspace-write" || preset === "full-access") {
 		next.preset = preset;
 	}
 
@@ -195,7 +195,7 @@ interface SandboxPersistedAccess {
 export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersistedAccess) {
 	// Register CLI flags
 	pi.registerFlag("sandbox-mode", {
-		description: "Sandbox preset (read-only, default, full-access)",
+		description: "Sandbox preset (read-only, workspace-write, full-access)",
 		type: "string",
 	});
 	pi.registerFlag("no-sandbox", {
@@ -618,9 +618,9 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 								? "Network sandboxing can surface as DNS/connectivity failures. If network is required, use /approval to switch to full-access preset, or re-run with escalate=true."
 								: classification.kind === "filesystem" &&
 									  classification.subtype === "read"
-									? "In read-only preset, /tmp is an ephemeral tmpfs mount. Files written in one tool call do not persist to the next. Switch to default preset (/approval) to get a persistent /tmp, or re-run with escalate=true."
+									? "In read-only preset, /tmp is an ephemeral tmpfs mount. Files written in one tool call do not persist to the next. Switch to workspace-write preset (/approval) to get a persistent /tmp, or re-run with escalate=true."
 									: classification.kind === "filesystem"
-										? "Filesystem sandboxing can surface as permission errors. If a write is required, use /approval to switch to default or full-access preset, or re-run with escalate=true."
+										? "Filesystem sandboxing can surface as permission errors. If a write is required, use /approval to switch to workspace-write or full-access preset, or re-run with escalate=true."
 										: "";
 
 						onData(
@@ -963,8 +963,8 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 			const modeMap: Record<string, SandboxPreset> = {
 				"read-only": "read-only",
 				readonly: "read-only",
-				default: "default",
-				agent: "default",
+				"workspace-write": "workspace-write",
+				agent: "workspace-write",
 				"full-access": "full-access",
 				full: "full-access",
 			};
@@ -974,7 +974,7 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 				ctx.ui.notify(`Sandbox mode: ${PRESET_LABELS[mapped]}`, "info");
 			} else {
 				ctx.ui.notify(
-					`Invalid --sandbox-mode value: ${sandboxMode}. Use: read-only, default, full-access`,
+					`Invalid --sandbox-mode value: ${sandboxMode}. Use: read-only, workspace-write, full-access`,
 					"warning",
 				);
 			}
@@ -1011,7 +1011,7 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 			"\n" +
 			"Sandbox presets:\n" +
 			"  - read-only: filesystem read-only (writes only to ephemeral /tmp), network denied, approval on-request\n" +
-			"  - default: workspace-write (writes to workspace + temp dirs, .git/hooks blocked, /tmp persistent), network denied, approval on-request\n" +
+			"  - workspace-write: workspace-write (writes to workspace + temp dirs, .git/hooks blocked, /tmp persistent), network denied, approval on-request\n" +
 			"  - full-access: unrestricted filesystem, unrestricted network, no approval prompts\n" +
 			"\n" +
 			"Authoritative current sandbox state is injected into the start of the user message as content[0]:\n" +
