@@ -39,7 +39,7 @@ import type { SandboxConfig } from "../sandbox/config.js";
 import { parseAgentDefinition } from "./parser.js";
 import { parseConfiguredToolNames } from "./tool-allowlist.js";
 import type { AgentDefinition, Complexity, ModelSpec } from "./types.js";
-import { decodeAgentModelSpec } from "./model-spec.js";
+import { decodeAgentModelSpec, validatePromptModeModelId } from "./model-spec.js";
 
 const MODE_AGENT_SANDBOX: SandboxConfig = {
 	preset: "full-access",
@@ -57,9 +57,7 @@ const MODE_AGENT_TOOLS = [
 	"get_code_context_exa",
 ] as const;
 
-const COMPLEXITY_LEVELS = ["low", "medium", "high"] as const;
-const ALLOWED_AGENT_SETTINGS_KEYS = new Set(["models", "tools", "complexity"]);
-const ALLOWED_COMPLEXITY_CONFIG_KEYS = new Set(["models"]);
+const ALLOWED_AGENT_SETTINGS_KEYS = new Set(["models", "model", "tools"]);
 
 export class AgentRegistryConfigError extends Data.TaggedError("AgentRegistryConfigError")<{
 	readonly message: string;
@@ -217,18 +215,30 @@ function parseToolsArray(
 	});
 }
 
-interface ComplexityConfig {
-	models?: readonly ModelSpec[];
+function parseModelShorthand(
+	value: unknown,
+	keyPath: string,
+): Effect.Effect<readonly ModelSpec[] | undefined, AgentRegistryConfigError> {
+	if (value === undefined) return Effect.succeed(undefined);
+	if (typeof value !== "string") {
+		return Effect.fail(new AgentRegistryConfigError({ message: `${keyPath}: must be a string` }));
+	}
+
+	return validatePromptModeModelId(value, keyPath).pipe(
+		Effect.mapError(
+			(error) =>
+				new AgentRegistryConfigError({
+					message: error.message,
+					cause: error,
+				}),
+		),
+		Effect.map((model) => [{ model }] as const),
+	);
 }
 
 interface AgentSettingsOverride {
 	models?: readonly ModelSpec[];
 	tools?: readonly string[];
-	complexity?: {
-		low?: ComplexityConfig;
-		medium?: ComplexityConfig;
-		high?: ComplexityConfig;
-	};
 }
 
 function mergeSettingsOverride(
@@ -305,86 +315,28 @@ function loadAgentSettingsFromJson(
 				if (!ALLOWED_AGENT_SETTINGS_KEYS.has(key)) {
 					return yield* Effect.fail(
 						new AgentRegistryConfigError({
-							message: `Invalid settings in ${agentPath}: ${key} is not supported (allowed keys: models, tools, complexity)`,
+							message: `Invalid settings in ${agentPath}: ${key} is not supported (allowed keys: models, model, tools)`,
 						}),
 					);
 				}
 			}
 
-			const models = yield* parseModelsArray(config["models"], `${agentPath}.models`);
+			if (config["model"] !== undefined && config["models"] !== undefined) {
+				return yield* Effect.fail(
+					new AgentRegistryConfigError({
+						message: `${agentPath}: cannot specify both 'model' and 'models'`,
+					}),
+				);
+			}
+
+			const models =
+				config["model"] !== undefined
+					? yield* parseModelShorthand(config["model"], `${agentPath}.model`)
+					: yield* parseModelsArray(config["models"], `${agentPath}.models`);
 			const tools = yield* parseToolsArray(config["tools"], `${agentPath}.tools`);
 			const override: AgentSettingsOverride = {};
 			if (models) override.models = models;
 			if (tools !== undefined) override.tools = tools;
-
-			const complexity = config["complexity"];
-			if (complexity !== undefined) {
-				if (!isRecord(complexity)) {
-					return yield* Effect.fail(
-						new AgentRegistryConfigError({
-							message: `Invalid settings in ${agentPath}.complexity: value must be an object`,
-						}),
-					);
-				}
-
-				for (const key of Object.keys(complexity)) {
-					if (!COMPLEXITY_LEVELS.includes(key as "low" | "medium" | "high")) {
-						return yield* Effect.fail(
-							new AgentRegistryConfigError({
-								message: `Invalid settings in ${agentPath}.complexity: ${key} is not supported (allowed keys: low, medium, high)`,
-							}),
-						);
-					}
-				}
-
-				const complexityOverride: NonNullable<AgentSettingsOverride["complexity"]> = {};
-				for (const level of COMPLEXITY_LEVELS) {
-					const levelConfig = complexity[level];
-					if (levelConfig === undefined) {
-						continue;
-					}
-					if (!isRecord(levelConfig)) {
-						return yield* Effect.fail(
-							new AgentRegistryConfigError({
-								message: `Invalid settings in ${agentPath}.complexity.${level}: value must be an object`,
-							}),
-						);
-					}
-
-					for (const key of Object.keys(levelConfig)) {
-						if (!ALLOWED_COMPLEXITY_CONFIG_KEYS.has(key)) {
-							return yield* Effect.fail(
-								new AgentRegistryConfigError({
-									message: `Invalid settings in ${agentPath}.complexity.${level}: ${key} is not supported (allowed keys: models)`,
-								}),
-							);
-						}
-					}
-
-					const levelModels = yield* parseModelsArray(
-						levelConfig["models"],
-						`${agentPath}.complexity.${level}.models`,
-					);
-					if (levelModels === undefined) {
-						return yield* Effect.fail(
-							new AgentRegistryConfigError({
-								message: `Invalid settings in ${agentPath}.complexity.${level}: models is required`,
-							}),
-						);
-					}
-					complexityOverride[level] = { models: levelModels };
-				}
-
-				if (Object.keys(complexityOverride).length === 0) {
-					return yield* Effect.fail(
-						new AgentRegistryConfigError({
-							message: `Invalid settings in ${agentPath}: complexity must define at least one of low, medium, high`,
-						}),
-					);
-				}
-
-				override.complexity = complexityOverride;
-			}
 
 			if (Object.keys(override).length > 0) {
 				result = mergeSettingsOverride(result, name, override);
@@ -603,7 +555,7 @@ export class AgentRegistry {
 		});
 	}
 
-	resolve(name: string, complexity: Complexity): AgentDefinition | undefined {
+	resolve(name: string, _complexity: Complexity): AgentDefinition | undefined {
 		if (isPromptModePresetName(name)) {
 			const def = this.modeAgents.get(name);
 			if (!def) return undefined;
@@ -623,11 +575,6 @@ export class AgentRegistry {
 
 		let models = def.models;
 		if (override.models) models = override.models;
-
-		const complexityConfig = override.complexity?.[complexity];
-		if (complexityConfig?.models) {
-			models = complexityConfig.models;
-		}
 
 		return {
 			...def,

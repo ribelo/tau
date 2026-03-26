@@ -109,6 +109,39 @@ broken
 		fs.rmSync(tempProject, { recursive: true, force: true });
 	});
 
+	it("accepts model shorthand in user agent settings", async () => {
+		const tempHome = mkdtemp("tau-home-");
+		const tempProject = mkdtemp("tau-project-");
+
+		writeFile(
+			path.join(tempHome, ".pi", "agent", "agents", "oracle.md"),
+			validAgentMarkdown("oracle"),
+		);
+		writeFile(
+			path.join(tempHome, ".pi", "agent", "settings.json"),
+			JSON.stringify(
+				{
+					agents: {
+						oracle: {
+							model: "anthropic/claude-sonnet-4",
+						},
+					},
+				},
+				null,
+				2,
+			),
+		);
+
+		vi.stubEnv("HOME", tempHome);
+
+		const registry = await Effect.runPromise(AgentRegistry.load(tempProject));
+		const resolved = registry.resolve("oracle", "medium");
+		expect(resolved?.models).toEqual([{ model: "anthropic/claude-sonnet-4" }]);
+
+		fs.rmSync(tempHome, { recursive: true, force: true });
+		fs.rmSync(tempProject, { recursive: true, force: true });
+	});
+
 	it("accepts xhigh in user agent settings", async () => {
 		const tempHome = mkdtemp("tau-home-");
 		const tempProject = mkdtemp("tau-project-");
@@ -145,6 +178,36 @@ broken
 			model: "openai-codex/gpt-5.3-codex",
 			thinking: "xhigh",
 		});
+
+		fs.rmSync(tempHome, { recursive: true, force: true });
+		fs.rmSync(tempProject, { recursive: true, force: true });
+	});
+
+	it("accepts model shorthand in project agent settings", async () => {
+		const tempHome = mkdtemp("tau-home-");
+		const tempProject = mkdtemp("tau-project-");
+
+		writeFile(path.join(tempProject, ".pi", "agents", "oracle.md"), validAgentMarkdown("oracle"));
+		writeFile(
+			path.join(tempProject, ".pi", "settings.json"),
+			JSON.stringify(
+				{
+					agents: {
+						oracle: {
+							model: "openai/gpt-5",
+						},
+					},
+				},
+				null,
+				2,
+			),
+		);
+
+		vi.stubEnv("HOME", tempHome);
+
+		const registry = await Effect.runPromise(AgentRegistry.load(tempProject));
+		const resolved = registry.resolve("oracle", "medium");
+		expect(resolved?.models).toEqual([{ model: "openai/gpt-5" }]);
 
 		fs.rmSync(tempHome, { recursive: true, force: true });
 		fs.rmSync(tempProject, { recursive: true, force: true });
@@ -213,6 +276,83 @@ broken
 		);
 		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrow(
 			/agents\.oracle\.tools\[1\] duplicates "read"/,
+		);
+
+		fs.rmSync(tempHome, { recursive: true, force: true });
+		fs.rmSync(tempProject, { recursive: true, force: true });
+	});
+
+	it("fails when both model and models are specified on the same agent", async () => {
+		const tempHome = mkdtemp("tau-home-");
+		const tempProject = mkdtemp("tau-project-");
+
+		writeFile(
+			path.join(tempHome, ".pi", "agent", "agents", "oracle.md"),
+			validAgentMarkdown("oracle"),
+		);
+		writeFile(
+			path.join(tempHome, ".pi", "agent", "settings.json"),
+			JSON.stringify(
+				{
+					agents: {
+						oracle: {
+							model: "anthropic/claude-sonnet-4",
+							models: [{ model: "openai/gpt-5" }],
+						},
+					},
+				},
+				null,
+				2,
+			),
+		);
+
+		vi.stubEnv("HOME", tempHome);
+
+		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrowError(
+			AgentRegistryConfigError,
+		);
+		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrow(
+			/cannot specify both 'model' and 'models'/,
+		);
+
+		fs.rmSync(tempHome, { recursive: true, force: true });
+		fs.rmSync(tempProject, { recursive: true, force: true });
+	});
+
+	it("rejects complexity in agent settings", async () => {
+		const tempHome = mkdtemp("tau-home-");
+		const tempProject = mkdtemp("tau-project-");
+
+		writeFile(
+			path.join(tempHome, ".pi", "agent", "agents", "oracle.md"),
+			validAgentMarkdown("oracle"),
+		);
+		writeFile(
+			path.join(tempHome, ".pi", "agent", "settings.json"),
+			JSON.stringify(
+				{
+					agents: {
+						oracle: {
+							complexity: {
+								low: {
+									models: [{ model: "openai/gpt-5" }],
+								},
+							},
+						},
+					},
+				},
+				null,
+				2,
+			),
+		);
+
+		vi.stubEnv("HOME", tempHome);
+
+		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrowError(
+			AgentRegistryConfigError,
+		);
+		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrow(
+			/complexity is not supported \(allowed keys: models, model, tools\)/,
 		);
 
 		fs.rmSync(tempHome, { recursive: true, force: true });
