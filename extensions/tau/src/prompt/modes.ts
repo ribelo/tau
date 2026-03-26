@@ -46,7 +46,7 @@ const DEFAULT_PROMPT_MODE_CONFIG: Record<
 	{ readonly model: string; readonly thinking: ThinkingLevel; readonly promptFile: "smart.md" | "deep.md" | "rush.md" }
 > = {
 	smart: { model: "anthropic/claude-opus-4-5", thinking: "medium", promptFile: "smart.md" },
-	deep: { model: "openai-codex/gpt-5.3-codex", thinking: "high", promptFile: "deep.md" },
+	deep: { model: "openai-codex/gpt-5.4", thinking: "xhigh", promptFile: "deep.md" },
 	rush: { model: "kimi-coding/kimi-k2-thinking", thinking: "off", promptFile: "rush.md" },
 };
 
