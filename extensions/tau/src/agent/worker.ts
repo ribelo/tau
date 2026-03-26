@@ -12,6 +12,7 @@ import type { Model, Api, ThinkingLevel, Message } from "@mariozechner/pi-ai";
 import { stream, streamSimple } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
 import { Effect, SubscriptionRef, Stream } from "effect";
+import { nanoid } from "nanoid";
 import { type Status } from "./status.js";
 import type { AgentId, AgentDefinition, ModelSpec } from "./types.js";
 import { type Agent, AgentError } from "./services.js";
@@ -330,7 +331,7 @@ export class AgentWorker implements Agent {
 			const models = opts.definition.models;
 
 			// Stable agent ID (survives session recreation on model fallback)
-			const agentId = crypto.randomUUID() as AgentId;
+			const agentId: AgentId = nanoid(12);
 
 			// Mutable context for nested agent tool
 			const agentContext = {
@@ -736,7 +737,7 @@ export class AgentWorker implements Agent {
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const worker = this;
 		return Effect.gen(function* () {
-			const submissionId = `sub-${crypto.randomUUID()}`;
+			const submissionId = `sub-${nanoid(12)}`;
 			worker.submitResultRetries = 0;
 
 			yield* SubscriptionRef.set(worker.statusRef, worker.currentRunningStatus());

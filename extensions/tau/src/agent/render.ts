@@ -50,7 +50,7 @@ export function renderAgentCall(args: unknown, theme: Theme) {
 			const msg = (params["message"] as string) || "";
 			const preview = truncate(oneLine(msg), 40);
 			return new Text(
-				`${theme.fg("dim", "➜")} ${theme.fg("accent", `send:${id.slice(0, 8)}`)} ${theme.fg("dim", `"${preview}"`)}`,
+				`${theme.fg("dim", "➜")} ${theme.fg("accent", `send:${id}`)} ${theme.fg("dim", `"${preview}"`)}`,
 				0,
 				0,
 			);
@@ -58,7 +58,7 @@ export function renderAgentCall(args: unknown, theme: Theme) {
 		case "close": {
 			const id = (params["id"] as string) || "?";
 			return new Text(
-				`${theme.fg("dim", "✕")} ${theme.fg("accent", `close:${id.slice(0, 8)}`)}`,
+				`${theme.fg("dim", "✕")} ${theme.fg("accent", `close:${id}`)}`,
 				0,
 				0,
 			);
@@ -115,7 +115,7 @@ export function renderAgentResult(
 		const tools = status["tools"] as
 			| Array<{ name: string; args?: string; result?: string; isError?: boolean }>
 			| undefined;
-		const idStr = id.slice(0, 8);
+		const idStr = id;
 		const typeStr = type ? `  ${theme.fg("accent", type)}` : "";
 		const showLiveTimer = !expanded && state === "running";
 		const shownWorkedMs =
@@ -145,7 +145,7 @@ export function renderAgentResult(
 
 	// spawn
 	if (data["agent_id"] && data["status"] === "running") {
-		const idStr = (data["agent_id"] as string).slice(0, 8);
+		const idStr = data["agent_id"] as string;
 		const msg = data["message"] as string | undefined;
 		if (options.expanded && msg) {
 			return new Text(
@@ -170,16 +170,16 @@ export function renderAgentResult(
 			typeof data["message"] === "string" ? (data["message"] as string) : undefined;
 		if (options.expanded && message) {
 			const targetLine = agentId
-				? `\n${theme.fg("dim", "to:")} ${theme.fg("accent", agentId.slice(0, 8))}`
+				? `\n${theme.fg("dim", "to:")} ${theme.fg("accent", agentId)}`
 				: "";
 			return new Text(
-				`${theme.fg("success", "✔")} submission: ${theme.fg("dim", submissionId.slice(0, 8))}${targetLine}\n${theme.fg("dim", "message:")} ${theme.fg("toolOutput", message)}`,
+				`${theme.fg("success", "✔")} submission: ${theme.fg("dim", submissionId)}${targetLine}\n${theme.fg("dim", "message:")} ${theme.fg("toolOutput", message)}`,
 				0,
 				0,
 			);
 		}
 		return new Text(
-			`${theme.fg("success", "✔")} submission: ${theme.fg("dim", submissionId.slice(0, 8))}`,
+			`${theme.fg("success", "✔")} submission: ${theme.fg("dim", submissionId)}`,
 			0,
 			0,
 		);
