@@ -25,6 +25,8 @@ import type { ApprovalBroker } from "./approval-broker.js";
 import { createWorkerAgentTool, type RunAgentControlPromise } from "./runtime.js";
 import { applyAgentToolAllowlist } from "./tool-allowlist.js";
 
+const MAX_SUBMIT_RESULT_RETRIES = 3;
+
 function truncateStr(s: string, max: number): string {
 	if (s.length <= max) return s;
 	return s.slice(0, max - 3) + "...";
@@ -201,6 +203,7 @@ interface SessionInfra {
 
 export class AgentWorker implements Agent {
 	private structuredOutput?: unknown;
+	private submitResultRetries = 0;
 	private turns = 0;
 	private toolCalls = 0;
 	private workedMs = 0;
@@ -227,6 +230,10 @@ export class AgentWorker implements Agent {
 			approvalBroker: ApprovalBroker | undefined;
 		},
 	) {}
+
+	get definition(): AgentDefinition {
+		return this.infra.definition;
+	}
 
 	private currentRunningStatus(): Status {
 		return {
@@ -270,6 +277,29 @@ export class AgentWorker implements Agent {
 			workedMs: this.workedMs,
 			tools: this.tools,
 		});
+	}
+
+	private repromptForSubmitResult(retry: number): Effect.Effect<void> {
+		const reminderMessage = `You MUST call the submit_result tool with JSON matching the provided schema. This is retry ${retry} of ${MAX_SUBMIT_RESULT_RETRIES}. Call submit_result now.`;
+		return Effect.tryPromise({
+			try: () =>
+				this.session.prompt(reminderMessage, {
+					source: "extension",
+					streamingBehavior: "steer",
+				}),
+			catch: (error) =>
+				new Error(
+					error instanceof Error ? error.message : String(error),
+				),
+		}).pipe(
+			Effect.catch((error) => {
+				const reason =
+					error instanceof Error ? error.message : String(error);
+				return Effect.sync(() => {
+					this.publishFailed(reason);
+				});
+			}),
+		);
 	}
 
 	static make(opts: {
@@ -493,36 +523,63 @@ export class AgentWorker implements Agent {
 						"Agent ended with error (no details provided)";
 
 					agent.publishFailed(reason);
-				} else if (
-					assistantMsg?.stopReason === "aborted" &&
-					agent.structuredOutput === undefined
-				) {
+					return;
+				}
+
+				if (assistantMsg?.stopReason === "aborted") {
+					// submit_result aborts the session after capturing output —
+					// if structuredOutput is set, that's a successful completion.
+					if (agent.structuredOutput !== undefined) {
+						agent.publishCompleted(undefined);
+						return;
+					}
+					// Explicit interrupt/close — do NOT retry, honor the abort.
 					const textContent = assistantMsg.content
 						.filter(
 							(p): p is { type: "text"; text: string } =>
 								p.type === "text" && typeof p.text === "string",
 						)
-							.map((p) => p.text)
-							.join("\n");
+						.map((p) => p.text)
+						.join("\n");
 
 					if (!textContent) {
 						agent.publishFailed("Agent was aborted before producing a response");
 					} else {
 						agent.publishCompleted(textContent);
 					}
-				} else {
-					const message = assistantMsg
-						? assistantMsg.content
-								.filter(
-									(p): p is { type: "text"; text: string } =>
-										p.type === "text" && typeof p.text === "string",
-								)
-								.map((p) => p.text)
-								.join("\n")
-						: undefined;
-
-					agent.publishCompleted(message);
+					return;
 				}
+
+				// Retry when structured output was requested but agent didn't call submit_result.
+				// Only applies to non-aborted endings (normal turn completion without tool call).
+				if (
+					agent.infra.resultSchema !== undefined &&
+					agent.structuredOutput === undefined
+				) {
+					if (agent.submitResultRetries < MAX_SUBMIT_RESULT_RETRIES) {
+						agent.submitResultRetries += 1;
+						Effect.runFork(
+							agent.repromptForSubmitResult(agent.submitResultRetries),
+						);
+					} else {
+						agent.publishFailed(
+							`Agent did not call submit_result after ${MAX_SUBMIT_RESULT_RETRIES} retries`,
+						);
+					}
+					return;
+				}
+
+				const message = assistantMsg
+					? assistantMsg.content
+							.filter(
+								(p): p is { type: "text"; text: string } =>
+									p.type === "text" && typeof p.text === "string",
+							)
+							.map((p) => p.text)
+							.join("\n")
+					: undefined;
+
+				agent.publishCompleted(message);
 			}
 		});
 	}
@@ -680,6 +737,7 @@ export class AgentWorker implements Agent {
 		const worker = this;
 		return Effect.gen(function* () {
 			const submissionId = `sub-${crypto.randomUUID()}`;
+			worker.submitResultRetries = 0;
 
 			yield* SubscriptionRef.set(worker.statusRef, worker.currentRunningStatus());
 
