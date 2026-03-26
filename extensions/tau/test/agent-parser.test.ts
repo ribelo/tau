@@ -15,9 +15,7 @@ models:
     thinking: high
   - model: groq/llama-4-scout
     thinking: medium
-sandbox_fs: workspace-write
-sandbox_net: allow-all
-approval_policy: on-failure
+sandbox: workspace-write
 approval_timeout: 45
 ---
 You are the oracle.`;
@@ -39,9 +37,7 @@ description: The oracle agent
 models:
   - model: openai-codex/gpt-5.3-codex
     thinking: xhigh
-sandbox_fs: read-only
-sandbox_net: allow-all
-approval_policy: never
+sandbox: read-only
 approval_timeout: 60
 ---
 Deep reasoning.`;
@@ -58,9 +54,7 @@ description: Finder agent
 models:
   - model: inherit
     thinking: inherit
-sandbox_fs: read-only
-sandbox_net: deny
-approval_policy: never
+sandbox: read-only
 approval_timeout: 60
 ---
 Find stuff.`;
@@ -77,9 +71,7 @@ description: Fast agent
 models:
   - model: groq/llama-4-scout
   - model: anthropic/claude-haiku-4-5
-sandbox_fs: workspace-write
-sandbox_net: allow-all
-approval_policy: never
+sandbox: workspace-write
 approval_timeout: 60
 ---
 Go fast.`;
@@ -100,9 +92,7 @@ models:
 tools:
   - read
   - bash
-sandbox_fs: read-only
-sandbox_net: deny
-approval_policy: never
+sandbox: read-only
 approval_timeout: 60
 ---
 Find stuff.`;
@@ -111,13 +101,30 @@ Find stuff.`;
 		expect(def.tools).toEqual(["read", "bash"]);
 	});
 
+	it("should throw on unknown frontmatter keys", async () => {
+		const content = `---
+name: finder
+description: Finder agent
+models:
+  - model: inherit
+    thinking: inherit
+sandbox_fs: read-only
+sandbox_net: allow-all
+approval_policy: never
+approval_timeout: 60
+---
+Find stuff.`;
+
+		await expect(Effect.runPromise(parseAgentDefinition(content))).rejects.toThrow(
+			/unknown keys: approval_policy, sandbox_fs, sandbox_net/,
+		);
+	});
+
 	it("should throw on missing models", async () => {
 		const content = `---
 name: oracle
 description: The oracle agent
-sandbox_fs: workspace-write
-sandbox_net: allow-all
-approval_policy: on-failure
+sandbox: workspace-write
 approval_timeout: 60
 ---
 Prompt`;
@@ -135,9 +142,7 @@ models:
 tools:
   - read
   - read
-sandbox_fs: read-only
-sandbox_net: deny
-approval_policy: never
+sandbox: read-only
 approval_timeout: 60
 ---
 Prompt`;
@@ -152,9 +157,7 @@ Prompt`;
 name: oracle
 description: The oracle agent
 models: []
-sandbox_fs: workspace-write
-sandbox_net: allow-all
-approval_policy: on-failure
+sandbox: workspace-write
 approval_timeout: 60
 ---
 Prompt`;
@@ -175,9 +178,7 @@ name: oracle
 description: The oracle agent
 models:
   - model: claude-3-5-sonnet-latest
-sandbox_fs: workspace-write
-sandbox_net: allow-all
-approval_policy: on-failure
+sandbox: workspace-write
 approval_timeout: 0
 ---
 Prompt`;
@@ -190,9 +191,7 @@ name: oracle
 description: The oracle agent
 models:
   - model: claude-3-5-sonnet-latest
-sandbox_fs: workspace-write
-sandbox_net: allow-all
-approval_policy: on-failure
+sandbox: workspace-write
 approval_timeout: 1.5
 ---
 Prompt`;
@@ -234,9 +233,7 @@ description: A test agent
 models:
   - model: inherit
     thinking: low
-sandbox_fs: read-only
-sandbox_net: deny
-approval_policy: never
+sandbox: read-only
 approval_timeout: 60
 ---
 Test prompt`,

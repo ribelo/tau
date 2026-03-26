@@ -1,6 +1,6 @@
 ---
 name: agent-creation
-description: Guide for creating custom agent definitions. This skill should be used when users want to create a specialized agent for their project or globally, configure model routing, or customize sandbox policies.
+description: Guide for creating custom agent definitions. This skill should be used when users want to create a specialized agent for their project or globally, configure model selection, or customize sandbox policies.
 ---
 
 # Agent Creation
@@ -31,9 +31,7 @@ models:
 tools:
   - read
   - bash
-sandbox_fs: workspace-write
-sandbox_net: allow-all
-approval_policy: never
+sandbox: workspace-write
 approval_timeout: 60
 ---
 
@@ -50,14 +48,14 @@ pi system prompt. If empty, only the default prompt is used.
 | `name` | Agent identifier used in `agent spawn <name>` |
 | `description` | When and how to use the agent |
 | `models` | Non-empty list of model specs |
-| `sandbox_fs` / `sandbox_net` / `approval_policy` / `approval_timeout` | Legacy sandbox fields still supported |
 
 ### Optional
 
 | Field | Description |
 |-------|-------------|
 | `tools` | Exact allowlist of tool names this agent may use |
-| `sandbox` | Preferred shorthand for sandbox configuration |
+| `sandbox` | Sandbox preset for this agent |
+| `approval_timeout` | Auto-deny timeout in seconds |
 
 ### Model Configuration
 
@@ -101,12 +99,7 @@ Typical examples:
 | Field | Values | Description |
 |-------|--------|-------------|
 | `sandbox` | `read-only`, `workspace-write`, `full-access` | Sandbox preset |
-| `sandbox_fs` | `read-only`, `workspace-write`, `danger-full-access` | Legacy filesystem mode |
-| `sandbox_net` | `deny`, `allow-all` | Network access |
-| `approval_policy` | `never`, `on-failure`, `on-request`, `unless-trusted` | Approval policy |
 | `approval_timeout` | positive integer seconds | Auto-deny timeout |
-
-Prefer `sandbox` for new agents unless you need the legacy split fields.
 
 ## System Prompt Body
 
@@ -194,37 +187,35 @@ before editing.
 
 ## Settings Overrides
 
-Override models or tools in `.pi/settings.json` or `~/.pi/agent/settings.json`:
+Override models or tools in `.pi/settings.json` or `~/.pi/agent/settings.json`.
+
+Valid agent settings keys:
+- `model`
+- `thinking`
+- `models`
+- `tools`
+
+Use either `model` plus optional `thinking`, or a full `models` array:
 
 ```json
 {
   "agents": {
     "my-agent": {
+      "model": "anthropic/claude-sonnet-4-20250514",
+      "thinking": "medium",
+      "tools": ["read", "bash", "bd"]
+    },
+    "fallback-agent": {
       "models": [
         {
           "model": "anthropic/claude-sonnet-4-20250514",
           "thinking": "medium"
-        }
-      ],
-      "tools": ["read", "bash", "bd"],
-      "complexity": {
-        "low": {
-          "models": [
-            {
-              "model": "anthropic/claude-haiku-3-5-20241022",
-              "thinking": "low"
-            }
-          ]
         },
-        "high": {
-          "models": [
-            {
-              "model": "anthropic/claude-sonnet-4-20250514",
-              "thinking": "high"
-            }
-          ]
+        {
+          "model": "openai/gpt-5",
+          "thinking": "high"
         }
-      }
+      ]
     }
   }
 }
@@ -232,7 +223,8 @@ Override models or tools in `.pi/settings.json` or `~/.pi/agent/settings.json`:
 
 Notes:
 - `tools` is a top-level override only.
-- Complexity overrides currently affect models only.
+- `thinking` requires `model`.
+- `model` and `models` are mutually exclusive.
 
 ## Creating a New Agent
 

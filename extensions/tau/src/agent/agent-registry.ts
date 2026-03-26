@@ -225,6 +225,26 @@ function parseModelShorthand(
 		return Effect.fail(new AgentRegistryConfigError({ message: `${keyPath}: must be a string` }));
 	}
 
+	const thinkingKeyPath = keyPath.replace(".model", ".thinking");
+	if (value === "inherit") {
+		if (thinkingValue === undefined || thinkingValue === "inherit") {
+			return Effect.succeed([{ model: "inherit", thinking: "inherit" }] as const);
+		}
+		if (typeof thinkingValue !== "string") {
+			return Effect.fail(
+				new AgentRegistryConfigError({ message: `${thinkingKeyPath}: must be a string` }),
+			);
+		}
+		if (!isPromptModeThinkingLevel(thinkingValue)) {
+			return Effect.fail(
+				new AgentRegistryConfigError({
+					message: `${thinkingKeyPath}: must be one of inherit, off, minimal, low, medium, high, xhigh`,
+				}),
+			);
+		}
+		return Effect.succeed([{ model: "inherit", thinking: thinkingValue }] as const);
+	}
+
 	return validatePromptModeModelId(value, keyPath).pipe(
 		Effect.mapError(
 			(error) =>
@@ -239,13 +259,13 @@ function parseModelShorthand(
 			}
 			if (typeof thinkingValue !== "string") {
 				return Effect.fail(
-					new AgentRegistryConfigError({ message: `${keyPath.replace(".model", ".thinking")}: must be a string` }),
+					new AgentRegistryConfigError({ message: `${thinkingKeyPath}: must be a string` }),
 				);
 			}
 			if (!isPromptModeThinkingLevel(thinkingValue)) {
 				return Effect.fail(
 					new AgentRegistryConfigError({
-						message: `${keyPath.replace(".model", ".thinking")}: must be one of off, minimal, low, medium, high, xhigh`,
+						message: `${thinkingKeyPath}: must be one of off, minimal, low, medium, high, xhigh`,
 					}),
 				);
 			}

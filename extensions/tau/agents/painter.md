@@ -12,9 +12,7 @@ tools:
   - write
   - bd
   - agent
-sandbox_fs: workspace-write
-sandbox_net: allow-all
-approval_policy: never
+sandbox: workspace-write
 approval_timeout: 60
 ---
 

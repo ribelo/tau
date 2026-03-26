@@ -23,9 +23,7 @@ description: test agent
 models:
   - model: inherit
     thinking: inherit
-sandbox_fs: read-only
-sandbox_net: allow-all
-approval_policy: never
+sandbox: read-only
 approval_timeout: 60
 ---
 
@@ -51,9 +49,7 @@ description: broken
 models:
   - model: inherit
     thinking: ultra
-sandbox_fs: read-only
-sandbox_net: allow-all
-approval_policy: never
+sandbox: read-only
 approval_timeout: 60
 ---
 
@@ -137,6 +133,73 @@ broken
 		const registry = await Effect.runPromise(AgentRegistry.load(tempProject));
 		const resolved = registry.resolve("oracle");
 		expect(resolved?.models).toEqual([{ model: "anthropic/claude-sonnet-4" }]);
+
+		fs.rmSync(tempHome, { recursive: true, force: true });
+		fs.rmSync(tempProject, { recursive: true, force: true });
+	});
+
+	it("accepts inherit model shorthand in user agent settings", async () => {
+		const tempHome = mkdtemp("tau-home-");
+		const tempProject = mkdtemp("tau-project-");
+
+		writeFile(
+			path.join(tempHome, ".pi", "agent", "agents", "oracle.md"),
+			validAgentMarkdown("oracle"),
+		);
+		writeFile(
+			path.join(tempHome, ".pi", "agent", "settings.json"),
+			JSON.stringify(
+				{
+					agents: {
+						oracle: {
+							model: "inherit",
+						},
+					},
+				},
+				null,
+				2,
+			),
+		);
+
+		vi.stubEnv("HOME", tempHome);
+
+		const registry = await Effect.runPromise(AgentRegistry.load(tempProject));
+		const resolved = registry.resolve("oracle");
+		expect(resolved?.models).toEqual([{ model: "inherit", thinking: "inherit" }]);
+
+		fs.rmSync(tempHome, { recursive: true, force: true });
+		fs.rmSync(tempProject, { recursive: true, force: true });
+	});
+
+	it("accepts inherit thinking in user agent settings", async () => {
+		const tempHome = mkdtemp("tau-home-");
+		const tempProject = mkdtemp("tau-project-");
+
+		writeFile(
+			path.join(tempHome, ".pi", "agent", "agents", "oracle.md"),
+			validAgentMarkdown("oracle"),
+		);
+		writeFile(
+			path.join(tempHome, ".pi", "agent", "settings.json"),
+			JSON.stringify(
+				{
+					agents: {
+						oracle: {
+							model: "inherit",
+							thinking: "inherit",
+						},
+					},
+				},
+				null,
+				2,
+			),
+		);
+
+		vi.stubEnv("HOME", tempHome);
+
+		const registry = await Effect.runPromise(AgentRegistry.load(tempProject));
+		const resolved = registry.resolve("oracle");
+		expect(resolved?.models).toEqual([{ model: "inherit", thinking: "inherit" }]);
 
 		fs.rmSync(tempHome, { recursive: true, force: true });
 		fs.rmSync(tempProject, { recursive: true, force: true });
@@ -371,9 +434,7 @@ description: broken
 models:
   - model: inherit
     thinking: ultra
-sandbox_fs: read-only
-sandbox_net: allow-all
-approval_policy: never
+sandbox: read-only
 approval_timeout: 60
 ---
 

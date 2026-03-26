@@ -9,9 +9,7 @@ tools:
   - read
   - bash
   - bd
-sandbox_fs: read-only
-sandbox_net: allow-all
-approval_policy: never
+sandbox: read-only
 approval_timeout: 60
 ---
 

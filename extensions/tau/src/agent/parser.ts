@@ -5,8 +5,9 @@ import * as path from "node:path";
 import type { AgentDefinition, ModelSpec } from "./types.js";
 import type { SandboxConfig } from "../sandbox/config.js";
 import { ApprovalTimeoutSeconds } from "../schemas/config.js";
-import { APPROVAL_POLICIES, FILESYSTEM_MODES, NETWORK_MODES, SANDBOX_PRESET_NAMES, inferPresetFromModes } from "../shared/policy.js";
 import { EXTENSION_AGENTS_DIR, getUserAgentsDir } from "../shared/discovery.js";
+import { isRecord } from "../shared/json.js";
+import { SANDBOX_PRESET_NAMES } from "../shared/policy.js";
 import { findNearestProjectPiDirEffect } from "../shared/settings.js";
 import { decodeAgentModelSpec } from "./model-spec.js";
 import { parseConfiguredToolNames } from "./tool-allowlist.js";
@@ -18,11 +19,18 @@ export class AgentDefinitionError extends Data.TaggedError("AgentDefinitionError
 
 const SandboxPresetSchema = Schema.Literals([...SANDBOX_PRESET_NAMES]);
 
-const FilesystemModeSchema = Schema.Literals([...FILESYSTEM_MODES]);
+const AGENT_DEFINITION_FRONTMATTER_KEYS = [
+	"name",
+	"description",
+	"models",
+	"tools",
+	"sandbox",
+	"approval_timeout",
+] as const;
 
-const NetworkModeSchema = Schema.Literals([...NETWORK_MODES]);
-
-const ApprovalPolicySchema = Schema.Literals([...APPROVAL_POLICIES]);
+const VALID_AGENT_DEFINITION_FRONTMATTER_KEYS = new Set<string>(
+	AGENT_DEFINITION_FRONTMATTER_KEYS,
+);
 
 const AgentDefinitionFrontmatterSchema = Schema.Struct({
 	name: Schema.String,
@@ -30,12 +38,29 @@ const AgentDefinitionFrontmatterSchema = Schema.Struct({
 	models: Schema.NonEmptyArray(Schema.Unknown),
 	tools: Schema.optional(Schema.Array(Schema.Unknown)),
 	sandbox: Schema.optional(SandboxPresetSchema),
-	// Legacy fields still accepted for back-compat
-	sandbox_fs: Schema.optional(FilesystemModeSchema),
-	sandbox_net: Schema.optional(NetworkModeSchema),
-	approval_policy: Schema.optional(ApprovalPolicySchema),
 	approval_timeout: Schema.optional(ApprovalTimeoutSeconds),
 });
+
+function validateFrontmatterKeys(
+	frontmatter: unknown,
+): Effect.Effect<unknown, AgentDefinitionError> {
+	if (!isRecord(frontmatter)) {
+		return Effect.succeed(frontmatter);
+	}
+
+	const unknownKeys = Object.keys(frontmatter)
+		.filter((key) => !VALID_AGENT_DEFINITION_FRONTMATTER_KEYS.has(key))
+		.sort((left, right) => left.localeCompare(right));
+	if (unknownKeys.length === 0) {
+		return Effect.succeed(frontmatter);
+	}
+
+	return Effect.fail(
+		new AgentDefinitionError({
+			message: `Invalid agent frontmatter: unknown keys: ${unknownKeys.join(", ")} (allowed keys: ${AGENT_DEFINITION_FRONTMATTER_KEYS.join(", ")})`,
+		}),
+	);
+}
 
 export function parseAgentDefinition(
 	content: string,
@@ -68,13 +93,17 @@ export function parseAgentDefinition(
 			}),
 	}).pipe(
 		Effect.flatMap((frontmatter) =>
-			Schema.decodeUnknownEffect(AgentDefinitionFrontmatterSchema)(frontmatter).pipe(
-				Effect.mapError(
-					(cause) =>
-						new AgentDefinitionError({
-							message: `Invalid agent frontmatter: ${String(cause)}`,
-							cause,
-						}),
+			validateFrontmatterKeys(frontmatter).pipe(
+				Effect.flatMap((validatedFrontmatter) =>
+					Schema.decodeUnknownEffect(AgentDefinitionFrontmatterSchema)(validatedFrontmatter).pipe(
+						Effect.mapError(
+							(cause) =>
+								new AgentDefinitionError({
+									message: `Invalid agent frontmatter: ${String(cause)}`,
+									cause,
+								}),
+						),
+					),
 				),
 			),
 		),
@@ -103,13 +132,10 @@ export function parseAgentDefinition(
 							}),
 					}).pipe(
 						Effect.map((tools): AgentDefinition => {
-							const sandbox: SandboxConfig = {
-								preset: parsedFrontmatter.sandbox ?? inferPresetFromModes({
-									filesystemMode: parsedFrontmatter.sandbox_fs,
-									networkMode: parsedFrontmatter.sandbox_net,
-									approvalPolicy: parsedFrontmatter.approval_policy,
-								}),
-							};
+							const sandbox: SandboxConfig =
+								parsedFrontmatter.sandbox === undefined
+									? {}
+									: { preset: parsedFrontmatter.sandbox };
 
 							return {
 								name: parsedFrontmatter.name,
