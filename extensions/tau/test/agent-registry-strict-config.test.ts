@@ -352,7 +352,7 @@ broken
 			AgentRegistryConfigError,
 		);
 		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrow(
-			/complexity is not supported \(allowed keys: models, model, tools\)/,
+			/complexity is not supported \(allowed keys: model, thinking, models, tools\)/,
 		);
 
 		fs.rmSync(tempHome, { recursive: true, force: true });

@@ -39,7 +39,7 @@ import type { SandboxConfig } from "../sandbox/config.js";
 import { parseAgentDefinition } from "./parser.js";
 import { parseConfiguredToolNames } from "./tool-allowlist.js";
 import type { AgentDefinition, Complexity, ModelSpec } from "./types.js";
-import { decodeAgentModelSpec, validatePromptModeModelId } from "./model-spec.js";
+import { decodeAgentModelSpec, isPromptModeThinkingLevel, validatePromptModeModelId } from "./model-spec.js";
 
 const MODE_AGENT_SANDBOX: SandboxConfig = {
 	preset: "full-access",
@@ -57,7 +57,7 @@ const MODE_AGENT_TOOLS = [
 	"get_code_context_exa",
 ] as const;
 
-const ALLOWED_AGENT_SETTINGS_KEYS = new Set(["models", "model", "tools"]);
+const ALLOWED_AGENT_SETTINGS_KEYS = new Set(["models", "model", "thinking", "tools"]);
 
 export class AgentRegistryConfigError extends Data.TaggedError("AgentRegistryConfigError")<{
 	readonly message: string;
@@ -217,6 +217,7 @@ function parseToolsArray(
 
 function parseModelShorthand(
 	value: unknown,
+	thinkingValue: unknown,
 	keyPath: string,
 ): Effect.Effect<readonly ModelSpec[] | undefined, AgentRegistryConfigError> {
 	if (value === undefined) return Effect.succeed(undefined);
@@ -232,7 +233,24 @@ function parseModelShorthand(
 					cause: error,
 				}),
 		),
-		Effect.map((model) => [{ model }] as const),
+		Effect.flatMap((model) => {
+			if (thinkingValue === undefined) {
+				return Effect.succeed([{ model }] as const);
+			}
+			if (typeof thinkingValue !== "string") {
+				return Effect.fail(
+					new AgentRegistryConfigError({ message: `${keyPath.replace(".model", ".thinking")}: must be a string` }),
+				);
+			}
+			if (!isPromptModeThinkingLevel(thinkingValue)) {
+				return Effect.fail(
+					new AgentRegistryConfigError({
+						message: `${keyPath.replace(".model", ".thinking")}: must be one of off, minimal, low, medium, high, xhigh`,
+					}),
+				);
+			}
+			return Effect.succeed([{ model, thinking: thinkingValue }] as const);
+		}),
 	);
 }
 
@@ -315,7 +333,7 @@ function loadAgentSettingsFromJson(
 				if (!ALLOWED_AGENT_SETTINGS_KEYS.has(key)) {
 					return yield* Effect.fail(
 						new AgentRegistryConfigError({
-							message: `Invalid settings in ${agentPath}: ${key} is not supported (allowed keys: models, model, tools)`,
+							message: `Invalid settings in ${agentPath}: ${key} is not supported (allowed keys: model, thinking, models, tools)`,
 						}),
 					);
 				}
@@ -329,9 +347,17 @@ function loadAgentSettingsFromJson(
 				);
 			}
 
+			if (config["thinking"] !== undefined && config["model"] === undefined) {
+				return yield* Effect.fail(
+					new AgentRegistryConfigError({
+						message: `${agentPath}: 'thinking' requires 'model' (use 'models' array for full control)`,
+					}),
+				);
+			}
+
 			const models =
 				config["model"] !== undefined
-					? yield* parseModelShorthand(config["model"], `${agentPath}.model`)
+					? yield* parseModelShorthand(config["model"], config["thinking"], `${agentPath}.model`)
 					: yield* parseModelsArray(config["models"], `${agentPath}.models`);
 			const tools = yield* parseToolsArray(config["tools"], `${agentPath}.tools`);
 			const override: AgentSettingsOverride = {};
