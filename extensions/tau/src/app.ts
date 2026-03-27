@@ -1,4 +1,4 @@
-import { Effect, Layer, ManagedRuntime } from "effect";
+import { Effect, Fiber, Layer, ManagedRuntime } from "effect";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 
 import { PiAPILive } from "./effect/pi.js";
@@ -9,16 +9,19 @@ import { Footer, FooterLive } from "./services/footer.js";
 import { PromptModes, PromptModesLive } from "./services/prompt-modes.js";
 import { Persistence, PersistenceLive } from "./services/persistence.js";
 import { CuratedMemory, CuratedMemoryLive } from "./services/curated-memory.js";
+import { SkillManager, SkillManagerLive } from "./services/skill-manager.js";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import initBeads from "./beads/index.js";
 import initExa from "./exa/index.js";
 import initMemory from "./memory/index.js";
+import initSkillManage from "./skill-manage/index.js";
 import initTerminalPrompt from "./terminal-prompt/index.js";
 import initWorkedFor from "./worked-for/index.js";
 import { initStatus } from "./status/index.js";
 import initCommit from "./commit/index.js";
 import initEditor from "./editor/index.js";
 import initSkillMarker from "./skill-marker/index.js";
+import { reloadSkills } from "./skill-marker/index.js";
 import initAgent from "./agent/index.js";
 import { AgentConfig, AgentControl } from "./agent/services.js";
 import { AgentControlLive } from "./agent/control.js";
@@ -43,6 +46,10 @@ const FooterLayer = FooterLive.pipe(
 );
 const PromptModesLayer = PromptModesLive.pipe(Layer.provide(PersistenceLayer));
 const CuratedMemoryLayer = CuratedMemoryLive;
+const skillMutationCallback: { current: () => void } = { current: () => {} };
+const SkillManagerLayer = SkillManagerLive({
+	onSkillMutated: () => skillMutationCallback.current(),
+});
 const AgentConfigLive = Layer.succeed(
 	AgentConfig,
 	AgentConfig.of({
@@ -65,12 +72,13 @@ const createMainLayer = (agentRuntimeBridge: AgentRuntimeBridgeService) => {
 		FooterLayer,
 		PromptModesLayer,
 		CuratedMemoryLayer,
+		SkillManagerLayer,
 		AgentLayer,
 	).pipe(Layer.provide(PiLoggerLive));
 };
 
 type TauRuntime = ManagedRuntime.ManagedRuntime<
-	Persistence | Sandbox | Footer | PromptModes | CuratedMemory | AgentControl,
+	Persistence | Sandbox | Footer | PromptModes | CuratedMemory | AgentControl | SkillManager,
 	never
 >;
 
@@ -96,6 +104,10 @@ export const runTau = (pi: ExtensionAPI) => {
 	const layer = createMainLayer(agentRuntimeBridge).pipe(Layer.provide(PiAPILive(pi)));
 	const currentRuntime = ManagedRuntime.make(layer);
 	runtime = currentRuntime;
+	const runCuratedMemory = <A, E>(effect: Effect.Effect<A, E, CuratedMemory>) =>
+		currentRuntime.runPromise(effect);
+	const runSkillManager = <A, E>(effect: Effect.Effect<A, E, SkillManager>) =>
+		currentRuntime.runPromise(effect);
 
 	const program = Effect.scoped(
 		Effect.gen(function* () {
@@ -105,6 +117,9 @@ export const runTau = (pi: ExtensionAPI) => {
 			const promptModes = yield* PromptModes;
 			const curatedMemory = yield* CuratedMemory;
 			const skillMarker = createSkillMarkerRuntime();
+			skillMutationCallback.current = () => {
+				void reloadSkills(skillMarker, process.cwd());
+			};
 			const persistedAccess = {
 				getSnapshot: persistence.getSnapshot,
 				update: persistence.update,
@@ -127,7 +142,8 @@ export const runTau = (pi: ExtensionAPI) => {
 					skillMarker,
 				});
 				initSkillMarker(pi, skillMarker);
-				initMemory(pi, (effect) => currentRuntime.runPromise(effect) as Promise<never>);
+				initMemory(pi, runCuratedMemory);
+				initSkillManage(pi, runSkillManager);
 			});
 
 			const agentRegistry = yield* AgentRegistry.load(process.cwd());
@@ -140,5 +156,16 @@ export const runTau = (pi: ExtensionAPI) => {
 		}),
 	);
 
-	return currentRuntime.runFork(program);
+	const rootFiber = currentRuntime.runFork(program);
+	let disposed = false;
+
+	pi.on("session_shutdown", async () => {
+		if (disposed) return;
+		disposed = true;
+		await Effect.runPromise(Fiber.interrupt(rootFiber));
+		await currentRuntime.dispose();
+		runtime = undefined;
+	});
+
+	return rootFiber;
 };
