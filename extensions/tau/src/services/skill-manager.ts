@@ -82,6 +82,10 @@ interface SkillMatch {
 }
 
 function getSkillsDir(): string {
+	const override = process.env["TAU_SKILLS_DIR"];
+	if (override) {
+		return override;
+	}
 	return path.join(os.homedir(), ".pi", "agent", "skills");
 }
 
