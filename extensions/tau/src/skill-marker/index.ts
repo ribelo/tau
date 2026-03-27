@@ -2,14 +2,16 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
+	type SlashCommandInfo,
 	getAgentDir,
 	loadSkills,
 	stripFrontmatter,
 	truncateHead,
-	type Skill,
 } from "@mariozechner/pi-coding-agent";
 import type { AutocompleteProvider } from "@mariozechner/pi-tui";
+import { dirname, join } from "node:path";
 import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 
 import { SkillMarkerAutocompleteProvider, type SkillCandidate } from "./autocomplete.js";
 
@@ -17,6 +19,8 @@ import { SkillMarkerAutocompleteProvider, type SkillCandidate } from "./autocomp
 export { shouldAutoTriggerSkillAutocomplete } from "./autocomplete.js";
 
 const ENABLED = true;
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const TAU_SKILLS_DIR = join(__dirname, "..", "..", "skills");
 
 // Marker rules (see tau-2lq.1)
 const SKILL_MARKER_REGEX = /(?:^|\s)\$([a-z0-9][a-z0-9-]*)(?=$|[^a-z0-9-])/g;
@@ -25,7 +29,6 @@ type SkillInfo = {
 	name: string;
 	description: string;
 	path: string;
-	baseDir: string;
 };
 
 type SkillBody = {
@@ -38,14 +41,13 @@ class SkillRegistry {
 	private byName = new Map<string, SkillInfo>();
 	private bodyCache = new Map<string, SkillBody>();
 
-	refresh(skills: Skill[]): void {
+	refresh(skills: Iterable<SkillInfo>): void {
 		this.byName.clear();
 		for (const s of skills) {
 			this.byName.set(s.name, {
 				name: s.name,
 				description: s.description,
-				path: s.filePath,
-				baseDir: s.baseDir,
+				path: s.path,
 			});
 		}
 		this.bodyCache.clear();
@@ -87,6 +89,26 @@ class SkillRegistry {
 	}
 }
 
+function getSkillInfoFromCommands(commands: readonly SlashCommandInfo[]): SkillInfo[] {
+	const skills: SkillInfo[] = [];
+
+	for (const command of commands) {
+		if (command.source !== "skill") continue;
+		if (!command.name.startsWith("skill:")) continue;
+
+		const name = command.name.slice("skill:".length);
+		if (name.length === 0) continue;
+
+		skills.push({
+			name,
+			description: command.description ?? "",
+			path: command.sourceInfo.path,
+		});
+	}
+
+	return skills;
+}
+
 export type SkillMarkerRuntime = {
 	registry: SkillRegistry;
 	wrapper?: SkillMarkerAutocompleteProvider;
@@ -118,10 +140,28 @@ function escapeXml(str: string): string {
 		.replace(/'/g, "&apos;");
 }
 
-async function reloadSkills(runtime: SkillMarkerRuntime, cwd: string) {
-	const agentDir = getAgentDir();
-	const { skills } = loadSkills({ cwd, agentDir });
+function refreshFromActiveCommands(pi: ExtensionAPI, runtime: SkillMarkerRuntime): void {
+	const skills = getSkillInfoFromCommands(pi.getCommands());
+	if (skills.length === 0) return;
 	runtime.registry.refresh(skills);
+}
+
+export async function reloadSkills(runtime: SkillMarkerRuntime, cwd: string) {
+	const agentDir = getAgentDir();
+	const { skills } = loadSkills({ cwd, agentDir, skillPaths: [TAU_SKILLS_DIR] });
+	runtime.registry.refresh(
+		skills.map((skill) => ({
+			name: skill.name,
+			description: skill.description,
+			path: skill.filePath,
+		})),
+	);
+}
+
+async function refreshSkillRegistry(pi: ExtensionAPI, runtime: SkillMarkerRuntime, cwd: string) {
+	refreshFromActiveCommands(pi, runtime);
+	if (runtime.registry.getAllNames().length > 0) return;
+	await reloadSkills(runtime, cwd);
 }
 
 export function wrapAutocompleteProvider(
@@ -141,7 +181,14 @@ export default function initSkillMarker(pi: ExtensionAPI, runtime: SkillMarkerRu
 
 	pi.on("session_start", async (_event, ctx) => {
 		try {
-			await reloadSkills(runtime, ctx.cwd);
+			await refreshSkillRegistry(pi, runtime, ctx.cwd);
+			setTimeout(() => {
+				try {
+					refreshFromActiveCommands(pi, runtime);
+				} catch {
+					// ignore delayed refresh failures
+				}
+			}, 0);
 		} catch (err) {
 			if (ctx.hasUI) {
 				ctx.ui.notify(
@@ -153,12 +200,10 @@ export default function initSkillMarker(pi: ExtensionAPI, runtime: SkillMarkerRu
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
-		if (runtime.registry.getAllNames().length === 0) {
-			try {
-				await reloadSkills(runtime, ctx.cwd);
-			} catch {
-				// ignore
-			}
+		try {
+			await refreshSkillRegistry(pi, runtime, ctx.cwd);
+		} catch {
+			// ignore
 		}
 
 		const mentioned = collectMentionedSkills(event.prompt);
