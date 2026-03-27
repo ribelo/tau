@@ -1,4 +1,5 @@
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 
 const QuestionOption = Type.Object({
@@ -30,6 +31,15 @@ const RequestUserInputParams = Type.Object({
 	}),
 });
 
+type QuestionInput = {
+	id: string;
+	header: string;
+	question: string;
+	options: Array<{ label: string; description: string }>;
+};
+
+type AnswersMap = Record<string, string>;
+
 export default function initRequestUserInput(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "request_user_input",
@@ -39,6 +49,43 @@ export default function initRequestUserInput(pi: ExtensionAPI) {
 		promptSnippet:
 			"request_user_input: Present structured multiple-choice questions to the user. Use in plan mode for decisions/tradeoffs.",
 		parameters: RequestUserInputParams,
+
+		renderCall(args, theme) {
+			const questions = (args as { questions?: QuestionInput[] }).questions ?? [];
+			let out = theme.fg("toolTitle", theme.bold("request_user_input"));
+			if (questions.length > 0) {
+				out += ` ${theme.fg("dim", `${questions.length} question${questions.length > 1 ? "s" : ""}`)}`;
+			}
+
+			for (const q of questions) {
+				out += `\n  ${theme.fg("accent", q.header + ":")} ${theme.fg("toolOutput", q.question)}`;
+				for (const opt of q.options) {
+					out += `\n    ${theme.fg("muted", "·")} ${opt.label} ${theme.fg("dim", `— ${opt.description}`)}`;
+				}
+			}
+			return new Text(out, 0, 0);
+		},
+
+		renderResult(result, options, theme) {
+			if (options.isPartial) {
+				return new Text(theme.fg("warning", "Waiting for user input…"), 0, 0);
+			}
+
+			const answers = result.details as AnswersMap | undefined;
+			if (!answers || Object.keys(answers).length === 0) {
+				return new Text(theme.fg("dim", "(no answers)"), 0, 0);
+			}
+
+			const entries = Object.entries(answers);
+			let out = "";
+			for (let i = 0; i < entries.length; i++) {
+				const [id, answer] = entries[i]!;
+				if (i > 0) out += "\n";
+				out += `  ${theme.fg("accent", id + ":")} ${theme.fg("toolOutput", answer)}`;
+			}
+			return new Text(out, 0, 0);
+		},
+
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			if (!ctx.hasUI) {
 				return {
@@ -52,7 +99,7 @@ export default function initRequestUserInput(pi: ExtensionAPI) {
 				};
 			}
 
-			const answers: Record<string, string> = {};
+			const answers: AnswersMap = {};
 
 			for (const question of params.questions) {
 				if (signal?.aborted) {
