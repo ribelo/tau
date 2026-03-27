@@ -99,6 +99,8 @@ function getSkillInfoFromCommands(commands: readonly SlashCommandInfo[]): SkillI
 		const name = command.name.slice("skill:".length);
 		if (name.length === 0) continue;
 
+		if (!command.sourceInfo?.path) continue;
+
 		skills.push({
 			name,
 			description: command.description ?? "",
