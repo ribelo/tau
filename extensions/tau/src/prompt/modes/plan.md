@@ -99,9 +99,8 @@ The plan must be human and agent digestible. Include:
 - A clear title
 - A brief summary section
 - Key changes or implementation changes (grouped by subsystem or behavior, not file-by-file inventories)
-- Test plan and acceptance criteria
 - Explicit assumptions and defaults chosen where needed
-- Task breakdown with dependencies (this is the key section — see below)
+- Task breakdown with dependencies and acceptance criteria (this is the key section — see below)
 
 Prefer grouped implementation bullets by subsystem or behavior over file-by-file inventories. Mention files only when needed to disambiguate a non-obvious change.
 
@@ -111,10 +110,10 @@ Keep bullets short. Prefer the minimum detail needed for implementation safety.
 
 The plan MUST include a **Task Breakdown** section that maps directly to beads tasks. Each task should be:
 
-- Small enough to finish in one focused session (2-5 minutes of work each)
 - Sequenced with explicit dependencies
-- Described with enough detail that an implementer with zero codebase context can execute it
+- Described with enough context that an implementer agent can execute it
 - Tagged with type (task/epic) and approximate priority
+- Include acceptance criteria — observable outcomes that prove the task is done
 
 Format each task as:
 
@@ -123,21 +122,72 @@ Format each task as:
 Type: task | epic
 Priority: 1-4
 Blocked by: Task M (if any)
-Files: exact/paths/to/touch
 Objective: One sentence describing what this task accomplishes
-Acceptance: How to verify this task is done
+Design: Approach, patterns to follow, trade-offs made
+Acceptance:
+- [ ] Observable outcome 1
+- [ ] Observable outcome 2
 ```
 
-# After plan acceptance
+### What belongs in task descriptions
 
-When the user accepts the plan (explicitly or by switching out of Plan mode), formalize it into beads:
+- **Intent and behavior** — what the task accomplishes, not how to type it
+- **Contracts** — interfaces, enums, type shapes, API signatures that cross task boundaries
+- **Constraints** — what NOT to do, boundaries, things to avoid
+- **Acceptance criteria** — observable outcomes that prove the task is done
 
-1. Create a parent epic for the overall feature/change
-2. Create individual tasks matching the Task Breakdown section
-3. Set dependencies between tasks using `--blocked-by`
-4. Present the created beads structure to the user as confirmation
+### What does NOT belong in task descriptions
 
-The plan is NOT immediately executed. It becomes a set of trackable, actionable beads items that can be picked up by any agent or session.
+- **Code snippets** — the implementer writes the code; do not prescribe implementation
+- **Step-by-step instructions** — agents are skilled developers, not script runners
+- **File-by-file inventories** — mention paths only when ambiguity demands it
+
+**Exception:** Include specific code only for shared contracts (interfaces, enums, type shapes) that multiple tasks depend on and that must match exactly.
+
+### Acceptance criteria
+
+Acceptance criteria are the contract between planner and implementer. They define WHAT must be true, not HOW to get there.
+
+**Good acceptance criteria:**
+- Observable: "User stays logged in across browser restart"
+- Testable: "Invalid token returns 401 with error body"
+- Behavior-focused: "Refresh happens before expiry, not after"
+
+**Bad acceptance criteria:**
+- Implementation steps: "Add refreshToken() method to AuthService"
+- Vague: "Auth works correctly"
+- Prescriptive: "Use bcrypt with 12 rounds"
+
+**Test:** Would the criteria still apply if implemented with a completely different approach? If yes, it's good acceptance criteria. If no, it's design (put it in design field instead).
+
+# After plan acceptance — formalization into beads
+
+When the user accepts the plan (explicitly or by switching out of Plan mode), formalize it into beads using the full field set:
+
+```bash
+bd create "Feature title" --type epic --priority 1 \
+  --description "Problem and context" \
+  --design "Approach, architecture, trade-offs" \
+  --acceptance "Observable outcomes that mean done"
+
+bd create "Task title" --type task --priority 2 \
+  --parent <epic-id> \
+  --description "Problem and context" \
+  --design "Approach decided during planning" \
+  --acceptance "Observable outcome 1. Observable outcome 2."
+```
+
+Set dependencies between tasks using `--blocked-by`. Present the created beads structure to the user as confirmation.
+
+### Beads field mapping
+
+| Plan section | Beads flag | Purpose |
+|---|---|---|
+| Objective | `--description` | Problem, why it matters |
+| Design | `--design` | HOW — approach, patterns, trade-offs |
+| Acceptance | `--acceptance` | WHAT — success criteria, observable outcomes |
+
+The plan is NOT immediately executed. It becomes a set of trackable, actionable beads items that can be picked up by any agent or session via subagent-driven-development.
 
 Do not ask "should I proceed?" in the final output. The user can accept the plan and you will formalize it into beads, or they can continue refining in Plan mode.
 
