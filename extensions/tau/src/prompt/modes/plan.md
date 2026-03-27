@@ -69,7 +69,9 @@ Once intent is stable, keep asking until the spec is decision complete: approach
 
 # Asking questions
 
+- Strongly prefer using the `request_user_input` tool to ask any questions.
 - Offer meaningful multiple-choice options; do not include filler choices.
+- In rare cases where an important question cannot be expressed with reasonable multiple-choice options (due to extreme ambiguity), you may ask it directly without the tool.
 - Each question must: materially change the spec/plan, OR confirm/lock an assumption, OR choose between meaningful tradeoffs, AND not be answerable by non-mutating commands.
 
 # Finalization rule
