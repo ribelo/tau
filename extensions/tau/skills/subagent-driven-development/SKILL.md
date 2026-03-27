@@ -46,28 +46,34 @@ Nothing else. No restating the spec. No step-by-step instructions.
 ### One task, complex or cross-cutting
 `agent spawn deep` — more reasoning, handles multi-file changes well.
 
-### Multiple sequential tasks (same epic)
-`agent spawn deep` with the epic ID — deep agents handle multi-step work well. When tasks must be done in order and cannot be parallelized, one deep agent working through the sequence is faster than spawn/wait/spawn cycles.
+### Multiple sequential tasks — reuse vs. fresh
 
-Reuse the same agent with `agent send` for subsequent tasks in the sequence:
+The decision to reuse an agent or spawn a fresh one is about **context relevance**:
+
+**Reuse** (`agent send`) when the next task touches the same files or area. The agent already has those files in context — it won't need to re-read them. This saves tokens and time, and the understanding it built from prior work directly helps the next task.
+
+**Fresh** (`agent spawn`) when the next task is in a different area of the codebase. Accumulated context from unrelated files pollutes the agent's working memory and increases the chance of confusion or hallucination. A clean agent with focused context will be faster and more accurate.
+
+Rule of thumb: if the agent would need to read mostly the same files for the next task, reuse it. If it would need to read entirely different files, spawn fresh.
 
 ```text
-agent spawn deep "Implement tau-abc.1
-Read the task: bd show tau-abc.1
-..." -> impl-1
-
-agent wait [impl-1]
-
-agent send [impl-1] "Now implement tau-abc.2
+# Reuse: task 2 touches same files as task 1
+agent spawn deep "Implement tau-abc.1 ..." -> impl
+agent wait [impl]
+agent send [impl] "Now implement tau-abc.2
 Read the task: bd show tau-abc.2"
+agent wait [impl]
 
-agent wait [impl-1]
+# Fresh: tasks touch different subsystems
+agent spawn smart "Implement tau-abc.3 ..." -> impl-3
+agent spawn smart "Implement tau-abc.4 ..." -> impl-4
+agent wait [impl-3, impl-4]
 ```
 
-### Multiple independent tasks (parallelizable)
-Spawn separate agents — one per task, in parallel. Only when tasks touch disjoint files.
+### Review — same reuse logic
 
-### Review
+Reviewers follow the same rule. One reviewer can cover multiple tasks across an epic when they touch related code — it accumulates understanding of the area and catches cross-task regressions. Spawn a fresh reviewer when switching to unrelated code where prior context would not help.
+
 `agent spawn review` — always a separate agent from the implementer.
 
 ## Per-Task Workflow
@@ -98,7 +104,7 @@ agent wait [impl_id]
 
 ### Step 2: Two-Stage Review
 
-Spawn ONE reviewer. It handles spec compliance first, then code quality.
+Spawn ONE reviewer per area of code. It handles spec compliance first, then code quality. If subsequent tasks touch the same area, reuse this reviewer via `send` — it already knows the code and catches cross-task regressions. Spawn a fresh reviewer when moving to unrelated code.
 
 **Phase 1 — Spec compliance:**
 
@@ -144,9 +150,9 @@ agent close [reviewer_id]
 bd close tau-abc123 --reason "Implemented and reviewed"
 ```
 
-## Multi-Task Sequential Example
+## Multi-Task Sequential Example (related tasks, same area)
 
-When an epic has tasks that must be done in order:
+When tasks touch the same files/area — reuse both implementer and reviewer:
 
 ```text
 [bd update tau-abc.1 --status in_progress]
@@ -157,26 +163,32 @@ Project context: npm run gate, do not commit" -> impl
 
 agent wait [impl]
 
-[Review tau-abc.1 as above]
+agent spawn review "Review tau-abc.1 for spec compliance
+Read the spec: bd show tau-abc.1 ..." -> rev
+
+[Review tau-abc.1 — spec then quality as above]
 
 [bd close tau-abc.1 --reason "Implemented and reviewed"]
 [bd update tau-abc.2 --status in_progress]
 
+# Reuse implementer — it already knows the code
 agent send [impl] "Now implement tau-abc.2
 Read the task: bd show tau-abc.2"
 
 agent wait [impl]
 
-[Review tau-abc.2 as above]
+# Reuse reviewer — it already knows the area
+agent send [rev] "Review tau-abc.2 for spec compliance
+Read the spec: bd show tau-abc.2 ..."
+
+[Review tau-abc.2 — spec then quality]
 
 [bd close tau-abc.2 --reason "Implemented and reviewed"]
 ```
 
-The deep agent accumulates codebase context across tasks — it already knows the code from task 1 when starting task 2. This is faster than spawning fresh agents for sequential work.
+## Multi-Task Parallel Example (unrelated tasks, disjoint files)
 
-## Multi-Task Parallel Example
-
-When tasks touch disjoint files:
+When tasks touch different areas — fresh agents, no context pollution:
 
 ```text
 [bd update tau-abc.1 --status in_progress]
@@ -225,7 +237,8 @@ bd close tau-abc --reason "All tasks implemented and reviewed"
 - Letting implementer self-review
 - Closing beads task before both review stages pass
 - Telling agents to commit or change git state
-- Spawning fresh agents for sequential dependent work (reuse with `send`)
+- Spawning fresh agents for sequential dependent work in the same area (reuse with `send`)
+- Reusing agents across unrelated areas (accumulated context pollutes, spawn fresh)
 
 ## Integration
 
@@ -237,7 +250,7 @@ Plan mode creates the beads tasks. SDD executes them:
 
 ### With review
 
-Two-phase review per task (spec then quality), one reviewer agent reused via `send`.
+Two-phase review per task (spec then quality). Reuse reviewer across related tasks in the same area via `send`. Fresh reviewer for unrelated code.
 
 ### With test-driven development
 
