@@ -976,7 +976,8 @@ export function createApplyPatchToolDefinition(
 			const parts: string[] = [];
 			for (const fileDiff of summary.diffs) {
 				if (fileDiff.diff) {
-					parts.push(renderColoredDiff(fileDiff.diff, theme));
+					const header = theme.fg("toolTitle", fileDiff.filePath);
+					parts.push(`${header}\n${renderColoredDiff(fileDiff.diff, theme)}`);
 				}
 			}
 			return new Text(parts.length > 0 ? `\n${parts.join("\n\n")}` : "", 0, 0);
