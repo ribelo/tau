@@ -12,6 +12,8 @@ tools:
   - write
   - bd
   - agent
+spawns:
+  - finder
 sandbox: workspace-write
 approval_timeout: 60
 ---

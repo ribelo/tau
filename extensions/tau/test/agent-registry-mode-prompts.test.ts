@@ -33,6 +33,7 @@ describe("agent-registry: mode agents", () => {
 				"apply_patch",
 				"agent",
 				"bd",
+				"memory",
 				"web_search_exa",
 				"crawling_exa",
 				"get_code_context_exa",

@@ -53,6 +53,7 @@ const MODE_AGENT_TOOLS = [
 	"apply_patch",
 	"agent",
 	"bd",
+	"memory",
 	"web_search_exa",
 	"crawling_exa",
 	"get_code_context_exa",
