@@ -2,7 +2,7 @@ import { parse as parseYaml } from "yaml";
 
 const MAX_NAME_LENGTH = 64;
 const MAX_DESCRIPTION_LENGTH = 1024;
-const VALID_NAME_RE = /^[a-z0-9][a-z0-9._-]*$/;
+const VALID_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
 const ALLOWED_FILE_PATH_ROOTS = new Set(["references", "templates", "scripts", "assets"]);
 const INJECTION_PATTERNS = [
 	"ignore previous instructions",
@@ -30,7 +30,7 @@ export function validateName(name: string): string | undefined {
 	}
 
 	if (!VALID_NAME_RE.test(name)) {
-		return "Skill name must start with a lowercase letter or digit and use only lowercase letters, digits, dots, underscores, or hyphens.";
+		return "Skill name must start with a lowercase letter or digit and use only lowercase letters, digits, or hyphens.";
 	}
 
 	return undefined;

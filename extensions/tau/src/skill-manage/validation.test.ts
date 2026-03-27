@@ -10,7 +10,7 @@ import {
 describe("validateName", () => {
 	it("accepts valid skill names", () => {
 		expect(validateName("my-skill")).toBeUndefined();
-		expect(validateName("skill_1.2")).toBeUndefined();
+		expect(validateName("skill123")).toBeUndefined();
 		expect(validateName("a".repeat(64))).toBeUndefined();
 	});
 
