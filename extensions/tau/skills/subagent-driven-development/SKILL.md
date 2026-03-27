@@ -112,9 +112,11 @@ agent wait [impl_id]
 
 **Key:** Give the agent the task text, file paths, conventions, verification steps, and constraints inline. Do not assume the agent will read the same surrounding documents already read in the controller session.
 
-#### Step 2: Dispatch Spec Compliance Reviewer
+#### Step 2: Dispatch Reviewer (spec compliance first, then code quality)
 
-After the implementer completes, spawn a reviewer. **Keep the reviewer alive** — if issues are found, you will `send` it a follow-up instead of spawning a new one:
+After the implementer completes, spawn **one** reviewer. This reviewer handles both review stages in sequence — spec compliance first, then code quality. Keeping a single reviewer means it accumulates full context of the code and can catch regressions across fix cycles.
+
+**Phase 1 — Spec compliance:**
 
 ```text
 agent spawn review "Review whether Task 1 implementation matches the original spec
@@ -139,37 +141,31 @@ or
 - Specific spec gaps that must be fixed before proceeding"
 ```
 
-Then wait:
-
 ```text
-agent wait [spec_review_id]
+agent wait [reviewer_id]
 ```
 
-**If spec issues are found:** Fix the gaps with an implementer agent, then **`send` the same reviewer** a re-review request instead of spawning a new one. The reviewer already has the full context of what it found — a fresh reviewer would lose that:
+**If spec issues are found:** Fix the gaps with an implementer agent, then `send` the same reviewer a re-review request:
 
 ```text
-agent send [spec_review_id] "The following spec gaps have been fixed:
+agent send [reviewer_id] "The following spec gaps have been fixed:
 - [describe what was fixed]
 
 Please re-review the same files against the original spec. Confirm PASS or list remaining gaps."
 ```
 
 ```text
-agent wait [spec_review_id]
+agent wait [reviewer_id]
 ```
 
-Repeat the send → wait loop until the reviewer returns PASS. Then **close** the spec reviewer:
+Repeat the send → wait loop until the reviewer returns PASS.
+
+**Phase 2 — Code quality:**
+
+Once spec compliance passes, `send` the **same reviewer** the quality checklist. It already knows the code from the spec review — no need to re-read files or re-establish context:
 
 ```text
-agent close [spec_review_id]
-```
-
-#### Step 3: Dispatch Code Quality Reviewer
-
-After spec compliance passes, spawn a quality reviewer. Same rule — **keep it alive** for re-review loops:
-
-```text
-agent spawn review "Review code quality for Task 1 implementation
+agent send [reviewer_id] "Spec compliance is PASS. Now review code quality for the same implementation.
 
 FILES TO REVIEW:
 - src/domain/user.ts
@@ -191,32 +187,33 @@ OUTPUT FORMAT:
 - Verdict: APPROVED or REQUEST_CHANGES"
 ```
 
-Then wait:
-
 ```text
-agent wait [quality_review_id]
+agent wait [reviewer_id]
 ```
 
-**If quality issues are found:** Fix the issues, then **`send` the same reviewer** a re-review:
+**If quality issues are found:** Fix the issues, then `send` a re-review:
 
 ```text
-agent send [quality_review_id] "The following quality issues have been addressed:
+agent send [reviewer_id] "The following quality issues have been addressed:
 - [describe what was fixed]
 
-Please re-review and confirm APPROVED or list remaining issues."
+Please re-review and confirm APPROVED or list remaining issues.
+Also verify that the quality fixes did not break spec compliance."
 ```
 
 ```text
-agent wait [quality_review_id]
+agent wait [reviewer_id]
 ```
 
-Repeat until APPROVED. Then close the quality reviewer:
+Repeat until APPROVED. Then close the reviewer:
 
 ```text
-agent close [quality_review_id]
+agent close [reviewer_id]
 ```
 
-#### Step 4: Mark Complete
+**Why one reviewer:** The quality reviewer already has full context from the spec review — files read, expectations understood. If a quality fix accidentally breaks spec compliance, the same reviewer catches it because it remembers the spec. One agent slot instead of two.
+
+#### Step 3: Mark Complete
 
 Once implementation, spec review, and quality review are all complete, close the beads task:
 
@@ -304,7 +301,7 @@ The point is not to create tiny meaningless tasks. The point is to make each tas
 - Move to the next task while either review has open issues
 - Tell write agents to commit, rebase, or change git state
 - Close the beads task before both review stages pass
-- **Spawn a new reviewer for re-review when the original is still alive** — use `agent send` to the existing reviewer instead; it already has the context of what it found
+- **Spawn a new reviewer for re-review or for the quality phase** — use `agent send` to the existing reviewer; it already has the context of what it found and reviewed
 
 ## Handling Issues
 
@@ -351,9 +348,10 @@ The point is not to create tiny meaningless tasks. The point is to make each tas
 - Completion is explicit, not implied
 
 **Cost trade-off:**
-- More agent invocations (implementer + 2 reviewers per task)
+- More agent invocations (implementer + reviewer per task, plus send cycles for fixes)
 - More coordination than hand-editing everything in one session
 - But catches issues early, which is cheaper than debugging compounded mistakes later
+- One reviewer per task (not two) keeps agent slots efficient while preserving two-stage rigor
 
 This workflow spends more coordination effort up front to buy lower rework cost later. That trade is usually worth it when the work is multi-step, user-visible, or contract-heavy.
 
@@ -374,10 +372,12 @@ This skill is a specialization of the broader delegation model:
 
 ### With review
 
-The two-stage review process IS the review flow:
-1. Spec compliance review checks whether the task matches the plan
-2. Code quality review checks whether the implementation is solid
-3. Final integration review checks cross-task consistency and merge readiness
+The two-phase review process IS the review flow:
+1. One reviewer per task, spawned once
+2. Phase 1 (via spawn): spec compliance — does the task match the plan?
+3. Phase 2 (via send): code quality — is the implementation solid?
+4. Quality fixes are re-checked for spec compliance by the same reviewer
+5. Final integration review checks cross-task consistency and merge readiness
 
 ### With test-driven development
 
@@ -413,13 +413,14 @@ If an agent encounters bugs or confusing behavior during implementation:
   You: "Globally unique"
   Implementer: Implemented, 3/3 tests passing.
 
-[agent spawn review "Spec compliance for Task 1"] -> spec-1
-[agent wait [spec-1]]
-  Spec reviewer: PASS — all requirements met
+[agent spawn review "Spec compliance for Task 1"] -> rev-1
+[agent wait [rev-1]]
+  Reviewer: PASS — all requirements met
 
-[agent spawn review "Code quality for Task 1"] -> quality-1
-[agent wait [quality-1]]
-  Quality reviewer: APPROVED — clean code, good tests
+[agent send [rev-1] "Spec is PASS. Now review code quality for the same files."]
+[agent wait [rev-1]]
+  Reviewer: APPROVED — clean code, good tests
+[agent close [rev-1]]
 
 [bd close tau-a1 --reason "Implemented and reviewed"]
 
@@ -430,31 +431,30 @@ If an agent encounters bugs or confusing behavior during implementation:
 [agent wait [impl-2]]
   Implementer: No questions, implemented, 5/5 tests passing.
 
-[agent spawn review "Spec compliance for Task 2"] -> spec-2
-[agent wait [spec-2]]
-  Spec reviewer: Missing requirement — minimum password length validation (spec says 8 chars)
+[agent spawn review "Spec compliance for Task 2"] -> rev-2
+[agent wait [rev-2]]
+  Reviewer: Missing requirement — minimum password length validation (spec says 8 chars)
 
 [agent spawn smart "Fix Task 2 spec gap: add minimum password length validation"] -> fix-2
 [agent wait [fix-2]]
   Implementer: Added validation, 7/7 tests passing.
 
-[agent send [spec-2] "Fixed: added minimum password length validation (8 chars). Please re-review."]
-[agent wait [spec-2]]
-  Spec reviewer: PASS
-[agent close [spec-2]]
+[agent send [rev-2] "Fixed: added minimum password length validation (8 chars). Please re-review spec."]
+[agent wait [rev-2]]
+  Reviewer: PASS
 
-[agent spawn review "Code quality for Task 2"] -> quality-2
-[agent wait [quality-2]]
-  Quality reviewer: Important issue — magic number 8 should be extracted to MIN_PASSWORD_LENGTH
+[agent send [rev-2] "Spec is PASS. Now review code quality."]
+[agent wait [rev-2]]
+  Reviewer: Important issue — magic number 8 should be extracted to MIN_PASSWORD_LENGTH
 
 [agent spawn smart "Fix Task 2 quality issue: extract MIN_PASSWORD_LENGTH constant"] -> fix-2b
 [agent wait [fix-2b]]
   Implementer: Extracted constant, 7/7 tests passing.
 
-[agent send [quality-2] "Fixed: extracted MIN_PASSWORD_LENGTH constant. Please re-review."]
-[agent wait [quality-2]]
-  Quality reviewer: APPROVED
-[agent close [quality-2]]
+[agent send [rev-2] "Fixed: extracted MIN_PASSWORD_LENGTH constant. Re-review quality + verify spec still holds."]
+[agent wait [rev-2]]
+  Reviewer: APPROVED, spec still compliant
+[agent close [rev-2]]
 
 [bd close tau-a2 --reason "Implemented and reviewed"]
 
@@ -465,13 +465,14 @@ If an agent encounters bugs or confusing behavior during implementation:
 [agent wait [impl-3]]
   Implementer: Implemented, 6/6 tests passing.
 
-[agent spawn review "Spec compliance for Task 3"] -> spec-3
-[agent wait [spec-3]]
-  Spec reviewer: PASS
+[agent spawn review "Spec compliance for Task 3"] -> rev-3
+[agent wait [rev-3]]
+  Reviewer: PASS
 
-[agent spawn review "Code quality for Task 3"] -> quality-3
-[agent wait [quality-3]]
-  Quality reviewer: APPROVED
+[agent send [rev-3] "Spec is PASS. Now review code quality."]
+[agent wait [rev-3]]
+  Reviewer: APPROVED
+[agent close [rev-3]]
 
 [bd close tau-a3 --reason "Implemented and reviewed"]
 
@@ -488,10 +489,12 @@ If an agent encounters bugs or confusing behavior during implementation:
 
 A few things to notice in the workflow:
 - The implementer never reviews its own work
+- One reviewer per task handles both spec and quality phases via `send`
 - Task 2 does not advance to quality review until spec review passes
-- Re-reviews use `agent send` to the same reviewer, not a fresh `spawn` — the reviewer keeps context of what it originally found
-- Reviewers are explicitly closed after they return PASS/APPROVED
-- The task is not closed when the first implementation finishes; it closes only after both review loops pass
+- Re-reviews use `agent send` to the same reviewer — the reviewer keeps context of what it originally found
+- After a quality fix, the reviewer also verifies spec compliance still holds
+- Reviewers are explicitly closed after both phases pass
+- The task is not closed when the first implementation finishes; it closes only after both review phases pass
 - Questions are answered before implementation continues
 - Fixes are handled by focused follow-up agents, not by muddying the controller context
 
@@ -499,11 +502,11 @@ A few things to notice in the workflow:
 
 ```text
 Fresh agent per task
-Two-stage review every time
+One reviewer per task — spec then quality via send
 Spec compliance FIRST
 Code quality SECOND
 Never skip reviews
-Reuse reviewers with send — don't spawn fresh for re-review
+Reuse the reviewer with send — don't spawn a second one
 Catch issues early
 ```
 
