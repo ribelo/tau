@@ -211,6 +211,7 @@ export const AgentManagerLive = Layer.effect(
 							modelRegistry: opts.modelRegistry,
 							resultSchema: opts.resultSchema,
 							runPromise: agentRuntime.runPromise,
+							...(opts.agentSummaries !== undefined ? { agentSummaries: opts.agentSummaries } : {}),
 						});
 
 						const id = agent.id;

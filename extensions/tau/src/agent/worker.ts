@@ -22,10 +22,13 @@ import { TAU_PERSISTED_STATE_TYPE, loadPersistedState } from "../shared/state.js
 import { withWorkerSandboxOverride } from "./worker-sandbox.js";
 import { setWorkerApprovalBroker } from "./approval-broker.js";
 import { createApplyPatchToolDefinition } from "../sandbox/apply-patch.js";
+import { createBdToolDefinition } from "../beads/index.js";
+import { createExaToolDefinitions } from "../exa/index.js";
 
 import type { ApprovalBroker } from "./approval-broker.js";
 import { createWorkerAgentTool, type RunAgentControlPromise } from "./runtime.js";
 import { applyAgentToolAllowlist } from "./tool-allowlist.js";
+import { buildToolDescription } from "./tool.js";
 
 const MAX_SUBMIT_RESULT_RETRIES = 3;
 
@@ -120,6 +123,17 @@ function toolOnlyStreamFn(
 		default:
 			return streamSimple(model, { messages: context }, options);
 	}
+}
+
+export function createWorkerCustomTools(
+	agentTool: ToolDefinition,
+): ToolDefinition[] {
+	return [
+		agentTool,
+		createApplyPatchToolDefinition() as unknown as ToolDefinition,
+		createBdToolDefinition() as unknown as ToolDefinition,
+		...createExaToolDefinitions().map((tool) => tool as unknown as ToolDefinition),
+	];
 }
 
 export function resolveModelPattern(pattern: string, models: Model<Api>[]): Model<Api> | undefined {
@@ -315,6 +329,7 @@ export class AgentWorker implements Agent {
 		modelRegistry?: ModelRegistry | undefined;
 		resultSchema?: unknown;
 		runPromise: RunAgentControlPromise;
+		agentSummaries?: ReadonlyArray<{ readonly name: string; readonly description: string }>;
 	}) {
 		return Effect.gen(function* () {
 			const modelRegistry = opts.modelRegistry
@@ -344,16 +359,15 @@ export class AgentWorker implements Agent {
 				approvalBroker: opts.approvalBroker,
 			};
 
-				const agentTool = createWorkerAgentTool(
-					opts.runPromise,
-					agentContext,
-					"Manage non-blocking agent tasks. Actions: spawn, send, wait, close, list.",
-				);
+			const agentTool = createWorkerAgentTool(
+				opts.runPromise,
+				agentContext,
+				opts.agentSummaries
+					? buildToolDescription({ list: () => opts.agentSummaries ?? [] }, opts.definition.spawns)
+					: "Manage non-blocking agent tasks. Actions: spawn, send, wait, close, list.",
+			);
 
-			const customTools: ToolDefinition[] = [
-				agentTool as ToolDefinition,
-				createApplyPatchToolDefinition(),
-			];
+			const customTools = createWorkerCustomTools(agentTool as ToolDefinition);
 
 			// submit_result tool placeholder - needs agent reference, set after construction
 			let agent: AgentWorker;

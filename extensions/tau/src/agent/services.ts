@@ -76,6 +76,7 @@ export interface SpawnOptions {
 	readonly approvalBroker?: ApprovalBroker | undefined;
 	readonly modelRegistry?: ModelRegistry | undefined;
 	readonly resultSchema?: unknown;
+	readonly agentSummaries?: ReadonlyArray<{ readonly name: string; readonly description: string }>;
 }
 
 export class AgentManager extends ServiceMap.Service<

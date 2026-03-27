@@ -78,10 +78,17 @@ export const AgentParams = Type.Object({
 	),
 });
 
-export function buildToolDescription(registry: {
-	list: () => ReadonlyArray<{ readonly name: string; readonly description: string }>;
-}): string {
-	const agents = registry.list();
+export function buildToolDescription(
+	registry: {
+		list: () => ReadonlyArray<{ readonly name: string; readonly description: string }>;
+	},
+	spawns?: readonly string[] | "*" | undefined,
+): string {
+	const allAgents = registry.list();
+	const agents =
+		spawns === undefined || spawns === "*"
+			? allAgents
+			: allAgents.filter((a) => spawns.includes(a.name));
 
 	const lines: string[] = [];
 	lines.push("Manage non-blocking agent tasks. Actions: spawn, send, wait, close, list.");

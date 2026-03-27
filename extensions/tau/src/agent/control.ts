@@ -52,6 +52,7 @@ export const AgentControlLive = Layer.effect(
 						approvalBroker: opts.approvalBroker,
 						modelRegistry: opts.modelRegistry,
 						resultSchema: opts.result_schema,
+						agentSummaries: registry.list(),
 					} satisfies SpawnOptions as SpawnOptions);
 				}).pipe(
 					Effect.mapError((error) =>
