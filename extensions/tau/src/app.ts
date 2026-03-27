@@ -15,6 +15,7 @@ import initBeads from "./beads/index.js";
 import initExa from "./exa/index.js";
 import initMemory from "./memory/index.js";
 import initSkillManage from "./skill-manage/index.js";
+import initNudge from "./nudge/index.js";
 import initTerminalPrompt from "./terminal-prompt/index.js";
 import initWorkedFor from "./worked-for/index.js";
 import { initStatus } from "./status/index.js";
@@ -144,6 +145,7 @@ export const runTau = (pi: ExtensionAPI) => {
 				initSkillMarker(pi, skillMarker);
 				initMemory(pi, runCuratedMemory);
 				initSkillManage(pi, runSkillManager);
+				initNudge(pi);
 			});
 
 			const agentRegistry = yield* AgentRegistry.load(process.cwd());

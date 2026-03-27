@@ -11,7 +11,7 @@ import {
 	validatePromptModeModelId,
 } from "../agent/model-spec.js";
 
-export type PromptModePresetName = "smart" | "deep" | "rush";
+export type PromptModePresetName = "smart" | "deep" | "rush" | "plan";
 export type PromptModeName = "default" | PromptModePresetName;
 
 type PromptModePreset = {
@@ -28,7 +28,7 @@ export class PromptModeConfigError extends Data.TaggedError("PromptModeConfigErr
 const MODE_PROMPTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "modes");
 
 const loadModePrompt = (
-	filename: "smart.md" | "deep.md" | "rush.md",
+	filename: "smart.md" | "deep.md" | "rush.md" | "plan.md",
 ): Effect.Effect<string, PromptModeConfigError> => {
 	const filePath = path.join(MODE_PROMPTS_DIR, filename);
 	return Effect.tryPromise({
@@ -43,11 +43,12 @@ const loadModePrompt = (
 
 const DEFAULT_PROMPT_MODE_CONFIG: Record<
 	PromptModePresetName,
-	{ readonly model: string; readonly thinking: ThinkingLevel; readonly promptFile: "smart.md" | "deep.md" | "rush.md" }
+	{ readonly model: string; readonly thinking: ThinkingLevel; readonly promptFile: "smart.md" | "deep.md" | "rush.md" | "plan.md" }
 > = {
 	smart: { model: "anthropic/claude-opus-4-5", thinking: "medium", promptFile: "smart.md" },
 	deep: { model: "openai-codex/gpt-5.4", thinking: "xhigh", promptFile: "deep.md" },
 	rush: { model: "kimi-coding/kimi-k2-thinking", thinking: "off", promptFile: "rush.md" },
+	plan: { model: "anthropic/claude-opus-4-5", thinking: "high", promptFile: "plan.md" },
 };
 
 function buildDefaultPromptModePreset(
@@ -71,11 +72,12 @@ function getDefaultPromptModePresets(): Effect.Effect<
 		smart: buildDefaultPromptModePreset("smart"),
 		deep: buildDefaultPromptModePreset("deep"),
 		rush: buildDefaultPromptModePreset("rush"),
+		plan: buildDefaultPromptModePreset("plan"),
 	});
 }
 
 export const isPromptModePresetName = (value: string): value is PromptModePresetName =>
-	value === "smart" || value === "deep" || value === "rush";
+	value === "smart" || value === "deep" || value === "rush" || value === "plan";
 
 export const isPromptModeName = (value: string): value is PromptModeName =>
 	value === "default" || isPromptModePresetName(value);
@@ -171,12 +173,14 @@ function readPromptModeOverridesFromSettings(
 		smart: parsePresetOverride(presets["smart"], `${context}: promptModes.presets.smart`),
 		deep: parsePresetOverride(presets["deep"], `${context}: promptModes.presets.deep`),
 		rush: parsePresetOverride(presets["rush"], `${context}: promptModes.presets.rush`),
+		plan: parsePresetOverride(presets["plan"], `${context}: promptModes.presets.plan`),
 	}).pipe(
 		Effect.map((overrides) => {
 			const out: Partial<Record<PromptModePresetName, PromptModePresetOverride>> = {};
 			if (overrides.smart) out.smart = overrides.smart;
 			if (overrides.deep) out.deep = overrides.deep;
 			if (overrides.rush) out.rush = overrides.rush;
+			if (overrides.plan) out.plan = overrides.plan;
 			return out;
 		}),
 	);
@@ -210,9 +214,10 @@ export function resolvePromptModePresets(
 						smart: { ...defaults.smart },
 						deep: { ...defaults.deep },
 						rush: { ...defaults.rush },
+						plan: { ...defaults.plan },
 					};
 
-					for (const mode of ["smart", "deep", "rush"] as const) {
+					for (const mode of ["smart", "deep", "rush", "plan"] as const) {
 						const override = {
 							...globalOverrides[mode],
 							...projectOverrides[mode],

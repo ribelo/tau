@@ -221,7 +221,7 @@ export const PromptModesLive = Layer.effect(
 					};
 
 					pi.registerCommand("mode", {
-						description: "Prompt mode: /mode [default|smart|deep|rush|list]",
+						description: "Prompt mode: /mode [default|smart|deep|rush|plan|list]",
 						handler: async (args, ctx) => {
 							const trimmed = (args || "").trim();
 
@@ -235,6 +235,7 @@ export const PromptModesLive = Layer.effect(
 									"smart",
 									"deep",
 									"rush",
+									"plan",
 								]);
 								if (!choice) return;
 								if (!isPromptModeName(choice)) {
@@ -258,6 +259,7 @@ export const PromptModesLive = Layer.effect(
 									`- smart${active === "smart" ? " [active]" : ""}: ${state.promptModes?.modelsByMode?.smart ?? presets.smart.model} (${presets.smart.thinking})`,
 									`- deep${active === "deep" ? " [active]" : ""}: ${state.promptModes?.modelsByMode?.deep ?? presets.deep.model} (${presets.deep.thinking})`,
 									`- rush${active === "rush" ? " [active]" : ""}: ${state.promptModes?.modelsByMode?.rush ?? presets.rush.model} (${presets.rush.thinking})`,
+									`- plan${active === "plan" ? " [active]" : ""}: ${state.promptModes?.modelsByMode?.plan ?? presets.plan.model} (${presets.plan.thinking})`,
 								];
 								ctx.ui.notify(lines.join("\n"), "info");
 								return;
@@ -265,7 +267,7 @@ export const PromptModesLive = Layer.effect(
 
 							const lower = trimmed.toLowerCase();
 							if (!isPromptModeName(lower)) {
-								ctx.ui.notify("Usage: /mode default|smart|deep|rush|list", "info");
+								ctx.ui.notify("Usage: /mode default|smart|deep|rush|plan|list", "info");
 								return;
 							}
 

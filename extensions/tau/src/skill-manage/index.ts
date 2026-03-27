@@ -245,8 +245,4 @@ export default function initSkillManage(
 ): void {
 	pi.registerTool(createSkillManageToolDefinition(runEffect));
 
-	pi.on("before_agent_start", async (event) => {
-		const nudge = "\n\n## Skills (self-improvement)\nAfter completing a complex task (5+ tool calls), fixing a tricky error, or discovering a non-trivial workflow, save the approach as a skill with skill_manage so you can reuse it next time.\nWhen using a skill and finding it outdated, incomplete, or wrong, patch it immediately with skill_manage(action='patch') — don't wait to be asked.";
-		return { systemPrompt: event.systemPrompt + nudge };
-	});
 }
