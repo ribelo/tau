@@ -17,6 +17,22 @@ Execute beads-tracked work by dispatching agents. Beads tasks ARE the spec — t
 - Work needs systematic execution with review gates
 - Multiple tasks need coordinated delivery
 
+## Orchestrator Ownership
+
+The orchestrator (you) exclusively owns three things. Subagents must not touch them:
+
+| Domain | Orchestrator does | Subagent does |
+|---|---|---|
+| **Git** | Commits, rebases, pushes | Reports what changed |
+| **Review** | Spawns and manages reviewers | Gets reviewed, never self-reviews |
+| **Beads lifecycle** | Creates tasks, updates status, closes | Reads spec via `bd show`, nothing else |
+
+Subagents that discover unrelated bugs or issues report them back to the orchestrator. They do not fix unrelated problems — the orchestrator files a separate beads task for follow-up.
+
+These boundaries are enforced at two levels:
+1. Mode agent spawns exclude `review` and `plan` — subagents cannot spawn review or plan agents
+2. Worker delegation prompt (injected into every subagent) states ownership rules explicitly
+
 ## Delegation Rules
 
 ### Beads is the spec
@@ -237,6 +253,8 @@ bd close tau-abc --reason "All tasks implemented and reviewed"
 - Letting implementer self-review
 - Closing beads task before both review stages pass
 - Telling agents to commit or change git state
+- Letting subagents create/close beads tasks or spawn reviewers
+- Letting subagents fix unrelated bugs (they report, orchestrator files follow-up)
 - Spawning fresh agents for sequential dependent work in the same area (reuse with `send`)
 - Reusing agents across unrelated areas (accumulated context pollutes, spawn fresh)
 

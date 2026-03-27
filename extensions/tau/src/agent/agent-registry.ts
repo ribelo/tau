@@ -6,7 +6,7 @@
  * 2. User: ~/.pi/agent/agents/*.md
  * 3. Extension: extensions/tau/agents/*.md (bundled)
  *
- * NOTE: Mode agents (smart/deep/rush) are virtual and derive model+thinking from
+ * NOTE: Mode agents (smart/deep/rush/plan) are virtual and derive model+thinking from
  * prompt mode settings (global/project). They are not loadable/overridable via
  * agent frontmatter.
  */
@@ -53,11 +53,12 @@ const MODE_AGENT_TOOLS = [
 	"apply_patch",
 	"agent",
 	"bd",
-	"memory",
 	"web_search_exa",
 	"crawling_exa",
 	"get_code_context_exa",
 ] as const;
+
+const MODE_AGENT_SPAWNS = ["smart", "deep", "rush", "finder", "librarian", "oracle", "painter"] as const;
 
 const ALLOWED_AGENT_SETTINGS_KEYS = new Set(["models", "model", "thinking", "tools", "spawns"]);
 
@@ -84,13 +85,16 @@ function buildModeAgentDefinition(
 					? "Smart agent. Uses the smart mode system prompt and preset model selection."
 					: mode === "deep"
 						? "Deep agent. Uses the deep mode system prompt and preset model selection."
-						: "Rush agent. Uses the rush mode system prompt and preset model selection.";
+						: mode === "rush"
+							? "Rush agent. Uses the rush mode system prompt and preset model selection."
+							: "Plan agent. Uses the plan mode system prompt and preset model selection.";
 
 			return {
 				name: mode,
 				description,
 				models: [model],
 				tools: MODE_AGENT_TOOLS,
+				spawns: [...MODE_AGENT_SPAWNS],
 				sandbox: MODE_AGENT_SANDBOX,
 				systemPrompt: preset.systemPrompt,
 			};
@@ -139,7 +143,7 @@ function discoverAgentFiles(
 					if (isPromptModeName(name)) {
 						return yield* Effect.fail(
 							new AgentRegistryConfigError({
-								message: `Invalid agent file ${path.join(dir, entry.name)}: prompt mode names (default, smart, deep, rush) are reserved; smart, deep, and rush are virtual agents, and default is not spawnable.`,
+								message: `Invalid agent file ${path.join(dir, entry.name)}: prompt mode names (default, smart, deep, rush, plan) are reserved; smart, deep, rush, and plan are virtual agents, and default is not spawnable.`,
 							}),
 						);
 					}
@@ -589,7 +593,7 @@ export class AgentRegistry {
 			}
 
 			const modeAgentEntries = yield* Effect.all(
-				(["smart", "deep", "rush"] as const).map((mode) =>
+				(["smart", "deep", "rush", "plan"] as const).map((mode) =>
 					buildModeAgentDefinition(mode, cwd).pipe(Effect.map((definition) => [mode, definition] as const)),
 				),
 			);

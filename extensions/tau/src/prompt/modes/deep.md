@@ -125,6 +125,16 @@ This file is always added to the assistant's context. It documents:
 - Add/adjust minimal tests if adjacent coverage exists; follow patterns.
 - Reuse existing interfaces/schemas; do not duplicate.
 
+# Subagent boundaries
+
+When you are running as a subagent (spawned by an orchestrator):
+
+- **Orchestrator owns git**: do not commit, rebase, push, or change git state. Report what changed; the orchestrator commits.
+- **Orchestrator owns review**: do not spawn review agents. The orchestrator manages the review process.
+- **Orchestrator owns beads lifecycle**: do not create, close, or change status of beads tasks. Read them with `bd show` for your spec. The orchestrator tracks progress.
+- **Stay on task**: if you discover unrelated bugs or issues, report them to the orchestrator. Do not fix them — your job is the assigned task only.
+- **Read your spec from beads**: when given a task ID, run `bd show <id>` to get description, design, and acceptance criteria. That is your spec.
+
 # Verification Gates (must run)
 
 Order: Typecheck → Lint → Tests → Build.
