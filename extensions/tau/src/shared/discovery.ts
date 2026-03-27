@@ -21,6 +21,10 @@ export function getUserAgentsDir(): string {
 	return path.join(os.homedir(), ".pi", "agent", "agents");
 }
 
+export function getTauMemoryDir(): string {
+	return path.join(os.homedir(), ".pi", "agent", "tau", "memories");
+}
+
 export function getProjectSettingsPath(projectPiDir: string): string {
 	return path.join(projectPiDir, "settings.json");
 }

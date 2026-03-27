@@ -8,9 +8,11 @@ import { SandboxStateLive } from "./services/state.js";
 import { Footer, FooterLive } from "./services/footer.js";
 import { PromptModes, PromptModesLive } from "./services/prompt-modes.js";
 import { Persistence, PersistenceLive } from "./services/persistence.js";
+import { CuratedMemory, CuratedMemoryLive } from "./services/curated-memory.js";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import initBeads from "./beads/index.js";
 import initExa from "./exa/index.js";
+import initMemory from "./memory/index.js";
 import initTerminalPrompt from "./terminal-prompt/index.js";
 import initWorkedFor from "./worked-for/index.js";
 import { initStatus } from "./status/index.js";
@@ -21,7 +23,8 @@ import initAgent from "./agent/index.js";
 import { AgentConfig, AgentControl } from "./agent/services.js";
 import { AgentControlLive } from "./agent/control.js";
 import { AgentManagerLive } from "./agent/manager.js";
-import { AgentRuntimeBridgeLive,
+import {
+	AgentRuntimeBridgeLive,
 	type AgentRuntimeBridgeService,
 } from "./agent/runtime.js";
 import { AgentRegistry } from "./agent/agent-registry.js";
@@ -39,6 +42,7 @@ const FooterLayer = FooterLive.pipe(
 	Layer.provide(SandboxLayer),
 );
 const PromptModesLayer = PromptModesLive.pipe(Layer.provide(PersistenceLayer));
+const CuratedMemoryLayer = CuratedMemoryLive;
 const AgentConfigLive = Layer.succeed(
 	AgentConfig,
 	AgentConfig.of({
@@ -60,12 +64,13 @@ const createMainLayer = (agentRuntimeBridge: AgentRuntimeBridgeService) => {
 		SandboxLayer,
 		FooterLayer,
 		PromptModesLayer,
+		CuratedMemoryLayer,
 		AgentLayer,
 	).pipe(Layer.provide(PiLoggerLive));
 };
 
 type TauRuntime = ManagedRuntime.ManagedRuntime<
-	Persistence | Sandbox | Footer | PromptModes | AgentControl,
+	Persistence | Sandbox | Footer | PromptModes | CuratedMemory | AgentControl,
 	never
 >;
 
@@ -98,6 +103,7 @@ export const runTau = (pi: ExtensionAPI) => {
 			const sandbox = yield* Sandbox;
 			const footer = yield* Footer;
 			const promptModes = yield* PromptModes;
+			const curatedMemory = yield* CuratedMemory;
 			const skillMarker = createSkillMarkerRuntime();
 			const persistedAccess = {
 				getSnapshot: persistence.getSnapshot,
@@ -108,6 +114,7 @@ export const runTau = (pi: ExtensionAPI) => {
 			yield* sandbox.setup;
 			yield* footer.setup;
 			yield* promptModes.setup;
+			yield* curatedMemory.setup;
 			yield* Effect.sync(() => {
 				initBeads(pi);
 				initExa(pi);
@@ -120,6 +127,7 @@ export const runTau = (pi: ExtensionAPI) => {
 					skillMarker,
 				});
 				initSkillMarker(pi, skillMarker);
+				initMemory(pi, (effect) => currentRuntime.runPromise(effect) as Promise<never>);
 			});
 
 			const agentRegistry = yield* AgentRegistry.load(process.cwd());
