@@ -22,7 +22,13 @@ yarn-error.log*
 *.tsbuildinfo
 
 # pi local artifacts
-.pi/
+.pi/*
+!.pi/backlog/
+.pi/backlog/*
+!.pi/backlog/events/
+!.pi/backlog/events/**
+# .pi/backlog/cache/** is a derived, non-canonical, git-ignored materialized cache.
+.pi/backlog/cache/
 
 # effect-solutions reference
 .reference/

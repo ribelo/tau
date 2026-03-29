@@ -1,19 +1,19 @@
 ---
 name: subagent-driven-development
-description: Execute beads-tracked work by dispatching agents per task/epic with two-stage review. Beads is the spec — agents read it, implement it, get reviewed against it. Use when tasks are formalized in beads and need systematic execution.
+description: Execute backlog-tracked work by dispatching agents per task or epic with two-stage review. Backlog is the spec — agents read it, implement it, get reviewed against it. Use when work is formalized in backlog and needs systematic execution.
 ---
 
 # Subagent-Driven Development
 
 ## Overview
 
-Execute beads-tracked work by dispatching agents. Beads tasks ARE the spec — the orchestrator does not repeat their content in delegation messages.
+Execute backlog-tracked work by dispatching agents. Backlog items are the spec — the orchestrator does not repeat their content in delegation messages.
 
-**Core principle:** Beads is the source of truth. Agents read beads. Orchestrator coordinates, not transcribes.
+**Core principle:** Backlog is the source of truth. Agents read backlog. The orchestrator coordinates and keeps delegation terse.
 
 ## When to Use
 
-- Beads tasks exist with description, design, and acceptance criteria
+- Backlog items exist with description, design, and acceptance criteria
 - Work needs systematic execution with review gates
 - Multiple tasks need coordinated delivery
 
@@ -25,9 +25,9 @@ The orchestrator (you) exclusively owns three things. Subagents must not touch t
 |---|---|---|
 | **Git** | Commits, rebases, pushes | Reports what changed |
 | **Review** | Spawns and manages reviewers | Gets reviewed, never self-reviews |
-| **Beads lifecycle** | Creates tasks, updates status, closes | Reads spec via `bd show`, nothing else |
+| **Backlog lifecycle** | Creates items, updates status, closes | Reads spec via `backlog show`, nothing else |
 
-Subagents that discover unrelated bugs or issues report them back to the orchestrator. They do not fix unrelated problems — the orchestrator files a separate beads task for follow-up.
+Subagents that discover unrelated bugs or issues report them back to the orchestrator. They do not fix unrelated problems — the orchestrator decides whether a follow-up backlog item is needed.
 
 These boundaries are enforced at two levels:
 1. Mode agent spawns exclude `review` and `plan` — subagents cannot spawn review or plan agents
@@ -35,9 +35,9 @@ These boundaries are enforced at two levels:
 
 ## Delegation Rules
 
-### Beads is the spec
+### Backlog is the spec
 
-Every delegation message references a beads task ID. The agent reads the task with `bd show <id>` to get description, design, and acceptance criteria. The orchestrator does NOT paste task content into the delegation prompt.
+Every delegation message references a backlog item ID. The agent reads the task with `backlog show <id>` to get description, design, and acceptance criteria. The orchestrator does NOT paste task content into the delegation prompt.
 
 ### No code in delegation
 
@@ -48,9 +48,9 @@ The orchestrator does not provide code snippets to implementer agents. Agents ar
 ### Minimal delegation message
 
 A delegation message contains:
-1. The beads task ID (or epic ID for multi-task delegation)
+1. The backlog task ID (or epic ID for multi-task delegation)
 2. Project-level context the agent cannot discover (test commands, gate commands, key conventions)
-3. Constraints not in the beads task (e.g., "do not commit", "do not touch file X")
+3. Constraints not in the backlog item (e.g., "do not commit", "do not touch file X")
 
 Nothing else. No restating the spec. No step-by-step instructions.
 
@@ -77,7 +77,7 @@ Rule of thumb: if the agent would need to read mostly the same files for the nex
 agent spawn deep "Implement tau-abc.1 ..." -> impl
 agent wait [impl]
 agent send [impl] "Now implement tau-abc.2
-Read the task: bd show tau-abc.2"
+Read the task: backlog show tau-abc.2"
 agent wait [impl]
 
 # Fresh: tasks touch different subsystems
@@ -97,7 +97,7 @@ Reviewers follow the same rule. One reviewer can cover multiple tasks across an 
 ### Step 0: Claim
 
 ```bash
-bd update tau-abc123 --status in_progress
+backlog update tau-abc123 --status in_progress
 ```
 
 ### Step 1: Dispatch Implementer
@@ -105,7 +105,7 @@ bd update tau-abc123 --status in_progress
 ```text
 agent spawn deep "Implement tau-abc123
 
-Read the task: bd show tau-abc123
+Read the task: backlog show tau-abc123
 Follow its description, design, and acceptance criteria.
 
 Project context:
@@ -127,7 +127,7 @@ Spawn ONE reviewer per area of code. It handles spec compliance first, then code
 ```text
 agent spawn review "Review tau-abc123 for spec compliance
 
-Read the spec: bd show tau-abc123
+Read the spec: backlog show tau-abc123
 Check every acceptance criterion is met.
 
 OUTPUT: PASS or list of specific gaps"
@@ -163,7 +163,7 @@ agent close [reviewer_id]
 ### Step 3: Mark Complete
 
 ```bash
-bd close tau-abc123 --reason "Implemented and reviewed"
+backlog close tau-abc123 --reason "Implemented and reviewed"
 ```
 
 ## Multi-Task Sequential Example (related tasks, same area)
@@ -171,35 +171,35 @@ bd close tau-abc123 --reason "Implemented and reviewed"
 When tasks touch the same files/area — reuse both implementer and reviewer:
 
 ```text
-[bd update tau-abc.1 --status in_progress]
+[backlog update tau-abc.1 --status in_progress]
 
 agent spawn deep "Implement tau-abc.1
-Read the task: bd show tau-abc.1
+Read the task: backlog show tau-abc.1
 Project context: npm run gate, do not commit" -> impl
 
 agent wait [impl]
 
 agent spawn review "Review tau-abc.1 for spec compliance
-Read the spec: bd show tau-abc.1 ..." -> rev
+Read the spec: backlog show tau-abc.1 ..." -> rev
 
 [Review tau-abc.1 — spec then quality as above]
 
-[bd close tau-abc.1 --reason "Implemented and reviewed"]
-[bd update tau-abc.2 --status in_progress]
+[backlog close tau-abc.1 --reason "Implemented and reviewed"]
+[backlog update tau-abc.2 --status in_progress]
 
 # Reuse implementer — it already knows the code
 agent send [impl] "Now implement tau-abc.2
-Read the task: bd show tau-abc.2"
+Read the task: backlog show tau-abc.2"
 
 agent wait [impl]
 
 # Reuse reviewer — it already knows the area
 agent send [rev] "Review tau-abc.2 for spec compliance
-Read the spec: bd show tau-abc.2 ..."
+Read the spec: backlog show tau-abc.2 ..."
 
 [Review tau-abc.2 — spec then quality]
 
-[bd close tau-abc.2 --reason "Implemented and reviewed"]
+[backlog close tau-abc.2 --reason "Implemented and reviewed"]
 ```
 
 ## Multi-Task Parallel Example (unrelated tasks, disjoint files)
@@ -207,8 +207,8 @@ Read the spec: bd show tau-abc.2 ..."
 When tasks touch different areas — fresh agents, no context pollution:
 
 ```text
-[bd update tau-abc.1 --status in_progress]
-[bd update tau-abc.2 --status in_progress]
+[backlog update tau-abc.1 --status in_progress]
+[backlog update tau-abc.2 --status in_progress]
 
 agent spawn smart "Implement tau-abc.1 ..." -> impl-1
 agent spawn smart "Implement tau-abc.2 ..." -> impl-2
@@ -240,20 +240,20 @@ The orchestrator session owns git actions:
 npm run gate
 git diff --stat
 git add -A && git commit -m "feat: complete auth feature"
-bd close tau-abc --reason "All tasks implemented and reviewed"
+backlog close tau-abc --reason "All tasks implemented and reviewed"
 ```
 
 ## Red Flags
 
-- Pasting full task specs into delegation messages (use beads IDs)
+- Pasting full task specs into delegation messages (use backlog IDs)
 - Providing code snippets to implementers (let them write code)
 - Skipping reviews
 - Starting quality review before spec compliance PASS
 - Spawning new reviewer for re-review (use `agent send`)
 - Letting implementer self-review
-- Closing beads task before both review stages pass
+- Closing a backlog item before both review stages pass
 - Telling agents to commit or change git state
-- Letting subagents create/close beads tasks or spawn reviewers
+- Letting subagents create or close backlog items or spawn reviewers
 - Letting subagents fix unrelated bugs (they report, orchestrator files follow-up)
 - Spawning fresh agents for sequential dependent work in the same area (reuse with `send`)
 - Reusing agents across unrelated areas (accumulated context pollutes, spawn fresh)
@@ -262,9 +262,9 @@ bd close tau-abc --reason "All tasks implemented and reviewed"
 
 ### With plan mode
 
-Plan mode creates the beads tasks. SDD executes them:
-1. Plan mode → `<proposed_plan>` → user accepts → beads epics/tasks created
-2. SDD → reads beads → dispatches agents → delivers working code
+Plan mode creates the backlog tasks. SDD executes them:
+1. Plan mode → `<proposed_plan>` → user accepts → backlog epics and tasks created
+2. SDD → reads backlog → dispatches agents → delivers working code
 
 ### With review
 

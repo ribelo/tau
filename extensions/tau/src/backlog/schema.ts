@@ -1,0 +1,105 @@
+import { Schema } from "effect";
+
+export const IssueStatusSchema = Schema.String.check(Schema.isMinLength(1));
+export type IssueStatus = Schema.Schema.Type<typeof IssueStatusSchema>;
+
+export const IssueTypeSchema = Schema.String.check(Schema.isMinLength(1));
+export type IssueType = Schema.Schema.Type<typeof IssueTypeSchema>;
+
+export const DependencyTypeSchema = Schema.String.check(Schema.isMinLength(1)).check(
+	Schema.isMaxLength(50),
+);
+export type DependencyType = Schema.Schema.Type<typeof DependencyTypeSchema>;
+
+export const DependencySchema = Schema.Struct({
+	issue_id: Schema.NonEmptyString,
+	depends_on_id: Schema.NonEmptyString,
+	type: DependencyTypeSchema,
+	created_at: Schema.String,
+	created_by: Schema.optional(Schema.String),
+	metadata: Schema.optional(Schema.Unknown),
+	thread_id: Schema.optional(Schema.String),
+});
+export type Dependency = Schema.Schema.Type<typeof DependencySchema>;
+
+export const CommentSchema = Schema.Struct({
+	id: Schema.Number,
+	issue_id: Schema.NonEmptyString,
+	author: Schema.String,
+	text: Schema.String,
+	created_at: Schema.String,
+});
+export type Comment = Schema.Schema.Type<typeof CommentSchema>;
+
+const IssueExtraFields = Schema.Record(Schema.String, Schema.Unknown);
+
+const IssueKnownFieldsSchema = Schema.Struct({
+	id: Schema.NonEmptyString,
+	title: Schema.NonEmptyString,
+	description: Schema.optional(Schema.String),
+	design: Schema.optional(Schema.String),
+	acceptance_criteria: Schema.optional(Schema.String),
+	notes: Schema.optional(Schema.String),
+	status: Schema.optional(IssueStatusSchema),
+	priority: Schema.optional(Schema.Number),
+	issue_type: Schema.optional(IssueTypeSchema),
+	assignee: Schema.optional(Schema.String),
+	owner: Schema.optional(Schema.String),
+	estimated_minutes: Schema.optional(Schema.Number),
+	created_at: Schema.optional(Schema.String),
+	created_by: Schema.optional(Schema.String),
+	updated_at: Schema.optional(Schema.String),
+	closed_at: Schema.optional(Schema.String),
+	close_reason: Schema.optional(Schema.String),
+	closed_by_session: Schema.optional(Schema.String),
+	due_at: Schema.optional(Schema.String),
+	defer_until: Schema.optional(Schema.String),
+	external_ref: Schema.optional(Schema.String),
+	source_system: Schema.optional(Schema.String),
+	compaction_level: Schema.optional(Schema.Number),
+	compacted_at: Schema.optional(Schema.String),
+	compacted_at_commit: Schema.optional(Schema.String),
+	original_size: Schema.optional(Schema.Number),
+	labels: Schema.optional(Schema.Array(Schema.String)),
+	dependencies: Schema.optional(Schema.Array(DependencySchema)),
+	comments: Schema.optional(Schema.Array(CommentSchema)),
+	deleted_at: Schema.optional(Schema.String),
+	deleted_by: Schema.optional(Schema.String),
+	delete_reason: Schema.optional(Schema.String),
+	original_type: Schema.optional(Schema.String),
+	sender: Schema.optional(Schema.String),
+	ephemeral: Schema.optional(Schema.Boolean),
+	pinned: Schema.optional(Schema.Boolean),
+	is_template: Schema.optional(Schema.Boolean),
+	bonded_from: Schema.optional(Schema.Array(Schema.Unknown)),
+	creator: Schema.optional(Schema.Unknown),
+	validations: Schema.optional(Schema.Array(Schema.Unknown)),
+	quality_score: Schema.optional(Schema.Number),
+	crystallizes: Schema.optional(Schema.Boolean),
+	await_type: Schema.optional(Schema.String),
+	await_id: Schema.optional(Schema.String),
+	timeout: Schema.optional(Schema.Number),
+	waiters: Schema.optional(Schema.Array(Schema.String)),
+	holder: Schema.optional(Schema.String),
+	source_formula: Schema.optional(Schema.String),
+	source_location: Schema.optional(Schema.String),
+	hook_bead: Schema.optional(Schema.String),
+	role_bead: Schema.optional(Schema.String),
+	agent_state: Schema.optional(Schema.String),
+	last_activity: Schema.optional(Schema.String),
+	role_type: Schema.optional(Schema.String),
+	rig: Schema.optional(Schema.String),
+	mol_type: Schema.optional(Schema.String),
+	work_type: Schema.optional(Schema.String),
+	event_kind: Schema.optional(Schema.String),
+	actor: Schema.optional(Schema.String),
+	target: Schema.optional(Schema.String),
+	payload: Schema.optional(Schema.String),
+});
+
+export const IssueFieldsSchema = Schema.StructWithRest(IssueKnownFieldsSchema, [IssueExtraFields]);
+export type Issue = Schema.Schema.Type<typeof IssueFieldsSchema>;
+
+export const decodeIssue = Schema.decodeUnknownSync(IssueFieldsSchema);
+export const encodeIssue = Schema.encodeSync(IssueFieldsSchema);
+

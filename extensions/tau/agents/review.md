@@ -21,7 +21,7 @@ models:
 tools:
   - read
   - bash
-  - bd
+  - backlog
 sandbox: read-only
 approval_timeout: 60
 ---

@@ -10,7 +10,7 @@ tools:
   - bash
   - edit
   - write
-  - bd
+  - backlog
   - agent
 spawns:
   - finder

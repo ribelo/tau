@@ -22,7 +22,7 @@ import { TAU_PERSISTED_STATE_TYPE, loadPersistedState } from "../shared/state.js
 import { withWorkerSandboxOverride } from "./worker-sandbox.js";
 import { setWorkerApprovalBroker } from "./approval-broker.js";
 import { createApplyPatchToolDefinition } from "../sandbox/apply-patch.js";
-import { createBdToolDefinition } from "../beads/index.js";
+import { createBacklogToolDefinition } from "../backlog/tool.js";
 import { createExaToolDefinitions } from "../exa/index.js";
 
 import type { ApprovalBroker } from "./approval-broker.js";
@@ -45,6 +45,8 @@ function formatToolArgs(toolName: string, args: unknown): string {
 	switch (toolName) {
 		case "bash":
 			return typeof a["command"] === "string" ? a["command"] : "";
+		case "backlog":
+			return typeof a["command"] === "string" ? a["command"] : "";
 		case "read":
 			return typeof a["path"] === "string" ? a["path"] : "";
 		case "write":
@@ -60,16 +62,16 @@ function formatToolArgs(toolName: string, args: unknown): string {
 	}
 }
 
-const WORKER_DELEGATION_PROMPT = `## Worker Agent Instructions
+export const WORKER_DELEGATION_PROMPT = `## Worker Agent Instructions
 
 You are a worker agent spawned by an orchestrator. Follow these rules:
 
 1. **Execute only what was requested** - Focus on the specific task in your instructions.
-2. **Read spec from beads** - If given a task ID, run \`bd show <id>\` for context.
+2. **Read spec from backlog** - If given a task ID, run \`backlog show <id>\` for context.
 3. **Orchestrator owns git** - Do not commit, rebase, push, or change git state.
 4. **Orchestrator owns review** - Do not spawn review agents.
-5. **Orchestrator owns beads** - Do not create, close, or update status of beads tasks. Only read with \`bd show\`.
-6. **Stay on task** - If you discover unrelated bugs, report them in your final message. Do not fix them, do not file beads tasks for them. The orchestrator handles follow-up.
+5. **Orchestrator owns backlog state** - Do not create, close, or update backlog tasks unless explicitly asked. Only read with \`backlog show\` by default.
+6. **Stay on task** - If you discover unrelated bugs, report them in your final message. Do not fix them and do not create follow-up backlog items unless explicitly asked. The orchestrator handles follow-up.
 7. **Other agents may work simultaneously** - Ignore changes you didn't make.
 8. **Only your final message is returned** - Make it a clear summary.
 `;
@@ -129,7 +131,7 @@ export function createWorkerCustomTools(
 	return [
 		agentTool,
 		createApplyPatchToolDefinition() as unknown as ToolDefinition,
-		createBdToolDefinition() as unknown as ToolDefinition,
+		createBacklogToolDefinition() as unknown as ToolDefinition,
 		...createExaToolDefinitions().map((tool) => tool as unknown as ToolDefinition),
 	];
 }

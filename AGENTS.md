@@ -1,7 +1,7 @@
 # Agent Instructions
 
-This project uses **bd (beads)** for issue tracking.
-Run `bd prime` for workflow context, or install hooks (`bd hooks install`) for auto-injection.
+This project uses the event-sourced **backlog** for planning and issue tracking.
+Inspect work with `backlog ready` and `backlog show <id>`.
 
 ## pi extension packaging (crucial)
 
@@ -21,14 +21,13 @@ Multiple agents may work in the same checkout concurrently.
 
 - **Do not run destructive git commands** outside the extension directory you are actively working on.
   - Never `git restore`, `git checkout`, `git reset`, `git clean`, or similar on other extensions’ files.
-- If the repo is dirty due to someone else’s work and it blocks `bd sync`/`git pull`, **stop and ask** instead of trying to “fix” it.
-  - Safe fallback: `bd sync --flush-only` (exports beads JSONL without git pull/rebase/push)
-- It is always safe to run `bd` commands; `.beads/*` is designed for parallelism.
+- If the repo is dirty due to someone else’s work and it blocks `git pull`, **stop and ask** instead of trying to “fix” it.
+- It is always safe to inspect backlog state. Canonical shared state lives under `.pi/backlog/events/**`, and `.pi/backlog/cache/**` is derived local cache.
 
 ## Naming Conventions
 
 - All tool names, tool labels, and command names that are visible to the user should be **lowercase** to match pi's built-in tools (`read`, `bash`, `edit`, `write`, etc.).
-- If you need namespaces, use lowercase separators like `.` or `_` (e.g. `exa.web_search`, `exa.code_context`, `bd`).
+- If you need namespaces, use lowercase separators like `.` or `_` (e.g. `exa.web_search`, `exa.code_context`, `backlog`).
 
 ## Writing Conventions
 
@@ -74,16 +73,22 @@ Write code clean, explicit, without fallbacks:
 - **Delete, don't deprecate**: Remove old code rather than keeping it working temporarily.
 - **Invalid states are unrepresentable**: Design APIs and data structures so that invalid states cannot be expressed. When invalid data is encountered, stop immediately and report the error.
 
+## Backlog Storage
+
+- Canonical tracked backlog events live under `.pi/backlog/events/**`.
+- Materialized current-state cache lives under `.pi/backlog/cache/**` and is rebuildable.
+- Legacy `.beads/issues.jsonl` and `.beads/beads.db` import automatically on first backlog read or write.
+
 ## Quick Reference
 
 ```bash
-bd ready                                      # Find unblocked work
-bd show <id>                                  # View issue details
-bd create "Title" --type task --priority 2    # Create issue
-bd update <id> --status in_progress            # Claim work
-bd close <id>                                 # Complete work
-bd sync                                       # Sync with git (run at session end)
-bd prime                                      # Full workflow details
+backlog ready                                  # Find unblocked work
+backlog show <id>                              # View issue details
+backlog list                                   # List tracked work
+backlog create "Title" --type task --priority 2 # Create issue
+backlog update <id> --status in_progress       # Claim work
+backlog close <id> --reason "Done"            # Complete work
+backlog status                                 # Show summary counts
 ```
 
 ## Quality Gate
@@ -103,7 +108,7 @@ Before the agent says "I'm done" (or hands off work as complete):
 2. The agent MUST NOT present broken / failing code as finished work.
 3. If `npm run gate` fails:
    - If the failure is caused by the agent's changes: fix it (or explicitly ask for approval to ship broken code).
-   - If the failure seems pre-existing or unrelated: stop and ask the user before continuing, and record it (bd issue).
+   - If the failure seems pre-existing or unrelated: stop and ask the user before continuing, and record it in backlog.
 
 ## Landing the Plane (Session Completion)
 
@@ -113,11 +118,10 @@ Before the agent says "I'm done" (or hands off work as complete):
 
 1. **File issues for remaining work** - Create issues for anything that needs follow-up
 2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
+3. **Update issue status** - Close finished backlog items, update in-progress items
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
-   bd sync
    git push
    git status  # MUST show "up to date with origin"
    ```

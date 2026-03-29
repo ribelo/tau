@@ -24,6 +24,7 @@ describe("agent-registry: mode agents", () => {
 			const smart = registry.resolve("smart");
 			const deep = registry.resolve("deep");
 			const rush = registry.resolve("rush");
+			const plan = registry.resolve("plan");
 			const defaultMode = registry.resolve("default");
 			const expectedTools = [
 				"read",
@@ -32,7 +33,7 @@ describe("agent-registry: mode agents", () => {
 				"write",
 				"apply_patch",
 				"agent",
-				"bd",
+				"backlog",
 				"memory",
 				"web_search_exa",
 				"crawling_exa",
@@ -42,12 +43,20 @@ describe("agent-registry: mode agents", () => {
 			expect(smart?.systemPrompt).toBe(presets.smart.systemPrompt);
 			expect(deep?.systemPrompt).toBe(presets.deep.systemPrompt);
 			expect(rush?.systemPrompt).toBe(presets.rush.systemPrompt);
+			expect(plan?.systemPrompt).toBe(presets.plan.systemPrompt);
 			expect(defaultMode).toBeUndefined();
 			expect(registry.has("default")).toBe(false);
 			expect(registry.names()).not.toContain("default");
 			expect(smart?.tools).toEqual(expectedTools);
 			expect(deep?.tools).toEqual(expectedTools);
 			expect(rush?.tools).toEqual(expectedTools);
+			expect(plan?.tools).toEqual(expectedTools);
+
+			for (const prompt of [presets.smart.systemPrompt, presets.deep.systemPrompt, presets.rush.systemPrompt, presets.plan.systemPrompt]) {
+				expect(prompt).toContain("backlog");
+				expect(prompt).not.toMatch(/\bbd\b/u);
+				expect(prompt).not.toMatch(/beads/iu);
+			}
 		} finally {
 			fs.rmSync(tempHome, { recursive: true, force: true });
 		}

@@ -11,7 +11,7 @@ const WORKER_AVAILABLE_TOOL_NAMES = [
 	"agent",
 	"apply_patch",
 	"bash",
-	"bd",
+	"backlog",
 	"crawling_exa",
 	"edit",
 	"find",

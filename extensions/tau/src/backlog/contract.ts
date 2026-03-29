@@ -1,0 +1,300 @@
+import path from "node:path";
+import { Schema } from "effect";
+
+export const BACKLOG_STORAGE = Object.freeze({
+	rootDir: ".pi/backlog",
+	canonicalEventsDir: ".pi/backlog/events",
+	materializedCacheDir: ".pi/backlog/cache",
+	materializedIssuesPath: ".pi/backlog/cache/issues.jsonl",
+});
+
+export const BACKLOG_CACHE_POLICY = Object.freeze({
+	path: ".pi/backlog/cache/**",
+	derived: true,
+	canonical: false,
+	gitIgnored: true,
+	materialized: true,
+	description: "Derived, non-canonical, git-ignored materialized cache.",
+});
+
+const CANONICAL_RECORDED_AT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
+
+function isCanonicalRecordedAt(value: string): boolean {
+	if (!CANONICAL_RECORDED_AT_PATTERN.test(value)) {
+		return false;
+	}
+
+	const timestamp = Date.parse(value);
+	if (Number.isNaN(timestamp)) {
+		return false;
+	}
+
+	return new Date(timestamp).toISOString() === value;
+}
+
+export const BacklogRecordedAtSchema = Schema.String.check(
+	Schema.makeFilter(
+		(value) =>
+			isCanonicalRecordedAt(value) ||
+			"recorded_at must be a real canonical UTC ISO-8601 timestamp with millisecond precision",
+	),
+);
+
+export function resolveBacklogPaths(workspaceRoot: string) {
+	return Object.freeze({
+		rootDir: path.join(workspaceRoot, BACKLOG_STORAGE.rootDir),
+		canonicalEventsDir: path.join(workspaceRoot, BACKLOG_STORAGE.canonicalEventsDir),
+		materializedCacheDir: path.join(workspaceRoot, BACKLOG_STORAGE.materializedCacheDir),
+		materializedIssuesPath: path.join(workspaceRoot, BACKLOG_STORAGE.materializedIssuesPath),
+	});
+}
+
+export type BacklogFieldValue = unknown;
+
+export const BacklogFieldValuesSchema = Schema.Record(Schema.String, Schema.Unknown);
+export type BacklogFieldValues = Schema.Schema.Type<typeof BacklogFieldValuesSchema>;
+
+const BacklogEventEnvelopeFields = {
+	schema_version: Schema.Literal(1),
+	event_id: Schema.NonEmptyString,
+	issue_id: Schema.NonEmptyString,
+	recorded_at: BacklogRecordedAtSchema,
+	actor: Schema.NonEmptyString,
+} as const;
+
+export const BacklogIssueCreatedEventSchema = Schema.Struct({
+	...BacklogEventEnvelopeFields,
+	kind: Schema.Literal("issue.created"),
+	fields: BacklogFieldValuesSchema,
+});
+
+export const BacklogIssueImportedEventSchema = Schema.Struct({
+	...BacklogEventEnvelopeFields,
+	kind: Schema.Literal("issue.imported"),
+	source: Schema.Struct({
+		system: Schema.NonEmptyString,
+		issue_id: Schema.NonEmptyString,
+	}),
+	fields: BacklogFieldValuesSchema,
+});
+
+export const BacklogIssueUpdatedEventSchema = Schema.Struct({
+	...BacklogEventEnvelopeFields,
+	kind: Schema.Literal("issue.updated"),
+	set_fields: BacklogFieldValuesSchema,
+	unset_fields: Schema.Array(Schema.NonEmptyString),
+});
+
+export const BacklogEventSchema = Schema.Union([
+	BacklogIssueCreatedEventSchema,
+	BacklogIssueImportedEventSchema,
+	BacklogIssueUpdatedEventSchema,
+] as const);
+export type BacklogEvent = Schema.Schema.Type<typeof BacklogEventSchema>;
+
+export class BacklogContractError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "BacklogContractError";
+	}
+}
+
+export type BacklogFieldClock = {
+	readonly recorded_at: string;
+	readonly event_id: string;
+	readonly deleted: boolean;
+};
+
+export type BacklogMaterializedIssue = {
+	readonly issue_id: string;
+	readonly origin_kind: "issue.created" | "issue.imported";
+	readonly fields: Readonly<Record<string, BacklogFieldValue>>;
+	readonly field_clock: Readonly<Record<string, BacklogFieldClock>>;
+};
+
+type BacklogFieldRevision =
+	| {
+			readonly deleted: false;
+			readonly value: BacklogFieldValue;
+			readonly recorded_at: string;
+			readonly event_id: string;
+	  }
+	| {
+			readonly deleted: true;
+			readonly recorded_at: string;
+			readonly event_id: string;
+	  };
+
+type MutableBacklogMaterializedIssue = {
+	readonly issue_id: string;
+	readonly origin_kind: "issue.created" | "issue.imported";
+	revisions: Map<string, BacklogFieldRevision>;
+};
+
+function parseRecordedAt(recordedAt: string): number {
+	if (!isCanonicalRecordedAt(recordedAt)) {
+		throw new BacklogContractError(`Invalid recorded_at timestamp: ${recordedAt}`);
+	}
+	const timestamp = Date.parse(recordedAt);
+	return timestamp;
+}
+
+function compareEventOrder(
+	a: Pick<BacklogEvent, "recorded_at" | "event_id">,
+	b: Pick<BacklogEvent, "recorded_at" | "event_id">,
+): number {
+	const timestampDelta = parseRecordedAt(a.recorded_at) - parseRecordedAt(b.recorded_at);
+	if (timestampDelta !== 0) {
+		return timestampDelta;
+	}
+	return a.event_id.localeCompare(b.event_id);
+}
+
+function assertOriginFields(issueId: string, fields: BacklogFieldValues): void {
+	const idValue = fields["id"];
+	if (typeof idValue !== "string" || idValue !== issueId) {
+		throw new BacklogContractError(
+			`Origin event for issue ${issueId} must set fields.id to the same issue id`,
+		);
+	}
+}
+
+function assertImmutableIssueId(event: Extract<BacklogEvent, { kind: "issue.updated" }>): void {
+	if ("id" in event.set_fields || event.unset_fields.includes("id")) {
+		throw new BacklogContractError(`Update event ${event.event_id} cannot modify issue id ${event.issue_id}`);
+	}
+}
+
+function shouldReplaceRevision(
+	existing: BacklogFieldRevision | undefined,
+	candidate: Pick<BacklogEvent, "recorded_at" | "event_id">,
+): boolean {
+	if (!existing) {
+		return true;
+	}
+	return compareEventOrder(candidate, existing) >= 0;
+}
+
+function applyFieldSet(
+	state: MutableBacklogMaterializedIssue,
+	event: Pick<BacklogEvent, "recorded_at" | "event_id">,
+	fields: BacklogFieldValues,
+): void {
+	for (const [field, value] of Object.entries(fields)) {
+		const existing = state.revisions.get(field);
+		if (!shouldReplaceRevision(existing, event)) {
+			continue;
+		}
+		state.revisions.set(field, {
+			deleted: false,
+			value,
+			recorded_at: event.recorded_at,
+			event_id: event.event_id,
+		});
+	}
+}
+
+function applyFieldUnset(
+	state: MutableBacklogMaterializedIssue,
+	event: Pick<BacklogEvent, "recorded_at" | "event_id">,
+	fields: ReadonlyArray<string>,
+): void {
+	for (const field of fields) {
+		const existing = state.revisions.get(field);
+		if (!shouldReplaceRevision(existing, event)) {
+			continue;
+		}
+		state.revisions.set(field, {
+			deleted: true,
+			recorded_at: event.recorded_at,
+			event_id: event.event_id,
+		});
+	}
+}
+
+function materializeIssue(state: MutableBacklogMaterializedIssue): BacklogMaterializedIssue {
+	const fields: Record<string, BacklogFieldValue> = {};
+	const fieldClock: Record<string, BacklogFieldClock> = {};
+
+	for (const [field, revision] of state.revisions.entries()) {
+		fieldClock[field] = {
+			recorded_at: revision.recorded_at,
+			event_id: revision.event_id,
+			deleted: revision.deleted,
+		};
+		if (!revision.deleted) {
+			fields[field] = revision.value;
+		}
+	}
+
+	return Object.freeze({
+		issue_id: state.issue_id,
+		origin_kind: state.origin_kind,
+		fields: Object.freeze(fields),
+		field_clock: Object.freeze(fieldClock),
+	});
+}
+
+export function compareBacklogEvents(a: BacklogEvent, b: BacklogEvent): number {
+	return compareEventOrder(a, b);
+}
+
+export function sortBacklogEvents(events: ReadonlyArray<BacklogEvent>): ReadonlyArray<BacklogEvent> {
+	return [...events].sort(compareBacklogEvents);
+}
+
+export function replayBacklogEvents(
+	events: ReadonlyArray<BacklogEvent>,
+): ReadonlyMap<string, BacklogMaterializedIssue> {
+	const issues = new Map<string, MutableBacklogMaterializedIssue>();
+
+	for (const event of sortBacklogEvents(events)) {
+		const existing = issues.get(event.issue_id);
+
+		switch (event.kind) {
+			case "issue.created": {
+				if (existing) {
+					throw new BacklogContractError(`Issue ${event.issue_id} already has an origin event`);
+				}
+				assertOriginFields(event.issue_id, event.fields);
+				const state: MutableBacklogMaterializedIssue = {
+					issue_id: event.issue_id,
+					origin_kind: event.kind,
+					revisions: new Map(),
+				};
+				applyFieldSet(state, event, event.fields);
+				issues.set(event.issue_id, state);
+				break;
+			}
+			case "issue.imported": {
+				if (existing) {
+					throw new BacklogContractError(`Issue ${event.issue_id} already has an origin event`);
+				}
+				assertOriginFields(event.issue_id, event.fields);
+				const state: MutableBacklogMaterializedIssue = {
+					issue_id: event.issue_id,
+					origin_kind: event.kind,
+					revisions: new Map(),
+				};
+				applyFieldSet(state, event, event.fields);
+				issues.set(event.issue_id, state);
+				break;
+			}
+			case "issue.updated": {
+				if (!existing) {
+					throw new BacklogContractError(
+						`Update event ${event.event_id} references issue ${event.issue_id} before an origin event`,
+					);
+				}
+				assertImmutableIssueId(event);
+				applyFieldSet(existing, event, event.set_fields);
+				applyFieldUnset(existing, event, event.unset_fields);
+				break;
+			}
+		}
+	}
+
+	return new Map(
+		Array.from(issues.entries(), ([issueId, issue]) => [issueId, materializeIssue(issue)]),
+	);
+}

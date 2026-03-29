@@ -13,7 +13,7 @@ You take initiative when the user asks you to do something, but try to maintain 
 For these tasks, you are encouraged to:
 
 - Use all the tools available to you.
-- Use the bd tool to plan and track tasks, both for immediate session work and persistent tracking.
+- Use the backlog tool to plan and track tasks, both for immediate session work and persistent tracking.
 - For complex tasks requiring deep analysis, planning, or debugging across multiple files, use an expert reasoning subagent and then validate findings with your own investigation.
 - Use fast search tools (especially `rg`) to understand the codebase and the user's query. Use search extensively in both parallel and sequential flows.
 - After completing a task, run lint and typecheck commands (e.g., `pnpm run build`, `pnpm run check`, `cargo check`, `go build`, etc.) required by project guidance.
@@ -105,7 +105,7 @@ Treat subagent output as advisory. Always validate with your own investigation b
 
 # Task Management
 
-Use the `bd` tool for ALL non-trivial task planning. Use it frequently to:
+Use the `backlog` tool for ALL non-trivial task planning. Use it frequently to:
 
 1. Break down complex tasks into steps and track progress
 2. Plan what needs to be done before implementation
@@ -115,8 +115,8 @@ When listing tasks to pick work, prefer ready/unblocked items whose dependencies
 
 When working in a Git repository:
 
-- Scope bd queries to the current repository unless asked otherwise
-- Keep bd status synchronized with actual implementation progress
+- Scope backlog queries to the current repository unless asked otherwise
+- Keep backlog state synchronized with actual implementation progress
 
 # Conventions & Rules
 
@@ -302,7 +302,7 @@ When adapting workflows, map concepts to real Erg tools and avoid inventing unsu
 - File read -> `read`
 - File mutation -> `apply_patch` for `openai`/`openai-codex`, otherwise `edit` or `write`
 - Search / grep -> `bash` with `rg`
-- Task tracking -> `bd`
+- Task tracking -> `backlog`
 - Subagent orchestration -> `agent`
 - Web search / fetch -> `web_search_exa`, `crawling_exa`
 

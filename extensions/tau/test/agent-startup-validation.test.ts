@@ -143,4 +143,39 @@ describe("agent startup validation", () => {
 		fs.rmSync(tempHome, { recursive: true, force: true });
 		fs.rmSync(tempProject, { recursive: true, force: true });
 	});
+
+	it("allows startup when a mode agent uses backlog as its planning tool", async () => {
+		const tempHome = mkdtemp("tau-home-");
+		const tempProject = mkdtemp("tau-project-");
+
+		writeFile(
+			path.join(tempHome, ".pi", "agent", "settings.json"),
+			JSON.stringify(
+				{
+					agents: {
+						deep: {
+							tools: ["read", "backlog"],
+						},
+					},
+				},
+				null,
+				2,
+			),
+		);
+
+		vi.stubEnv("HOME", tempHome);
+
+		const log = vi.fn<(message: string) => void>();
+		const exit = vi.fn((code: number): never => {
+			throw new Error(`EXIT:${code}`);
+		});
+
+		await validateAgentDefinitionsAtStartup(tempProject, { log, exit });
+
+		expect(log).not.toHaveBeenCalled();
+		expect(exit).not.toHaveBeenCalled();
+
+		fs.rmSync(tempHome, { recursive: true, force: true });
+		fs.rmSync(tempProject, { recursive: true, force: true });
+	});
 });

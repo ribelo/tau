@@ -52,7 +52,7 @@ const MODE_AGENT_TOOLS = [
 	"write",
 	"apply_patch",
 	"agent",
-	"bd",
+	"backlog",
 	"memory",
 	"web_search_exa",
 	"crawling_exa",

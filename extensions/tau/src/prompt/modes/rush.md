@@ -63,6 +63,6 @@ Speed is the priority. Skip explanations unless asked. Keep responses under 2 li
 
 # Erg Adaptation
 
-- Use bd when task tracking is needed.
+- Use backlog when task tracking is needed.
 - Use subagent delegation for broad conceptual search when plain rg is insufficient.
 - Keep AGENTS.md workflow requirements as hard constraints.

@@ -8,7 +8,7 @@ models:
 tools:
   - read
   - bash
-  - bd
+  - backlog
   - web_search_exa
   - crawling_exa
   - get_code_context_exa

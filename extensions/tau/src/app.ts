@@ -11,7 +11,7 @@ import { Persistence, PersistenceLive } from "./services/persistence.js";
 import { CuratedMemory, CuratedMemoryLive } from "./services/curated-memory.js";
 import { SkillManager, SkillManagerLive } from "./services/skill-manager.js";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import initBeads from "./beads/index.js";
+import initBacklog from "./backlog/tool.js";
 import initExa from "./exa/index.js";
 import initMemory from "./memory/index.js";
 import initSkillManage from "./skill-manage/index.js";
@@ -133,7 +133,7 @@ export const runTau = (pi: ExtensionAPI) => {
 			yield* promptModes.setup;
 			yield* curatedMemory.setup;
 			yield* Effect.sync(() => {
-				initBeads(pi);
+				initBacklog(pi);
 				initExa(pi);
 				initTerminalPrompt(pi, persistedAccess);
 				initWorkedFor(pi, persistedAccess);

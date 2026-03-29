@@ -1,5 +1,4 @@
 import { Effect, Layer, Schedule, Scope, ServiceMap, Stream } from "effect";
-import { FileSystem } from "effect/FileSystem";
 
 import type {
 	ExtensionAPI,
@@ -12,7 +11,10 @@ import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import * as path from "node:path";
 
 import { PiAPI } from "../effect/pi.js";
+import { readMaterializedIssuesCache } from "../backlog/materialize.js";
+import type { Issue } from "../backlog/schema.js";
 import { isRecord } from "../shared/json.js";
+import { findNearestWorkspaceRoot } from "../shared/discovery.js";
 import { Persistence } from "./persistence.js";
 import { Sandbox } from "./sandbox.js";
 import { DEFAULT_SANDBOX_CONFIG } from "../sandbox/config.js";
@@ -112,44 +114,14 @@ const collectGitLineDelta = async (pi: ExtensionAPI, cwd: string): Promise<GitLi
 	};
 };
 
-const findBeadsJsonlPath = (
-	fs: FileSystem,
-	startDir: string,
-): Effect.Effect<string | null, unknown, never> =>
-	Effect.gen(function* () {
-		let current = startDir;
-		for (;;) {
-			const candidate = path.join(current, ".beads", "beads.left.jsonl");
-			const exists = yield* fs.exists(candidate);
-			if (exists) {
-				return candidate;
-			}
-			const parent = path.dirname(current);
-			if (parent === current) {
-				return null;
-			}
-			current = parent;
-		}
-	});
+export const countInProgressIssues = (issues: ReadonlyArray<Issue>): number =>
+	issues.filter((issue) => issue.status === "in_progress").length;
 
-const countInProgressIssuesFromJsonl = (content: string): number => {
-	let count = 0;
-	for (const line of content.split("\n")) {
-		const trimmed = line.trim();
-		if (!trimmed) continue;
-		try {
-			const parsed: unknown = JSON.parse(trimmed);
-			if (!isRecord(parsed)) continue;
-			const status = parsed["status"];
-			if (status === "in_progress" || status === "in-progress") {
-				count += 1;
-			}
-		} catch {
-			continue;
-		}
-	}
-	return count;
-};
+export async function readFooterBacklogInProgressCount(cwd: string): Promise<number> {
+	const workspaceRoot = findNearestWorkspaceRoot(cwd);
+	const issues = await readMaterializedIssuesCache(workspaceRoot);
+	return countInProgressIssues(issues);
+}
 
 const computeTotalCost = (ctx: ExtensionContext): number => {
 	let totalCost = 0;
@@ -174,7 +146,6 @@ export const FooterLive = Layer.effect(
 	Footer,
 	Effect.gen(function* () {
 		const pi = yield* PiAPI;
-		const fs = yield* FileSystem;
 		const sandbox = yield* Sandbox;
 		const persistence = yield* Persistence;
 
@@ -193,16 +164,7 @@ export const FooterLive = Layer.effect(
 			const cwd = currentCwd;
 			const gitLineDelta = yield* Effect.promise(() => collectGitLineDelta(pi, cwd));
 
-			const issuesPath = yield* findBeadsJsonlPath(fs, cwd);
-			let inProgressCount = 0;
-			if (issuesPath) {
-				const issuesJsonl = yield* fs
-					.readFileString(issuesPath)
-					.pipe(Effect.catch(() => Effect.succeed("")));
-				if (issuesJsonl.length > 0) {
-					inProgressCount = countInProgressIssuesFromJsonl(issuesJsonl);
-				}
-			}
+			const inProgressCount = yield* Effect.promise(() => readFooterBacklogInProgressCount(cwd));
 
 			if (
 				currentHygiene.gitLineDelta.added === gitLineDelta.added &&
