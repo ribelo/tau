@@ -626,4 +626,64 @@ describe("memory tool runtime", () => {
 			await runtime.dispose();
 		}
 	});
+
+	it("surfaces descriptive /memories errors when a memory file is invalid", async () => {
+		const { pi, commands } = makePiStub();
+		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
+		const runEffect = <A, E>(effect: Effect.Effect<A, E, CuratedMemory>) => runtime.runPromise(effect);
+		const cwd = path.join(tempHome, "workspace-memories-invalid");
+		await fs.mkdir(cwd, { recursive: true });
+		await fs.mkdir(path.join(cwd, ".pi"), { recursive: true });
+		await fs.writeFile(path.join(cwd, ".pi", "settings.json"), "{}", "utf8");
+		await fs.mkdir(path.dirname(globalMemoryPath(tempHome)), { recursive: true });
+		await fs.writeFile(
+			globalMemoryPath(tempHome),
+			JSON.stringify({
+				id: "bad",
+				content: "broken memory entry",
+				createdAt: "2024-01-02T03:04:05.000Z",
+				updatedAt: "2024-01-02T03:04:05.000Z",
+			}),
+			"utf8",
+		);
+
+		const notifications: Array<{ readonly message: string; readonly level: string }> = [];
+
+		try {
+			const memory = await runEffect(Effect.gen(function* () {
+				return yield* CuratedMemory;
+			}));
+			await runtime.runPromise(Effect.scoped(memory.setup));
+
+			initMemory(pi, runEffect);
+
+			const command = commands.get("memories");
+			expect(command).toBeDefined();
+
+			await command!.handler(
+				"",
+				{
+					...makeContext(cwd),
+					ui: {
+						setWidget: () => undefined,
+						setFooter: () => () => undefined,
+						setEditorComponent: () => undefined,
+						notify: (message: string, level: string) => {
+							notifications.push({ message, level });
+						},
+						setStatus: () => undefined,
+					},
+				} as unknown as ExtensionContext,
+			);
+
+			expect(notifications).toEqual([
+				{
+					message: expect.stringContaining("expected a nanoid"),
+					level: "error",
+				},
+			]);
+		} finally {
+			await runtime.dispose();
+		}
+	});
 });

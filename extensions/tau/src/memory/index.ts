@@ -41,6 +41,16 @@ function toolFail(text: string, details: Omit<ToolDetails, "success"> = {}): Too
 	return { content: [{ type: "text", text }], details: { success: false, ...details } };
 }
 
+function describeMemoryCommandError(error: unknown): string {
+	if (error instanceof MemoryFileError) {
+		return `Memory file error: ${error.reason}`;
+	}
+	if (error instanceof Error) {
+		return error.message || String(error);
+	}
+	return String(error);
+}
+
 function formatEntry(entry: MemoryEntry): string {
 	return [`id: ${entry.id}`, `chars: ${entry.content.length}`, `content:\n${entry.content}`].join("\n");
 }
@@ -111,7 +121,7 @@ export default function initMemory(
 					{ triggerTurn: false },
 				);
 			} catch (error: unknown) {
-				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+				ctx.ui.notify(describeMemoryCommandError(error), "error");
 			}
 		},
 	});
