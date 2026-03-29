@@ -44,6 +44,11 @@ function previewContent(value: string, maxChars = 96): string {
 	return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
 }
 
+function renderCallContent(value: string, theme: Theme): string {
+	const lines = value.replace(/\r\n?/gu, "\n").split("\n");
+	return [`${theme.fg("muted", "content:")}`, ...lines.map((line) => `  ${theme.fg("toolOutput", line)}`)].join("\n");
+}
+
 function renderProgressBar(percent: number | undefined, width: number, theme: Theme): string {
 	if (typeof percent !== "number") {
 		return `${theme.fg("muted", "[")}${theme.fg("dim", "?".repeat(width))}${theme.fg("muted", "]")}`;
@@ -200,6 +205,7 @@ export function renderMemoryCall(args: Record<string, unknown> | undefined, them
 	}
 	if (content) {
 		out += `\n${theme.fg("muted", `chars: ${content.length}`)}`;
+		out += `\n${renderCallContent(content, theme)}`;
 	}
 
 	return new Text(out, 0, 0);
