@@ -1,4 +1,5 @@
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { execFile, type ExecFileException } from "node:child_process";
+import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 import { Markdown, Text, type AutocompleteItem } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
@@ -86,6 +87,36 @@ const BdCliJsonOutputSchema = Schema.Union([
 ]);
 
 const BD_MESSAGE_TYPE = "bd";
+
+const BD_TOOL_DESCRIPTION =
+	'Wrapper around the `bd` (Beads) CLI created mainly to render output nicely for the user. Provide `command` and omit the leading `bd` (it will be stripped if present).\n\nCommon examples:\n- List all issues: `list`\n- List ready work (unblocked): `ready`\n- List blocked work: `blocked`\n- Show issue: `show tau-xxxx`\n- Create task: `create "Title" --type task --priority 2 --description "..."`\n- Create epic: `create "Epic title" --type epic --priority 1 --description "..."`\n- Update status: `update tau-xxxx --status in_progress`\n- Close issue: `close tau-xxxx --reason "Done"`\n- Init: `init`\n- Onboard: `onboard`\n- Sync: `sync`\n- Help: `help` (forwarded to `bd --help`) or `help show`';
+
+const BD_TOOL_PROMPT_SNIPPET =
+	"Git-backed issue tracker (Beads) for task planning, tracking, and persistent memory across sessions";
+
+const BD_TOOL_PROMPT_GUIDELINES = [
+	"Use the bd tool for ALL non-trivial task planning. Use it frequently to break down complex tasks, track progress, and plan before implementation.",
+	"When listing tasks to pick work, prefer ready/unblocked items whose dependencies are satisfied.",
+	"Mark tasks in-progress at start and done immediately when finished.",
+] as const;
+
+type BdExecOptions = {
+	readonly signal?: AbortSignal;
+	readonly timeout?: number;
+	readonly cwd?: string;
+};
+
+type BdExecResult = {
+	readonly code: number | null;
+	readonly stdout: string;
+	readonly stderr: string;
+};
+
+type BdExec = (
+	command: string,
+	args: readonly string[],
+	options: BdExecOptions,
+) => Promise<BdExecResult>;
 
 const bdParams = Type.Object({
 	command: Type.String({
@@ -600,14 +631,70 @@ function buildArgs(command: string): { args: string[]; kind: RenderKind } {
 	return { args, kind };
 }
 
+function createPiBdExec(pi: Pick<ExtensionAPI, "exec">): BdExec {
+	return async (command, args, options) => {
+		const result = await pi.exec(command, [...args], {
+			...(options.signal ? { signal: options.signal } : {}),
+			...(options.timeout !== undefined ? { timeout: options.timeout } : {}),
+			...(options.cwd ? { cwd: options.cwd } : {}),
+		});
+
+		return {
+			code: result.code,
+			stdout: result.stdout ?? "",
+			stderr: result.stderr ?? "",
+		};
+	};
+}
+
+function createLocalBdExec(): BdExec {
+	return (command, args, options) =>
+		new Promise((resolve, reject) => {
+			execFile(
+				command,
+				[...args],
+				{
+					encoding: "utf8",
+					maxBuffer: 5 * 1024 * 1024,
+					...(options.signal ? { signal: options.signal } : {}),
+					...(options.timeout !== undefined ? { timeout: options.timeout } : {}),
+					...(options.cwd ? { cwd: options.cwd } : {}),
+				},
+				(error, stdout, stderr) => {
+					if (error === null) {
+						resolve({ code: 0, stdout, stderr });
+						return;
+					}
+
+					const execError = error as ExecFileException;
+					if (
+						typeof execError.code === "number" ||
+						execError.killed === true ||
+						execError.signal !== undefined ||
+						execError.name === "AbortError"
+					) {
+						resolve({
+							code: typeof execError.code === "number" ? execError.code : null,
+							stdout,
+							stderr,
+						});
+						return;
+					}
+
+					reject(error);
+				},
+			);
+		});
+}
+
 async function runBd(
-	pi: ExtensionAPI,
+	exec: BdExec,
 	command: string,
 	signal?: AbortSignal,
 	cwd?: string,
 ): Promise<BdToolDetails> {
 	const { args, kind } = buildArgs(command);
-	const res = await pi.exec("bd", args, {
+	const res = await exec("bd", args, {
 		...(signal ? { signal } : {}),
 		timeout: 60_000,
 		...(cwd ? { cwd } : {}),
@@ -668,7 +755,7 @@ async function runBd(
 		outputText,
 		stdout,
 		stderr,
-		code: res.code,
+		...(res.code !== null ? { code: res.code } : {}),
 	};
 }
 
@@ -757,7 +844,104 @@ function renderBd(details: BdToolDetails, options: { expanded: boolean }, theme:
 	return renderFallback("unknown", JSON.stringify(json, null, 2), theme);
 }
 
+export function createBdToolDefinition(options?: {
+	exec?: BdExec;
+}): ToolDefinition<typeof bdParams, BdToolDetails> {
+	const exec = options?.exec ?? createLocalBdExec();
+
+	return {
+		name: "bd",
+		label: "bd",
+		description: BD_TOOL_DESCRIPTION,
+		promptSnippet: BD_TOOL_PROMPT_SNIPPET,
+		promptGuidelines: [...BD_TOOL_PROMPT_GUIDELINES],
+		parameters: bdParams,
+
+		async execute(_toolCallId, params, signal, _onUpdate, _ctx) {
+			const details = await runBd(exec, params.command, signal, params.cwd);
+
+			if (details.code && details.code !== 0) {
+				const errText = details.outputText || `bd exited with code ${details.code}`;
+				return { content: [{ type: "text", text: errText }], details };
+			}
+
+			if (details.isJson) {
+				const text = formatBdDetailsAsText(details);
+				return {
+					content: [{ type: "text", text }],
+					details,
+				};
+			}
+
+			return {
+				content: [{ type: "text", text: details.outputText || "(no output)" }],
+				details,
+			};
+		},
+
+		renderCall(args, theme) {
+			const cmd = typeof args?.command === "string" ? args.command.trim() : "";
+			const tokens = shellSplit(stripLeadingPrompt(cmd));
+			const withoutBd = stripLeadingBd(tokens);
+
+			const positional: string[] = [];
+			const flags: Record<string, string | boolean> = {};
+
+			for (let i = 0; i < withoutBd.length; i++) {
+				const token = withoutBd[i]!;
+				if (token.startsWith("-")) {
+					const parts = token.split("=");
+					const key = parts[0]!.replace(/^-+/, "");
+					if (parts.length > 1) {
+						flags[key] = parts.slice(1).join("=");
+					} else {
+						const next = withoutBd[i + 1];
+						if (next && !next.startsWith("-")) {
+							flags[key] = next;
+							i++;
+						} else {
+							flags[key] = true;
+						}
+					}
+				} else {
+					positional.push(token);
+				}
+			}
+
+			let out = theme.fg("toolTitle", theme.bold(`bd ${positional.join(" ")}`));
+			if (args?.cwd) {
+				out += `\n${theme.fg("muted", `cwd: ${args.cwd}`)}`;
+			}
+
+			const flagEntries = Object.entries(flags).map(([key, value]) => {
+				let k = key;
+				let v = value === true ? "true" : String(value);
+				if (k === "json") {
+					k = "output";
+					v = "json";
+				}
+				return { k, v };
+			});
+			flagEntries.sort((a, b) => a.v.length - b.v.length);
+
+			for (const { k, v } of flagEntries) {
+				out += `\n${theme.fg("muted", `${k}: ${v}`)}`;
+			}
+
+			return new Text(out, 0, 0);
+		},
+
+		renderResult(result, options, theme) {
+			const details = result.details as BdToolDetails | undefined;
+			if (!details) return new Text(theme.fg("dim", "(no bd details)"), 0, 0);
+			return renderBd(details, options, theme as Theme);
+		},
+	};
+}
+
 export default function initBeads(pi: ExtensionAPI) {
+	const bdExec = createPiBdExec(pi);
+
 	// Keep /bd command outputs out of LLM context.
 	pi.on("context", async (event) => {
 		const filtered = event.messages.filter(
@@ -842,7 +1026,7 @@ export default function initBeads(pi: ExtensionAPI) {
 
 			// Run bd immediately and render output as a custom message.
 			try {
-				const details = await runBd(pi, trimmed);
+				const details = await runBd(bdExec, trimmed);
 				pi.sendMessage(
 					{
 						customType: BD_MESSAGE_TYPE,
@@ -864,99 +1048,5 @@ export default function initBeads(pi: ExtensionAPI) {
 		return renderBd(details, options, theme as Theme);
 	});
 
-	pi.registerTool({
-		name: "bd",
-		label: "bd",
-		description:
-			'Wrapper around the `bd` (Beads) CLI created mainly to render output nicely for the user. Provide `command` and omit the leading `bd` (it will be stripped if present).\n\nCommon examples:\n- List all issues: `list`\n- List ready work (unblocked): `ready`\n- List blocked work: `blocked`\n- Show issue: `show tau-xxxx`\n- Create task: `create "Title" --type task --priority 2 --description "..."`\n- Create epic: `create "Epic title" --type epic --priority 1 --description "..."`\n- Update status: `update tau-xxxx --status in_progress`\n- Close issue: `close tau-xxxx --reason "Done"`\n- Init: `init`\n- Onboard: `onboard`\n- Sync: `sync`\n- Help: `help` (forwarded to `bd --help`) or `help show`',
-		promptSnippet:
-			"Git-backed issue tracker (Beads) for task planning, tracking, and persistent memory across sessions",
-		promptGuidelines: [
-			"Use the bd tool for ALL non-trivial task planning. Use it frequently to break down complex tasks, track progress, and plan before implementation.",
-			"When listing tasks to pick work, prefer ready/unblocked items whose dependencies are satisfied.",
-			"Mark tasks in-progress at start and done immediately when finished.",
-		],
-		parameters: bdParams,
-
-		async execute(_toolCallId, params, signal, _onUpdate, _ctx) {
-			const details = await runBd(pi, params.command, signal, params.cwd);
-
-			if (details.code && details.code !== 0) {
-				const errText = details.outputText || `bd exited with code ${details.code}`;
-				return { content: [{ type: "text", text: errText }], details };
-			}
-
-			if (details.isJson) {
-				const text = formatBdDetailsAsText(details);
-				return {
-					content: [{ type: "text", text }],
-					details,
-				};
-			}
-
-			return {
-				content: [{ type: "text", text: details.outputText || "(no output)" }],
-				details,
-			};
-		},
-
-		renderCall(args, theme) {
-			const cmd = typeof args?.command === "string" ? args.command.trim() : "";
-			const tokens = shellSplit(stripLeadingPrompt(cmd));
-			const withoutBd = stripLeadingBd(tokens);
-
-			const positional: string[] = [];
-			const flags: Record<string, string | boolean> = {};
-
-			for (let i = 0; i < withoutBd.length; i++) {
-				const token = withoutBd[i]!;
-				if (token.startsWith("-")) {
-					const parts = token.split("=");
-					const key = parts[0]!.replace(/^-+/, "");
-					if (parts.length > 1) {
-						flags[key] = parts.slice(1).join("=");
-					} else {
-						const next = withoutBd[i + 1];
-						if (next && !next.startsWith("-")) {
-							flags[key] = next;
-							i++;
-						} else {
-							flags[key] = true;
-						}
-					}
-				} else {
-					positional.push(token);
-				}
-			}
-
-			let out = theme.fg("toolTitle", theme.bold(`bd ${positional.join(" ")}`));
-			if (args?.cwd) {
-				out += `\n${theme.fg("muted", `cwd: ${args.cwd}`)}`;
-			}
-
-			// Sort flags by value length (shorter first) for readability
-			const flagEntries = Object.entries(flags).map(([key, value]) => {
-				let k = key;
-				let v = value === true ? "true" : String(value);
-				if (k === "json") {
-					k = "output";
-					v = "json";
-				}
-				return { k, v };
-			});
-			flagEntries.sort((a, b) => a.v.length - b.v.length);
-
-			for (const { k, v } of flagEntries) {
-				out += `\n${theme.fg("muted", `${k}: ${v}`)}`;
-			}
-
-			return new Text(out, 0, 0);
-		},
-
-		renderResult(result, options, theme) {
-			const details = result.details as BdToolDetails | undefined;
-			if (!details) return new Text(theme.fg("dim", "(no bd details)"), 0, 0);
-			return renderBd(details, options, theme as Theme);
-		},
-	});
+	pi.registerTool(createBdToolDefinition({ exec: bdExec }));
 }

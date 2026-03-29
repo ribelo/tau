@@ -42,7 +42,7 @@ import type { AgentDefinition, ModelSpec } from "./types.js";
 import { decodeAgentModelSpec, isPromptModeThinkingLevel, validatePromptModeModelId } from "./model-spec.js";
 
 const MODE_AGENT_SANDBOX: SandboxConfig = {
-	preset: "full-access",
+	preset: "workspace-write",
 };
 
 const MODE_AGENT_TOOLS = [
@@ -53,6 +53,7 @@ const MODE_AGENT_TOOLS = [
 	"apply_patch",
 	"agent",
 	"bd",
+	"memory",
 	"web_search_exa",
 	"crawling_exa",
 	"get_code_context_exa",

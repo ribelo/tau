@@ -51,10 +51,6 @@ Do NOT run multiple edits to the same file in parallel.
 
 If an AGENTS.md is provided, treat it as ground truth for commands and structure.
 
-# Subagent boundaries
-
-When running as a subagent: orchestrator owns git, review, and beads lifecycle. Do not commit, spawn reviewers, or change beads task status. Stay on your assigned task. Report unrelated bugs to the orchestrator instead of fixing them. Read your spec from beads via `bd show <id>`.
-
 # File Links
 
 Link files as: [display text](file:///absolute/path#L10-L20)

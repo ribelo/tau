@@ -1,5 +1,10 @@
 import { Data, Effect, Schema } from "effect";
-import { getMarkdownTheme, type ExtensionAPI, type Theme } from "@mariozechner/pi-coding-agent";
+import {
+	getMarkdownTheme,
+	type ExtensionAPI,
+	type Theme,
+	type ToolDefinition,
+} from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { Markdown, Text } from "@mariozechner/pi-tui";
 
@@ -195,7 +200,6 @@ interface ExaService {
 		signal: AbortSignal | undefined,
 	) => Effect.Effect<ExaContextResponse, ExaApiError | ExaConfigError>;
 }
-
 
 // =============================================================================
 // Helpers
@@ -778,149 +782,154 @@ const renderCodeContextResult = (
 // Tool Registration
 // =============================================================================
 
+export function createExaToolDefinitions(): ToolDefinition[] {
+	return [
+		{
+			name: "web_search_exa",
+			label: "exa.web_search",
+			description:
+				"Search the Exa index (web, papers, GitHub, news, etc.). Use this to find relevant URLs. Best practices: keep numResults small (3-10), use filters (includeDomains/category/date ranges) to narrow results, and only request text when you need snippets.",
+			promptSnippet: "Search the Exa index (web, papers, GitHub, news, etc.)",
+			parameters: WebSearchTypeBox,
+
+			renderCall(args, theme) {
+				return new Text(renderSearchCall(args, theme), 0, 0);
+			},
+
+			renderResult(result, options, theme) {
+				if (options.isPartial) {
+					return new Text(theme.fg("warning", "Searching Exa…"), 0, 0);
+				}
+
+				// Result comes from details field
+				const details = (result as { details?: ExaSearchResponse }).details;
+				if (!details) {
+					return new Text(theme.fg("dim", "(no results)"), 0, 0);
+				}
+
+				return new Text(renderSearchResult(details, options.expanded, theme), 0, 0);
+			},
+
+			async execute(_toolCallId, params, signal, onUpdate, _ctx) {
+				onUpdate?.({ content: [{ type: "text", text: "Searching Exa…" }], details: {} });
+
+				const typedParams = params as WebSearchParams;
+				const program = ExaServiceLive.search(typedParams, signal);
+
+				const result = await Effect.runPromise(program);
+
+				// Format text content
+				const textContent = result.results
+					.map((r, i) => formatSearchResultText(r, i))
+					.join("\n\n");
+
+				return {
+					content: [{ type: "text", text: textContent || "No results found." }],
+					details: result,
+				};
+			},
+		},
+
+		{
+			name: "crawling_exa",
+			label: "exa.crawl",
+			description:
+				"Fetch page contents via Exa (/contents). Use this when you already have URLs and need text, highlights, or summaries. Best practice: request only what you need (summary/highlights vs full text) to keep tool output small.",
+			promptSnippet: "Fetch page contents via Exa (/contents) when you already have URLs",
+			parameters: CrawlingTypeBox,
+
+			renderCall(args, theme) {
+				return new Text(renderCrawlCall(args, theme), 0, 0);
+			},
+
+			renderResult(result, options, theme) {
+				if (options.isPartial) {
+					return new Text(theme.fg("warning", "Fetching contents from Exa…"), 0, 0);
+				}
+
+				const details = (result as { details?: ExaContentsResponse }).details;
+				if (!details) {
+					return new Text(theme.fg("dim", "(no results)"), 0, 0);
+				}
+
+				return new Text(renderCrawlResult(details, options.expanded, theme), 0, 0);
+			},
+
+			async execute(_toolCallId, params, signal, onUpdate, _ctx) {
+				onUpdate?.({
+					content: [{ type: "text", text: "Fetching contents from Exa…" }],
+					details: {},
+				});
+
+				const typedParams = params as CrawlingParams;
+				const program = ExaServiceLive.crawl(typedParams, signal);
+
+				const result = await Effect.runPromise(program);
+
+				const textContent = result.results
+					.map((r, i) => formatCrawlResultText(r, i))
+					.join("\n\n");
+
+				return {
+					content: [{ type: "text", text: textContent || "No results found." }],
+					details: result,
+				};
+			},
+		},
+
+		{
+			name: "get_code_context_exa",
+			label: "exa.code_context",
+			description:
+				"Get relevant code snippets and examples via Exa Context API (Exa Code). Best practice: start with tokensNum omitted (defaults to 'dynamic') for token-efficient results; use '5000' (or '10000' if needed) when you want a fixed size.",
+			promptSnippet: "Get relevant code snippets and examples via Exa Context API (Exa Code)",
+			parameters: CodeContextTypeBox,
+
+			renderCall(args, theme) {
+				return new Text(renderCodeContextCall(args, theme), 0, 0);
+			},
+
+			renderResult(result, options, theme) {
+				if (options.isPartial) {
+					return new Text(theme.fg("warning", "Getting code context from Exa…"), 0, 0);
+				}
+
+				const details = (result as { details?: ExaContextResponse }).details;
+				if (!details) {
+					return new Text(theme.fg("dim", "(no response)"), 0, 0);
+				}
+
+				const out = renderCodeContextResult(details, options.expanded, theme);
+
+				if (options.expanded) {
+					const mdTheme = getMarkdownTheme();
+					return new Markdown(out, 0, 0, mdTheme);
+				}
+				return new Text(out, 0, 0);
+			},
+
+			async execute(_toolCallId, params, signal, onUpdate, _ctx) {
+				onUpdate?.({
+					content: [{ type: "text", text: "Getting code context from Exa…" }],
+					details: {},
+				});
+
+				const typedParams = params as CodeContextParams;
+				const program = ExaServiceLive.codeContext(typedParams, signal);
+
+				const result = await Effect.runPromise(program);
+
+				return {
+					content: [{ type: "text", text: result.response ?? "(no response)" }],
+					details: result,
+				};
+			},
+		},
+	];
+}
+
 export default function initExa(pi: ExtensionAPI): void {
-	// Register web_search tool
-	pi.registerTool({
-		name: "web_search_exa",
-		label: "exa.web_search",
-		description:
-			"Search the Exa index (web, papers, GitHub, news, etc.). Use this to find relevant URLs. Best practices: keep numResults small (3-10), use filters (includeDomains/category/date ranges) to narrow results, and only request text when you need snippets.",
-		promptSnippet: "Search the Exa index (web, papers, GitHub, news, etc.)",
-		parameters: WebSearchTypeBox,
-
-		renderCall(args, theme) {
-			return new Text(renderSearchCall(args, theme), 0, 0);
-		},
-
-		renderResult(result, options, theme) {
-			if (options.isPartial) {
-				return new Text(theme.fg("warning", "Searching Exa…"), 0, 0);
-			}
-
-			// Result comes from details field
-			const details = (result as { details?: ExaSearchResponse }).details;
-			if (!details) {
-				return new Text(theme.fg("dim", "(no results)"), 0, 0);
-			}
-
-			return new Text(renderSearchResult(details, options.expanded, theme), 0, 0);
-		},
-
-		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
-			onUpdate?.({ content: [{ type: "text", text: "Searching Exa…" }], details: {} });
-
-			const typedParams = params as WebSearchParams;
-			const program = ExaServiceLive.search(typedParams, signal);
-
-			const result = await Effect.runPromise(program);
-
-			// Format text content
-			const textContent = result.results
-				.map((r, i) => formatSearchResultText(r, i))
-				.join("\n\n");
-
-			return {
-				content: [{ type: "text", text: textContent || "No results found." }],
-				details: result,
-			};
-		},
-	});
-
-	// Register crawl tool
-	pi.registerTool({
-		name: "crawling_exa",
-		label: "exa.crawl",
-		description:
-			"Fetch page contents via Exa (/contents). Use this when you already have URLs and need text, highlights, or summaries. Best practice: request only what you need (summary/highlights vs full text) to keep tool output small.",
-		promptSnippet: "Fetch page contents via Exa (/contents) when you already have URLs",
-		parameters: CrawlingTypeBox,
-
-		renderCall(args, theme) {
-			return new Text(renderCrawlCall(args, theme), 0, 0);
-		},
-
-		renderResult(result, options, theme) {
-			if (options.isPartial) {
-				return new Text(theme.fg("warning", "Fetching contents from Exa…"), 0, 0);
-			}
-
-			const details = (result as { details?: ExaContentsResponse }).details;
-			if (!details) {
-				return new Text(theme.fg("dim", "(no results)"), 0, 0);
-			}
-
-			return new Text(renderCrawlResult(details, options.expanded, theme), 0, 0);
-		},
-
-		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
-			onUpdate?.({
-				content: [{ type: "text", text: "Fetching contents from Exa…" }],
-				details: {},
-			});
-
-			const typedParams = params as CrawlingParams;
-			const program = ExaServiceLive.crawl(typedParams, signal);
-
-			const result = await Effect.runPromise(program);
-
-			const textContent = result.results
-				.map((r, i) => formatCrawlResultText(r, i))
-				.join("\n\n");
-
-			return {
-				content: [{ type: "text", text: textContent || "No results found." }],
-				details: result,
-			};
-		},
-	});
-
-	// Register code_context tool
-	pi.registerTool({
-		name: "get_code_context_exa",
-		label: "exa.code_context",
-		description:
-			"Get relevant code snippets and examples via Exa Context API (Exa Code). Best practice: start with tokensNum omitted (defaults to 'dynamic') for token-efficient results; use '5000' (or '10000' if needed) when you want a fixed size.",
-		promptSnippet: "Get relevant code snippets and examples via Exa Context API (Exa Code)",
-		parameters: CodeContextTypeBox,
-
-		renderCall(args, theme) {
-			return new Text(renderCodeContextCall(args, theme), 0, 0);
-		},
-
-		renderResult(result, options, theme) {
-			if (options.isPartial) {
-				return new Text(theme.fg("warning", "Getting code context from Exa…"), 0, 0);
-			}
-
-			const details = (result as { details?: ExaContextResponse }).details;
-			if (!details) {
-				return new Text(theme.fg("dim", "(no response)"), 0, 0);
-			}
-
-			const out = renderCodeContextResult(details, options.expanded, theme);
-
-			if (options.expanded) {
-				const mdTheme = getMarkdownTheme();
-				return new Markdown(out, 0, 0, mdTheme);
-			}
-			return new Text(out, 0, 0);
-		},
-
-		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
-			onUpdate?.({
-				content: [{ type: "text", text: "Getting code context from Exa…" }],
-				details: {},
-			});
-
-			const typedParams = params as CodeContextParams;
-			const program = ExaServiceLive.codeContext(typedParams, signal);
-
-			const result = await Effect.runPromise(program);
-
-			return {
-				content: [{ type: "text", text: result.response ?? "(no response)" }],
-				details: result,
-			};
-		},
-	});
+	for (const tool of createExaToolDefinitions()) {
+		pi.registerTool(tool);
+	}
 }

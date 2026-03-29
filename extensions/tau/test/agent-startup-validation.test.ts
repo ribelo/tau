@@ -84,14 +84,61 @@ describe("agent startup validation", () => {
 			throw new Error(`EXIT:${code}`);
 		});
 
+		await expect(validateAgentDefinitionsAtStartup(tempProject, { log, exit })).rejects.toThrow(
+			"EXIT:1",
+		);
+
+		expect(exit).toHaveBeenCalledWith(1);
+		expect(logged).toContain("pi failed to start: invalid agent configuration detected.");
+		expect(logged).toContain("broken-one.md");
+		expect(logged).toContain("broken-two.md");
+
+		fs.rmSync(tempHome, { recursive: true, force: true });
+		fs.rmSync(tempProject, { recursive: true, force: true });
+	});
+
+	it("exits startup when a resolved mode agent references unavailable tools", async () => {
+		const tempHome = mkdtemp("tau-home-");
+		const tempProject = mkdtemp("tau-project-");
+
+		writeFile(
+			path.join(tempHome, ".pi", "agent", "settings.json"),
+			JSON.stringify(
+				{
+					agents: {
+						deep: {
+							tools: ["read", "imaginary_tool"],
+						},
+					},
+				},
+				null,
+				2,
+			),
+		);
+
+		vi.stubEnv("HOME", tempHome);
+
+		let logged = "";
+		let notified = "";
+		const log = (message: string) => {
+			logged = message;
+		};
+		const notify = (message: string) => {
+			notified = message;
+		};
+		const exit = vi.fn((code: number): never => {
+			throw new Error(`EXIT:${code}`);
+		});
+
 		await expect(
-			validateAgentDefinitionsAtStartup(tempProject, { log, exit }),
+			validateAgentDefinitionsAtStartup(tempProject, { log, notify, exit }),
 		).rejects.toThrow("EXIT:1");
 
 		expect(exit).toHaveBeenCalledWith(1);
-		expect(logged).toContain("pi failed to start: invalid agent definition markdown detected.");
-		expect(logged).toContain("broken-one.md");
-		expect(logged).toContain("broken-two.md");
+		expect(logged).toContain("pi failed to start: invalid agent configuration detected.");
+		expect(logged).toContain('Invalid tools for agent "deep": imaginary_tool');
+		expect(logged).toContain("Available tools:");
+		expect(notified).toBe(logged);
 
 		fs.rmSync(tempHome, { recursive: true, force: true });
 		fs.rmSync(tempProject, { recursive: true, force: true });

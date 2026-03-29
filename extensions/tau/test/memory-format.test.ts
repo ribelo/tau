@@ -5,8 +5,39 @@ import {
 	charCount,
 	joinEntries,
 	parseEntries,
-	renderPromptBlock,
+	renderMemorySnapshotXml,
+	type MemorySnapshot,
 } from "../src/memory/format.js";
+
+function makeSnapshot(partial: Partial<MemorySnapshot> = {}): MemorySnapshot {
+	return {
+		project: {
+			bucket: "project",
+			path: "/workspace/.pi/tau/memories/PROJECT.md",
+			entries: [],
+			chars: 0,
+			limitChars: 2200,
+			usagePercent: 0,
+		},
+		global: {
+			bucket: "global",
+			path: "/home/test/.pi/agent/tau/memories/MEMORY.md",
+			entries: [],
+			chars: 0,
+			limitChars: 2200,
+			usagePercent: 0,
+		},
+		user: {
+			bucket: "user",
+			path: "/home/test/.pi/agent/tau/memories/USER.md",
+			entries: [],
+			chars: 0,
+			limitChars: 1375,
+			usagePercent: 0,
+		},
+		...partial,
+	};
+}
 
 describe("memory format helpers", () => {
 	it("parses trimmed entries and removes empty segments", () => {
@@ -40,34 +71,86 @@ describe("memory format helpers", () => {
 		expect(charCount([])).toBe(0);
 	});
 
-	it("renders an empty prompt block when there are no entries", () => {
-		expect(renderPromptBlock("memory", [], 2200)).toBe("");
+	it("renders an empty XML snapshot when every scope is empty and empty scopes are omitted", () => {
+		expect(renderMemorySnapshotXml(makeSnapshot(), { includeEmpty: false })).toBe("");
 	});
 
-	it("renders a memory prompt block with usage and content", () => {
-		const entries = ["alpha", "beta\ngamma"];
-		const expectedContent = `alpha${ENTRY_DELIMITER}beta\ngamma`;
-		const expectedChars = expectedContent.length;
+	it("renders an XML snapshot with backing file paths and escaped content", () => {
+		const projectEntries = ["alpha"];
+		const globalEntries = ["beta & <gamma>"];
+		const userEntries = ["zed"];
 
-		expect(renderPromptBlock("memory", entries, 20)).toBe(
+		expect(
+			renderMemorySnapshotXml(
+				makeSnapshot({
+					project: {
+						bucket: "project",
+						path: "/workspace/.pi/tau/memories/PROJECT.md",
+						entries: projectEntries,
+						chars: charCount(projectEntries),
+						limitChars: 2200,
+						usagePercent: Math.floor((charCount(projectEntries) / 2200) * 100),
+					},
+					global: {
+						bucket: "global",
+						path: "/home/test/.pi/agent/tau/memories/MEMORY.md",
+						entries: globalEntries,
+						chars: charCount(globalEntries),
+						limitChars: 2200,
+						usagePercent: Math.floor((charCount(globalEntries) / 2200) * 100),
+					},
+					user: {
+						bucket: "user",
+						path: "/home/test/.pi/agent/tau/memories/USER.md",
+						entries: userEntries,
+						chars: charCount(userEntries),
+						limitChars: 10,
+						usagePercent: Math.floor((charCount(userEntries) / 10) * 100),
+					},
+				}),
+				{ includeEmpty: true },
+			),
+		).toBe(
 			[
-				"═".repeat(46),
-				`MEMORY (your personal notes) [${Math.floor((expectedChars / 20) * 100)}% — ${expectedChars}/20 chars]`,
-				"═".repeat(46),
-				expectedContent,
+				"<memory_snapshot>",
+				'<project_memory path="/workspace/.pi/tau/memories/PROJECT.md" entries="1" chars="5" limit="2200" usage_percent="0">',
+				"alpha",
+				"</project_memory>",
+				'<global_memory path="/home/test/.pi/agent/tau/memories/MEMORY.md" entries="1" chars="14" limit="2200" usage_percent="0">',
+				"beta &amp; &lt;gamma&gt;",
+				"</global_memory>",
+				'<user_memory path="/home/test/.pi/agent/tau/memories/USER.md" entries="1" chars="3" limit="10" usage_percent="30">',
+				"zed",
+				"</user_memory>",
+				"</memory_snapshot>",
 			].join("\n"),
 		);
 	});
 
-	it("renders a user profile prompt block with grouped numbers", () => {
-		const entry = "x".repeat(1474);
+	it("keeps empty scopes in the XML when includeEmpty is true", () => {
+		const rendered = renderMemorySnapshotXml(makeSnapshot(), { includeEmpty: true });
 
-		expect(renderPromptBlock("user", [entry], 2200)).toContain(
-			"USER PROFILE (who the user is) [67% — 1,474/2,200 chars]",
-		);
+		expect(rendered).toContain('<project_memory path="/workspace/.pi/tau/memories/PROJECT.md" entries="0" chars="0" limit="2200" usage_percent="0">');
+		expect(rendered).toContain('<global_memory path="/home/test/.pi/agent/tau/memories/MEMORY.md" entries="0" chars="0" limit="2200" usage_percent="0">');
+		expect(rendered).toContain('<user_memory path="/home/test/.pi/agent/tau/memories/USER.md" entries="0" chars="0" limit="1375" usage_percent="0">');
 	});
 
-	it("floors the usage percentage", () => {
-		expect(renderPromptBlock("memory", ["aa"], 3)).toContain("[66% — 2/3 chars]");
+	it("floors the usage percentage in XML metadata", () => {
+		const entries = ["aa"];
+		const rendered = renderMemorySnapshotXml(
+			makeSnapshot({
+				global: {
+					bucket: "global",
+					path: "/home/test/.pi/agent/tau/memories/MEMORY.md",
+					entries,
+					chars: charCount(entries),
+					limitChars: 3,
+					usagePercent: Math.floor((charCount(entries) / 3) * 100),
+				},
+			}),
+			{ includeEmpty: false },
+		);
+
+		expect(rendered).toContain('usage_percent="66"');
 	});
 });

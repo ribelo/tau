@@ -22,7 +22,37 @@ export function getUserAgentsDir(): string {
 }
 
 export function getTauMemoryDir(): string {
+	const override = process.env["TAU_MEMORY_DIR"];
+	if (override) return override;
 	return path.join(os.homedir(), ".pi", "agent", "tau", "memories");
+}
+
+function pathExists(candidate: string): boolean {
+	try {
+		fs.statSync(candidate);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export function findNearestWorkspaceRoot(cwd: string): string {
+	const start = path.resolve(cwd);
+	let current = path.resolve(cwd);
+	for (;;) {
+		if (pathExists(path.join(current, ".pi", "settings.json")) || pathExists(path.join(current, ".git"))) {
+			return current;
+		}
+		const parent = path.dirname(current);
+		if (parent === current) {
+			return start;
+		}
+		current = parent;
+	}
+}
+
+export function getProjectTauMemoryDir(cwd: string): string {
+	return path.join(findNearestWorkspaceRoot(cwd), ".pi", "tau", "memories");
 }
 
 export function getProjectSettingsPath(projectPiDir: string): string {

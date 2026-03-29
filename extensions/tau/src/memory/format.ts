@@ -1,23 +1,21 @@
-export type MemoryBucket = "memory" | "user";
+export type MemoryScope = "project" | "global" | "user";
+
+export interface MemoryBucketSnapshot {
+	readonly bucket: MemoryScope;
+	readonly path: string;
+	readonly entries: readonly string[];
+	readonly chars: number;
+	readonly limitChars: number;
+	readonly usagePercent: number;
+}
+
+export interface MemorySnapshot {
+	readonly project: MemoryBucketSnapshot;
+	readonly global: MemoryBucketSnapshot;
+	readonly user: MemoryBucketSnapshot;
+}
 
 export const ENTRY_DELIMITER = "\n§\n";
-
-const HEADER_SEPARATOR = "═".repeat(46);
-const numberFormatter = new Intl.NumberFormat("en-US");
-
-function usagePercent(currentChars: number, charLimit: number): number {
-	return charLimit > 0 ? Math.floor((currentChars / charLimit) * 100) : 0;
-}
-
-function formatUsage(currentChars: number, charLimit: number): string {
-	return `${usagePercent(currentChars, charLimit)}% — ${numberFormatter.format(currentChars)}/${numberFormatter.format(charLimit)} chars`;
-}
-
-function promptBlockTitle(bucket: MemoryBucket): string {
-	return bucket === "user"
-		? "USER PROFILE (who the user is)"
-		: "MEMORY (your personal notes)";
-}
 
 export function parseEntries(raw: string): string[] {
 	if (!raw.trim()) {
@@ -38,17 +36,44 @@ export function charCount(entries: readonly string[]): number {
 	return joinEntries(entries).length;
 }
 
-export function renderPromptBlock(
-	bucket: MemoryBucket,
-	entries: readonly string[],
-	charLimit: number,
+function escapeXml(value: string): string {
+	return value
+		.replaceAll("&", "&amp;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;")
+		.replaceAll('"', "&quot;")
+		.replaceAll("'", "&apos;");
+}
+
+function bucketTag(bucket: MemoryScope): string {
+	return `${bucket}_memory`;
+}
+
+function snapshotBuckets(snapshot: MemorySnapshot): readonly MemoryBucketSnapshot[] {
+	return [snapshot.project, snapshot.global, snapshot.user];
+}
+
+function renderBucketXml(bucket: MemoryBucketSnapshot): string {
+	const lines = [
+		`<${bucketTag(bucket.bucket)} path="${escapeXml(bucket.path)}" entries="${bucket.entries.length}" chars="${bucket.chars}" limit="${bucket.limitChars}" usage_percent="${bucket.usagePercent}">`,
+	];
+	const content = joinEntries(bucket.entries);
+	if (content.length > 0) {
+		lines.push(escapeXml(content));
+	}
+	lines.push(`</${bucketTag(bucket.bucket)}>`);
+	return lines.join("\n");
+}
+
+export function renderMemorySnapshotXml(
+	snapshot: MemorySnapshot,
+	options: { readonly includeEmpty?: boolean } = {},
 ): string {
-	if (entries.length === 0) {
+	const includeEmpty = options.includeEmpty ?? false;
+	const buckets = snapshotBuckets(snapshot).filter((bucket) => includeEmpty || bucket.entries.length > 0);
+	if (buckets.length === 0) {
 		return "";
 	}
 
-	const content = joinEntries(entries);
-	const header = `${promptBlockTitle(bucket)} [${formatUsage(content.length, charLimit)}]`;
-
-	return `${HEADER_SEPARATOR}\n${header}\n${HEADER_SEPARATOR}\n${content}`;
+	return ["<memory_snapshot>", ...buckets.map(renderBucketXml), "</memory_snapshot>"].join("\n");
 }
