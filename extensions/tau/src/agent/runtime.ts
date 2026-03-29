@@ -2,8 +2,11 @@ import { Effect, Layer, ServiceMap } from "effect";
 
 import { AgentControl } from "./services.js";
 import { createAgentToolDef, type AgentToolContext, type AgentToolDef } from "./tool.js";
+import { CuratedMemory } from "../services/curated-memory.js";
 
-export type RunAgentControlPromise = <A, E>(effect: Effect.Effect<A, E, AgentControl>) => Promise<A>;
+export type RunAgentControlPromise = <A, E, R extends AgentControl | CuratedMemory>(
+	effect: Effect.Effect<A, E, R>,
+) => Promise<A>;
 
 export interface AgentRuntimeBridgeService {
 	readonly runPromise: RunAgentControlPromise;

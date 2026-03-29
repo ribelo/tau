@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
+import type { RunAgentControlPromise } from "../src/agent/runtime.js";
 import { createWorkerCustomTools, WORKER_DELEGATION_PROMPT } from "../src/agent/worker.js";
 
 const agentToolDefinition: ToolDefinition = {
@@ -20,12 +21,20 @@ const agentToolDefinition: ToolDefinition = {
 
 describe("createWorkerCustomTools", () => {
 	it("includes the shared worker-only tool definitions", () => {
-		const tools = createWorkerCustomTools(agentToolDefinition);
+		const runEffect: RunAgentControlPromise = async () => {
+			throw new Error("unused in test");
+		};
+
+		const tools = createWorkerCustomTools(
+			agentToolDefinition,
+			runEffect,
+		);
 
 		expect(tools.map((tool) => tool.name)).toEqual([
 			"agent",
 			"apply_patch",
 			"backlog",
+			"memory",
 			"web_search_exa",
 			"crawling_exa",
 			"get_code_context_exa",

@@ -406,9 +406,11 @@ describe("memory tool runtime", () => {
 		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
 		const runEffect = <A, E>(effect: Effect.Effect<A, E, CuratedMemory>) => runtime.runPromise(effect);
 		const cwd = path.join(tempHome, "workspace-fresh-memory");
+		const previousCwd = process.cwd();
 		await fs.mkdir(cwd, { recursive: true });
 		await fs.mkdir(path.join(cwd, ".pi"), { recursive: true });
 		await fs.writeFile(path.join(cwd, ".pi", "settings.json"), "{}", "utf8");
+		process.chdir(cwd);
 
 		try {
 			const memory = await runEffect(Effect.gen(function* () {
@@ -487,6 +489,7 @@ describe("memory tool runtime", () => {
 			expect(reloadedStart[0]).toEqual({ systemPrompt: expect.stringContaining("tau-project-memory-next-agent-start") });
 			expect(reloadedStart[0]).toEqual({ systemPrompt: expect.stringContaining(projectMemoryPath(cwd)) });
 		} finally {
+			process.chdir(previousCwd);
 			await runtime.dispose();
 		}
 	});

@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 import { Type, type Static } from "@sinclair/typebox";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 
 import { CuratedMemory, type MutationResult } from "../services/curated-memory.js";
@@ -124,7 +124,13 @@ export default function initMemory(
 		return renderMemoriesMessage(details, theme);
 	});
 
-	pi.registerTool({
+	pi.registerTool(createMemoryToolDefinition(runEffect));
+}
+
+export function createMemoryToolDefinition(
+	runEffect: <A, E>(effect: Effect.Effect<A, E, CuratedMemory>) => Promise<A>,
+): ToolDefinition<typeof MemoryToolParams, ToolDetails> {
+	return {
 		name: "memory",
 		label: "memory",
 		description: TOOL_DESCRIPTION,
@@ -211,5 +217,5 @@ export default function initMemory(
 		renderResult(result, _options, theme) {
 			return renderMemoryResult(result, theme);
 		},
-	});
+	};
 }

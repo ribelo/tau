@@ -24,6 +24,7 @@ import { setWorkerApprovalBroker } from "./approval-broker.js";
 import { createApplyPatchToolDefinition } from "../sandbox/apply-patch.js";
 import { createBacklogToolDefinition } from "../backlog/tool.js";
 import { createExaToolDefinitions } from "../exa/index.js";
+import { createMemoryToolDefinition } from "../memory/index.js";
 
 import type { ApprovalBroker } from "./approval-broker.js";
 import { createWorkerAgentTool, type RunAgentControlPromise } from "./runtime.js";
@@ -127,11 +128,13 @@ function toolOnlyStreamFn(
 
 export function createWorkerCustomTools(
 	agentTool: ToolDefinition,
+	runEffect: RunAgentControlPromise,
 ): ToolDefinition[] {
 	return [
 		agentTool,
 		createApplyPatchToolDefinition() as unknown as ToolDefinition,
 		createBacklogToolDefinition() as unknown as ToolDefinition,
+		createMemoryToolDefinition(runEffect) as unknown as ToolDefinition,
 		...createExaToolDefinitions().map((tool) => tool as unknown as ToolDefinition),
 	];
 }
@@ -367,7 +370,7 @@ export class AgentWorker implements Agent {
 					: "Manage non-blocking agent tasks. Actions: spawn, send, wait, close, list.",
 			);
 
-			const customTools = createWorkerCustomTools(agentTool as ToolDefinition);
+			const customTools = createWorkerCustomTools(agentTool as ToolDefinition, opts.runPromise);
 
 			// submit_result tool placeholder - needs agent reference, set after construction
 			let agent: AgentWorker;
