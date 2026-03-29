@@ -205,6 +205,37 @@ describe("CuratedMemory service", () => {
 		}
 	});
 
+	it("accepts existing default-length nanoid entries when appending new memory", async () => {
+		await fs.mkdir(globalMemoryDir(tempHome), { recursive: true });
+		await fs.writeFile(
+			globalMemoryPath(tempHome),
+			[
+				JSON.stringify({
+					id: "itoVz1h0QCl_78gmCgjPG",
+					content: "existing-entry",
+					createdAt: "2026-03-29T11:14:07.584Z",
+					updatedAt: "2026-03-29T11:14:07.584Z",
+				}),
+			].join("\n"),
+			"utf8",
+		);
+
+		const { pi } = makePiStub();
+		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
+
+		try {
+			const memory = await runtime.runPromise(getCuratedMemory);
+			await runtime.runPromise(memory.add("global", "new-entry", workspaceRoot));
+
+			expect(parseMemoryEntries(await fs.readFile(globalMemoryPath(tempHome), "utf8")).map((entry) => entry.content)).toEqual([
+				"existing-entry",
+				"new-entry",
+			]);
+		} finally {
+			await runtime.dispose();
+		}
+	});
+
 	it("rejects updates that would collide with an existing entry", async () => {
 		const { pi } = makePiStub();
 		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));

@@ -4,7 +4,7 @@ import { nanoid } from "nanoid";
 export type MemoryScope = "project" | "global" | "user";
 
 const ID_SIZE = 12;
-const NANO_ID_PATTERN = /^[A-Za-z0-9_-]{12}$/u;
+const NANO_ID_PATTERN = /^[A-Za-z0-9_-]{12,}$/u;
 
 export const MemoryEntryId = Schema.String.check(
 	Schema.makeFilter((value) => NANO_ID_PATTERN.test(value) || "expected a nanoid"),

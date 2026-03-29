@@ -116,6 +116,21 @@ describe("memory format helpers", () => {
 		]);
 	});
 
+	it("parses previously stored default-length nanoid ids", () => {
+		const parsed = parseMemoryEntries(
+			JSON.stringify({
+				id: "itoVz1h0QCl_78gmCgjPG",
+				content: "alpha",
+				createdAt: "2024-01-02T03:04:05.000Z",
+				updatedAt: "2024-01-02T03:04:05.000Z",
+			}),
+		);
+
+		expect(parsed).toHaveLength(1);
+		expect(parsed[0]?.id).toBe("itoVz1h0QCl_78gmCgjPG");
+		expect(parsed[0]?.content).toBe("alpha");
+	});
+
 	it("rejects invalid JSONL memory entries via Effect Schema validation", () => {
 		expect(() =>
 			parseMemoryEntries(
