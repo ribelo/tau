@@ -16,32 +16,68 @@ import type {
 
 import { PiAPILive } from "../src/effect/pi.js";
 import { runTau } from "../src/app.js";
+import { parseMemoryEntries } from "../src/memory/format.js";
 import initMemory from "../src/memory/index.js";
+import type { MemoriesMessageDetails } from "../src/memory/renderer.js";
 import initNudge from "../src/nudge/index.js";
 import initWorkedFor from "../src/worked-for/index.js";
 import { CuratedMemory, CuratedMemoryLive } from "../src/services/curated-memory.js";
 
 function globalMemoryPath(homeDir: string): string {
-	return path.join(homeDir, ".pi", "agent", "tau", "memories", "MEMORY.md");
+	return path.join(homeDir, ".pi", "agent", "tau", "memories", "MEMORY.jsonl");
 }
 
 function projectMemoryPath(workspaceRoot: string): string {
-	return path.join(workspaceRoot, ".pi", "tau", "memories", "PROJECT.md");
-}
-
-function userMemoryPath(homeDir: string): string {
-	return path.join(homeDir, ".pi", "agent", "tau", "memories", "USER.md");
+	return path.join(workspaceRoot, ".pi", "tau", "memories", "PROJECT.jsonl");
 }
 
 type EventHandler = (event: unknown, ctx: ExtensionContext) => unknown;
 
+interface MemoryToolExecutionResult {
+	readonly content: { readonly type: "text"; readonly text: string }[];
+	readonly details: {
+		readonly entry?: {
+			readonly id: string;
+			readonly content: string;
+		};
+	};
+}
+
+interface RegisteredCommand {
+	readonly description?: string;
+	readonly handler: (args: string, ctx: ExtensionContext) => Promise<void> | void;
+}
+
+interface SentMessage {
+	readonly customType?: string;
+	readonly details?: unknown;
+	readonly content?: string;
+	readonly display?: boolean;
+}
+
+async function waitFor<T>(load: () => Promise<T>, ready: (value: T) => boolean): Promise<T> {
+	for (let attempt = 0; attempt < 20; attempt++) {
+		const value = await load();
+		if (ready(value)) {
+			return value;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	}
+
+	return load();
+}
+
 function makePiStub(): {
 	readonly pi: ExtensionAPI;
 	readonly tools: ToolDefinition[];
+	readonly commands: Map<string, RegisteredCommand>;
+	readonly sentMessages: SentMessage[];
 	readonly fire: (event: string, payload: unknown, ctx?: ExtensionContext) => Promise<readonly unknown[]>;
 } {
 	const eventHandlers = new Map<string, EventHandler[]>();
 	const tools: ToolDefinition[] = [];
+	const commands = new Map<string, RegisteredCommand>();
+	const sentMessages: SentMessage[] = [];
 
 	const base = {
 		on: (event: string, handler: EventHandler) => {
@@ -53,11 +89,15 @@ function makePiStub(): {
 		registerTool: (tool: ToolDefinition) => {
 			tools.push(tool);
 		},
-		registerCommand: () => undefined,
+		registerCommand: (name: string, command: RegisteredCommand) => {
+			commands.set(name, command);
+		},
 		registerShortcut: () => undefined,
 		registerMessageRenderer: () => undefined,
 		registerFlag: () => undefined,
-		sendMessage: () => undefined,
+		sendMessage: (message: SentMessage) => {
+			sentMessages.push(message);
+		},
 		appendEntry: () => undefined,
 		getThinkingLevel: () => "medium",
 		setThinkingLevel: () => undefined,
@@ -82,6 +122,8 @@ function makePiStub(): {
 	return {
 		pi,
 		tools,
+		commands,
+		sentMessages,
 		fire: async (event, payload, ctx) => {
 			const handlers = eventHandlers.get(event) ?? [];
 			const context =
@@ -231,7 +273,7 @@ describe("memory tool runtime", () => {
 				ctx,
 			);
 
-			const result = await Promise.race([
+			const result = (await Promise.race([
 				memoryTool!.execute(
 					"call-1",
 					{
@@ -246,7 +288,7 @@ describe("memory tool runtime", () => {
 				new Promise<never>((_, reject) =>
 					setTimeout(() => reject(new Error("memory execute timed out")), 1000),
 				),
-			]);
+			])) as MemoryToolExecutionResult;
 
 			const firstContent = result.content[0];
 			expect(firstContent?.type).toBe("text");
@@ -254,11 +296,11 @@ describe("memory tool runtime", () => {
 				throw new Error("memory tool did not return text content");
 			}
 			expect(firstContent.text).toContain("Added entry to global memory.");
-			expect(firstContent.text).toContain("<memory_snapshot>");
-			expect(firstContent.text).toContain(globalMemoryPath(tempHome));
-			expect(firstContent.text).toContain(projectMemoryPath(cwd));
-			expect(firstContent.text).toContain(userMemoryPath(tempHome));
-			expect(await fs.readFile(globalMemoryPath(tempHome), "utf8")).toBe("tau-memory-runtime-hang-repro");
+			expect(firstContent.text).toContain("id:");
+			expect(firstContent.text).not.toContain("<memory_snapshot>");
+			expect(result.details.entry).toBeDefined();
+			expect(result.details.entry?.content).toBe("tau-memory-runtime-hang-repro");
+			expect(parseMemoryEntries(await fs.readFile(globalMemoryPath(tempHome), "utf8")).map((entry) => entry.content)).toEqual(["tau-memory-runtime-hang-repro"]);
 
 			await expect(
 				Promise.race([
@@ -280,6 +322,80 @@ describe("memory tool runtime", () => {
 					),
 				]),
 			).resolves.toBeDefined();
+		} finally {
+			await runtime.dispose();
+		}
+	});
+
+	it("updates and removes memory entries by id through the tool interface", async () => {
+		const { pi, tools } = makePiStub();
+		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
+		const runEffect = <A, E>(effect: Effect.Effect<A, E, CuratedMemory>) => runtime.runPromise(effect);
+		const cwd = path.join(tempHome, "workspace-id-api");
+		await fs.mkdir(cwd, { recursive: true });
+		await fs.mkdir(path.join(cwd, ".pi"), { recursive: true });
+		await fs.writeFile(path.join(cwd, ".pi", "settings.json"), "{}", "utf8");
+
+		try {
+			const memory = await runEffect(Effect.gen(function* () {
+				return yield* CuratedMemory;
+			}));
+			await runtime.runPromise(Effect.scoped(memory.setup));
+
+			initMemory(pi, runEffect);
+
+			const memoryTool = tools.find((tool) => tool.name === "memory");
+			expect(memoryTool).toBeDefined();
+
+			const ctx = makeContext(cwd);
+			const added = (await memoryTool!.execute(
+				"call-id-add",
+				{
+					action: "add",
+					target: "global",
+					content: "id-addressed-entry",
+				},
+				undefined,
+				undefined,
+				ctx,
+			)) as MemoryToolExecutionResult;
+
+			const entryId = added.details.entry?.id;
+			if (!entryId) {
+				throw new Error("memory tool did not return an entry id");
+			}
+
+			const updated = (await memoryTool!.execute(
+				"call-id-update",
+				{
+					action: "update",
+					target: "global",
+					id: entryId,
+					content: "updated entry",
+				},
+				undefined,
+				undefined,
+				ctx,
+			)) as MemoryToolExecutionResult;
+
+			expect(updated.details.entry?.id).toBe(entryId);
+			expect(updated.details.entry?.content).toBe("updated entry");
+
+			const removed = (await memoryTool!.execute(
+				"call-id-remove",
+				{
+					action: "remove",
+					target: "global",
+					id: entryId,
+				},
+				undefined,
+				undefined,
+				ctx,
+			)) as MemoryToolExecutionResult;
+
+			expect(removed.details.entry?.id).toBe(entryId);
+			expect(removed.content[0]).toEqual({ type: "text", text: expect.stringContaining("Removed entry from global memory.") });
+			expect(parseMemoryEntries(await fs.readFile(globalMemoryPath(tempHome), "utf8"))).toEqual([]);
 		} finally {
 			await runtime.dispose();
 		}
@@ -328,7 +444,7 @@ describe("memory tool runtime", () => {
 				undefined,
 				ctx,
 			);
-			expect(await fs.readFile(projectMemoryPath(cwd), "utf8")).toBe("tau-project-memory-next-agent-start");
+			expect(parseMemoryEntries(await fs.readFile(projectMemoryPath(cwd), "utf8")).map((entry) => entry.content)).toEqual(["tau-project-memory-next-agent-start"]);
 
 			const nextStart = await fire(
 				"before_agent_start",
@@ -345,14 +461,27 @@ describe("memory tool runtime", () => {
 			await fire("session_start", { type: "session_start" }, ctx);
 			await new Promise((resolve) => setTimeout(resolve, 50));
 
-			const reloadedStart = await fire(
-				"before_agent_start",
-				{
-					type: "before_agent_start",
-					prompt: "save memory",
-					systemPrompt: "base",
-				} satisfies BeforeAgentStartEvent,
-				ctx,
+			const reloadedStart = await waitFor(
+				() =>
+					fire(
+						"before_agent_start",
+						{
+							type: "before_agent_start",
+							prompt: "save memory",
+							systemPrompt: "base",
+						} satisfies BeforeAgentStartEvent,
+						ctx,
+					),
+				(result) => {
+					const first = result[0];
+					return (
+						typeof first === "object" &&
+						first !== null &&
+						"systemPrompt" in first &&
+						typeof first.systemPrompt === "string" &&
+						first.systemPrompt.includes("tau-project-memory-next-agent-start")
+					);
+				},
 			);
 
 			expect(reloadedStart[0]).toEqual({ systemPrompt: expect.stringContaining("tau-project-memory-next-agent-start") });
@@ -447,6 +576,51 @@ describe("memory tool runtime", () => {
 			).resolves.toBeDefined();
 		} finally {
 			await Effect.runPromise(Fiber.interrupt(fiber));
+		}
+	});
+
+	it("registers /memories and sends all scopes in one view payload", async () => {
+		const { pi, commands, sentMessages } = makePiStub();
+		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
+		const runEffect = <A, E>(effect: Effect.Effect<A, E, CuratedMemory>) => runtime.runPromise(effect);
+		const cwd = path.join(tempHome, "workspace-memories-command");
+		await fs.mkdir(cwd, { recursive: true });
+		await fs.mkdir(path.join(cwd, ".pi"), { recursive: true });
+		await fs.writeFile(path.join(cwd, ".pi", "settings.json"), "{}", "utf8");
+
+		try {
+			const memory = await runEffect(Effect.gen(function* () {
+				return yield* CuratedMemory;
+			}));
+			await runtime.runPromise(Effect.scoped(memory.setup));
+			await runEffect(memory.add("project", "project memory preview", cwd));
+			await runEffect(memory.add("global", "global memory preview", cwd));
+			await runEffect(memory.add("user", "user memory preview", cwd));
+
+			initMemory(pi, runEffect);
+
+			const command = commands.get("memories");
+			expect(command).toBeDefined();
+
+			await command!.handler("", makeContext(cwd));
+
+			expect(sentMessages).toHaveLength(1);
+			const [message] = sentMessages;
+			expect(message?.customType).toBe("memories");
+
+			const details = message?.details as MemoriesMessageDetails | undefined;
+			expect(details?.snapshot.project.entries.map((entry) => entry.content)).toEqual([
+				"project memory preview",
+			]);
+			expect(details?.snapshot.global.entries.map((entry) => entry.content)).toEqual([
+				"global memory preview",
+			]);
+			expect(details?.snapshot.user.entries.map((entry) => entry.content)).toEqual([
+				"user memory preview",
+			]);
+			expect(details?.snapshot.project.entries[0]?.id).toHaveLength(12);
+		} finally {
+			await runtime.dispose();
 		}
 	});
 });

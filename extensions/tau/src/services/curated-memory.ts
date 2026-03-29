@@ -3,33 +3,39 @@ import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { Effect, Layer, Ref, Semaphore, ServiceMap } from "effect";
+import { DateTime, Effect, Layer, Ref, Semaphore, ServiceMap } from "effect";
 import type { Scope } from "effect";
 
 import { PiAPI } from "../effect/pi.js";
 import {
+	type MemoryEntry,
+	type MemoryEntryId,
+	type MemoryEntriesSnapshot,
+	type MemoryBucketEntriesSnapshot,
 	type MemoryBucketSnapshot,
 	type MemorySnapshot,
 	type MemoryScope,
 	charCount,
-	joinEntries,
-	parseEntries,
+	createMemoryEntry,
+	migrateLegacyMarkdownToJsonl,
+	normalizeMemoryContent,
+	parseMemoryEntries,
 	renderMemorySnapshotXml,
+	serializeMemoryEntries,
 } from "../memory/format.js";
 import {
-	MemoryAmbiguousMatch,
 	MemoryDuplicateEntry,
+	MemoryEntryTooLarge,
 	MemoryEmptyContent,
 	MemoryFileError,
-	MemoryLimitExceeded,
 	MemoryNoMatch,
 	type MemoryMutationError,
 } from "../memory/errors.js";
 import { getProjectTauMemoryDir, getTauMemoryDir } from "../shared/discovery.js";
 
-const PROJECT_CHAR_LIMIT = 2200;
-const GLOBAL_CHAR_LIMIT = 2200;
-const USER_CHAR_LIMIT = 1375;
+const PROJECT_ENTRY_CHAR_LIMIT = 1000;
+const GLOBAL_ENTRY_CHAR_LIMIT = 1000;
+const USER_ENTRY_CHAR_LIMIT = 500;
 const LOCK_STALE_MS = 5_000;
 
 interface FrozenSnapshot {
@@ -44,22 +50,32 @@ interface LockMetadata {
 
 export interface MutationResult {
 	readonly changedScope: MemoryScope;
-	readonly snapshot: MemorySnapshot;
-	readonly rendered: string;
+	readonly entry: MemoryEntry;
 }
 
-function limitForScope(scope: MemoryScope): number {
+function entryLimitForScope(scope: MemoryScope): number {
 	switch (scope) {
 		case "project":
-			return PROJECT_CHAR_LIMIT;
+			return PROJECT_ENTRY_CHAR_LIMIT;
 		case "global":
-			return GLOBAL_CHAR_LIMIT;
+			return GLOBAL_ENTRY_CHAR_LIMIT;
 		case "user":
-			return USER_CHAR_LIMIT;
+			return USER_ENTRY_CHAR_LIMIT;
 	}
 }
 
 function fileNameForScope(scope: MemoryScope): string {
+	switch (scope) {
+		case "project":
+			return "PROJECT.jsonl";
+		case "global":
+			return "MEMORY.jsonl";
+		case "user":
+			return "USER.jsonl";
+	}
+}
+
+function legacyFileNameForScope(scope: MemoryScope): string {
 	switch (scope) {
 		case "project":
 			return "PROJECT.md";
@@ -71,7 +87,7 @@ function fileNameForScope(scope: MemoryScope): string {
 }
 
 function normalizeEntryText(text: string): string {
-	return text.replace(/\r\n?/gu, "\n").trim();
+	return normalizeMemoryContent(text);
 }
 
 function directoryForScope(scope: MemoryScope, cwd: string): string {
@@ -80,6 +96,10 @@ function directoryForScope(scope: MemoryScope, cwd: string): string {
 
 function scopePath(scope: MemoryScope, cwd: string): string {
 	return path.join(directoryForScope(scope, cwd), fileNameForScope(scope));
+}
+
+function legacyScopePath(scope: MemoryScope, cwd: string): string {
+	return path.join(directoryForScope(scope, cwd), legacyFileNameForScope(scope));
 }
 
 function lockFilePath(scope: MemoryScope, cwd: string): string {
@@ -140,11 +160,62 @@ async function shouldReclaimLock(lockPath: string): Promise<boolean> {
 	}
 }
 
-async function readScope(scope: MemoryScope, cwd: string): Promise<string[]> {
+function entryContents(entries: readonly MemoryEntry[]): string[] {
+	return entries.map((entry) => entry.content);
+}
+
+function longestEntryCharCount(entries: readonly MemoryEntry[]): number {
+	return entries.reduce((longest, entry) => Math.max(longest, entry.content.length), 0);
+}
+
+async function readJsonlScope(scope: MemoryScope, cwd: string): Promise<MemoryEntry[]> {
+	const raw = await fs.readFile(scopePath(scope, cwd), "utf-8");
+	return parseMemoryEntries(raw);
+}
+
+async function migrateLegacyScope(scope: MemoryScope, cwd: string): Promise<MemoryEntry[]> {
+	const raw = await fs.readFile(legacyScopePath(scope, cwd), "utf-8");
+	const migrated = migrateLegacyMarkdownToJsonl(raw);
+	const entries = parseMemoryEntries(migrated);
+	await atomicWrite(scope, cwd, entries);
 	try {
-		const raw = await fs.readFile(scopePath(scope, cwd), "utf-8");
-		const entries = parseEntries(raw).map(normalizeEntryText);
-		return [...new Set(entries)];
+		await fs.unlink(legacyScopePath(scope, cwd));
+	} catch (err: unknown) {
+		if (!isNodeError(err, "ENOENT")) {
+			throw err;
+		}
+	}
+	return entries;
+}
+
+async function readScope(scope: MemoryScope, cwd: string): Promise<MemoryEntry[]> {
+	try {
+		return await readJsonlScope(scope, cwd);
+	} catch (err: unknown) {
+		if (!isNodeError(err, "ENOENT")) {
+			throw err;
+		}
+	}
+
+	try {
+		return await withFileLock(scope, cwd, async () => {
+			try {
+				return await readJsonlScope(scope, cwd);
+			} catch (err: unknown) {
+				if (!isNodeError(err, "ENOENT")) {
+					throw err;
+				}
+			}
+
+			try {
+				return await migrateLegacyScope(scope, cwd);
+			} catch (err: unknown) {
+				if (isNodeError(err, "ENOENT")) {
+					return [];
+				}
+				throw err;
+			}
+		});
 	} catch (err: unknown) {
 		if (isNodeError(err, "ENOENT")) {
 			return [];
@@ -153,13 +224,13 @@ async function readScope(scope: MemoryScope, cwd: string): Promise<string[]> {
 	}
 }
 
-async function atomicWrite(scope: MemoryScope, cwd: string, entries: readonly string[]): Promise<void> {
+async function atomicWrite(scope: MemoryScope, cwd: string, entries: readonly MemoryEntry[]): Promise<void> {
 	const dirPath = directoryForScope(scope, cwd);
 	await ensureDir(dirPath);
 	const dest = scopePath(scope, cwd);
 	const tmp = path.join(path.dirname(dest), `.mem_${crypto.randomBytes(6).toString("hex")}.tmp`);
 	try {
-		await fs.writeFile(tmp, joinEntries(entries), "utf-8");
+		await fs.writeFile(tmp, serializeMemoryEntries(entries), "utf-8");
 		await fs.rename(tmp, dest);
 	} catch (err: unknown) {
 		try {
@@ -229,44 +300,74 @@ async function withFileLock<T>(scope: MemoryScope, cwd: string, fn: () => Promis
 	}
 }
 
-function findMatchingEntries(entries: readonly string[], substring: string): number[] {
-	const indices: number[] = [];
-	for (let index = 0; index < entries.length; index++) {
-		if (entries[index]!.includes(substring)) {
-			indices.push(index);
-		}
-	}
-	return indices;
+function findEntryIndexById(entries: readonly MemoryEntry[], id: string): number {
+	return entries.findIndex((entry) => entry.id === id);
 }
 
-function preview(entry: string): string {
-	return entry.length > 80 ? `${entry.slice(0, 80)}...` : entry;
+function makeBucketSnapshot(scope: MemoryScope, cwd: string, entries: readonly MemoryEntry[]): MemoryBucketSnapshot {
+	const contents = entryContents(entries);
+	const chars = charCount(contents);
+	const limit = entryLimitForScope(scope);
+	return {
+		bucket: scope,
+		path: scopePath(scope, cwd),
+		entries: contents,
+		chars,
+		limitChars: limit,
+		usagePercent: limit > 0 ? Math.floor((longestEntryCharCount(entries) / limit) * 100) : 0,
+	};
 }
 
-function makeBucketSnapshot(scope: MemoryScope, cwd: string, entries: readonly string[]): MemoryBucketSnapshot {
-	const chars = charCount(entries);
-	const limit = limitForScope(scope);
+function makeBucketEntriesSnapshot(
+	scope: MemoryScope,
+	cwd: string,
+	entries: readonly MemoryEntry[],
+): MemoryBucketEntriesSnapshot {
+	const chars = charCount(entryContents(entries));
+	const limit = entryLimitForScope(scope);
 	return {
 		bucket: scope,
 		path: scopePath(scope, cwd),
 		entries,
 		chars,
 		limitChars: limit,
-		usagePercent: limit > 0 ? Math.floor((chars / limit) * 100) : 0,
+		usagePercent: limit > 0 ? Math.floor((longestEntryCharCount(entries) / limit) * 100) : 0,
 	};
 }
 
-async function loadSnapshotValue(cwd: string): Promise<MemorySnapshot> {
-	const [projectEntries, globalEntries, userEntries] = await Promise.all([
+interface LoadedScopeEntries {
+	readonly project: MemoryEntry[];
+	readonly global: MemoryEntry[];
+	readonly user: MemoryEntry[];
+}
+
+async function loadEntriesByScope(cwd: string): Promise<LoadedScopeEntries> {
+	const [project, global, user] = await Promise.all([
 		readScope("project", cwd),
 		readScope("global", cwd),
 		readScope("user", cwd),
 	]);
 
+	return { project, global, user };
+}
+
+async function loadSnapshotValue(cwd: string): Promise<MemorySnapshot> {
+	const entries = await loadEntriesByScope(cwd);
+
 	return {
-		project: makeBucketSnapshot("project", cwd, projectEntries),
-		global: makeBucketSnapshot("global", cwd, globalEntries),
-		user: makeBucketSnapshot("user", cwd, userEntries),
+		project: makeBucketSnapshot("project", cwd, entries.project),
+		global: makeBucketSnapshot("global", cwd, entries.global),
+		user: makeBucketSnapshot("user", cwd, entries.user),
+	};
+}
+
+async function loadEntriesSnapshotValue(cwd: string): Promise<MemoryEntriesSnapshot> {
+	const entries = await loadEntriesByScope(cwd);
+
+	return {
+		project: makeBucketEntriesSnapshot("project", cwd, entries.project),
+		global: makeBucketEntriesSnapshot("global", cwd, entries.global),
+		user: makeBucketEntriesSnapshot("user", cwd, entries.user),
 	};
 }
 
@@ -289,18 +390,19 @@ export class CuratedMemory extends ServiceMap.Service<
 	CuratedMemory,
 	{
 		readonly getSnapshot: (cwd: string) => Effect.Effect<MemorySnapshot, MemoryFileError>;
+		readonly getEntriesSnapshot: (cwd: string) => Effect.Effect<MemoryEntriesSnapshot, MemoryFileError>;
 		readonly reloadFrozenSnapshot: (cwd: string) => Effect.Effect<void, MemoryFileError>;
 		readonly getFrozenPromptBlock: () => string;
 		readonly add: (scope: MemoryScope, text: string, cwd: string) => Effect.Effect<MutationResult, MemoryMutationError>;
 		readonly update: (
 			scope: MemoryScope,
-			oldText: string,
+			id: MemoryEntryId | string,
 			newText: string,
 			cwd: string,
 		) => Effect.Effect<MutationResult, MemoryMutationError>;
 		readonly remove: (
 			scope: MemoryScope,
-			oldText: string,
+			id: MemoryEntryId | string,
 			cwd: string,
 		) => Effect.Effect<MutationResult, MemoryMutationError>;
 		readonly setup: Effect.Effect<void, never, Scope.Scope>;
@@ -317,6 +419,12 @@ export const CuratedMemoryLive = Layer.effect(
 		const getSnapshot = (cwd: string): Effect.Effect<MemorySnapshot, MemoryFileError> =>
 			Effect.tryPromise({
 				try: () => loadSnapshotValue(cwd),
+				catch: (err) => new MemoryFileError({ reason: String(err) }),
+			});
+
+		const getEntriesSnapshot = (cwd: string): Effect.Effect<MemoryEntriesSnapshot, MemoryFileError> =>
+			Effect.tryPromise({
+				try: () => loadEntriesSnapshotValue(cwd),
 				catch: (err) => new MemoryFileError({ reason: String(err) }),
 			});
 
@@ -341,28 +449,28 @@ export const CuratedMemoryLive = Layer.effect(
 		const mutate = (
 			scope: MemoryScope,
 			cwd: string,
-			fn: (entries: string[]) => Effect.Effect<string[], MemoryMutationError>,
+			fn: (
+				entries: MemoryEntry[],
+			) => Effect.Effect<{ readonly nextEntries: MemoryEntry[]; readonly entry: MemoryEntry }, MemoryMutationError>,
 		): Effect.Effect<MutationResult, MemoryMutationError> =>
 			mutex.withPermits(1)(
 				Effect.tryPromise({
-					try: () => withFileLock(scope, cwd, () => readScope(scope, cwd)),
+					try: () => readScope(scope, cwd),
 					catch: (err) => new MemoryFileError({ reason: String(err) }),
 				}).pipe(
 					Effect.flatMap(fn),
-					Effect.flatMap((nextEntries) =>
+					Effect.flatMap(({ nextEntries, entry }) =>
 						Effect.tryPromise({
 							try: () =>
 								withFileLock(scope, cwd, async () => {
 									await atomicWrite(scope, cwd, nextEntries);
 								}),
 							catch: (err) => new MemoryFileError({ reason: String(err) }),
-						}).pipe(Effect.as(nextEntries)),
+						}).pipe(Effect.as(entry)),
 					),
-					Effect.flatMap(() => getSnapshot(cwd)),
-					Effect.map((snapshot) => ({
+					Effect.map((entry) => ({
 						changedScope: scope,
-						snapshot,
-						rendered: renderMemorySnapshotXml(snapshot, { includeEmpty: true }),
+						entry,
 					} satisfies MutationResult)),
 				),
 			);
@@ -377,113 +485,105 @@ export const CuratedMemoryLive = Layer.effect(
 				return Effect.fail(new MemoryEmptyContent());
 			}
 
+			const limit = entryLimitForScope(scope);
+			if (trimmed.length > limit) {
+				return Effect.fail(
+					new MemoryEntryTooLarge({
+						scope,
+						limitChars: limit,
+						entryChars: trimmed.length,
+					}),
+				);
+			}
+
 			return mutate(scope, cwd, (entries) => {
-				if (entries.includes(trimmed)) {
-					return Effect.fail(new MemoryDuplicateEntry());
+				const existingEntry = entries.find((entry) => entry.content === trimmed);
+				if (existingEntry) {
+					return Effect.fail(new MemoryDuplicateEntry({ scope, entry: existingEntry }));
 				}
 
-				const candidate = [...entries, trimmed];
-				const limit = limitForScope(scope);
-				if (charCount(candidate) > limit) {
-					return Effect.fail(
-						new MemoryLimitExceeded({
-							currentChars: charCount(entries),
-							limitChars: limit,
-							entryChars: trimmed.length,
-							currentEntries: entries,
-						}),
-					);
-				}
-
-				return Effect.succeed(candidate);
+				const entry = createMemoryEntry(trimmed);
+				return Effect.succeed({ nextEntries: [...entries, entry], entry });
 			});
 		};
 
 		const update = (
 			scope: MemoryScope,
-			oldText: string,
+			id: MemoryEntryId | string,
 			newText: string,
 			cwd: string,
 		): Effect.Effect<MutationResult, MemoryMutationError> => {
-			const oldTrimmed = normalizeEntryText(oldText);
+			const trimmedId = id.trim();
 			const newTrimmed = normalizeEntryText(newText);
-			if (!oldTrimmed || !newTrimmed) {
+			if (!trimmedId || !newTrimmed) {
 				return Effect.fail(new MemoryEmptyContent());
 			}
 
+			const limit = entryLimitForScope(scope);
+			if (newTrimmed.length > limit) {
+				return Effect.fail(
+					new MemoryEntryTooLarge({
+						scope,
+						limitChars: limit,
+						entryChars: newTrimmed.length,
+					}),
+				);
+			}
+
 			return mutate(scope, cwd, (entries) => {
-				const matches = findMatchingEntries(entries, oldTrimmed);
-				if (matches.length === 0) {
-					return Effect.fail(new MemoryNoMatch({ substring: oldTrimmed }));
+				const index = findEntryIndexById(entries, trimmedId);
+				if (index === -1) {
+					return Effect.fail(new MemoryNoMatch({ id: trimmedId }));
 				}
 
-				const uniqueTexts = new Set(matches.map((index) => entries[index]));
-				if (matches.length > 1 && uniqueTexts.size > 1) {
-					return Effect.fail(
-						new MemoryAmbiguousMatch({
-							matchCount: matches.length,
-							previews: matches.map((index) => preview(entries[index]!)),
-						}),
-					);
-				}
-
-				const index = matches[0]!;
-				if (entries.some((entry, entryIndex) => entryIndex !== index && entry === newTrimmed)) {
-					return Effect.fail(new MemoryDuplicateEntry());
+				if (entries.some((entry, entryIndex) => entryIndex !== index && entry.content === newTrimmed)) {
+					const existingEntry = entries.find((entry, entryIndex) => entryIndex !== index && entry.content === newTrimmed);
+					if (!existingEntry) {
+						return Effect.die(new Error("Expected duplicate memory entry to exist"));
+					}
+					return Effect.fail(new MemoryDuplicateEntry({ scope, entry: existingEntry }));
 				}
 
 				const candidate = [...entries];
-				candidate[index] = newTrimmed;
-				const limit = limitForScope(scope);
-				if (charCount(candidate) > limit) {
-					return Effect.fail(
-						new MemoryLimitExceeded({
-							currentChars: charCount(entries),
-							limitChars: limit,
-							entryChars: newTrimmed.length,
-							currentEntries: entries,
-						}),
-					);
-				}
+				const entry = createMemoryEntry(newTrimmed, {
+					id: candidate[index]!.id,
+					createdAt: candidate[index]!.createdAt,
+					updatedAt: DateTime.nowUnsafe(),
+				});
+				candidate[index] = entry;
 
-				return Effect.succeed(candidate);
+				return Effect.succeed({ nextEntries: candidate, entry });
 			});
 		};
 
 		const remove = (
 			scope: MemoryScope,
-			oldText: string,
+			id: MemoryEntryId | string,
 			cwd: string,
 		): Effect.Effect<MutationResult, MemoryMutationError> => {
-			const trimmed = normalizeEntryText(oldText);
-			if (!trimmed) {
+			const trimmedId = id.trim();
+			if (!trimmedId) {
 				return Effect.fail(new MemoryEmptyContent());
 			}
 
 			return mutate(scope, cwd, (entries) => {
-				const matches = findMatchingEntries(entries, trimmed);
-				if (matches.length === 0) {
-					return Effect.fail(new MemoryNoMatch({ substring: trimmed }));
-				}
-
-				const uniqueTexts = new Set(matches.map((index) => entries[index]));
-				if (matches.length > 1 && uniqueTexts.size > 1) {
-					return Effect.fail(
-						new MemoryAmbiguousMatch({
-							matchCount: matches.length,
-							previews: matches.map((index) => preview(entries[index]!)),
-						}),
-					);
+				const index = findEntryIndexById(entries, trimmedId);
+				if (index === -1) {
+					return Effect.fail(new MemoryNoMatch({ id: trimmedId }));
 				}
 
 				const candidate = [...entries];
-				candidate.splice(matches[0]!, 1);
-				return Effect.succeed(candidate);
+				const [entry] = candidate.splice(index, 1);
+				if (!entry) {
+					return Effect.die(new Error("Expected memory entry to remove"));
+				}
+				return Effect.succeed({ nextEntries: candidate, entry });
 			});
 		};
 
 		return CuratedMemory.of({
 			getSnapshot,
+			getEntriesSnapshot,
 			reloadFrozenSnapshot,
 			getFrozenPromptBlock,
 			add,

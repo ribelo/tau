@@ -1,36 +1,32 @@
 import { Schema } from "effect";
 
+import { MemoryEntry } from "./format.js";
+
 export class MemoryEmptyContent extends Schema.TaggedErrorClass<MemoryEmptyContent>()(
 	"MemoryEmptyContent",
 	{},
 ) {}
 
-export class MemoryLimitExceeded extends Schema.TaggedErrorClass<MemoryLimitExceeded>()(
-	"MemoryLimitExceeded",
+export class MemoryEntryTooLarge extends Schema.TaggedErrorClass<MemoryEntryTooLarge>()(
+	"MemoryEntryTooLarge",
 	{
-		currentChars: Schema.Number,
+		scope: Schema.Union([Schema.Literal("project"), Schema.Literal("global"), Schema.Literal("user")]),
 		limitChars: Schema.Number,
 		entryChars: Schema.Number,
-		currentEntries: Schema.Array(Schema.String),
 	},
 ) {}
 
 export class MemoryNoMatch extends Schema.TaggedErrorClass<MemoryNoMatch>()(
 	"MemoryNoMatch",
-	{ substring: Schema.String },
-) {}
-
-export class MemoryAmbiguousMatch extends Schema.TaggedErrorClass<MemoryAmbiguousMatch>()(
-	"MemoryAmbiguousMatch",
-	{
-		matchCount: Schema.Number,
-		previews: Schema.Array(Schema.String),
-	},
+	{ id: Schema.String },
 ) {}
 
 export class MemoryDuplicateEntry extends Schema.TaggedErrorClass<MemoryDuplicateEntry>()(
 	"MemoryDuplicateEntry",
-	{},
+	{
+		scope: Schema.Union([Schema.Literal("project"), Schema.Literal("global"), Schema.Literal("user")]),
+		entry: MemoryEntry,
+	},
 ) {}
 
 export class MemoryFileError extends Schema.TaggedErrorClass<MemoryFileError>()(
@@ -40,8 +36,7 @@ export class MemoryFileError extends Schema.TaggedErrorClass<MemoryFileError>()(
 
 export type MemoryMutationError =
 	| MemoryEmptyContent
-	| MemoryLimitExceeded
+	| MemoryEntryTooLarge
 	| MemoryNoMatch
-	| MemoryAmbiguousMatch
 	| MemoryDuplicateEntry
 	| MemoryFileError;

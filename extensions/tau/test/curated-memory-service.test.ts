@@ -6,8 +6,8 @@ import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 
 import { PiAPILive } from "../src/effect/pi.js";
-import { ENTRY_DELIMITER } from "../src/memory/format.js";
-import { MemoryDuplicateEntry } from "../src/memory/errors.js";
+import { createMemoryEntry, ENTRY_DELIMITER, parseMemoryEntries, serializeMemoryEntries } from "../src/memory/format.js";
+import { MemoryDuplicateEntry, MemoryEntryTooLarge } from "../src/memory/errors.js";
 import { CuratedMemory, CuratedMemoryLive } from "../src/services/curated-memory.js";
 
 const getCuratedMemory = Effect.gen(function* () {
@@ -32,11 +32,11 @@ function globalMemoryDir(homeDir: string): string {
 }
 
 function globalMemoryPath(homeDir: string): string {
-	return path.join(globalMemoryDir(homeDir), "MEMORY.md");
+	return path.join(globalMemoryDir(homeDir), "MEMORY.jsonl");
 }
 
 function userMemoryPath(homeDir: string): string {
-	return path.join(globalMemoryDir(homeDir), "USER.md");
+	return path.join(globalMemoryDir(homeDir), "USER.jsonl");
 }
 
 function projectMemoryDir(workspaceRoot: string): string {
@@ -44,7 +44,11 @@ function projectMemoryDir(workspaceRoot: string): string {
 }
 
 function projectMemoryPath(workspaceRoot: string): string {
-	return path.join(projectMemoryDir(workspaceRoot), "PROJECT.md");
+	return path.join(projectMemoryDir(workspaceRoot), "PROJECT.jsonl");
+}
+
+function legacyGlobalMemoryPath(homeDir: string): string {
+	return path.join(globalMemoryDir(homeDir), "MEMORY.md");
 }
 
 function makePiStub(): {
@@ -122,9 +126,9 @@ describe("CuratedMemory service", () => {
 	it("keeps the injected XML snapshot frozen until session_start reload", async () => {
 		await fs.mkdir(globalMemoryDir(tempHome), { recursive: true });
 		await fs.mkdir(projectMemoryDir(workspaceRoot), { recursive: true });
-		await fs.writeFile(globalMemoryPath(tempHome), ["alpha"].join(ENTRY_DELIMITER), "utf8");
-		await fs.writeFile(projectMemoryPath(workspaceRoot), ["project-alpha"].join(ENTRY_DELIMITER), "utf8");
-		await fs.writeFile(userMemoryPath(tempHome), ["rafa"].join(ENTRY_DELIMITER), "utf8");
+		await fs.writeFile(globalMemoryPath(tempHome), serializeMemoryEntries([createMemoryEntry("alpha")]), "utf8");
+		await fs.writeFile(projectMemoryPath(workspaceRoot), serializeMemoryEntries([createMemoryEntry("project-alpha")]), "utf8");
+		await fs.writeFile(userMemoryPath(tempHome), serializeMemoryEntries([createMemoryEntry("rafa")]), "utf8");
 
 		const { pi, emit } = makePiStub();
 		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
@@ -176,7 +180,26 @@ describe("CuratedMemory service", () => {
 			const memory = await runtime.runPromise(getCuratedMemory);
 			await runtime.runPromise(memory.add("project", "alpha", nestedCwd));
 
-			expect(await fs.readFile(projectMemoryPath(workspaceRoot), "utf8")).toBe("alpha");
+			expect(parseMemoryEntries(await fs.readFile(projectMemoryPath(workspaceRoot), "utf8")).map((entry) => entry.content)).toEqual(["alpha"]);
+		} finally {
+			await runtime.dispose();
+		}
+	});
+
+	it("migrates legacy markdown memory files to jsonl on first read", async () => {
+		await fs.mkdir(globalMemoryDir(tempHome), { recursive: true });
+		await fs.writeFile(legacyGlobalMemoryPath(tempHome), ["alpha", "beta"].join(ENTRY_DELIMITER), "utf8");
+
+		const { pi } = makePiStub();
+		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
+
+		try {
+			const memory = await runtime.runPromise(getCuratedMemory);
+			const snapshot = await runtime.runPromise(memory.getSnapshot(workspaceRoot));
+
+			expect(snapshot.global.entries).toEqual(["alpha", "beta"]);
+			expect(parseMemoryEntries(await fs.readFile(globalMemoryPath(tempHome), "utf8")).map((entry) => entry.content)).toEqual(["alpha", "beta"]);
+			await expect(fs.access(legacyGlobalMemoryPath(tempHome))).rejects.toThrow();
 		} finally {
 			await runtime.dispose();
 		}
@@ -189,9 +212,9 @@ describe("CuratedMemory service", () => {
 		try {
 			const memory = await runtime.runPromise(getCuratedMemory);
 			await runtime.runPromise(memory.add("global", "alpha", workspaceRoot));
-			await runtime.runPromise(memory.add("global", "beta", workspaceRoot));
+			const beta = await runtime.runPromise(memory.add("global", "beta", workspaceRoot));
 
-			await expect(runtime.runPromise(memory.update("global", "beta", "alpha", workspaceRoot))).rejects.toBeInstanceOf(
+			await expect(runtime.runPromise(memory.update("global", beta.entry.id, "alpha", workspaceRoot))).rejects.toBeInstanceOf(
 				MemoryDuplicateEntry,
 			);
 		} finally {
@@ -205,14 +228,57 @@ describe("CuratedMemory service", () => {
 
 		try {
 			const memory = await runtime.runPromise(getCuratedMemory);
-			await runtime.runPromise(memory.add("global", "alpha\r\nbeta", workspaceRoot));
+			const added = await runtime.runPromise(memory.add("global", "alpha\r\nbeta", workspaceRoot));
 
 			await expect(runtime.runPromise(memory.add("global", "alpha\nbeta", workspaceRoot))).rejects.toBeInstanceOf(
 				MemoryDuplicateEntry,
 			);
 
-			await runtime.runPromise(memory.remove("global", "alpha\r\nbeta", workspaceRoot));
+			await runtime.runPromise(memory.remove("global", added.entry.id, workspaceRoot));
 			expect(await fs.readFile(globalMemoryPath(tempHome), "utf8")).toBe("");
+		} finally {
+			await runtime.dispose();
+		}
+	});
+
+	it("updates and removes entries by exact id", async () => {
+		const { pi } = makePiStub();
+		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
+
+		try {
+			const memory = await runtime.runPromise(getCuratedMemory);
+			const first = await runtime.runPromise(memory.add("global", "alpha", workspaceRoot));
+			await runtime.runPromise(memory.add("global", "alpha detail", workspaceRoot));
+
+			const updated = await runtime.runPromise(memory.update("global", first.entry.id, "alpha revised", workspaceRoot));
+			expect(updated.entry.id).toBe(first.entry.id);
+
+			await runtime.runPromise(memory.remove("global", first.entry.id, workspaceRoot));
+
+			expect(parseMemoryEntries(await fs.readFile(globalMemoryPath(tempHome), "utf8")).map((entry) => entry.content)).toEqual([
+				"alpha detail",
+			]);
+		} finally {
+			await runtime.dispose();
+		}
+	});
+
+	it("rejects entries that exceed the per-scope character limit", async () => {
+		const { pi } = makePiStub();
+		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
+
+		try {
+			const memory = await runtime.runPromise(getCuratedMemory);
+			const tooLargeGlobalEntry = "g".repeat(1001);
+			const userEntry = await runtime.runPromise(memory.add("user", "short", workspaceRoot));
+
+			await expect(runtime.runPromise(memory.add("global", tooLargeGlobalEntry, workspaceRoot))).rejects.toBeInstanceOf(
+				MemoryEntryTooLarge,
+			);
+
+			await expect(runtime.runPromise(memory.update("user", userEntry.entry.id, "u".repeat(501), workspaceRoot))).rejects.toBeInstanceOf(
+				MemoryEntryTooLarge,
+			);
 		} finally {
 			await runtime.dispose();
 		}
@@ -233,7 +299,7 @@ describe("CuratedMemory service", () => {
 			const memory = await runtime.runPromise(getCuratedMemory);
 			await runtime.runPromise(memory.add("global", "alpha", workspaceRoot));
 
-			expect(await fs.readFile(globalMemoryPath(tempHome), "utf8")).toBe("alpha");
+			expect(parseMemoryEntries(await fs.readFile(globalMemoryPath(tempHome), "utf8")).map((entry) => entry.content)).toEqual(["alpha"]);
 			await expect(fs.access(path.join(globalMemoryDir(tempHome), ".lock"))).rejects.toThrow();
 		} finally {
 			await runtime.dispose();
@@ -254,7 +320,7 @@ describe("CuratedMemory service", () => {
 			const memory = await runtime.runPromise(getCuratedMemory);
 			await runtime.runPromise(memory.add("global", "beta", workspaceRoot));
 
-			expect(await fs.readFile(globalMemoryPath(tempHome), "utf8")).toBe("beta");
+			expect(parseMemoryEntries(await fs.readFile(globalMemoryPath(tempHome), "utf8")).map((entry) => entry.content)).toEqual(["beta"]);
 			await expect(fs.access(lockPath)).rejects.toThrow();
 		} finally {
 			await runtime.dispose();
@@ -275,7 +341,7 @@ describe("CuratedMemory service", () => {
 			const memory = await runtime.runPromise(getCuratedMemory);
 			await runtime.runPromise(memory.add("global", "gamma", workspaceRoot));
 
-			expect(await fs.readFile(globalMemoryPath(tempHome), "utf8")).toBe("gamma");
+			expect(parseMemoryEntries(await fs.readFile(globalMemoryPath(tempHome), "utf8")).map((entry) => entry.content)).toEqual(["gamma"]);
 			await expect(fs.access(lockPath)).rejects.toThrow();
 		} finally {
 			await runtime.dispose();
