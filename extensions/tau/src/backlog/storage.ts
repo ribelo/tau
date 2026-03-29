@@ -32,6 +32,19 @@ function nowIso(): string {
 	return new Date().toISOString();
 }
 
+function canonicalizeLegacyTimestamp(value: string | undefined): string | undefined {
+	if (!value) {
+		return undefined;
+	}
+
+	const timestamp = Date.parse(value);
+	if (Number.isNaN(timestamp)) {
+		return undefined;
+	}
+
+	return new Date(timestamp).toISOString();
+}
+
 function datePathFromRecordedAt(recordedAt: string): string {
 	return recordedAt.slice(0, 10).split("-").join(path.sep);
 }
@@ -417,7 +430,10 @@ async function readBeadsIssuesDb(dbPath: string): Promise<ReadonlyArray<Issue>> 
 }
 
 function importedEventForIssue(issue: Issue): BacklogEvent {
-	const recordedAt = issue.updated_at ?? issue.created_at ?? nowIso();
+	const recordedAt =
+		canonicalizeLegacyTimestamp(issue.updated_at) ??
+		canonicalizeLegacyTimestamp(issue.created_at) ??
+		nowIso();
 	return decodeImportedEvent({
 		schema_version: 1,
 		event_id: `import-${issue.id}`,

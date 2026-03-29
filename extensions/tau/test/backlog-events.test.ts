@@ -115,8 +115,8 @@ describe("backlog events", () => {
 					status: "open",
 					priority: 1,
 					issue_type: "task",
-					created_at: "2026-03-20T10:00:00.000Z",
-					updated_at: "2026-03-20T10:00:00.000Z",
+					created_at: "2026-03-20T10:00:00.000+01:00",
+					updated_at: "2026-03-20T10:00:00.000+01:00",
 				}),
 				JSON.stringify({
 					id: "tau-legacy-2",
@@ -148,6 +148,9 @@ describe("backlog events", () => {
 		const events = await readBacklogEventsFromWorkspace(workspaceRoot);
 		expect(events).toHaveLength(2);
 		expect(events.every((event) => event.kind === "issue.imported")).toBe(true);
+		expect(events.find((event) => event.issue_id === "tau-legacy-1")?.recorded_at).toBe(
+			"2026-03-20T09:00:00.000Z",
+		);
 	});
 
 	it("imports from .beads/beads.db when jsonl is absent and rebuilds cache after appended events", async () => {
