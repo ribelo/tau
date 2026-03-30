@@ -37,6 +37,13 @@ function refreshToolDescription(agentTool: AgentToolHandle, registry: AgentRegis
 	agentTool.refresh(description);
 }
 
+function formatStatusSummary(allNames: string[]): string {
+	const disabled = allNames.filter((n) => isAgentDisabled(n));
+	if (disabled.length === 0) return "All agents enabled";
+	const enabled = allNames.filter((n) => !isAgentDisabled(n));
+	return `Enabled: ${enabled.join(", ")}\nDisabled: ${disabled.join(", ")}`;
+}
+
 export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHandle): void {
 	// Reset on session boundaries
 	pi.on("session_start", async () => {
@@ -98,7 +105,7 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 					setAgentEnabled(agentName, action === "enable");
 					refreshToolDescription(agentTool, registry);
 					const state = action === "enable" ? "enabled" : "disabled";
-					ctx.ui.notify(`Agent "${agentName}" ${state}`, "info");
+					ctx.ui.notify(`Agent "${agentName}" ${state}\n${formatStatusSummary(allNames)}`, "info");
 					return;
 				}
 
@@ -109,35 +116,27 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 				return;
 			}
 
-			// Interactive toggle loop
-			let done = false;
-			while (!done) {
-				const options = allNames.map((name: string) => {
-					const enabled = !isAgentDisabled(name);
-					return `${enabled ? "✓" : "✗"} ${name}`;
-				});
-				options.push("── Done ──");
+			// Single-shot selector: each option is a toggle action
+			const options = allNames.map((name: string) => {
+				const enabled = !isAgentDisabled(name);
+				const action = enabled ? "Disable" : "Enable";
+				return `${enabled ? "✓" : "✗"} ${name} → ${action}`;
+			});
 
-				const choice = await ctx.ui.select("Toggle agents", options);
-				if (!choice || choice === "── Done ──") {
-					done = true;
-					continue;
-				}
+			const choice = await ctx.ui.select("Toggle agent (select to flip)", options);
+			if (!choice) return;
 
-				const agentName = choice.replace(/^[✓✗]\s+/, "");
-				if (registry.has(agentName)) {
-					const currentlyEnabled = !isAgentDisabled(agentName);
-					setAgentEnabled(agentName, !currentlyEnabled);
-				}
-			}
+			// Extract agent name from "✓ <name> → Disable" or "✗ <name> → Enable"
+			const match = choice.match(/^[✓✗]\s+(\S+)\s+→/);
+			if (!match) return;
+			const agentName = match[1];
 
-			refreshToolDescription(agentTool, registry);
-
-			const disabled = allNames.filter((name: string) => isAgentDisabled(name));
-			if (disabled.length === 0) {
-				ctx.ui.notify("All agents enabled", "info");
-			} else {
-				ctx.ui.notify(`Disabled agents: ${disabled.join(", ")}`, "info");
+			if (agentName && registry.has(agentName)) {
+				const currentlyEnabled = !isAgentDisabled(agentName);
+				setAgentEnabled(agentName, !currentlyEnabled);
+				refreshToolDescription(agentTool, registry);
+				const state = currentlyEnabled ? "disabled" : "enabled";
+				ctx.ui.notify(`Agent "${agentName}" ${state}\n${formatStatusSummary(allNames)}`, "info");
 			}
 		},
 	});
