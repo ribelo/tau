@@ -15,6 +15,7 @@ import { AgentRegistry } from "./agent-registry.js";
 import { isFinal } from "./status.js";
 import type { AgentId } from "./types.js";
 import { Sandbox } from "../services/sandbox.js";
+import { isAgentDisabled } from "../agents-menu/index.js";
 
 export const AgentControlLive = Layer.effect(
 	AgentControl,
@@ -28,6 +29,16 @@ export const AgentControlLive = Layer.effect(
 			spawn: (opts: ControlSpawnOptions) =>
 				Effect.gen(function* () {
 					const registry = yield* AgentRegistry.load(opts.cwd);
+
+					if (isAgentDisabled(opts.agent)) {
+						const enabled = registry.names().filter((n) => !isAgentDisabled(n));
+						return yield* Effect.fail(
+							new AgentError({
+								message: `Agent "${opts.agent}" is disabled for this session. Use /agents to re-enable it. Available: ${enabled.join(", ")}`,
+							}),
+						);
+					}
+
 					const definition = registry.resolve(opts.agent);
 
 					if (!definition) {
