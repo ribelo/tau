@@ -37,7 +37,7 @@ describe("memory renderer", () => {
 				path: "/workspace/.pi/tau/memories/PROJECT.jsonl",
 				entries: [createMemoryEntry("project memory preview")],
 				chars: 22,
-				limitChars: 1408,
+				limitChars: 2048,
 				usagePercent: 2,
 			},
 			global: {
@@ -45,7 +45,7 @@ describe("memory renderer", () => {
 				path: "/home/test/.pi/agent/tau/memories/MEMORY.jsonl",
 				entries: [createMemoryEntry("global memory preview")],
 				chars: 21,
-				limitChars: 1152,
+				limitChars: 2048,
 				usagePercent: 2,
 			},
 			user: {
@@ -53,7 +53,7 @@ describe("memory renderer", () => {
 				path: "/home/test/.pi/agent/tau/memories/USER.jsonl",
 				entries: [createMemoryEntry("user memory preview")],
 				chars: 19,
-				limitChars: 1536,
+				limitChars: 1024,
 				usagePercent: 3,
 			},
 		};
@@ -81,24 +81,24 @@ describe("memory renderer", () => {
 				path: "/workspace/.pi/tau/memories/PROJECT.jsonl",
 				entries: Array.from({ length: 7 }, (_, index) => createMemoryEntry(`project-${index}`)),
 				chars: 1275,
-				limitChars: 1408,
-				usagePercent: 90,
+				limitChars: 2048,
+				usagePercent: 62,
 			},
 			global: {
 				bucket: "global",
 				path: "/home/test/.pi/agent/tau/memories/MEMORY.jsonl",
 				entries: Array.from({ length: 11 }, (_, index) => createMemoryEntry(`global-${index}`)),
 				chars: 1107,
-				limitChars: 1152,
-				usagePercent: 96,
+				limitChars: 2048,
+				usagePercent: 54,
 			},
 			user: {
 				bucket: "user",
 				path: "/home/test/.pi/agent/tau/memories/USER.jsonl",
 				entries: Array.from({ length: 9 }, (_, index) => createMemoryEntry(`user-${index}`)),
 				chars: 1452,
-				limitChars: 1536,
-				usagePercent: 94,
+				limitChars: 1024,
+				usagePercent: 141,
 			},
 		};
 
@@ -108,9 +108,9 @@ describe("memory renderer", () => {
 			.map((line) => line.trimEnd());
 
 		expect(summaryLines).toEqual([
-			"  project : [█████████████░]  7 entries · 1275/1408 chars",
-			"  global  : [█████████████░] 11 entries · 1107/1152 chars",
-			"  user    : [█████████████░]  9 entries · 1452/1536 chars",
+			"  project : [█████████░░░░░]  7 entries · 1275/2048 chars",
+			"  global  : [████████░░░░░░] 11 entries · 1107/2048 chars",
+			"  user    : [██████████████]  9 entries · 1452/1024 chars",
 		]);
 	});
 

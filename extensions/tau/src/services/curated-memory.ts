@@ -33,9 +33,9 @@ import {
 } from "../memory/errors.js";
 import { getProjectTauMemoryDir, getTauMemoryDir } from "../shared/discovery.js";
 
-const PROJECT_SCOPE_CHAR_LIMIT = 1408;
-const GLOBAL_SCOPE_CHAR_LIMIT = 1152;
-const USER_SCOPE_CHAR_LIMIT = 1536;
+const PROJECT_SCOPE_CHAR_LIMIT = 2048;
+const GLOBAL_SCOPE_CHAR_LIMIT = 2048;
+const USER_SCOPE_CHAR_LIMIT = 1024;
 const LOCK_STALE_MS = 5_000;
 
 interface FrozenSnapshot {
@@ -487,6 +487,7 @@ export const CuratedMemoryLive = Layer.effect(
 					return Effect.fail(new MemoryDuplicateEntry({ scope, entry: existingEntry }));
 				}
 
+				const currentChars = charCount(entryContents(entries));
 				const entry = createMemoryEntry(trimmed);
 				const nextEntries = [...entries, entry];
 				const nextChars = charCount(entryContents(nextEntries));
@@ -496,6 +497,7 @@ export const CuratedMemoryLive = Layer.effect(
 						new MemoryEntryTooLarge({
 							scope,
 							limitChars: limit,
+							currentChars,
 							entryChars: nextChars,
 						}),
 					);
@@ -531,6 +533,7 @@ export const CuratedMemoryLive = Layer.effect(
 				}
 
 				const candidate = [...entries];
+				const currentChars = charCount(entryContents(entries));
 				const entry = createMemoryEntry(newTrimmed, {
 					id: candidate[index]!.id,
 					createdAt: candidate[index]!.createdAt,
@@ -544,6 +547,7 @@ export const CuratedMemoryLive = Layer.effect(
 						new MemoryEntryTooLarge({
 							scope,
 							limitChars: limit,
+							currentChars,
 							entryChars: nextChars,
 						}),
 					);

@@ -12,6 +12,7 @@ export class MemoryEntryTooLarge extends Schema.TaggedErrorClass<MemoryEntryTooL
 	{
 		scope: Schema.Union([Schema.Literal("project"), Schema.Literal("global"), Schema.Literal("user")]),
 		limitChars: Schema.Number,
+		currentChars: Schema.Number,
 		entryChars: Schema.Number,
 	},
 ) {}

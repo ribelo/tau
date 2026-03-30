@@ -686,4 +686,51 @@ describe("memory tool runtime", () => {
 			await runtime.dispose();
 		}
 	});
+
+	it("returns a clear model-facing error when a memory scope would overflow", async () => {
+		const { pi, tools } = makePiStub();
+		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
+		const runEffect = <A, E>(effect: Effect.Effect<A, E, CuratedMemory>) => runtime.runPromise(effect);
+		const cwd = path.join(tempHome, "workspace-memory-overflow");
+		await fs.mkdir(cwd, { recursive: true });
+		await fs.mkdir(path.join(cwd, ".pi"), { recursive: true });
+		await fs.writeFile(path.join(cwd, ".pi", "settings.json"), "{}", "utf8");
+
+		try {
+			const memory = await runEffect(Effect.gen(function* () {
+				return yield* CuratedMemory;
+			}));
+			await runtime.runPromise(Effect.scoped(memory.setup));
+			await runEffect(memory.add("user", "u".repeat(900), cwd));
+
+			initMemory(pi, runEffect);
+
+			const memoryTool = tools.find((tool) => tool.name === "memory");
+			expect(memoryTool).toBeDefined();
+
+			const result = (await memoryTool!.execute(
+				"call-overflow",
+				{
+					action: "add",
+					target: "user",
+					content: "v".repeat(200),
+				},
+				undefined,
+				undefined,
+				makeContext(cwd),
+			)) as MemoryToolExecutionResult;
+
+			expect(result.content[0]).toEqual({
+				type: "text",
+				text: [
+					"user memory limit exceeded.",
+					"Current total: 900/1024 chars.",
+					"Projected total after this change: 1103/1024 chars.",
+					"Next step: shorten this content, remove or shorten existing user memories, or use project/global memory.",
+				].join("\n"),
+			});
+		} finally {
+			await runtime.dispose();
+		}
+	});
 });

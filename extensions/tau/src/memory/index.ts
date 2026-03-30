@@ -25,7 +25,7 @@ const MemoryToolParams = Type.Object({
 });
 type MemoryToolParams = Static<typeof MemoryToolParams>;
 
-const TOOL_DESCRIPTION = "Save durable information to persistent memory that survives across sessions. Memory is injected into future sessions, so keep it compact and focused on facts that will still matter later.\n\nWHEN TO SAVE (do this proactively, do not wait to be asked):\n- User corrects you or says 'remember this' / 'don't do that again'\n- User shares a preference, habit, or personal detail (name, role, timezone, coding style)\n- You discover something about the environment (OS, installed tools, project structure)\n- You learn a convention, API quirk, or workflow specific to this user's setup\n\nPRIORITY: User preferences and corrections > environment facts > procedural knowledge. The most valuable memory prevents the user from having to repeat themselves.\n\nDo NOT save task progress, session outcomes, completed-work logs, or temporary TODO state.\n\nTHREE TARGETS:\n- 'project': workspace-specific facts. Stored at the nearest workspace root in .pi/tau/memories/PROJECT.jsonl (1408 chars total)\n- 'global': notes that apply across projects. Stored in ~/.pi/agent/tau/memories/MEMORY.jsonl (1152 chars total)\n- 'user': who the user is - name, role, preferences, communication style, pet peeves. Stored in ~/.pi/agent/tau/memories/USER.jsonl (1536 chars total)\n\nACTIONS: add (new entry), update (replace an existing entry by id), remove (delete an existing entry by id). No read action - memory is already in the system prompt.\n\nEvery successful action returns the affected memory entry. Per-scope total limits sum to 4096 chars across project/global/user memory.\n\nSKIP: trivial/obvious info, things easily re-discovered, raw data dumps, temporary TODO state.";
+const TOOL_DESCRIPTION = "Save durable information to persistent memory that survives across sessions. Memory is injected into future sessions, so keep it compact and focused on facts that will still matter later.\n\nWHEN TO SAVE (do this proactively, do not wait to be asked):\n- User corrects you or says 'remember this' / 'don't do that again'\n- User shares a preference, habit, or personal detail (name, role, timezone, coding style)\n- You discover something about the environment (OS, installed tools, project structure)\n- You learn a convention, API quirk, or workflow specific to this user's setup\n\nPRIORITY: User preferences and corrections > environment facts > procedural knowledge. The most valuable memory prevents the user from having to repeat themselves.\n\nDo NOT save task progress, session outcomes, completed-work logs, or temporary TODO state.\n\nTHREE TARGETS:\n- 'project': workspace-specific facts. Stored at the nearest workspace root in .pi/tau/memories/PROJECT.jsonl (2048 chars total)\n- 'global': notes that apply across projects. Stored in ~/.pi/agent/tau/memories/MEMORY.jsonl (2048 chars total)\n- 'user': who the user is - name, role, preferences, communication style, pet peeves. Stored in ~/.pi/agent/tau/memories/USER.jsonl (1024 chars total)\n\nACTIONS: add (new entry), update (replace an existing entry by id), remove (delete an existing entry by id). No read action - memory is already in the system prompt.\n\nEvery successful action returns the affected memory entry. Per-scope total limits are enforced independently.\n\nSKIP: trivial/obvious info, things easily re-discovered, raw data dumps, temporary TODO state.";
 
 type ToolDetails = MemoryToolDetails;
 
@@ -39,6 +39,26 @@ function toolOk(text: string, details: Omit<ToolDetails, "success"> = {}): ToolR
 
 function toolFail(text: string, details: Omit<ToolDetails, "success"> = {}): ToolResult {
 	return { content: [{ type: "text", text }], details: { success: false, ...details } };
+}
+
+function alternateScopes(scope: MemoryScope): string {
+	switch (scope) {
+		case "project":
+			return "global/user";
+		case "global":
+			return "project/user";
+		case "user":
+			return "project/global";
+	}
+}
+
+function formatMemoryOverflow(error: MemoryEntryTooLarge): string {
+	return [
+		`${error.scope} memory limit exceeded.`,
+		`Current total: ${error.currentChars}/${error.limitChars} chars.`,
+		`Projected total after this change: ${error.entryChars}/${error.limitChars} chars.`,
+		`Next step: shorten this content, remove or shorten existing ${error.scope} memories, or use ${alternateScopes(error.scope)} memory.`,
+	].join("\n");
 }
 
 function describeMemoryCommandError(error: unknown): string {
@@ -187,10 +207,7 @@ export function createMemoryToolDefinition(
 				});
 			} catch (cause: unknown) {
 				if (cause instanceof MemoryEntryTooLarge) {
-					return toolFail(
-						`${cause.scope} memory would use ${cause.entryChars} chars total, but the scope allows at most ${cause.limitChars} chars.`,
-						{ action, scope: cause.scope },
-					);
+					return toolFail(formatMemoryOverflow(cause), { action, scope: cause.scope });
 				}
 				if (cause instanceof MemoryNoMatch) {
 					return toolFail(`No entry matched id '${cause.id}'.`, { action, scope: target });
