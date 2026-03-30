@@ -17,6 +17,8 @@ export type MemoryToolDetails = {
 	readonly scope?: MemoryScope;
 	readonly entry?: MemoryEntry;
 	readonly bucket?: MemoryBucketSnapshot;
+	readonly requestedId?: string;
+	readonly submittedContent?: string;
 };
 
 export type MemoriesMessageDetails = {
@@ -204,32 +206,27 @@ function renderSuccess(details: MemoryToolDetails, message: string, theme: Theme
 	return new Text(out.join(""), 0, 0);
 }
 
-function renderFailure(message: string, theme: Theme): Text {
+function renderFailure(details: MemoryToolDetails, message: string, theme: Theme): Text {
 	let out = theme.fg("dim", SEPARATOR);
-	out += `\n${theme.fg("error", "✘")} ${theme.fg("toolTitle", theme.bold("memory"))}`;
+	out += `\n${theme.fg("error", "✘")} ${theme.fg("toolTitle", theme.bold(actionLabel(details.action)))}`;
+	if (details.scope) {
+		out += `\n  ${theme.fg("muted", "scope".padEnd(8))}: ${scopeText(details.scope, theme)}`;
+	}
+	if (details.requestedId) {
+		out += `\n  ${theme.fg("muted", "id".padEnd(8))}: ${theme.fg("accent", details.requestedId)}`;
+	}
+	if (details.submittedContent) {
+		out += `\n  ${theme.fg("muted", "chars".padEnd(8))}: ${theme.fg("toolOutput", `${details.submittedContent.length}`)}`;
+		out += `\n${renderCallContent(details.submittedContent, theme)}`;
+	}
 	out += `\n${theme.fg("error", message || "Memory operation failed")}`;
 	return new Text(out, 0, 0);
 }
 
 export function renderMemoryCall(args: Record<string, unknown> | undefined, theme: Theme): Text {
-	const action = typeof args?.["action"] === "string" ? args["action"] : "memory";
-	const scope = typeof args?.["target"] === "string" ? args["target"] : undefined;
-	const id = typeof args?.["id"] === "string" ? args["id"].trim() : "";
-	const content = typeof args?.["content"] === "string" ? args["content"].trim() : "";
-
-	let out = theme.fg("toolTitle", theme.bold(`memory ${action}`));
-	if (scope) {
-		out += `\n${theme.fg("muted", `scope: ${scope}`)}`;
-	}
-	if (id) {
-		out += `\n${theme.fg("muted", `id: ${id}`)}`;
-	}
-	if (content) {
-		out += `\n${theme.fg("muted", `chars: ${content.length}`)}`;
-		out += `\n${renderCallContent(content, theme)}`;
-	}
-
-	return new Text(out, 0, 0);
+	void args;
+	void theme;
+	return new Text("", 0, 0);
 }
 
 export function renderMemoryResult(result: MemoryToolResult, theme: Theme) {
@@ -241,7 +238,7 @@ export function renderMemoryResult(result: MemoryToolResult, theme: Theme) {
 	}
 
 	if (!details.success) {
-		return renderFailure(message, theme);
+		return renderFailure(details, message, theme);
 	}
 
 	if (!details.entry && !details.bucket) {

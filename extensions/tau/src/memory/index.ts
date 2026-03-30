@@ -41,6 +41,13 @@ function toolFail(text: string, details: Omit<ToolDetails, "success"> = {}): Too
 	return { content: [{ type: "text", text }], details: { success: false, ...details } };
 }
 
+function requestDetails(id: string | undefined, content: string | undefined) {
+	return {
+		...(id ? { requestedId: id } : {}),
+		...(content ? { submittedContent: content } : {}),
+	} satisfies Omit<ToolDetails, "success" | "action" | "scope" | "entry" | "bucket">;
+}
+
 function alternateScopes(scope: MemoryScope): string {
 	switch (scope) {
 		case "project":
@@ -197,20 +204,29 @@ export function createMemoryToolDefinition(
 			try {
 				const result = await runEffect(program);
 				if (typeof result === "string") {
-					return toolFail(result, { action, scope: target });
+					return toolFail(result, { action, scope: target, ...requestDetails(id, content) });
 				}
 				return toolOk(result.text, {
 					action,
 					scope: target,
 					entry: result.entry,
 					bucket: result.bucket,
+					...requestDetails(id, content),
 				});
 			} catch (cause: unknown) {
 				if (cause instanceof MemoryEntryTooLarge) {
-					return toolFail(formatMemoryOverflow(cause), { action, scope: cause.scope });
+					return toolFail(formatMemoryOverflow(cause), {
+						action,
+						scope: cause.scope,
+						...requestDetails(id, content),
+					});
 				}
 				if (cause instanceof MemoryNoMatch) {
-					return toolFail(`No entry matched id '${cause.id}'.`, { action, scope: target });
+					return toolFail(`No entry matched id '${cause.id}'.`, {
+						action,
+						scope: target,
+						...requestDetails(id, content),
+					});
 				}
 				if (cause instanceof MemoryDuplicateEntry) {
 					let bucket: MemoryBucketSnapshot | undefined;
@@ -223,18 +239,28 @@ export function createMemoryToolDefinition(
 						action,
 						scope: target,
 						entry: cause.entry,
+						...requestDetails(id, content),
 						...(bucket ? { bucket } : {}),
 					});
 				}
 				if (cause instanceof MemoryEmptyContent) {
-					return toolFail("Content cannot be empty.", { action, scope: target });
+					return toolFail("Content cannot be empty.", {
+						action,
+						scope: target,
+						...requestDetails(id, content),
+					});
 				}
 				if (cause instanceof MemoryFileError) {
-					return toolFail(`Memory file error: ${cause.reason}`, { action, scope: target });
+					return toolFail(`Memory file error: ${cause.reason}`, {
+						action,
+						scope: target,
+						...requestDetails(id, content),
+					});
 				}
 				return toolFail(cause instanceof Error ? cause.message : String(cause), {
 					action,
 					scope: target,
+					...requestDetails(id, content),
 				});
 			}
 		},

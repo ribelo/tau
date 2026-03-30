@@ -114,42 +114,45 @@ describe("memory renderer", () => {
 		]);
 	});
 
-	it("renders add calls with the memory content so failures stay inspectable", () => {
+	it("suppresses the separate memory call cell to avoid duplicate content", () => {
 		const rendered = renderToolCall({
 			action: "add",
 			target: "project",
 			content: "remember this exact\nmulti-line memory",
 		});
 
-		expect(rendered).toContain("memory add");
-		expect(rendered).toContain("scope: project");
-		expect(rendered).toContain("chars: 37");
-		expect(rendered).toContain("content:");
-		expect(rendered).toContain("remember this exact");
-		expect(rendered).toContain("multi-line memory");
+		expect(rendered.trim()).toBe("");
 	});
 
-	it("keeps the submitted content visible alongside memory file failures", () => {
-		const call = renderToolCall({
-			action: "add",
-			target: "project",
-			content: "remember this exact\nmulti-line memory",
-		});
+	it("keeps the submitted content visible in the result when a memory file failure occurs", () => {
 		const result = renderToolResult({
 			content: [{ type: "text", text: 'Memory file error: Error: expected a nanoid\n    at ["id"]' }],
-			details: { success: false },
+			details: {
+				success: false,
+				action: "add",
+				scope: "project",
+				submittedContent: "remember this exact\nmulti-line memory",
+			},
 		});
 
-		expect(`${call}\n${result}`).toContain("remember this exact");
-		expect(`${call}\n${result}`).toContain("multi-line memory");
-		expect(`${call}\n${result}`).toContain("expected a nanoid");
+		expect(result).toContain("memory add");
+		expect(result).toContain("scope   : project");
+		expect(result).toContain("chars   : 37");
+		expect(result).toContain("content:");
+		expect(result).toContain("remember this exact");
+		expect(result).toContain("multi-line memory");
+		expect(result).toContain("expected a nanoid");
 	});
 
-	it("normalizes CRLF content before rendering the call preview", () => {
-		const rendered = renderToolCall({
-			action: "add",
-			target: "project",
-			content: "alpha\r\nbeta",
+	it("normalizes CRLF content before rendering failure content", () => {
+		const rendered = renderToolResult({
+			content: [{ type: "text", text: "Memory file error: broken" }],
+			details: {
+				success: false,
+				action: "add",
+				scope: "project",
+				submittedContent: "alpha\r\nbeta",
+			},
 		});
 
 		expect(rendered).toContain("alpha");
