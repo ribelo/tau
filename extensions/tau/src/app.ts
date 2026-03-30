@@ -1,4 +1,4 @@
-import { Effect, Fiber, Layer, ManagedRuntime } from "effect";
+import { Cause, Effect, Fiber, Layer, ManagedRuntime } from "effect";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 
 import { PiAPILive } from "./effect/pi.js";
@@ -85,7 +85,18 @@ type TauRuntime = ManagedRuntime.ManagedRuntime<
 >;
 
 export const runTau = (pi: ExtensionAPI) => {
+	return startTau(pi).fiber;
+};
+
+export const startTau = (pi: ExtensionAPI) => {
 	let runtime: TauRuntime | undefined;
+	let readySettled = false;
+	let resolveReady!: () => void;
+	let rejectReady!: (error: unknown) => void;
+	const ready = new Promise<void>((resolve, reject) => {
+		resolveReady = resolve;
+		rejectReady = reject;
+	});
 
 	const agentRuntimeBridge: AgentRuntimeBridgeService = {
 		runPromise: (effect) => {
@@ -111,8 +122,7 @@ export const runTau = (pi: ExtensionAPI) => {
 	const runSkillManager = <A, E>(effect: Effect.Effect<A, E, SkillManager>) =>
 		currentRuntime.runPromise(effect);
 
-	const program = Effect.scoped(
-		Effect.gen(function* () {
+	const startup = Effect.gen(function* () {
 			const persistence = yield* Persistence;
 			const sandbox = yield* Sandbox;
 			const footer = yield* Footer;
@@ -155,9 +165,23 @@ export const runTau = (pi: ExtensionAPI) => {
 			yield* Effect.sync(() => {
 				initAgent(pi, agentRuntimeBridge, agentToolDescription);
 			});
+	});
 
-			yield* Effect.never;
-		}),
+	const program = Effect.scoped(
+		Effect.matchCauseEffect(startup, {
+			onSuccess: () =>
+				Effect.sync(() => {
+					if (readySettled) return;
+					readySettled = true;
+					resolveReady();
+				}),
+			onFailure: (cause) =>
+				Effect.sync(() => {
+					if (readySettled) return;
+					readySettled = true;
+					rejectReady(Cause.squash(cause));
+				}).pipe(Effect.andThen(Effect.failCause(cause))),
+		}).pipe(Effect.andThen(Effect.never)),
 	);
 
 	const rootFiber = currentRuntime.runFork(program);
@@ -171,5 +195,5 @@ export const runTau = (pi: ExtensionAPI) => {
 		runtime = undefined;
 	});
 
-	return rootFiber;
+	return { fiber: rootFiber, ready };
 };

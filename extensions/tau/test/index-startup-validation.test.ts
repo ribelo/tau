@@ -40,14 +40,18 @@ describe("tau startup validation ordering", () => {
 	});
 
 	it("starts the runtime before startup validation settles", async () => {
-		const runTau = vi.fn();
+		const startTau = vi.fn((pi: ExtensionAPI) => ({
+			fiber: Symbol("fiber"),
+			ready: Promise.resolve(),
+			pi,
+		}));
 		let resolveValidation: (() => void) | undefined;
 		const validation = new Promise<void>((resolve) => {
 			resolveValidation = resolve;
 		});
 		const validateAgentDefinitionsAtStartup = vi.fn(() => validation);
 
-		vi.doMock("../src/app.js", () => ({ runTau }));
+		vi.doMock("../src/app.js", () => ({ startTau, runTau: vi.fn() }));
 		vi.doMock("../src/agent/startup-validation.js", () => ({
 			validateAgentDefinitionsAtStartup,
 		}));
@@ -58,21 +62,27 @@ describe("tau startup validation ordering", () => {
 		const result = tau(pi);
 		await Promise.resolve();
 
-		expect(result).toBeUndefined();
+		expect(result).toBeInstanceOf(Promise);
 		expect(validateAgentDefinitionsAtStartup).toHaveBeenCalledTimes(1);
 		expect(validateAgentDefinitionsAtStartup).toHaveBeenCalledWith(process.cwd());
-		expect(runTau).toHaveBeenCalledTimes(1);
-		expect(runTau.mock.calls[0]?.[0]).toBe(pi);
+		expect(startTau).toHaveBeenCalledTimes(1);
+		expect(startTau.mock.calls[0]?.[0]).toBe(pi);
+
+		await result;
 
 		resolveValidation?.();
 		await validation;
 	});
 
 	it("does not pass a notify handler into startup validation", async () => {
-		const runTau = vi.fn();
+		const startTau = vi.fn((pi: ExtensionAPI) => ({
+			fiber: Symbol("fiber"),
+			ready: Promise.resolve(),
+			pi,
+		}));
 		const validateAgentDefinitionsAtStartup = vi.fn(async () => undefined);
 
-		vi.doMock("../src/app.js", () => ({ runTau }));
+		vi.doMock("../src/app.js", () => ({ startTau, runTau: vi.fn() }));
 		vi.doMock("../src/agent/startup-validation.js", () => ({
 			validateAgentDefinitionsAtStartup,
 		}));
@@ -80,9 +90,9 @@ describe("tau startup validation ordering", () => {
 		const { default: tau } = await import("../src/index.js");
 		const pi = makePiStub();
 
-		tau(pi);
+		await tau(pi);
 
-		expect(runTau).toHaveBeenCalledTimes(1);
+		expect(startTau).toHaveBeenCalledTimes(1);
 		expect(validateAgentDefinitionsAtStartup).toHaveBeenCalledWith(process.cwd());
 		expect(validateAgentDefinitionsAtStartup.mock.calls[0]).toHaveLength(1);
 		expect(pi.sendMessage).not.toHaveBeenCalled();

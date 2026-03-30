@@ -5,15 +5,21 @@ import { Effect, Fiber } from "effect";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 import { runTau } from "../src/app.js";
+import tau from "../src/index.js";
 
 function makePiStub(): ExtensionAPI {
 	const eventHandlers = new Map<string, Array<(payload: unknown) => void>>();
 	const registeredTools: string[] = [];
 	const registeredCommands: string[] = [];
 	const registeredRenderers: string[] = [];
+	let editorSetCount = 0;
 
 	const base = {
-		on: () => undefined,
+		on: (event: string, handler: (payload: unknown, ctx?: unknown) => unknown) => {
+			const list = eventHandlers.get(event) ?? [];
+			list.push(handler);
+			eventHandlers.set(event, list);
+		},
 		registerTool: (tool: unknown) => {
 			if (
 				typeof tool === "object" &&
@@ -38,6 +44,8 @@ function makePiStub(): ExtensionAPI {
 		registerFlag: () => undefined,
 		sendMessage: () => undefined,
 		appendEntry: () => undefined,
+		getActiveTools: () => [],
+		getCommands: () => [],
 		getThinkingLevel: () => "medium",
 		setThinkingLevel: () => undefined,
 		setModel: async () => true,
@@ -80,6 +88,11 @@ function makePiStub(): ExtensionAPI {
 		__registeredTools: { value: registeredTools, enumerable: false },
 		__registeredCommands: { value: registeredCommands, enumerable: false },
 		__registeredRenderers: { value: registeredRenderers, enumerable: false },
+		__eventHandlers: { value: eventHandlers, enumerable: false },
+		__editorSetCount: {
+			get: () => editorSetCount,
+			enumerable: false,
+		},
 	});
 
 	return proxy;
@@ -120,5 +133,59 @@ describe("runTau runtime", () => {
 		} finally {
 			await Effect.runPromise(Fiber.interrupt(fiber));
 		}
+	});
+
+	it("does not resolve extension startup until late commands and editor session handlers are registered", async () => {
+		const pi = makePiStub() as ExtensionAPI & {
+			readonly __registeredCommands: string[];
+			readonly __eventHandlers: Map<string, Array<(payload: unknown, ctx?: unknown) => unknown>>;
+			readonly __editorSetCount: number;
+		};
+
+		const startup = tau(pi);
+		await startup;
+
+		expect(pi.__registeredCommands).toContain("mode");
+		expect(pi.__registeredCommands).toContain("memories");
+
+		const sessionStartHandlers = pi.__eventHandlers.get("session_start") ?? [];
+		expect(sessionStartHandlers.length).toBeGreaterThan(0);
+		let editorSetCount = 0;
+
+		const ctx = {
+			cwd: process.cwd(),
+			hasUI: true,
+			modelRegistry: {
+				find: (provider: string, id: string) => ({ provider, id }),
+			},
+			sessionManager: {
+				getEntries: () => [],
+				getBranch: () => [],
+				getSessionId: () => "test-session",
+			},
+			ui: {
+				setEditorComponent: () => {
+					editorSetCount += 1;
+				},
+				setFooter: () => () => undefined,
+				setWidget: () => undefined,
+				notify: () => undefined,
+				getEditorText: () => "",
+			},
+			isIdle: () => true,
+			hasPendingMessages: () => false,
+			abort: () => undefined,
+			shutdown: () => undefined,
+			getContextUsage: () => undefined,
+			compact: () => undefined,
+			getSystemPrompt: () => "",
+		} as unknown;
+
+		for (const handler of sessionStartHandlers) {
+			await Promise.resolve(handler({ type: "session_start" }, ctx));
+		}
+		await new Promise((resolve) => setTimeout(resolve, 10));
+
+		expect(editorSetCount).toBeGreaterThan(0);
 	});
 });
