@@ -1,5 +1,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { AgentRegistry } from "../agent/agent-registry.js";
+import { buildToolDescription } from "../agent/tool.js";
+import type { AgentToolHandle } from "../agent/index.js";
 import { Effect } from "effect";
 
 /**
@@ -30,13 +32,22 @@ function loadRegistry(cwd: string): Effect.Effect<AgentRegistry, never> {
 	);
 }
 
-export default function initAgentsMenu(pi: ExtensionAPI): void {
+function refreshToolDescription(agentTool: AgentToolHandle, registry: AgentRegistry): void {
+	const description = buildToolDescription(registry, undefined, isAgentDisabled);
+	agentTool.refresh(description);
+}
+
+export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHandle): void {
 	// Reset on session boundaries
 	pi.on("session_start", async () => {
 		resetAgentStates();
+		const registry = await Effect.runPromise(loadRegistry(process.cwd()));
+		refreshToolDescription(agentTool, registry);
 	});
 	pi.on("session_switch", async () => {
 		resetAgentStates();
+		const registry = await Effect.runPromise(loadRegistry(process.cwd()));
+		refreshToolDescription(agentTool, registry);
 	});
 
 	pi.registerCommand("agents", {
@@ -85,6 +96,7 @@ export default function initAgentsMenu(pi: ExtensionAPI): void {
 						return;
 					}
 					setAgentEnabled(agentName, action === "enable");
+					refreshToolDescription(agentTool, registry);
 					const state = action === "enable" ? "enabled" : "disabled";
 					ctx.ui.notify(`Agent "${agentName}" ${state}`, "info");
 					return;
@@ -118,6 +130,8 @@ export default function initAgentsMenu(pi: ExtensionAPI): void {
 					setAgentEnabled(agentName, !currentlyEnabled);
 				}
 			}
+
+			refreshToolDescription(agentTool, registry);
 
 			const disabled = allNames.filter((name: string) => isAgentDisabled(name));
 			if (disabled.length === 0) {

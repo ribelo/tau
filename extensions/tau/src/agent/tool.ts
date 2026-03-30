@@ -83,12 +83,21 @@ export function buildToolDescription(
 		list: () => ReadonlyArray<{ readonly name: string; readonly description: string }>;
 	},
 	spawns?: readonly string[] | "*" | undefined,
+	isDisabled?: (name: string) => boolean,
 ): string {
 	const allAgents = registry.list();
-	const agents =
+	const scopedAgents =
 		spawns === undefined || spawns === "*"
 			? allAgents
 			: allAgents.filter((a) => spawns.includes(a.name));
+
+	const enabledAgents = isDisabled
+		? scopedAgents.filter((a) => !isDisabled(a.name))
+		: scopedAgents;
+
+	const disabledAgents = isDisabled
+		? scopedAgents.filter((a) => isDisabled(a.name))
+		: [];
 
 	const lines: string[] = [];
 	lines.push("Manage non-blocking agent tasks. Actions: spawn, send, wait, close, list.");
@@ -101,10 +110,14 @@ export function buildToolDescription(
 	lines.push("You can spawn multiple agents and wait for all at once.");
 	lines.push("");
 	lines.push("## Available agents");
-	for (const a of agents) {
+	for (const a of enabledAgents) {
 		// Take first line of description for brevity
 		const shortDesc = a.description.split("\n")[0]?.trim() || "";
 		lines.push(`- ${a.name}: ${shortDesc}`);
+	}
+	if (disabledAgents.length > 0) {
+		lines.push("");
+		lines.push(`Disabled agents: ${disabledAgents.map((a) => a.name).join(", ")}`);
 	}
 	return lines.join("\n").trim();
 }

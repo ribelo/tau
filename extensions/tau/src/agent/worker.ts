@@ -30,6 +30,7 @@ import type { ApprovalBroker } from "./approval-broker.js";
 import { createWorkerAgentTool, type RunAgentControlPromise } from "./runtime.js";
 import { applyAgentToolAllowlist } from "./tool-allowlist.js";
 import { buildToolDescription } from "./tool.js";
+import { isAgentDisabled } from "../agents-menu/index.js";
 
 const MAX_SUBMIT_RESULT_RETRIES = 3;
 
@@ -366,7 +367,7 @@ export class AgentWorker implements Agent {
 				opts.runPromise,
 				agentContext,
 				opts.agentSummaries
-					? buildToolDescription({ list: () => opts.agentSummaries ?? [] }, opts.definition.spawns)
+					? buildToolDescription({ list: () => opts.agentSummaries ?? [] }, opts.definition.spawns, isAgentDisabled)
 					: "Manage non-blocking agent tasks. Actions: spawn, send, wait, close, list.",
 			);
 
