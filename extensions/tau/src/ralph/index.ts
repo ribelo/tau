@@ -4,7 +4,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { Text } from "@mariozechner/pi-tui";
 
-const RALPH_DIR = ".ralph";
+const RALPH_DIR = ".pi/ralph";
 const COMPLETE_MARKER = "<promise>COMPLETE</promise>";
 
 const DEFAULT_TEMPLATE = `# Task
@@ -229,7 +229,7 @@ Commands:
   /ralph archive <name>               Move loop to archive
   /ralph clean [--all]                Clean completed loops
   /ralph list --archived              Show archived loops
-  /ralph nuke [--yes]                 Delete all .ralph data
+  /ralph nuke [--yes]                 Delete all .pi/ralph data
   /ralph-stop                         Stop active loop (idle only)
 
 Options:
@@ -586,12 +586,12 @@ export default function initRalph(pi: ExtensionAPI): void {
 				case "nuke": {
 					const force = rest.trim() === "--yes";
 					const warning =
-						"This deletes all .ralph state, task, and archive files. External task files are not removed.";
+						"This deletes all .pi/ralph state, task, and archive files. External task files are not removed.";
 
 					const run = () => {
 						const dir = ralphDir(ctx.cwd);
 						if (!fs.existsSync(dir)) {
-							if (ctx.hasUI) ctx.ui.notify("No .ralph directory found.", "info");
+							if (ctx.hasUI) ctx.ui.notify("No .pi/ralph directory found.", "info");
 							return;
 						}
 
@@ -600,8 +600,8 @@ export default function initRalph(pi: ExtensionAPI): void {
 						if (ctx.hasUI) {
 							ctx.ui.notify(
 								ok
-									? "Removed .ralph directory."
-									: "Failed to remove .ralph directory.",
+									? "Removed .pi/ralph directory."
+									: "Failed to remove .pi/ralph directory.",
 								ok ? "info" : "error",
 							);
 						}
