@@ -74,6 +74,46 @@ describe("memory renderer", () => {
 		expect(rendered).toContain(snapshot.project.entries[0]!.id);
 	});
 
+	it("aligns the /memories summary columns for counts and char totals", () => {
+		const snapshot: MemoryEntriesSnapshot = {
+			project: {
+				bucket: "project",
+				path: "/workspace/.pi/tau/memories/PROJECT.jsonl",
+				entries: Array.from({ length: 7 }, (_, index) => createMemoryEntry(`project-${index}`)),
+				chars: 1275,
+				limitChars: 1000,
+				usagePercent: 20,
+			},
+			global: {
+				bucket: "global",
+				path: "/home/test/.pi/agent/tau/memories/MEMORY.jsonl",
+				entries: Array.from({ length: 11 }, (_, index) => createMemoryEntry(`global-${index}`)),
+				chars: 1107,
+				limitChars: 1000,
+				usagePercent: 20,
+			},
+			user: {
+				bucket: "user",
+				path: "/home/test/.pi/agent/tau/memories/USER.jsonl",
+				entries: Array.from({ length: 9 }, (_, index) => createMemoryEntry(`user-${index}`)),
+				chars: 1452,
+				limitChars: 500,
+				usagePercent: 47,
+			},
+		};
+
+		const lines = renderText(snapshot).split("\n");
+		const summaryLines = lines
+			.filter((line) => /^\s{2}(project|global|user)\s+:/u.test(line))
+			.map((line) => line.trimEnd());
+
+		expect(summaryLines).toEqual([
+			"  project : [███░░░░░░░░░░░]  7 entries · 1275/1000 chars",
+			"  global  : [███░░░░░░░░░░░] 11 entries · 1107/1000 chars",
+			"  user    : [███████░░░░░░░]  9 entries ·  1452/500 chars",
+		]);
+	});
+
 	it("renders add calls with the memory content so failures stay inspectable", () => {
 		const rendered = renderToolCall({
 			action: "add",

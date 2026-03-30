@@ -99,12 +99,32 @@ function scopeColumn(scope: MemoryScope, theme: Theme): string {
 	return theme.fg("accent", scope.padEnd(7));
 }
 
-function renderBucketSummary(bucket: MemoryBucketEntriesSnapshot, theme: Theme): string {
+interface MemoriesSummaryWidths {
+	readonly entries: number;
+	readonly chars: number;
+}
+
+function computeSummaryWidths(snapshot: MemoryEntriesSnapshot): MemoriesSummaryWidths {
+	const buckets = [snapshot.project, snapshot.global, snapshot.user] as const;
+	return {
+		entries: Math.max(...buckets.map((bucket) => `${bucket.entries.length} entries`.length)),
+		chars: Math.max(...buckets.map((bucket) => `${bucket.chars}/${bucket.limitChars} chars`.length)),
+	};
+}
+
+function renderBucketSummary(
+	bucket: MemoryBucketEntriesSnapshot,
+	widths: MemoriesSummaryWidths,
+	theme: Theme,
+): string {
+	const entriesSummary = `${bucket.entries.length} entries`.padStart(widths.entries);
+	const charsSummary = `${bucket.chars}/${bucket.limitChars} chars`.padStart(widths.chars);
+
 	return [
 		`  ${theme.fg("muted", `${bucket.bucket.padEnd(8)}:`)}`,
 		renderProgressBar(bucket.usagePercent, 14, theme),
-		theme.fg("toolOutput", `${bucket.entries.length} entries`),
-		theme.fg("dim", `· ${bucket.chars}/${bucket.limitChars} chars`),
+		theme.fg("toolOutput", entriesSummary),
+		theme.fg("dim", `· ${charsSummary}`),
 	].join(" ");
 }
 
@@ -120,11 +140,12 @@ function flattenEntries(snapshot: MemoryEntriesSnapshot): ReadonlyArray<{
 export function renderMemoriesMessage(details: MemoriesMessageDetails, theme: Theme): Text {
 	const buckets = [details.snapshot.project, details.snapshot.global, details.snapshot.user] as const;
 	const entries = flattenEntries(details.snapshot);
+	const summaryWidths = computeSummaryWidths(details.snapshot);
 	const out: string[] = [theme.fg("dim", SEPARATOR)];
 
 	out.push(`\n${theme.fg("toolTitle", theme.bold("memories"))}`);
 	for (const bucket of buckets) {
-		out.push(`\n${renderBucketSummary(bucket, theme)}`);
+		out.push(`\n${renderBucketSummary(bucket, summaryWidths, theme)}`);
 	}
 
 	out.push(
