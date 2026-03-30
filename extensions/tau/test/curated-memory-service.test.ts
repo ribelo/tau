@@ -294,22 +294,48 @@ describe("CuratedMemory service", () => {
 		}
 	});
 
-	it("rejects entries that exceed the per-scope character limit", async () => {
+	it("rejects mutations that exceed the per-scope total character limit", async () => {
 		const { pi } = makePiStub();
 		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
 
 		try {
 			const memory = await runtime.runPromise(getCuratedMemory);
-			const tooLargeGlobalEntry = "g".repeat(1001);
-			const userEntry = await runtime.runPromise(memory.add("user", "short", workspaceRoot));
+			await runtime.runPromise(memory.add("project", "p".repeat(900), workspaceRoot));
+			await runtime.runPromise(memory.add("project", "q".repeat(400), workspaceRoot));
+			await runtime.runPromise(memory.add("global", "g".repeat(1000), workspaceRoot));
+			const userEntry = await runtime.runPromise(memory.add("user", "u".repeat(1000), workspaceRoot));
+			await runtime.runPromise(memory.add("user", "v".repeat(300), workspaceRoot));
 
-			await expect(runtime.runPromise(memory.add("global", tooLargeGlobalEntry, workspaceRoot))).rejects.toBeInstanceOf(
+			await expect(runtime.runPromise(memory.add("project", "z".repeat(103), workspaceRoot))).rejects.toBeInstanceOf(
 				MemoryEntryTooLarge,
 			);
 
-			await expect(runtime.runPromise(memory.update("user", userEntry.entry.id, "u".repeat(501), workspaceRoot))).rejects.toBeInstanceOf(
+			await expect(runtime.runPromise(memory.add("global", "h".repeat(150), workspaceRoot))).rejects.toBeInstanceOf(
 				MemoryEntryTooLarge,
 			);
+
+			await expect(runtime.runPromise(memory.update("user", userEntry.entry.id, "u".repeat(1234), workspaceRoot))).rejects.toBeInstanceOf(
+				MemoryEntryTooLarge,
+			);
+		} finally {
+			await runtime.dispose();
+		}
+	});
+
+	it("computes usage percentage from total scope chars", async () => {
+		const { pi } = makePiStub();
+		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
+
+		try {
+			const memory = await runtime.runPromise(getCuratedMemory);
+			await runtime.runPromise(memory.add("user", "a".repeat(1000), workspaceRoot));
+			await runtime.runPromise(memory.add("user", "b".repeat(300), workspaceRoot));
+
+			const snapshot = await runtime.runPromise(memory.getSnapshot(workspaceRoot));
+
+			expect(snapshot.user.chars).toBe(1303);
+			expect(snapshot.user.limitChars).toBe(1536);
+			expect(snapshot.user.usagePercent).toBe(Math.floor((1303 / 1536) * 100));
 		} finally {
 			await runtime.dispose();
 		}

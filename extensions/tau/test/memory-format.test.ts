@@ -28,7 +28,7 @@ function makeSnapshot(partial: Partial<MemorySnapshot> = {}): MemorySnapshot {
 			path: "/workspace/.pi/tau/memories/PROJECT.jsonl",
 			entries: [],
 			chars: 0,
-			limitChars: 1000,
+			limitChars: 1408,
 			usagePercent: 0,
 		},
 		global: {
@@ -36,7 +36,7 @@ function makeSnapshot(partial: Partial<MemorySnapshot> = {}): MemorySnapshot {
 			path: "/home/test/.pi/agent/tau/memories/MEMORY.jsonl",
 			entries: [],
 			chars: 0,
-			limitChars: 1000,
+			limitChars: 1152,
 			usagePercent: 0,
 		},
 		user: {
@@ -44,7 +44,7 @@ function makeSnapshot(partial: Partial<MemorySnapshot> = {}): MemorySnapshot {
 			path: "/home/test/.pi/agent/tau/memories/USER.jsonl",
 			entries: [],
 			chars: 0,
-			limitChars: 500,
+			limitChars: 1536,
 			usagePercent: 0,
 		},
 		...partial,
@@ -228,16 +228,16 @@ describe("memory format helpers", () => {
 							path: "/workspace/.pi/tau/memories/PROJECT.jsonl",
 							entries: projectEntries,
 							chars: charCount(projectEntries),
-							limitChars: 1000,
-							usagePercent: Math.floor((projectEntries[0]!.length / 1000) * 100),
+							limitChars: 1408,
+							usagePercent: Math.floor((charCount(projectEntries) / 1408) * 100),
 						},
 						global: {
 							bucket: "global",
 							path: "/home/test/.pi/agent/tau/memories/MEMORY.jsonl",
 							entries: globalEntries,
 							chars: charCount(globalEntries),
-							limitChars: 1000,
-							usagePercent: Math.floor((globalEntries[0]!.length / 1000) * 100),
+							limitChars: 1152,
+							usagePercent: Math.floor((charCount(globalEntries) / 1152) * 100),
 						},
 						user: {
 							bucket: "user",
@@ -253,10 +253,10 @@ describe("memory format helpers", () => {
 		).toBe(
 			[
 				"<memory_snapshot>",
-				'<project_memory path="/workspace/.pi/tau/memories/PROJECT.jsonl" entries="1" chars="5" limit="1000" usage_percent="0">',
+				'<project_memory path="/workspace/.pi/tau/memories/PROJECT.jsonl" entries="1" chars="5" limit="1408" usage_percent="0">',
 				"alpha",
 				"</project_memory>",
-				'<global_memory path="/home/test/.pi/agent/tau/memories/MEMORY.jsonl" entries="1" chars="14" limit="1000" usage_percent="1">',
+				'<global_memory path="/home/test/.pi/agent/tau/memories/MEMORY.jsonl" entries="1" chars="14" limit="1152" usage_percent="1">',
 				"beta &amp; &lt;gamma&gt;",
 				"</global_memory>",
 				'<user_memory path="/home/test/.pi/agent/tau/memories/USER.jsonl" entries="1" chars="3" limit="10" usage_percent="30">',
@@ -270,9 +270,9 @@ describe("memory format helpers", () => {
 	it("keeps empty scopes in the XML when includeEmpty is true", () => {
 		const rendered = renderMemorySnapshotXml(makeSnapshot(), { includeEmpty: true });
 
-		expect(rendered).toContain('<project_memory path="/workspace/.pi/tau/memories/PROJECT.jsonl" entries="0" chars="0" limit="1000" usage_percent="0">');
-		expect(rendered).toContain('<global_memory path="/home/test/.pi/agent/tau/memories/MEMORY.jsonl" entries="0" chars="0" limit="1000" usage_percent="0">');
-		expect(rendered).toContain('<user_memory path="/home/test/.pi/agent/tau/memories/USER.jsonl" entries="0" chars="0" limit="500" usage_percent="0">');
+		expect(rendered).toContain('<project_memory path="/workspace/.pi/tau/memories/PROJECT.jsonl" entries="0" chars="0" limit="1408" usage_percent="0">');
+		expect(rendered).toContain('<global_memory path="/home/test/.pi/agent/tau/memories/MEMORY.jsonl" entries="0" chars="0" limit="1152" usage_percent="0">');
+		expect(rendered).toContain('<user_memory path="/home/test/.pi/agent/tau/memories/USER.jsonl" entries="0" chars="0" limit="1536" usage_percent="0">');
 	});
 
 	it("floors the usage percentage in XML metadata", () => {

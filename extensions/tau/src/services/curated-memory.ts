@@ -33,9 +33,9 @@ import {
 } from "../memory/errors.js";
 import { getProjectTauMemoryDir, getTauMemoryDir } from "../shared/discovery.js";
 
-const PROJECT_ENTRY_CHAR_LIMIT = 1000;
-const GLOBAL_ENTRY_CHAR_LIMIT = 1000;
-const USER_ENTRY_CHAR_LIMIT = 500;
+const PROJECT_SCOPE_CHAR_LIMIT = 1408;
+const GLOBAL_SCOPE_CHAR_LIMIT = 1152;
+const USER_SCOPE_CHAR_LIMIT = 1536;
 const LOCK_STALE_MS = 5_000;
 
 interface FrozenSnapshot {
@@ -53,14 +53,14 @@ export interface MutationResult {
 	readonly entry: MemoryEntry;
 }
 
-function entryLimitForScope(scope: MemoryScope): number {
+function scopeLimitForScope(scope: MemoryScope): number {
 	switch (scope) {
 		case "project":
-			return PROJECT_ENTRY_CHAR_LIMIT;
+			return PROJECT_SCOPE_CHAR_LIMIT;
 		case "global":
-			return GLOBAL_ENTRY_CHAR_LIMIT;
+			return GLOBAL_SCOPE_CHAR_LIMIT;
 		case "user":
-			return USER_ENTRY_CHAR_LIMIT;
+			return USER_SCOPE_CHAR_LIMIT;
 	}
 }
 
@@ -162,10 +162,6 @@ async function shouldReclaimLock(lockPath: string): Promise<boolean> {
 
 function entryContents(entries: readonly MemoryEntry[]): string[] {
 	return entries.map((entry) => entry.content);
-}
-
-function longestEntryCharCount(entries: readonly MemoryEntry[]): number {
-	return entries.reduce((longest, entry) => Math.max(longest, entry.content.length), 0);
 }
 
 async function readJsonlScope(scope: MemoryScope, cwd: string): Promise<MemoryEntry[]> {
@@ -307,14 +303,14 @@ function findEntryIndexById(entries: readonly MemoryEntry[], id: string): number
 function makeBucketSnapshot(scope: MemoryScope, cwd: string, entries: readonly MemoryEntry[]): MemoryBucketSnapshot {
 	const contents = entryContents(entries);
 	const chars = charCount(contents);
-	const limit = entryLimitForScope(scope);
+	const limit = scopeLimitForScope(scope);
 	return {
 		bucket: scope,
 		path: scopePath(scope, cwd),
 		entries: contents,
 		chars,
 		limitChars: limit,
-		usagePercent: limit > 0 ? Math.floor((longestEntryCharCount(entries) / limit) * 100) : 0,
+		usagePercent: limit > 0 ? Math.floor((chars / limit) * 100) : 0,
 	};
 }
 
@@ -324,14 +320,14 @@ function makeBucketEntriesSnapshot(
 	entries: readonly MemoryEntry[],
 ): MemoryBucketEntriesSnapshot {
 	const chars = charCount(entryContents(entries));
-	const limit = entryLimitForScope(scope);
+	const limit = scopeLimitForScope(scope);
 	return {
 		bucket: scope,
 		path: scopePath(scope, cwd),
 		entries,
 		chars,
 		limitChars: limit,
-		usagePercent: limit > 0 ? Math.floor((longestEntryCharCount(entries) / limit) * 100) : 0,
+		usagePercent: limit > 0 ? Math.floor((chars / limit) * 100) : 0,
 	};
 }
 
@@ -485,17 +481,6 @@ export const CuratedMemoryLive = Layer.effect(
 				return Effect.fail(new MemoryEmptyContent());
 			}
 
-			const limit = entryLimitForScope(scope);
-			if (trimmed.length > limit) {
-				return Effect.fail(
-					new MemoryEntryTooLarge({
-						scope,
-						limitChars: limit,
-						entryChars: trimmed.length,
-					}),
-				);
-			}
-
 			return mutate(scope, cwd, (entries) => {
 				const existingEntry = entries.find((entry) => entry.content === trimmed);
 				if (existingEntry) {
@@ -503,7 +488,19 @@ export const CuratedMemoryLive = Layer.effect(
 				}
 
 				const entry = createMemoryEntry(trimmed);
-				return Effect.succeed({ nextEntries: [...entries, entry], entry });
+				const nextEntries = [...entries, entry];
+				const nextChars = charCount(entryContents(nextEntries));
+				const limit = scopeLimitForScope(scope);
+				if (nextChars > limit) {
+					return Effect.fail(
+						new MemoryEntryTooLarge({
+							scope,
+							limitChars: limit,
+							entryChars: nextChars,
+						}),
+					);
+				}
+				return Effect.succeed({ nextEntries, entry });
 			});
 		};
 
@@ -517,17 +514,6 @@ export const CuratedMemoryLive = Layer.effect(
 			const newTrimmed = normalizeEntryText(newText);
 			if (!trimmedId || !newTrimmed) {
 				return Effect.fail(new MemoryEmptyContent());
-			}
-
-			const limit = entryLimitForScope(scope);
-			if (newTrimmed.length > limit) {
-				return Effect.fail(
-					new MemoryEntryTooLarge({
-						scope,
-						limitChars: limit,
-						entryChars: newTrimmed.length,
-					}),
-				);
 			}
 
 			return mutate(scope, cwd, (entries) => {
@@ -551,6 +537,17 @@ export const CuratedMemoryLive = Layer.effect(
 					updatedAt: DateTime.nowUnsafe(),
 				});
 				candidate[index] = entry;
+				const nextChars = charCount(entryContents(candidate));
+				const limit = scopeLimitForScope(scope);
+				if (nextChars > limit) {
+					return Effect.fail(
+						new MemoryEntryTooLarge({
+							scope,
+							limitChars: limit,
+							entryChars: nextChars,
+						}),
+					);
+				}
 
 				return Effect.succeed({ nextEntries: candidate, entry });
 			});
