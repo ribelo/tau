@@ -34,13 +34,60 @@ function renderResult(details: BacklogToolDetails, options: ToolRenderResultOpti
 	return rendered as Text;
 }
 
+function renderCall(args: { command: string; cwd?: string }): Text {
+	const tool = createBacklogToolDefinition();
+	const renderCallFn = tool.renderCall as unknown as (args: unknown, theme: Theme) => Text;
+	const rendered = renderCallFn(args, plainTheme);
+	return rendered as Text;
+}
+
+function normalizeRendered(text: Text): string {
+	return text
+		.render(80)
+		.map((line) => line.trimEnd())
+		.join("\n");
+}
+
 describe("backlog tool renderer", () => {
 	it("renders calls", () => {
-		const tool = createBacklogToolDefinition();
-		const renderCallFn = tool.renderCall as unknown as (args: unknown, theme: Theme) => Text;
-		const rendered = renderCallFn({ command: "show tau-1", cwd: "/tmp/workspace" }, plainTheme);
+		const rendered = renderCall({ command: "show tau-1", cwd: "/tmp/workspace" });
 		expect(rendered).toBeInstanceOf(Text);
 		expect(rendered?.render(400).join("\n")).toContain("backlog show tau-1");
+	});
+
+	it("renders update calls and results with the compact issue summary layout", () => {
+		const command =
+			'update tau-kjk --description "Port the missing trustmate review area from the banana product page as a Storybook-friendly section: disclosure note, score summary cards, lightweight filter chrome, and review cards/list composition." --design "Do not attempt to recreate the whole third-party widget runtime. Instead, build honest presentational React components that capture the visible Frisco structure for trustmate reviews using plain typed props and story fixtures based on the banana reference fragment. Keep interactions shallow and local; focus on review cards, score summaries, filter chips/buttons, and section composition that can later be wired to real data or embedded widget decisions." --acceptance_criteria "The product-page component system includes typed Tailwind components and stories for the visible trustmate reviews section, including summary metrics and a review-list/card composition that matches the banana reference structure closely enough for later parity polish."';
+
+		const callRendered = normalizeRendered(
+			renderCall({
+				command,
+				cwd: "/home/ribelo/projects/retailic/frisco-effect",
+			}),
+		);
+		expect(callRendered).toContain("backlog update tau-kjk --description");
+		expect(callRendered).toContain("cwd: /home/ribelo/projects/retailic/frisco-effect");
+
+		const resultRendered = normalizeRendered(
+			renderResult({
+				command,
+				kind: "update",
+				ok: true,
+				data: {
+					id: "tau-kjk",
+					title: "Port product-page trustmate reviews section and review cards",
+					status: "open",
+					priority: 1,
+					issue_type: "task",
+					created_at: "2026-03-30T12:00:00.000Z",
+					updated_at: "2026-03-30T12:00:00.000Z",
+				},
+			}),
+		);
+		expect(resultRendered).toContain("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+		expect(resultRendered).toContain("□  tau-kjk       [P1]    [task]      (open)");
+		expect(resultRendered).toContain("Port product-page trustmate");
+		expect(resultRendered).toContain("reviews section and review cards");
 	});
 
 	it("renders every backlog result kind without throwing", () => {
