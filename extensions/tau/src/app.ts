@@ -25,6 +25,7 @@ import initSkillMarker from "./skill-marker/index.js";
 import { reloadSkills } from "./skill-marker/index.js";
 import initAgent from "./agent/index.js";
 import initRequestUserInput from "./request-user-input/index.js";
+import initRalph from "./ralph/index.js";
 import { AgentConfig, AgentControl } from "./agent/services.js";
 import { AgentControlLive } from "./agent/control.js";
 import { AgentManagerLive } from "./agent/manager.js";
@@ -158,6 +159,7 @@ export const startTau = (pi: ExtensionAPI) => {
 				initSkillManage(pi, runSkillManager);
 				initNudge(pi);
 				initRequestUserInput(pi);
+				initRalph(pi);
 			});
 
 			const agentRegistry = yield* AgentRegistry.load(process.cwd());
