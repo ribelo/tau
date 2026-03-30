@@ -44,7 +44,7 @@ function resolvePersistedMode(
 	state: { promptModes?: { activeMode?: PromptModeName | undefined } | undefined } | undefined,
 ): PromptModeName {
 	const active = state?.promptModes?.activeMode;
-	return active ?? "smart";
+	return active ?? "default";
 }
 
 function resolveModeModelCandidates(
@@ -61,9 +61,12 @@ function persistModeState(
 	persistence: PromptModePersistence,
 	mode: PromptModeName,
 	selectedModel?: string,
+	options?: { readonly persist?: boolean },
 ): void {
+	const write = options?.persist === false ? persistence.hydrate : persistence.update;
+
 	if (!isPromptModePresetName(mode) || selectedModel === undefined) {
-		persistence.update({
+		write({
 			promptModes: {
 				activeMode: mode,
 			},
@@ -77,7 +80,7 @@ function persistModeState(
 		[mode]: selectedModel,
 	};
 
-	persistence.update({
+	write({
 		promptModes: {
 			activeMode: mode,
 			modelsByMode,
@@ -92,11 +95,17 @@ async function applyModeSelection(
 	ctx: Pick<ExtensionContext, "cwd" | "modelRegistry" | "ui">,
 	options: {
 		readonly notifyOnSuccess: boolean;
+		readonly persist?: boolean;
 		readonly withModelSelectSuppressed?: WithModelSelectSuppressed;
 	},
 ): Promise<void> {
 	if (!isPromptModePresetName(mode)) {
-		persistModeState(persistence, mode);
+		persistModeState(
+			persistence,
+			mode,
+			undefined,
+			options.persist === undefined ? undefined : { persist: options.persist },
+		);
 		pi.events.emit("tau:mode:changed", { mode });
 		if (options.notifyOnSuccess) {
 			ctx.ui.notify(`Mode: ${mode}`, "info");
@@ -153,7 +162,12 @@ async function applyModeSelection(
 	if (!selectedModelId) return;
 
 	pi.setThinkingLevel(preset.thinking);
-	persistModeState(persistence, mode, selectedModelId);
+	persistModeState(
+		persistence,
+		mode,
+		selectedModelId,
+		options.persist === undefined ? undefined : { persist: options.persist },
+	);
 	pi.events.emit("tau:mode:changed", { mode });
 	if (options.notifyOnSuccess) {
 		ctx.ui.notify(`Mode: ${mode}`, "info");
@@ -188,13 +202,18 @@ async function syncModeForSessionContext(
 	if (!ctx.hasUI) return;
 
 	const sessionState = loadPersistedState(ctx);
-	if (sessionState.promptModes) {
-		persistence.hydrate({ promptModes: sessionState.promptModes });
+	if (sessionState.promptModes?.modelsByMode) {
+		persistence.hydrate({
+			promptModes: {
+				modelsByMode: sessionState.promptModes.modelsByMode,
+			},
+		});
 	}
 
-	const mode = resolvePersistedMode(persistence.getSnapshot());
+	const mode: PromptModeName = "default";
 	await applyModeSelection(pi, persistence, mode, ctx, {
 		notifyOnSuccess: false,
+		persist: false,
 		...(options?.withModelSelectSuppressed
 			? { withModelSelectSuppressed: options.withModelSelectSuppressed }
 			: {}),
@@ -289,18 +308,15 @@ export const PromptModesLive = Layer.effect(
 						});
 					});
 
-					pi.on("model_select", async (event, ctx) => {
-						if (event.source === "set" && suppressModelSelectEvents > 0) {
-							return;
-						}
-						const persistedSessionState = loadPersistedState(ctx);
-						const inMemoryState = persistence.getSnapshot();
-						const mode =
-							persistedSessionState.promptModes?.activeMode ??
-							resolvePersistedMode(inMemoryState);
-						const selectedModel = `${event.model.provider}/${event.model.id}`;
-						persistModeState(persistence, mode, selectedModel);
-					});
+					pi.on("model_select", async (event, _ctx) => {
+					if (event.source === "set" && suppressModelSelectEvents > 0) {
+						return;
+					}
+					const inMemoryState = persistence.getSnapshot();
+					const mode = resolvePersistedMode(inMemoryState);
+					const selectedModel = `${event.model.provider}/${event.model.id}`;
+					persistModeState(persistence, mode, selectedModel);
+				});
 
 					pi.on("before_agent_start", async (event, ctx) => {
 						const baseSystemPrompt = stripInjectedModePrompt(event.systemPrompt);

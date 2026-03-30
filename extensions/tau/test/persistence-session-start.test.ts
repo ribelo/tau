@@ -13,19 +13,23 @@ type SessionStartHandler = (event: unknown, ctx: ExtensionContext) => unknown;
 type PiMock = {
 	readonly pi: ExtensionAPI;
 	readonly handlers: Map<string, SessionStartHandler[]>;
+	readonly appendedEntries: Array<{ readonly type: string; readonly data: unknown }>;
 };
 
 function makePiMock(): PiMock {
 	const handlers = new Map<string, SessionStartHandler[]>();
+	const appendedEntries: Array<{ readonly type: string; readonly data: unknown }> = [];
 	const pi = {
 		on: (event: string, handler: unknown) => {
 			const current = handlers.get(event) ?? [];
 			current.push(handler as SessionStartHandler);
 			handlers.set(event, current);
 		},
-		appendEntry: () => undefined,
+		appendEntry: (type: string, data: unknown) => {
+			appendedEntries.push({ type, data });
+		},
 	} as unknown as ExtensionAPI;
-	return { pi, handlers };
+	return { pi, handlers, appendedEntries };
 }
 
 function makeSessionStartContext(entries: unknown[]): ExtensionContext {
@@ -51,6 +55,32 @@ async function setupPersistence(pi: ExtensionAPI): Promise<{
 }
 
 describe("persistence session_start", () => {
+	it("does not append promptModes.activeMode into session state", async () => {
+		const mock = makePiMock();
+		const persistence = await setupPersistence(mock.pi);
+
+		persistence.update({
+			promptModes: {
+				activeMode: "deep",
+				modelsByMode: {
+					deep: "openai-codex/gpt-5.3-codex",
+				},
+			},
+		});
+
+		expect(mock.appendedEntries).toHaveLength(1);
+		expect(mock.appendedEntries[0]).toEqual({
+			type: TAU_PERSISTED_STATE_TYPE,
+			data: {
+				promptModes: {
+					modelsByMode: {
+						deep: "openai-codex/gpt-5.3-codex",
+					},
+				},
+			},
+		});
+	});
+
 	it("keeps existing prompt mode when session has no tau state", async () => {
 		const mock = makePiMock();
 		const persistence = await setupPersistence(mock.pi);

@@ -9,6 +9,18 @@ import {
 } from "../shared/state.js";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 
+function sanitizePersistedStateForSession(state: TauPersistedState): TauPersistedState {
+	if (!state.promptModes) {
+		return state;
+	}
+
+	const { activeMode: _activeMode, ...promptModes } = state.promptModes;
+	return {
+		...state,
+		promptModes,
+	};
+}
+
 export class Persistence extends ServiceMap.Service<
 	Persistence,
 	{
@@ -48,7 +60,7 @@ export const PersistenceLive = Layer.effect(
 
 		const updateSnapshot = (patch: Partial<TauPersistedState>): TauPersistedState => {
 			const next = hydrateSnapshot(patch);
-			pi.appendEntry(TAU_PERSISTED_STATE_TYPE, next);
+			pi.appendEntry(TAU_PERSISTED_STATE_TYPE, sanitizePersistedStateForSession(next));
 			return next;
 		};
 

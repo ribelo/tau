@@ -245,7 +245,7 @@ export const FooterLive = Layer.effect(
 										const totalCost = currentTotalCost;
 										const persisted = currentPersisted;
 										const modeLabel =
-											persisted.promptModes?.activeMode ?? "smart";
+											persisted.promptModes?.activeMode ?? "default";
 
 										// Single sandbox mode dot (matches codex behavior)
 										const fsMode =

@@ -221,7 +221,7 @@ async function setupPromptModes(
 }
 
 describe("prompt-modes session_start", () => {
-	it("keeps last used mode when /new session has no persisted mode", async () => {
+	it("starts in default mode when /new session has no persisted mode", async () => {
 		await withTempDir(async (cwd) => {
 			const stateRef = await Effect.runPromise(
 				SubscriptionRef.make<TauPersistedState>({ promptModes: { activeMode: "deep" } }),
@@ -235,19 +235,16 @@ describe("prompt-modes session_start", () => {
 			const ctx = makeSessionStartContext(cwd, []);
 			await Promise.resolve(sessionStart?.({ type: "session_start" }, ctx));
 
-			const deepPreset = (await Effect.runPromise(resolvePromptModePresets(cwd))).deep;
-			const expectedModel = parseProviderModel(deepPreset.model);
-
-			expect(mock.setModelCalls.at(-1)).toEqual(expectedModel);
-			expect(mock.thinkingCalls.at(-1)).toBe(deepPreset.thinking);
-			expect(mock.modeChangedEvents.at(-1)).toBe("deep");
+			expect(mock.setModelCalls).toHaveLength(0);
+			expect(mock.thinkingCalls).toHaveLength(0);
+			expect(mock.modeChangedEvents.at(-1)).toBe("default");
 
 			const persisted = Effect.runSync(SubscriptionRef.get(stateRef));
-			expect(persisted.promptModes?.activeMode).toBe("deep");
+			expect(persisted.promptModes?.activeMode).toBe("default");
 		});
 	});
 
-	it("prefers session persisted mode over previous in-memory mode", async () => {
+	it("ignores session persisted mode and starts in default mode", async () => {
 		await withTempDir(async (cwd) => {
 			const stateRef = await Effect.runPromise(
 				SubscriptionRef.make<TauPersistedState>({ promptModes: { activeMode: "deep" } }),
@@ -268,19 +265,16 @@ describe("prompt-modes session_start", () => {
 			const ctx = makeSessionStartContext(cwd, entries);
 			await Promise.resolve(sessionStart?.({ type: "session_start" }, ctx));
 
-			const smartPreset = (await Effect.runPromise(resolvePromptModePresets(cwd))).smart;
-			const expectedModel = parseProviderModel(smartPreset.model);
-
-			expect(mock.setModelCalls.at(-1)).toEqual(expectedModel);
-			expect(mock.thinkingCalls.at(-1)).toBe(smartPreset.thinking);
-			expect(mock.modeChangedEvents.at(-1)).toBe("smart");
+			expect(mock.setModelCalls).toHaveLength(0);
+			expect(mock.thinkingCalls).toHaveLength(0);
+			expect(mock.modeChangedEvents.at(-1)).toBe("default");
 
 			const persisted = Effect.runSync(SubscriptionRef.get(stateRef));
-			expect(persisted.promptModes?.activeMode).toBe("smart");
+			expect(persisted.promptModes?.activeMode).toBe("default");
 		});
 	});
 
-	it("restores the mode-assigned model from persisted state", async () => {
+	it("restores per-mode model assignments without activating them on session_start", async () => {
 		await withTempDir(async (cwd) => {
 			const stateRef = await Effect.runPromise(SubscriptionRef.make<TauPersistedState>({}));
 			const mock = makePiMock();
@@ -306,17 +300,12 @@ describe("prompt-modes session_start", () => {
 			const ctx = makeSessionStartContext(cwd, entries);
 			await Promise.resolve(sessionStart?.({ type: "session_start" }, ctx));
 
-			expect(mock.setModelCalls.at(-1)).toEqual({
-				provider: "openai-codex",
-				id: "gpt-5.3-codex",
-			});
-
-			const deepPreset = (await Effect.runPromise(resolvePromptModePresets(cwd))).deep;
-			expect(mock.thinkingCalls.at(-1)).toBe(deepPreset.thinking);
-			expect(mock.modeChangedEvents.at(-1)).toBe("deep");
+			expect(mock.setModelCalls).toHaveLength(0);
+			expect(mock.thinkingCalls).toHaveLength(0);
+			expect(mock.modeChangedEvents.at(-1)).toBe("default");
 
 			const persisted = Effect.runSync(SubscriptionRef.get(stateRef));
-			expect(persisted.promptModes?.activeMode).toBe("deep");
+			expect(persisted.promptModes?.activeMode).toBe("default");
 			expect(persisted.promptModes?.modelsByMode?.deep).toBe("openai-codex/gpt-5.3-codex");
 		});
 	});
@@ -351,7 +340,7 @@ describe("prompt-modes session_start", () => {
 		});
 	});
 
-	it("restores mode model on session_switch", async () => {
+	it("starts in default mode on session_switch while preserving per-mode assignments", async () => {
 		await withTempDir(async (cwd) => {
 			const stateRef = await Effect.runPromise(
 				SubscriptionRef.make<TauPersistedState>({ promptModes: { activeMode: "smart" } }),
@@ -381,22 +370,17 @@ describe("prompt-modes session_start", () => {
 				sessionSwitch?.({ type: "session_switch", reason: "resume" }, ctx),
 			);
 
-			expect(mock.setModelCalls.at(-1)).toEqual({
-				provider: "kimi-coding",
-				id: "kimi-k2-thinking",
-			});
-
-			const rushPreset = (await Effect.runPromise(resolvePromptModePresets(cwd))).rush;
-			expect(mock.thinkingCalls.at(-1)).toBe(rushPreset.thinking);
-			expect(mock.modeChangedEvents.at(-1)).toBe("rush");
+			expect(mock.setModelCalls).toHaveLength(0);
+			expect(mock.thinkingCalls).toHaveLength(0);
+			expect(mock.modeChangedEvents.at(-1)).toBe("default");
 
 			const persisted = Effect.runSync(SubscriptionRef.get(stateRef));
-			expect(persisted.promptModes?.activeMode).toBe("rush");
+			expect(persisted.promptModes?.activeMode).toBe("default");
 			expect(persisted.promptModes?.modelsByMode?.rush).toBe("kimi-coding/kimi-k2-thinking");
 		});
 	});
 
-	it("keeps per-mode model assignments across mode switches and resume", async () => {
+	it("keeps per-mode model assignments across explicit mode switches and restart", async () => {
 		await withTempDir(async (cwd) => {
 			const stateRef = await Effect.runPromise(
 				SubscriptionRef.make<TauPersistedState>({
@@ -429,25 +413,9 @@ describe("prompt-modes session_start", () => {
 			let persisted = Effect.runSync(SubscriptionRef.get(stateRef));
 			expect(persisted.promptModes?.modelsByMode?.smart).toBe("openai-codex/gpt-5.3-codex");
 
-			// Simulate switching to deep mode and assigning a different model there.
-			await Promise.resolve(
-				sessionSwitch?.(
-					{ type: "session_switch", reason: "resume" },
-					makeSessionStartContext(cwd, [
-						{
-							type: "custom",
-							customType: TAU_PERSISTED_STATE_TYPE,
-							data: {
-								promptModes: {
-									activeMode: "deep",
-									modelsByMode: {
-										smart: "openai-codex/gpt-5.3-codex",
-										deep: "anthropic/claude-opus-4-5",
-									},
-								},
-							},
-						},
-					]),
+			Effect.runSync(
+				SubscriptionRef.update(stateRef, (current) =>
+					mergePersistedState(current, { promptModes: { activeMode: "deep" } }),
 				),
 			);
 
@@ -481,7 +449,7 @@ describe("prompt-modes session_start", () => {
 			expect(persisted.promptModes?.modelsByMode?.deep).toBe("kimi-coding/kimi-k2-thinking");
 			expect(persisted.promptModes?.modelsByMode?.smart).toBe("openai-codex/gpt-5.3-codex");
 
-			// Resume into a smart session. It must restore smart's assigned model.
+			// Restart should return to default mode instead of restoring a saved mode.
 			await Promise.resolve(
 				sessionSwitch?.(
 					{ type: "session_switch", reason: "resume" },
@@ -503,10 +471,11 @@ describe("prompt-modes session_start", () => {
 				),
 			);
 
-			expect(mock.setModelCalls.at(-1)).toEqual({
-				provider: "openai-codex",
-				id: "gpt-5.3-codex",
-			});
+			expect(mock.modeChangedEvents.at(-1)).toBe("default");
+			persisted = Effect.runSync(SubscriptionRef.get(stateRef));
+			expect(persisted.promptModes?.activeMode).toBe("default");
+			expect(persisted.promptModes?.modelsByMode?.smart).toBe("openai-codex/gpt-5.3-codex");
+			expect(persisted.promptModes?.modelsByMode?.deep).toBe("kimi-coding/kimi-k2-thinking");
 		});
 	});
 
