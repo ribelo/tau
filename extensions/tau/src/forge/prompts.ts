@@ -56,7 +56,7 @@ export function buildReviewPrompt(
 		"",
 		"Call `forge_review` with your verdict:",
 		"- `{ verdict: 'complete' }` -- task is done, close it",
-		"- `{ verdict: 'reject', feedback: '...' }` -- describe what is wrong and what to fix",
+		"- `{ verdict: 'reject', feedback: '...' }` -- describe what is wrong; forge pauses for fresh session",
 	].join("\n");
 }
 

@@ -1,6 +1,6 @@
-import * as fs from "node:fs";
-import * as path from "node:path";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type {
+	ExtensionAPI,
+} from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { Text } from "@mariozechner/pi-tui";
 import type { ForgeState } from "./types.js";
@@ -17,33 +17,55 @@ import {
 	implementSystemSnippet,
 	reviewSystemSnippet,
 } from "./prompts.js";
+import { readMaterializedIssuesCache } from "../backlog/materialize.js";
+import { setIssueStatus } from "../backlog/events.js";
 
 const TOOL_FORGE_DONE = "forge_done";
 const TOOL_FORGE_REVIEW = "forge_review";
 
-/** Read a backlog item's title and description by shelling out to the backlog tool.
- *  We parse the JSON output from `backlog show <id>`. */
+/** Read a backlog item's title and description via internal backlog API. */
 async function readBacklogItem(
-	pi: ExtensionAPI,
+	cwd: string,
 	taskId: string,
 ): Promise<{ title: string; description: string } | undefined> {
 	try {
-		const result = await pi.exec("backlog", ["show", taskId], {
-			cwd: process.cwd(),
-			timeout: 10_000,
-		});
-		if (result.code !== 0) return undefined;
-		const parsed = JSON.parse(result.stdout) as {
-			title?: string;
-			description?: string;
-		};
+		const issues = await readMaterializedIssuesCache(cwd);
+		const issue = issues.find((i) => i.id === taskId);
+		if (!issue) return undefined;
 		return {
-			title: parsed.title ?? taskId,
-			description: parsed.description ?? "(no description)",
+			title: issue.title,
+			description: issue.description ?? "(no description)",
 		};
 	} catch {
 		return undefined;
 	}
+}
+
+/** Close a backlog item via internal backlog API. Returns true on success. */
+async function closeBacklogItem(
+	cwd: string,
+	taskId: string,
+	reason: string,
+): Promise<boolean> {
+	try {
+		await setIssueStatus(cwd, {
+			issueId: taskId,
+			actor: "forge",
+			status: "closed",
+			reason,
+		});
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** Resolve a model object from a model ID string via the model registry. */
+function resolveModel(
+	ctx: { modelRegistry: import("@mariozechner/pi-coding-agent").ModelRegistry },
+	modelId: string,
+): import("@mariozechner/pi-ai").Model<import("@mariozechner/pi-ai").Api> | undefined {
+	return ctx.modelRegistry.getAll().find((m) => m.id === modelId);
 }
 
 export default function initForge(pi: ExtensionAPI): void {
@@ -113,6 +135,33 @@ export default function initForge(pi: ExtensionAPI): void {
 		ctx.ui.setWidget("forge", lines);
 	}
 
+	/** The model that was active before the reviewer model was applied. */
+	let implementerModel: import("@mariozechner/pi-ai").Model<import("@mariozechner/pi-ai").Api> | undefined;
+
+	/** Apply reviewer model if configured. Saves current model for later restore. */
+	async function applyReviewerModel(
+		ctx: import("@mariozechner/pi-coding-agent").ExtensionContext,
+		state: ForgeState,
+	): Promise<void> {
+		if (!state.reviewer.model) return;
+		const reviewerModel = resolveModel(ctx, state.reviewer.model);
+		if (!reviewerModel) return;
+		implementerModel = ctx.model;
+		const ok = await pi.setModel(reviewerModel);
+		if (!ok) {
+			// Model switch failed (e.g. no API key); clear saved model so we don't restore garbage
+			implementerModel = undefined;
+		}
+	}
+
+	/** Restore the implementer model after review phase. */
+	async function restoreImplementerModel(): Promise<void> {
+		if (implementerModel) {
+			await pi.setModel(implementerModel);
+			implementerModel = undefined;
+		}
+	}
+
 	// ── Tools ────────────────────────────────────────────────────────
 
 	pi.registerTool({
@@ -152,8 +201,11 @@ export default function initForge(pi: ExtensionAPI): void {
 			activateForgeTools("reviewing");
 			updateUI(ctx);
 
+			// Apply reviewer model if configured
+			await applyReviewerModel(ctx, state);
+
 			// Read backlog item for review prompt
-			const item = await readBacklogItem(pi, state.taskId);
+			const item = await readBacklogItem(ctx.cwd, state.taskId);
 			const title = item?.title ?? state.taskId;
 			const description = item?.description ?? "(no description)";
 
@@ -228,14 +280,23 @@ export default function initForge(pi: ExtensionAPI): void {
 			const verdict = (params as { verdict: string }).verdict;
 
 			if (verdict === "complete") {
-				// Close the backlog item
-				try {
-					await pi.exec("backlog", ["close", state.taskId, "--reason", "Forge review: complete"], {
-						cwd: ctx.cwd,
-						timeout: 10_000,
-					});
-				} catch {
-					// best-effort close
+				// Close the backlog item via internal API
+				const closed = await closeBacklogItem(
+					ctx.cwd,
+					state.taskId,
+					"Forge review: complete",
+				);
+
+				if (!closed) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Failed to close backlog item ${state.taskId}. Forge state unchanged. Retry or close manually.`,
+							},
+						],
+						details: {},
+					};
 				}
 
 				state.status = "completed";
@@ -246,6 +307,9 @@ export default function initForge(pi: ExtensionAPI): void {
 				activeTaskId = undefined;
 				deactivateForgeTools();
 				updateUI(ctx);
+
+				// Restore implementer model if reviewer model was applied
+				await restoreImplementerModel();
 
 				return {
 					content: [
@@ -263,25 +327,23 @@ export default function initForge(pi: ExtensionAPI): void {
 			state.lastFeedback = feedback;
 			state.cycle++;
 			state.phase = "implementing";
+			// Pause so /forge resume starts a fresh session via ctx.newSession()
+			state.status = "paused";
 			saveState(ctx.cwd, state);
-			activateForgeTools("implementing");
+
+			const taskId = activeTaskId;
+			activeTaskId = undefined;
+			deactivateForgeTools();
 			updateUI(ctx);
 
-			// Read backlog item for next implement prompt
-			const item = await readBacklogItem(pi, state.taskId);
-			const title = item?.title ?? state.taskId;
-			const description = item?.description ?? "(no description)";
-
-			// Queue next implement prompt
-			pi.sendUserMessage(buildImplementPrompt(state, title, description), {
-				deliverAs: "followUp",
-			});
+			// Restore implementer model before next cycle
+			await restoreImplementerModel();
 
 			return {
 				content: [
 					{
 						type: "text",
-						text: `Review rejected. Feedback saved. Starting cycle ${state.cycle}.`,
+						text: `Review rejected. Feedback saved for cycle ${state.cycle}. Run /forge resume ${taskId} to start fresh session.`,
 					},
 				],
 				details: {},
@@ -303,6 +365,10 @@ export default function initForge(pi: ExtensionAPI): void {
 			return new Text(theme.fg("muted", text), 0, 0);
 		},
 	});
+
+	// P2 fix: deactivate forge tools immediately after registration
+	// so they are not exposed in ordinary sessions before /forge start.
+	deactivateForgeTools();
 
 	// ── Commands ─────────────────────────────────────────────────────
 
@@ -358,7 +424,7 @@ Commands:
 					}
 
 					// Validate backlog item exists
-					const item = await readBacklogItem(pi, taskId);
+					const item = await readBacklogItem(ctx.cwd, taskId);
 					if (!item) {
 						ctx.ui.notify(`Backlog item ${taskId} not found.`, "error");
 						return;
@@ -444,7 +510,7 @@ Commands:
 					activateForgeTools(state.phase);
 					updateUI(ctx);
 
-					const item = await readBacklogItem(pi, taskId);
+					const item = await readBacklogItem(ctx.cwd, taskId);
 					const title = item?.title ?? taskId;
 					const description = item?.description ?? "(no description)";
 
@@ -453,11 +519,25 @@ Commands:
 						"info",
 					);
 
+					// Resume in a fresh session for implementing phase
 					if (state.phase === "implementing") {
+						const result = await ctx.newSession();
+						if (result.cancelled) {
+							// User cancelled new session; revert to paused
+							state.status = "paused";
+							saveState(ctx.cwd, state);
+							activeTaskId = undefined;
+							deactivateForgeTools();
+							updateUI(ctx);
+							ctx.ui.notify("New session cancelled. Forge remains paused.", "warning");
+							return;
+						}
 						pi.sendUserMessage(
 							buildImplementPrompt(state, title, description),
 						);
 					} else {
+						// Reapply reviewer model when resuming in reviewing phase
+						await applyReviewerModel(ctx, state);
 						pi.sendUserMessage(
 							buildReviewPrompt(state, title, description),
 						);
@@ -493,6 +573,13 @@ Commands:
 					const modelId = field.slice("reviewer model ".length).trim();
 					if (!modelId) {
 						ctx.ui.notify("Missing model ID.", "warning");
+						return;
+					}
+
+					// Validate model exists
+					const model = resolveModel(ctx, modelId);
+					if (!model) {
+						ctx.ui.notify(`Model "${modelId}" not found.`, "error");
 						return;
 					}
 
