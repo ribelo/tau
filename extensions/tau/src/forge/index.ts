@@ -76,6 +76,16 @@ export default function initForge(pi: ExtensionAPI): void {
 	/** The task ID of the currently active forge in this session, if any. */
 	let activeTaskId: string | undefined;
 
+	/** Resolve callback for the current waitForAgentEnd promise, if any. */
+	let agentEndResolve: (() => void) | undefined;
+
+	/** Wait for the next agent_end event. Set up BEFORE sending a message. */
+	function waitForAgentEnd(): Promise<void> {
+		return new Promise<void>((resolve) => {
+			agentEndResolve = resolve;
+		});
+	}
+
 	// ── Tool activation helpers ──────────────────────────────────────
 
 	function activateForgeTools(phase: "implementing" | "reviewing"): void {
@@ -173,11 +183,11 @@ export default function initForge(pi: ExtensionAPI): void {
 				activateForgeTools("implementing");
 				updateUI(ctx.cwd, ctx);
 
+				const agentDone = waitForAgentEnd();
 				pi.sendUserMessage(
 					buildImplementPrompt(state, title, description),
 				);
-
-				await ctx.waitForIdle();
+				await agentDone;
 
 				// Check what happened
 				const after = loadState(ctx.cwd, taskId);
@@ -218,11 +228,11 @@ export default function initForge(pi: ExtensionAPI): void {
 				activateForgeTools("reviewing");
 				updateUI(ctx.cwd, ctx);
 
+				const agentDone = waitForAgentEnd();
 				pi.sendUserMessage(
 					buildReviewPrompt(state, title, description),
 				);
-
-				await ctx.waitForIdle();
+				await agentDone;
 
 				// Check what happened
 				const after = loadState(ctx.cwd, taskId);
@@ -749,6 +759,15 @@ Commands:
 	});
 
 	// ── Event handlers ───────────────────────────────────────────────
+
+	// Resolve the forge loop's wait when the agent finishes
+	pi.on("agent_end", async (_event, _ctx) => {
+		if (agentEndResolve) {
+			const resolve = agentEndResolve;
+			agentEndResolve = undefined;
+			resolve();
+		}
+	});
 
 	// Inject phase-appropriate system prompt
 	pi.on("before_agent_start", async (event, ctx) => {
