@@ -162,7 +162,7 @@ export const startTau = (pi: ExtensionAPI) => {
 				initSkillManage(pi, runSkillManager);
 				initNudge(pi);
 				initRequestUserInput(pi);
-				initRalph(pi);
+				initRalph(pi, agentRuntimeBridge);
 				initForge(pi);
 			});
 
