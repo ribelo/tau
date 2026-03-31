@@ -165,15 +165,20 @@ export default function initForge(pi: ExtensionAPI): void {
 		ctx.ui.setWidget("forge", lines);
 	}
 
-	/** Apply reviewer model if configured. */
-	async function applyReviewerModel(
+	/** Apply reviewer model and thinking level if configured. */
+	async function applyReviewerConfig(
 		ctx: import("@mariozechner/pi-coding-agent").ExtensionContext,
 		state: ForgeState,
 	): Promise<void> {
-		if (!state.reviewer.model) return;
-		const reviewerModel = resolveModel(ctx, state.reviewer.model);
-		if (!reviewerModel) return;
-		await pi.setModel(reviewerModel);
+		if (state.reviewer.model) {
+			const reviewerModel = resolveModel(ctx, state.reviewer.model);
+			if (reviewerModel) {
+				await pi.setModel(reviewerModel);
+			}
+		}
+		if (state.reviewer.thinking) {
+			pi.setThinkingLevel(state.reviewer.thinking as import("@mariozechner/pi-ai").ThinkingLevel);
+		}
 	}
 
 	// ── Core loop ────────────────────────────────────────────────────
@@ -239,7 +244,7 @@ export default function initForge(pi: ExtensionAPI): void {
 			}
 
 			if (state.phase === "reviewing") {
-				await applyReviewerModel(ctx, state);
+				await applyReviewerConfig(ctx, state);
 				activateForgeTools("reviewing");
 				updateUI(ctx.cwd, ctx);
 
@@ -482,7 +487,7 @@ Commands:
   /forge stop                           Pause active forge (press ESC first if agent is running)
   /forge resume <task-id>               Resume a paused forge
   /forge status                         Show all forges
-  /forge set <task-id> reviewer model <id>  Set reviewer model
+  /forge set <task-id> <model> [<thinking>]  Set reviewer (thinking: minimal/low/medium/high/xhigh)
   /forge cancel <task-id>               Delete forge state`;
 
 	pi.registerCommand("forge", {
@@ -695,24 +700,32 @@ Commands:
 				}
 
 				case "set": {
+					// /forge set <task-id> <model> [<thinking>]
 					const taskId = rest[0];
-					const field = rest.slice(1).join(" ");
-					if (!taskId || !field.startsWith("reviewer model ")) {
+					const modelId = rest[1];
+					const thinking = rest[2];
+
+					const VALID_THINKING: ReadonlyArray<string> = ["minimal", "low", "medium", "high", "xhigh"];
+
+					if (!taskId || !modelId) {
 						ctx.ui.notify(
-							"Usage: /forge set <task-id> reviewer model <model-id>",
+							"Usage: /forge set <task-id> <model> [<thinking>]",
 							"warning",
 						);
-						return;
-					}
-					const modelId = field.slice("reviewer model ".length).trim();
-					if (!modelId) {
-						ctx.ui.notify("Missing model ID.", "warning");
 						return;
 					}
 
 					const model = resolveModel(ctx, modelId);
 					if (!model) {
 						ctx.ui.notify(`Model "${modelId}" not found.`, "error");
+						return;
+					}
+
+					if (thinking && !VALID_THINKING.includes(thinking)) {
+						ctx.ui.notify(
+							`Invalid thinking level "${thinking}". Valid: ${VALID_THINKING.join(", ")}`,
+							"error",
+						);
 						return;
 					}
 
@@ -733,10 +746,13 @@ Commands:
 						};
 					}
 
-					state.reviewer = { ...state.reviewer, model: modelId };
+					state.reviewer = { model: modelId, ...(thinking ? { thinking } : {}) };
 					saveState(ctx.cwd, state);
+
+					const parts = [`model=${modelId}`];
+					if (thinking) parts.push(`thinking=${thinking}`);
 					ctx.ui.notify(
-						`Forge ${taskId}: reviewer model set to ${modelId}`,
+						`Forge ${taskId}: reviewer ${parts.join(", ")}`,
 						"info",
 					);
 					return;

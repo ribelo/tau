@@ -10,7 +10,7 @@ export interface ForgeState {
 	phase: ForgePhase;
 	cycle: number;
 	status: ForgeStatus;
-	reviewer: { model?: string };
+	reviewer: { model?: string; thinking?: string };
 	lastFeedback?: string;
 	readonly startedAt: string;
 	completedAt?: string;
