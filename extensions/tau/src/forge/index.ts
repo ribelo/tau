@@ -410,7 +410,7 @@ Commands:
 							.filter((i) => i.status !== "closed" && i.status !== "tombstone")
 							.filter((i) => i.id.startsWith(partial))
 							.slice(0, 20)
-							.map((i) => ({ label: i.id, value: i.id, description: i.title }));
+							.map((i) => ({ label: i.id, value: `${sub} ${i.id}`, description: i.title }));
 					} catch {
 						return null;
 					}
@@ -420,14 +420,14 @@ Commands:
 					const forges = listForges(process.cwd()).filter((s) => s.status === "paused");
 					return forges
 						.filter((s) => s.taskId.startsWith(partial))
-						.map((s) => ({ label: s.taskId, value: s.taskId, description: `paused, cycle ${s.cycle}` }));
+						.map((s) => ({ label: s.taskId, value: `${sub} ${s.taskId}`, description: `paused, cycle ${s.cycle}` }));
 				}
 				if (sub === "set" || sub === "cancel") {
 					// Suggest existing forges first, then open backlog items for set
 					const forges = listForges(process.cwd());
 					const forgeItems = forges
 						.filter((s) => s.taskId.startsWith(partial))
-						.map((s) => ({ label: s.taskId, value: s.taskId, description: `${s.status}, cycle ${s.cycle}` }));
+						.map((s) => ({ label: s.taskId, value: `${sub} ${s.taskId}`, description: `${s.status}, cycle ${s.cycle}` }));
 					if (forgeItems.length > 0) return forgeItems;
 					// For set: fall through to backlog items so user can pre-configure
 					if (sub === "set") {
@@ -439,7 +439,7 @@ Commands:
 								.filter((i) => i.status !== "closed" && i.status !== "tombstone")
 								.filter((i) => i.id.startsWith(partial))
 								.slice(0, 20)
-								.map((i) => ({ label: i.id, value: i.id, description: i.title }));
+								.map((i) => ({ label: i.id, value: `${sub} ${i.id}`, description: i.title }));
 						} catch {
 							return null;
 						}
