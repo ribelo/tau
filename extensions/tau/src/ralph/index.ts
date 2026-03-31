@@ -1,6 +1,11 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import type {
+	AgentEndEvent,
+	ExtensionAPI,
+	ExtensionCommandContext,
+	ExtensionContext,
+} from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { Text } from "@mariozechner/pi-tui";
 import { Effect, Option } from "effect";
@@ -12,6 +17,7 @@ const COMPLETE_MARKER = "<promise>COMPLETE</promise>";
 
 // Runtime bridge for subagent checks (set during init)
 let agentRuntime: AgentRuntimeBridgeService | undefined;
+let agentEndResolve: ((event: AgentEndEvent) => void) | undefined;
 
 /** Check if any subagent is active (pending or running). */
 async function hasActiveSubagents(): Promise<boolean> {
@@ -86,7 +92,117 @@ const STATUS_ICONS: Record<LoopStatus, string> = {
 };
 
 function sanitize(name: string): string {
-	return name.replace(/[^a-zA0-9_-]/g, "_").replace(/_+/g, "_");
+	return name.replace(/[^a-zA-Z0-9_-]/g, "_").replace(/_+/g, "_");
+}
+
+function waitForAgentEnd(): Promise<AgentEndEvent> {
+	return new Promise<AgentEndEvent>((resolve) => {
+		agentEndResolve = resolve;
+	});
+}
+
+function extractLastAssistantText(event: AgentEndEvent): string {
+	const lastAssistant = [...event.messages]
+		.reverse()
+		.find((message) => message.role === "assistant");
+	if (!lastAssistant || !Array.isArray(lastAssistant.content)) return "";
+	return lastAssistant.content
+		.filter((content): content is { type: "text"; text: string } => content.type === "text")
+		.map((content) => content.text)
+		.join("\n");
+}
+
+function decodeStringOption(value: unknown): Option.Option<string> {
+	if (typeof value === "string") return Option.some(value);
+	if (typeof value !== "object" || value === null || !("_tag" in value)) {
+		return Option.none();
+	}
+	if (value._tag === "Some" && "value" in value && typeof value.value === "string") {
+		return Option.some(value.value);
+	}
+	if (value._tag === "None") return Option.none();
+	return Option.none();
+}
+
+function normalizeLoopState(raw: unknown): LoopState | undefined {
+	if (typeof raw !== "object" || raw === null) return undefined;
+	const record = raw as Record<string, unknown>;
+	const name = record["name"];
+	const taskFile = record["taskFile"];
+	const iteration = record["iteration"];
+	const maxIterations = record["maxIterations"];
+	const itemsPerIteration = record["itemsPerIteration"];
+	const reflectEvery = record["reflectEvery"];
+	const reflectInstructions = record["reflectInstructions"];
+	const startedAt = record["startedAt"];
+	const lastReflectionAt = record["lastReflectionAt"];
+	if (
+		typeof name !== "string" ||
+		typeof taskFile !== "string" ||
+		typeof iteration !== "number" ||
+		typeof maxIterations !== "number" ||
+		typeof itemsPerIteration !== "number" ||
+		typeof reflectEvery !== "number" ||
+		typeof reflectInstructions !== "string" ||
+		typeof startedAt !== "string" ||
+		typeof lastReflectionAt !== "number"
+	) {
+		return undefined;
+	}
+	const statusValue = record["status"];
+	const status: LoopStatus =
+		statusValue === "active" || statusValue === "paused" || statusValue === "completed"
+			? statusValue
+			: record["active"] === true
+				? "active"
+				: "paused";
+	return {
+		name,
+		taskFile,
+		iteration,
+		maxIterations,
+		itemsPerIteration,
+		reflectEvery,
+		reflectInstructions,
+		status,
+		startedAt,
+		completedAt: decodeStringOption(record["completedAt"]),
+		lastReflectionAt,
+		controllerSessionFile: decodeStringOption(record["controllerSessionFile"]),
+		activeIterationSessionFile: decodeStringOption(record["activeIterationSessionFile"]),
+		advanceRequestedAt: decodeStringOption(record["advanceRequestedAt"]),
+		awaitingFinalize: record["awaitingFinalize"] === true,
+	};
+}
+
+function optionContains(option: Option.Option<string>, value: string | undefined): boolean {
+	if (value === undefined) return false;
+	return Option.match(option, {
+		onNone: () => false,
+		onSome: (optionValue) => optionValue === value,
+	});
+}
+
+function loopOwnsSessionFile(loop: LoopState, sessionFile: string | undefined): boolean {
+	return (
+		optionContains(loop.controllerSessionFile, sessionFile) ||
+		optionContains(loop.activeIterationSessionFile, sessionFile)
+	);
+}
+
+function findLoopBySessionFile(cwd: string, sessionFile: string | undefined): LoopState | undefined {
+	if (sessionFile === undefined) return undefined;
+	return listLoops(cwd).find(
+		(loop) => loop.status === "active" && loopOwnsSessionFile(loop, sessionFile),
+	);
+}
+
+function sessionFileFromContext(
+	ctx: Pick<ExtensionContext, "sessionManager">,
+): string | undefined {
+	return typeof ctx.sessionManager.getSessionFile === "function"
+		? ctx.sessionManager.getSessionFile()
+		: undefined;
 }
 
 function ensureDir(filePath: string): void {
@@ -137,11 +253,7 @@ function getPath(cwd: string, name: string, ext: string, archived = false): stri
 function loadState(cwd: string, name: string, archived = false): LoopState | undefined {
 	const content = tryRead(getPath(cwd, name, ".state.json", archived));
 	if (!content) return undefined;
-	const raw = JSON.parse(content) as Record<string, unknown>;
-	if (typeof raw["status"] !== "string") {
-		raw["status"] = raw["active"] === true ? "active" : "paused";
-	}
-	return raw as unknown as LoopState;
+	return normalizeLoopState(JSON.parse(content));
 }
 
 function saveState(cwd: string, state: LoopState, archived = false): void {
@@ -159,11 +271,7 @@ function listLoops(cwd: string, archived = false): LoopState[] {
 		.map((f) => {
 			const content = tryRead(path.join(dir, f));
 			if (!content) return undefined;
-			const raw = JSON.parse(content) as Record<string, unknown>;
-			if (typeof raw["status"] !== "string") {
-				raw["status"] = raw["active"] === true ? "active" : "paused";
-			}
-			return raw as unknown as LoopState;
+			return normalizeLoopState(JSON.parse(content));
 		})
 		.filter((s): s is LoopState => s !== undefined);
 }
@@ -172,146 +280,6 @@ function formatLoop(l: LoopState): string {
 	const status = `${STATUS_ICONS[l.status]} ${l.status}`;
 	const iter = l.maxIterations > 0 ? `${l.iteration}/${l.maxIterations}` : `${l.iteration}`;
 	return `${l.name}: ${status} (iteration ${iter})`;
-}
-
-/**
- * Run the Ralph controller loop iteration.
- * This function runs in the controller session and manages creating fresh iteration sessions.
- */
-async function runRalphLoop(
-	pi: ExtensionAPI,
-	ctx: ExtensionCommandContext,
-	loopName: string,
-): Promise<void> {
-	const state = loadState(ctx.cwd, loopName);
-	if (!state || state.status !== "active") {
-		ctx.ui.notify(`Loop "${loopName}" is not active.`, "warning");
-		return;
-	}
-
-	// Check 1: Verify no active subagents before proceeding
-	if (await hasActiveSubagents()) {
-		ctx.ui.notify(
-			"Ralph paused: subagents are still active. Complete or close them before continuing.",
-			"warning",
-		);
-		state.awaitingFinalize = true;
-		saveState(ctx.cwd, state);
-		return;
-	}
-
-	// Check max iterations
-	if (state.maxIterations > 0 && state.iteration >= state.maxIterations) {
-		state.status = "completed";
-		state.completedAt = Option.some(new Date().toISOString());
-		saveState(ctx.cwd, state);
-		ctx.ui.notify(
-			`Loop "${loopName}" reached max iterations (${state.maxIterations}).`,
-			"info",
-		);
-		return;
-	}
-
-	// Switch to controller session if needed
-	const controllerSession = Option.getOrUndefined(state.controllerSessionFile);
-	if (controllerSession && ctx.sessionManager.getSessionFile() !== controllerSession) {
-		const switched = await ctx.switchSession(controllerSession);
-		if (switched.cancelled) {
-			ctx.ui.notify("Could not switch to controller session.", "error");
-			return;
-		}
-	}
-
-	// Increment iteration and create fresh child session
-	const nextIteration = state.iteration + 1;
-
-	// Check 2: Double-check subagents are still not active before creating session
-	if (await hasActiveSubagents()) {
-		ctx.ui.notify(
-			"Ralph paused: subagents became active. Complete or close them before continuing.",
-			"warning",
-		);
-		state.awaitingFinalize = true;
-		saveState(ctx.cwd, state);
-		return;
-	}
-
-	const child = await ctx.newSession(
-		controllerSession ? { parentSession: controllerSession } : {},
-	);
-	if (child.cancelled) {
-		ctx.ui.notify("Creating iteration session was cancelled.", "warning");
-		return;
-	}
-
-	// Update state with new iteration
-	state.iteration = nextIteration;
-	const sessionFile = ctx.sessionManager.getSessionFile();
-	state.activeIterationSessionFile = sessionFile ? Option.some(sessionFile) : Option.none();
-	state.advanceRequestedAt = Option.none();
-	state.awaitingFinalize = false;
-	saveState(ctx.cwd, state);
-
-	// Send iteration prompt
-	const content = tryRead(path.resolve(ctx.cwd, state.taskFile));
-	if (!content) {
-		ctx.ui.notify(`Could not read task file: ${state.taskFile}`, "error");
-		return;
-	}
-
-	const needsReflection =
-		state.reflectEvery > 0 &&
-		state.iteration > 1 &&
-		(state.iteration - 1) % state.reflectEvery === 0;
-
-	pi.sendUserMessage(buildPrompt(state, content, needsReflection), {
-		deliverAs: "followUp",
-	});
-}
-
-/**
- * Finalize a Ralph iteration after ralph_done is called.
- * Called from agent_end event handler to process the completion.
- * This version works with ExtensionContext (from agent_end) which has fewer methods
- * than ExtensionCommandContext. It updates state but doesn't create new sessions.
- */
-async function finalizeRalphIteration(
-	pi: ExtensionAPI,
-	ctx: { cwd: string; ui: { notify: (message: string, level: "info" | "warning" | "error") => void }; hasUI: boolean },
-	loopName: string,
-	didComplete: boolean,
-): Promise<boolean> {
-	const state = loadState(ctx.cwd, loopName);
-	if (!state || state.status !== "active") return false;
-
-	if (didComplete) {
-		state.status = "completed";
-		state.completedAt = Option.some(new Date().toISOString());
-		saveState(ctx.cwd, state);
-		pi.sendUserMessage(
-			`───────────────────────────────────────────────────────────────────────\n✅ RALPH LOOP COMPLETE: ${state.name} | ${state.iteration} iterations\n───────────────────────────────────────────────────────────────────────`,
-		);
-		return false; // Loop complete, don't continue
-	}
-
-	// Check for active subagents before allowing continuation
-	if (await hasActiveSubagents()) {
-		state.awaitingFinalize = true;
-		saveState(ctx.cwd, state);
-		if (ctx.hasUI) {
-			ctx.ui.notify(
-				"Ralph iteration recorded. Run /ralph resume to continue after subagents complete.",
-				"info",
-			);
-		}
-		return false; // Blocked by subagents
-	}
-
-	// Ready to continue - but agent_end can't create sessions
-	// Signal that the controller should advance
-	state.awaitingFinalize = true;
-	saveState(ctx.cwd, state);
-	return true; // Ready to continue
 }
 
 function buildPrompt(state: LoopState, taskContent: string, isReflection: boolean): string {
@@ -412,6 +380,12 @@ Examples:
   /ralph start my-feature
   /ralph start review --items-per-iteration 5 --reflect-every 10`;
 
+export const __testing = {
+	sanitize,
+	normalizeLoopState,
+	loopOwnsSessionFile,
+};
+
 export default function initRalph(
 	pi: ExtensionAPI,
 	runtime?: AgentRuntimeBridgeService,
@@ -419,15 +393,28 @@ export default function initRalph(
 	agentRuntime = runtime;
 	let currentLoop: string | undefined;
 
-	function updateUI(cwd: string, ctx: { hasUI: boolean; ui: import("@mariozechner/pi-coding-agent").ExtensionUIContext }): void {
-		if (!ctx.hasUI) return;
+	function syncCurrentLoopFromSession(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): void {
+		currentLoop = findLoopBySessionFile(ctx.cwd, sessionFileFromContext(ctx))?.name;
+	}
 
-		const state = currentLoop ? loadState(cwd, currentLoop) : undefined;
+	function updateUI(cwd: string, ctx: Pick<ExtensionContext, "hasUI" | "ui" | "sessionManager">): void {
+		if (!ctx.hasUI) return;
+		if (
+			typeof ctx.ui.setStatus !== "function" ||
+			typeof ctx.ui.setWidget !== "function"
+		) {
+			return;
+		}
+
+		const state =
+			(currentLoop ? loadState(cwd, currentLoop) : undefined) ??
+			findLoopBySessionFile(cwd, sessionFileFromContext(ctx));
 		if (!state) {
 			ctx.ui.setStatus("ralph", undefined);
 			ctx.ui.setWidget("ralph", undefined);
 			return;
 		}
+		currentLoop = state.name;
 
 		const { theme } = ctx.ui;
 		const maxStr = state.maxIterations > 0 ? `/${state.maxIterations}` : "";
@@ -457,7 +444,7 @@ export default function initRalph(
 	function pauseLoop(
 		cwd: string,
 		state: LoopState,
-		ctx: { hasUI: boolean; ui: import("@mariozechner/pi-coding-agent").ExtensionUIContext },
+		ctx: Pick<ExtensionContext, "hasUI" | "ui" | "sessionManager">,
 		message?: string,
 	): void {
 		state.status = "paused";
@@ -470,15 +457,182 @@ export default function initRalph(
 	function stopLoop(
 		cwd: string,
 		state: LoopState,
-		ctx: { hasUI: boolean; ui: import("@mariozechner/pi-coding-agent").ExtensionUIContext },
+		ctx: Pick<ExtensionContext, "hasUI" | "ui" | "sessionManager">,
 		message?: string,
 	): void {
 		state.status = "completed";
 		state.completedAt = Option.some(new Date().toISOString());
+		state.awaitingFinalize = false;
+		state.advanceRequestedAt = Option.none();
 		saveState(cwd, state);
 		currentLoop = undefined;
 		updateUI(cwd, ctx);
 		if (message && ctx.hasUI) ctx.ui.notify(message, "info");
+	}
+
+	function completeLoop(
+		cwd: string,
+		state: LoopState,
+		ctx: Pick<ExtensionContext, "hasUI" | "ui" | "sessionManager">,
+		banner: string,
+	): void {
+		state.status = "completed";
+		state.completedAt = Option.some(new Date().toISOString());
+		state.awaitingFinalize = false;
+		state.advanceRequestedAt = Option.none();
+		saveState(cwd, state);
+		currentLoop = undefined;
+		updateUI(cwd, ctx);
+		pi.sendUserMessage(banner);
+	}
+
+	async function finalizePendingIteration(
+		ctx: ExtensionCommandContext,
+		loopName: string,
+	): Promise<"continue" | "blocked" | "stopped"> {
+		const state = loadState(ctx.cwd, loopName);
+		if (!state || state.status !== "active") return "stopped";
+		if (!state.awaitingFinalize) return "continue";
+		if (await hasActiveSubagents()) {
+			state.activeIterationSessionFile = Option.none();
+			pauseLoop(
+				ctx.cwd,
+				state,
+				ctx,
+				"Ralph paused: subagents are still active. Complete or close them, then run /ralph resume to continue.",
+			);
+			return "blocked";
+		}
+		state.awaitingFinalize = false;
+		state.advanceRequestedAt = Option.none();
+		saveState(ctx.cwd, state);
+		updateUI(ctx.cwd, ctx);
+		return "continue";
+	}
+
+	async function runSingleIteration(
+		ctx: ExtensionCommandContext,
+		loopName: string,
+	): Promise<"continue" | "blocked" | "stopped"> {
+		const state = loadState(ctx.cwd, loopName);
+		if (!state || state.status !== "active") return "stopped";
+
+		if (state.maxIterations > 0 && state.iteration >= state.maxIterations) {
+			completeLoop(
+				ctx.cwd,
+				state,
+				ctx,
+				`───────────────────────────────────────────────────────────────────────\n⚠️ RALPH LOOP STOPPED: ${state.name} | Max iterations (${state.maxIterations}) reached\n───────────────────────────────────────────────────────────────────────`,
+			);
+			return "stopped";
+		}
+
+		const controllerSession = Option.getOrUndefined(state.controllerSessionFile);
+		if (controllerSession === undefined) {
+			pauseLoop(ctx.cwd, state, ctx, "Ralph loop has no controller session file. Loop paused.");
+			return "stopped";
+		}
+
+		if (ctx.sessionManager.getSessionFile() !== controllerSession) {
+			const switched = await ctx.switchSession(controllerSession);
+			if (switched.cancelled) {
+				pauseLoop(ctx.cwd, state, ctx, "Could not switch to Ralph controller session.");
+				return "stopped";
+			}
+		}
+
+		if (await hasActiveSubagents()) {
+			state.awaitingFinalize = true;
+			state.activeIterationSessionFile = Option.none();
+			pauseLoop(
+				ctx.cwd,
+				state,
+				ctx,
+				"Ralph paused: subagents became active. Complete or close them, then run /ralph resume to continue.",
+			);
+			return "blocked";
+		}
+
+		const child = await ctx.newSession({ parentSession: controllerSession });
+		if (child.cancelled) {
+			pauseLoop(ctx.cwd, state, ctx, "Creating Ralph iteration session was cancelled.");
+			return "stopped";
+		}
+
+		const afterNewSession = loadState(ctx.cwd, loopName);
+		if (!afterNewSession || afterNewSession.status !== "active") return "stopped";
+
+		afterNewSession.iteration += 1;
+		const iterationSessionFile = ctx.sessionManager.getSessionFile();
+		afterNewSession.activeIterationSessionFile =
+			iterationSessionFile === undefined ? Option.none() : Option.some(iterationSessionFile);
+		afterNewSession.awaitingFinalize = false;
+		afterNewSession.advanceRequestedAt = Option.none();
+		saveState(ctx.cwd, afterNewSession);
+		currentLoop = loopName;
+		updateUI(ctx.cwd, ctx);
+
+		const content = tryRead(path.resolve(ctx.cwd, afterNewSession.taskFile));
+		if (!content) {
+			pauseLoop(
+				ctx.cwd,
+				afterNewSession,
+				ctx,
+				`Could not read Ralph task file: ${afterNewSession.taskFile}`,
+			);
+			return "stopped";
+		}
+
+		const needsReflection =
+			afterNewSession.reflectEvery > 0 &&
+			afterNewSession.iteration > 1 &&
+			(afterNewSession.iteration - 1) % afterNewSession.reflectEvery === 0;
+
+		const agentDone = waitForAgentEnd();
+		pi.sendUserMessage(buildPrompt(afterNewSession, content, needsReflection), {
+			deliverAs: "followUp",
+		});
+		const event = await agentDone;
+		const afterTurn = loadState(ctx.cwd, loopName);
+		if (!afterTurn || afterTurn.status !== "active") return "stopped";
+
+		const lastAssistantText = extractLastAssistantText(event);
+		if (lastAssistantText.includes(COMPLETE_MARKER)) {
+			completeLoop(
+				ctx.cwd,
+				afterTurn,
+				ctx,
+				`───────────────────────────────────────────────────────────────────────\n✅ RALPH LOOP COMPLETE: ${afterTurn.name} | ${afterTurn.iteration} iterations\n───────────────────────────────────────────────────────────────────────`,
+			);
+			return "stopped";
+		}
+
+		if (!afterTurn.awaitingFinalize) {
+			pauseLoop(
+				ctx.cwd,
+				afterTurn,
+				ctx,
+				`Iteration ${afterTurn.iteration} ended without ralph_done. Ralph paused. Use /ralph resume ${loopName} to continue.`,
+			);
+			return "stopped";
+		}
+
+		return "continue";
+	}
+
+	async function runRalphLoop(ctx: ExtensionCommandContext, loopName: string): Promise<void> {
+		while (true) {
+			const state = loadState(ctx.cwd, loopName);
+			if (!state || state.status !== "active") return;
+			currentLoop = loopName;
+			updateUI(ctx.cwd, ctx);
+
+			const finalizeResult = await finalizePendingIteration(ctx, loopName);
+			if (finalizeResult !== "continue") return;
+
+			const iterationResult = await runSingleIteration(ctx, loopName);
+			if (iterationResult !== "continue") return;
+		}
 	}
 
 	// --- Commands ---
@@ -559,7 +713,7 @@ export default function initRalph(
 					ctx.ui.notify(`Started loop "${loopName}" (max ${state.maxIterations} iterations)`, "info");
 
 					// Start the first iteration
-					await runRalphLoop(pi, ctx, loopName);
+					await runRalphLoop(ctx, loopName);
 					return;
 				}
 
@@ -617,7 +771,6 @@ export default function initRalph(
 
 					// Resume the loop by running the controller
 					state.status = "active";
-					state.awaitingFinalize = false;
 					saveState(ctx.cwd, state);
 					currentLoop = loopName;
 					updateUI(ctx.cwd, ctx);
@@ -625,7 +778,7 @@ export default function initRalph(
 					ctx.ui.notify(`Resuming: ${loopName}`, "info");
 
 					// Continue the loop
-					await runRalphLoop(pi, ctx, loopName);
+					await runRalphLoop(ctx, loopName);
 					return;
 				}
 
@@ -842,12 +995,12 @@ export default function initRalph(
 		name: "ralph_start",
 		label: "Start Ralph Loop",
 		description:
-			"Start a long-running development loop. Use for complex multi-iteration tasks.",
+			"Create a Ralph task file for a long-running development loop. Fresh-session Ralph loops are started by the /ralph command.",
 		promptSnippet:
-			"Start a persistent multi-iteration development loop with pacing and reflection controls.",
+			"Prepare a persistent multi-iteration Ralph loop task. The fresh-session controller is started by /ralph start.",
 		promptGuidelines: [
 			"Use this tool when the user explicitly wants an iterative loop, autonomous repeated passes, or paced multi-step execution.",
-			"After starting a loop, continue each finished iteration with ralph_done unless the completion marker has already been emitted.",
+			"This tool prepares the Ralph task file; the fresh-session controller is command-owned and starts via /ralph start.",
 		],
 		parameters: Type.Object({
 			name: Type.String({ description: "Loop name (e.g., 'refactor-auth')" }),
@@ -881,58 +1034,19 @@ export default function initRalph(
 				};
 			}
 
-			// Store controller session
-			const controllerSessionFile = ctx.sessionManager.getSessionFile();
-			if (!controllerSessionFile) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: "Loop requires a persisted session file (interactive session).",
-						},
-					],
-					details: {},
-					isError: true,
-				};
-			}
-
 			const fullPath = path.resolve(ctx.cwd, taskFile);
 			ensureDir(fullPath);
 			fs.writeFileSync(fullPath, params.taskContent, "utf-8");
-
-			const state: LoopState = {
-				name: loopName,
-				taskFile,
-				iteration: 0, // Will be incremented by runRalphLoop
-				maxIterations: params.maxIterations ?? 50,
-				itemsPerIteration: params.itemsPerIteration ?? 0,
-				reflectEvery: params.reflectEvery ?? 0,
-				reflectInstructions: DEFAULT_REFLECT_INSTRUCTIONS,
-				status: "active",
-				startedAt: new Date().toISOString(),
-				lastReflectionAt: 0,
-				completedAt: Option.none(),
-				controllerSessionFile: Option.some(controllerSessionFile),
-				activeIterationSessionFile: Option.none(),
-				advanceRequestedAt: Option.none(),
-				awaitingFinalize: false,
-			};
-
-			saveState(ctx.cwd, state);
-			currentLoop = loopName;
-			updateUI(ctx.cwd, ctx);
-
-			// Start the first iteration
-			await runRalphLoop(pi, ctx, loopName);
 
 			return {
 				content: [
 					{
 						type: "text",
-						text: `Started loop "${loopName}" (max ${state.maxIterations} iterations).`,
+						text: `Created Ralph task file at ${taskFile}. Fresh-session Ralph is command-owned; start it with /ralph start ${loopName} --max-iterations ${params.maxIterations ?? 50}${params.itemsPerIteration !== undefined ? ` --items-per-iteration ${params.itemsPerIteration}` : ""}${params.reflectEvery !== undefined ? ` --reflect-every ${params.reflectEvery}` : ""}.`,
 					},
 				],
-				details: {},
+				details: { taskFile, loopName },
+				isError: true,
 			};
 		},
 
@@ -966,14 +1080,17 @@ export default function initRalph(
 		parameters: Type.Object({}),
 
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
-			if (!currentLoop) {
+			const scopedLoop =
+				findLoopBySessionFile(ctx.cwd, ctx.sessionManager.getSessionFile())?.name ??
+				currentLoop;
+			if (!scopedLoop) {
 				return {
 					content: [{ type: "text", text: "No active Ralph loop." }],
 					details: {},
 				};
 			}
 
-			const state = loadState(ctx.cwd, currentLoop);
+			const state = loadState(ctx.cwd, scopedLoop);
 			if (!state || state.status !== "active") {
 				return {
 					content: [{ type: "text", text: "Ralph loop is not active." }],
@@ -985,12 +1102,16 @@ export default function initRalph(
 			if (await hasActiveSubagents()) {
 				state.awaitingFinalize = true;
 				state.advanceRequestedAt = Option.some(new Date().toISOString());
+				state.activeIterationSessionFile = Option.none();
+				state.status = "paused";
 				saveState(ctx.cwd, state);
+				currentLoop = undefined;
+				updateUI(ctx.cwd, ctx);
 				return {
 					content: [
 						{
 							type: "text",
-							text: "Ralph iteration recorded. Waiting for subagents to complete before advancing. Close active subagents and the loop will continue automatically.",
+							text: "Ralph iteration recorded. Subagents are still active, so advancement is blocked until they finish. Run /ralph resume when they are done.",
 						},
 					],
 					details: {},
@@ -1001,13 +1122,13 @@ export default function initRalph(
 			state.advanceRequestedAt = Option.some(new Date().toISOString());
 			state.awaitingFinalize = true;
 			saveState(ctx.cwd, state);
+			currentLoop = scopedLoop;
 
-			// The actual advancement happens in finalizeRalphIteration via agent_end event
 			return {
 				content: [
 					{
 						type: "text",
-						text: `Iteration ${state.iteration} complete. Finalizing...`,
+						text: `Iteration ${state.iteration} complete. Finalize recorded.`,
 					},
 				],
 				details: {},
@@ -1032,9 +1153,10 @@ export default function initRalph(
 	// --- Event handlers ---
 
 	pi.on("before_agent_start", async (event, ctx) => {
-		if (!currentLoop) return;
-		const state = loadState(ctx.cwd, currentLoop);
+		const sessionFile = sessionFileFromContext(ctx);
+		const state = findLoopBySessionFile(ctx.cwd, sessionFile);
 		if (!state || state.status !== "active") return;
+		if (!optionContains(state.activeIterationSessionFile, sessionFile)) return;
 
 		const iterStr = `${state.iteration}${state.maxIterations > 0 ? `/${state.maxIterations}` : ""}`;
 
@@ -1054,39 +1176,35 @@ export default function initRalph(
 	});
 
 	pi.on("agent_end", async (event, ctx) => {
-		if (!currentLoop) return;
-		const state = loadState(ctx.cwd, currentLoop);
-		if (!state || state.status !== "active") return;
-
-		const lastAssistant = [...event.messages]
-			.reverse()
-			.find((m) => m.role === "assistant");
-		const text =
-			lastAssistant && Array.isArray(lastAssistant.content)
-				? lastAssistant.content
-						.filter(
-							(c): c is { type: "text"; text: string } => c.type === "text",
-						)
-						.map((c) => c.text)
-						.join("\n")
-					: "";
-
-		const didComplete = text.includes(COMPLETE_MARKER);
-
-		// If ralph_done was called or completion marker was emitted, finalize
-		if (state.awaitingFinalize || didComplete) {
-			const shouldContinue = await finalizeRalphIteration(pi, ctx, currentLoop, didComplete);
-			// If ready to continue and not blocked by subagents, prompt user to resume
-			if (shouldContinue && ctx.hasUI) {
-				ctx.ui.notify(
-					`Iteration ${state.iteration} complete. Run /ralph resume ${currentLoop} to continue.`,
-					"info",
-				);
-			}
+		const resolve = agentEndResolve;
+		agentEndResolve = undefined;
+		if (resolve) {
+			resolve(event);
+			return;
 		}
+
+		const sessionFile = sessionFileFromContext(ctx);
+		const state = findLoopBySessionFile(ctx.cwd, sessionFile);
+		if (!state || state.status !== "active") return;
+		if (!optionContains(state.activeIterationSessionFile, sessionFile)) return;
+
+		const text = extractLastAssistantText(event);
+		if (!text.includes(COMPLETE_MARKER)) return;
+
+		state.status = "completed";
+		state.completedAt = Option.some(new Date().toISOString());
+		state.awaitingFinalize = false;
+		state.advanceRequestedAt = Option.none();
+		saveState(ctx.cwd, state);
+		if (currentLoop === state.name) currentLoop = undefined;
+		updateUI(ctx.cwd, ctx);
+		pi.sendUserMessage(
+			`───────────────────────────────────────────────────────────────────────\n✅ RALPH LOOP COMPLETE: ${state.name} | ${state.iteration} iterations\n───────────────────────────────────────────────────────────────────────`,
+		);
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		syncCurrentLoopFromSession(ctx);
 		const active = listLoops(ctx.cwd).filter((l) => l.status === "active");
 		if (active.length > 0 && ctx.hasUI) {
 			const lines = active.map(
@@ -1098,13 +1216,17 @@ export default function initRalph(
 				"info",
 			);
 		}
-		if (currentLoop) updateUI(ctx.cwd, ctx);
+		updateUI(ctx.cwd, ctx);
+	});
+
+	pi.on("session_switch", async (_event, ctx) => {
+		syncCurrentLoopFromSession(ctx);
+		updateUI(ctx.cwd, ctx);
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
-		if (currentLoop) {
-			const state = loadState(ctx.cwd, currentLoop);
-			if (state) saveState(ctx.cwd, state);
-		}
+		const scoped = findLoopBySessionFile(ctx.cwd, sessionFileFromContext(ctx));
+		const state = scoped ?? (currentLoop ? loadState(ctx.cwd, currentLoop) : undefined);
+		if (state) saveState(ctx.cwd, state);
 	});
 }
