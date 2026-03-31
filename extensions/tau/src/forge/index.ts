@@ -88,6 +88,8 @@ export default function initForge(pi: ExtensionAPI): void {
 
 	// ── Tool activation helpers ──────────────────────────────────────
 
+	const REVIEW_BLOCKED_TOOLS = ["edit", "write", "git_commit_with_user_approval"];
+
 	function activateForgeTools(phase: "implementing" | "reviewing"): void {
 		const current = pi.getActiveTools();
 		const without = current.filter(
@@ -96,7 +98,8 @@ export default function initForge(pi: ExtensionAPI): void {
 		if (phase === "implementing") {
 			pi.setActiveTools([...without, TOOL_FORGE_DONE]);
 		} else {
-			pi.setActiveTools([...without, TOOL_FORGE_REVIEW]);
+			const reviewTools = without.filter((t) => !REVIEW_BLOCKED_TOOLS.includes(t));
+			pi.setActiveTools([...reviewTools, TOOL_FORGE_REVIEW]);
 		}
 	}
 
