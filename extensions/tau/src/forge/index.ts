@@ -76,12 +76,6 @@ export default function initForge(pi: ExtensionAPI): void {
 	/** The task ID of the currently active forge in this session, if any. */
 	let activeTaskId: string | undefined;
 
-	/** Captured newSession from command context for automatic session transitions. */
-	let capturedNewSession: ExtensionCommandContext["newSession"] | undefined;
-
-	/** Set after forge_done / forge_review(reject). Cleared by turn_end handler. */
-	let pendingNewSession = false;
-
 	// ── Tool activation helpers ──────────────────────────────────────
 
 	function activateForgeTools(phase: "implementing" | "reviewing"): void {
@@ -108,6 +102,7 @@ export default function initForge(pi: ExtensionAPI): void {
 	// ── UI helpers ───────────────────────────────────────────────────
 
 	function updateUI(
+		cwd: string,
 		ctx: { hasUI: boolean; ui: import("@mariozechner/pi-coding-agent").ExtensionUIContext },
 	): void {
 		if (!ctx.hasUI) return;
@@ -118,7 +113,7 @@ export default function initForge(pi: ExtensionAPI): void {
 			return;
 		}
 
-		const state = loadState(process.cwd(), activeTaskId);
+		const state = loadState(cwd, activeTaskId);
 		if (!state || state.status !== "active") {
 			ctx.ui.setStatus("forge", undefined);
 			ctx.ui.setWidget("forge", undefined);
@@ -156,18 +151,143 @@ export default function initForge(pi: ExtensionAPI): void {
 		await pi.setModel(reviewerModel);
 	}
 
+	// ── Core loop ────────────────────────────────────────────────────
+
+	/**
+	 * Run the forge implement-review loop. Called from /forge start and /forge resume.
+	 * The command handler drives the loop: send prompt -> waitForIdle -> check state -> newSession -> repeat.
+	 */
+	async function runForgeLoop(
+		ctx: ExtensionCommandContext,
+		taskId: string,
+	): Promise<void> {
+		while (true) {
+			const state = loadState(ctx.cwd, taskId);
+			if (!state || state.status !== "active") break;
+
+			const item = await readBacklogItem(ctx.cwd, taskId);
+			const title = item?.title ?? taskId;
+			const description = item?.description ?? "(no description)";
+
+			if (state.phase === "implementing") {
+				activateForgeTools("implementing");
+				updateUI(ctx.cwd, ctx);
+
+				pi.sendUserMessage(
+					buildImplementPrompt(state, title, description),
+				);
+
+				await ctx.waitForIdle();
+
+				// Check what happened
+				const after = loadState(ctx.cwd, taskId);
+				if (!after || after.status !== "active") break;
+
+				if (after.phase !== "reviewing") {
+					// Agent finished without calling forge_done -- pause
+					after.status = "paused";
+					saveState(ctx.cwd, after);
+					activeTaskId = undefined;
+					deactivateForgeTools();
+					updateUI(ctx.cwd, ctx);
+					ctx.ui.notify(
+						"Implementation ended without forge_done. Forge paused. Use /forge resume to continue.",
+						"warning",
+					);
+					break;
+				}
+
+				// Transition to review: fresh session
+				const result = await ctx.newSession();
+				if (result.cancelled) {
+					after.status = "paused";
+					saveState(ctx.cwd, after);
+					activeTaskId = undefined;
+					deactivateForgeTools();
+					updateUI(ctx.cwd, ctx);
+					ctx.ui.notify("Session cancelled. Forge paused.", "warning");
+					break;
+				}
+
+				// Loop continues -- next iteration picks up reviewing phase
+				continue;
+			}
+
+			if (state.phase === "reviewing") {
+				await applyReviewerModel(ctx, state);
+				activateForgeTools("reviewing");
+				updateUI(ctx.cwd, ctx);
+
+				pi.sendUserMessage(
+					buildReviewPrompt(state, title, description),
+				);
+
+				await ctx.waitForIdle();
+
+				// Check what happened
+				const after = loadState(ctx.cwd, taskId);
+				if (!after) break;
+
+				if (after.status === "completed") {
+					// Review approved, task closed
+					activeTaskId = undefined;
+					deactivateForgeTools();
+					updateUI(ctx.cwd, ctx);
+					ctx.ui.notify(
+						`Forge complete: ${taskId} (${after.cycle} cycles)`,
+						"info",
+					);
+					break;
+				}
+
+				if (after.status !== "active") break;
+
+				if (after.phase !== "implementing") {
+					// Reviewer finished without calling forge_review -- pause
+					after.status = "paused";
+					saveState(ctx.cwd, after);
+					activeTaskId = undefined;
+					deactivateForgeTools();
+					updateUI(ctx.cwd, ctx);
+					ctx.ui.notify(
+						"Review ended without forge_review. Forge paused. Use /forge resume to continue.",
+						"warning",
+					);
+					break;
+				}
+
+				// Transition to implement: fresh session
+				const result = await ctx.newSession();
+				if (result.cancelled) {
+					after.status = "paused";
+					saveState(ctx.cwd, after);
+					activeTaskId = undefined;
+					deactivateForgeTools();
+					updateUI(ctx.cwd, ctx);
+					ctx.ui.notify("Session cancelled. Forge paused.", "warning");
+					break;
+				}
+
+				// Loop continues -- next iteration picks up implementing phase
+				continue;
+			}
+
+			break; // unknown phase
+		}
+	}
+
 	// ── Tools ────────────────────────────────────────────────────────
 
 	pi.registerTool({
 		name: TOOL_FORGE_DONE,
 		label: "Forge Done",
 		description:
-			"Signal that this implementation pass is complete. Transitions forge to review phase in a fresh session.",
+			"Signal that this implementation pass is complete. Transitions forge to review phase.",
 		promptSnippet:
-			"Signal completion of the current forge implementation pass to start the review phase.",
+			"Signal completion of the current forge implementation pass.",
 		promptGuidelines: [
 			"Call this when your implementation work for the current forge cycle is done.",
-			"After calling this, STOP. Do not continue working. A fresh review session starts automatically.",
+			"After calling this, STOP immediately. Do not continue working.",
 		],
 		parameters: Type.Object({}),
 
@@ -189,21 +309,15 @@ export default function initForge(pi: ExtensionAPI): void {
 				};
 			}
 
-			// Transition to reviewing
+			// Transition to reviewing -- the command handler loop detects this after waitForIdle
 			state.phase = "reviewing";
 			saveState(ctx.cwd, state);
-
-			// Deactivate tools -- session_start in the new session will activate the right ones
-			deactivateForgeTools();
-
-			// Signal turn_end handler to create fresh session
-			pendingNewSession = true;
 
 			return {
 				content: [
 					{
 						type: "text",
-						text: `Implementation complete (cycle ${state.cycle}). Fresh review session starting.`,
+						text: `Implementation complete (cycle ${state.cycle}). STOP now.`,
 					},
 				],
 				details: {},
@@ -225,13 +339,13 @@ export default function initForge(pi: ExtensionAPI): void {
 		name: TOOL_FORGE_REVIEW,
 		label: "Forge Review",
 		description:
-			"Submit review verdict. 'complete' closes the task. 'reject' starts a fresh implementation cycle.",
+			"Submit review verdict. 'complete' closes the task. 'reject' starts next implementation cycle.",
 		promptSnippet:
 			"Submit the review verdict for the current forge cycle.",
 		promptGuidelines: [
-			"Call with { verdict: 'complete' } when the implementation meets all requirements and all subtasks are closed.",
+			"Call with { verdict: 'complete' } when all requirements are met and subtasks are closed.",
 			"Call with { verdict: 'reject', feedback: '...' } to describe what needs fixing.",
-			"After calling this, STOP. Do not continue working.",
+			"After calling this, STOP immediately. Do not continue working.",
 		],
 		parameters: Type.Union([
 			Type.Object({
@@ -278,7 +392,7 @@ export default function initForge(pi: ExtensionAPI): void {
 						content: [
 							{
 								type: "text",
-								text: `Failed to close backlog item ${state.taskId}. Forge state unchanged. Retry or close manually.`,
+								text: `Failed to close backlog item ${state.taskId}. Retry or close manually.`,
 							},
 						],
 						details: {},
@@ -289,16 +403,11 @@ export default function initForge(pi: ExtensionAPI): void {
 				state.completedAt = new Date().toISOString();
 				saveState(ctx.cwd, state);
 
-				const prevTaskId = activeTaskId;
-				activeTaskId = undefined;
-				deactivateForgeTools();
-				updateUI(ctx);
-
 				return {
 					content: [
 						{
 							type: "text",
-							text: `Forge complete. Task ${prevTaskId} closed after ${state.cycle} cycle(s).`,
+							text: `Forge complete. Task ${state.taskId} closed after ${state.cycle} cycle(s). STOP now.`,
 						},
 					],
 					details: {},
@@ -312,17 +421,11 @@ export default function initForge(pi: ExtensionAPI): void {
 			state.phase = "implementing";
 			saveState(ctx.cwd, state);
 
-			// Deactivate tools -- session_start in the new session will activate the right ones
-			deactivateForgeTools();
-
-			// Signal turn_end handler to create fresh session
-			pendingNewSession = true;
-
 			return {
 				content: [
 					{
 						type: "text",
-						text: `Review rejected. Feedback saved for cycle ${state.cycle}. Fresh implementation session starting.`,
+						text: `Review rejected. Feedback saved for cycle ${state.cycle}. STOP now.`,
 					},
 				],
 				details: {},
@@ -351,7 +454,7 @@ export default function initForge(pi: ExtensionAPI): void {
 
 Commands:
   /forge start <task-id>                Start forge loop on a backlog task
-  /forge stop                           Pause active forge
+  /forge stop                           Pause active forge (press ESC first if agent is running)
   /forge resume <task-id>               Resume a paused forge
   /forge status                         Show all forges
   /forge set <task-id> reviewer model <id>  Set reviewer model
@@ -361,7 +464,6 @@ Commands:
 		description: "Forge -- implement-review loop on backlog items",
 		getArgumentCompletions(prefix: string) {
 			const tokens = prefix.trimStart().split(/\s+/);
-			// First token: subcommand
 			if (tokens.length <= 1) {
 				const subs = ["start", "stop", "resume", "status", "set", "cancel"];
 				const partial = tokens[0] ?? "";
@@ -374,10 +476,8 @@ Commands:
 			const sub = tokens[0];
 			const partial = tokens[1] ?? "";
 
-			// Second token: task-id for commands that need one
 			if (tokens.length === 2) {
 				if (sub === "start") {
-					// Suggest open backlog items (sync read of cache file)
 					try {
 						const paths = resolveBacklogPaths(process.cwd());
 						const raw = fs.readFileSync(paths.materializedIssuesPath, "utf-8");
@@ -392,20 +492,17 @@ Commands:
 					}
 				}
 				if (sub === "resume") {
-					// Suggest paused forges
 					const forges = listForges(process.cwd()).filter((s) => s.status === "paused");
 					return forges
 						.filter((s) => s.taskId.startsWith(partial))
 						.map((s) => ({ label: s.taskId, value: `${sub} ${s.taskId}`, description: `paused, cycle ${s.cycle}` }));
 				}
 				if (sub === "set" || sub === "cancel") {
-					// Suggest existing forges first, then open backlog items for set
 					const forges = listForges(process.cwd());
 					const forgeItems = forges
 						.filter((s) => s.taskId.startsWith(partial))
 						.map((s) => ({ label: s.taskId, value: `${sub} ${s.taskId}`, description: `${s.status}, cycle ${s.cycle}` }));
 					if (forgeItems.length > 0) return forgeItems;
-					// For set: fall through to backlog items so user can pre-configure
 					if (sub === "set") {
 						try {
 							const paths = resolveBacklogPaths(process.cwd());
@@ -428,9 +525,6 @@ Commands:
 		},
 
 		async handler(args, ctx) {
-			// Capture newSession for automatic transitions in forge_done / forge_review
-			capturedNewSession = ctx.newSession.bind(ctx);
-
 			const tokens = args.trim().split(/\s+/);
 			const cmd = tokens[0];
 			const rest = tokens.slice(1);
@@ -443,7 +537,6 @@ Commands:
 						return;
 					}
 
-					// Check if there's already an active forge
 					const existing = findActiveForge(ctx.cwd);
 					if (existing) {
 						ctx.ui.notify(
@@ -453,7 +546,6 @@ Commands:
 						return;
 					}
 
-					// Check if this task already has a forge
 					const prev = loadState(ctx.cwd, taskId);
 					if (prev?.status === "active") {
 						ctx.ui.notify(
@@ -463,14 +555,12 @@ Commands:
 						return;
 					}
 
-					// Validate backlog item exists
 					const item = await readBacklogItem(ctx.cwd, taskId);
 					if (!item) {
 						ctx.ui.notify(`Backlog item ${taskId} not found.`, "error");
 						return;
 					}
 
-					// If pre-configured via /forge set, reuse that state
 					const state: ForgeState = prev?.status === "paused"
 						? { ...prev, status: "active", cycle: 1, phase: "implementing", startedAt: new Date().toISOString() }
 						: {
@@ -484,13 +574,9 @@ Commands:
 
 					saveState(ctx.cwd, state);
 					activeTaskId = taskId;
-					activateForgeTools("implementing");
-					updateUI(ctx);
 
 					ctx.ui.notify(`Forge started on ${taskId} (cycle 1)`, "info");
-					pi.sendUserMessage(
-						buildImplementPrompt(state, item.title, item.description),
-					);
+					await runForgeLoop(ctx, taskId);
 					return;
 				}
 
@@ -512,9 +598,8 @@ Commands:
 
 					const paused = activeTaskId;
 					activeTaskId = undefined;
-					pendingNewSession = false;
 					deactivateForgeTools();
-					updateUI(ctx);
+					updateUI(ctx.cwd, ctx);
 					ctx.ui.notify(`Forge paused: ${paused}`, "info");
 					return;
 				}
@@ -533,13 +618,12 @@ Commands:
 					}
 					if (state.status === "completed") {
 						ctx.ui.notify(
-							`Forge for ${taskId} is already completed. Use /forge start ${taskId} to restart.`,
+							`Forge for ${taskId} is already completed.`,
 							"warning",
 						);
 						return;
 					}
 
-					// Pause any currently active forge
 					if (activeTaskId && activeTaskId !== taskId) {
 						const current = loadState(ctx.cwd, activeTaskId);
 						if (current && current.status === "active") {
@@ -557,16 +641,17 @@ Commands:
 						"info",
 					);
 
-					// Create fresh session -- session_start handler injects prompt + tools + model
+					// Fresh session, then run loop
 					const result = await ctx.newSession();
 					if (result.cancelled) {
 						state.status = "paused";
 						saveState(ctx.cwd, state);
 						activeTaskId = undefined;
-						deactivateForgeTools();
-						updateUI(ctx);
-						ctx.ui.notify("New session cancelled. Forge remains paused.", "warning");
+						ctx.ui.notify("Session cancelled. Forge remains paused.", "warning");
+						return;
 					}
+
+					await runForgeLoop(ctx, taskId);
 					return;
 				}
 
@@ -585,7 +670,6 @@ Commands:
 				}
 
 				case "set": {
-					// /forge set <task-id> reviewer model <model-id>
 					const taskId = rest[0];
 					const field = rest.slice(1).join(" ");
 					if (!taskId || !field.startsWith("reviewer model ")) {
@@ -601,14 +685,12 @@ Commands:
 						return;
 					}
 
-					// Validate model exists
 					const model = resolveModel(ctx, modelId);
 					if (!model) {
 						ctx.ui.notify(`Model "${modelId}" not found.`, "error");
 						return;
 					}
 
-					// Create a paused forge if none exists yet (pre-configuration)
 					let state = loadState(ctx.cwd, taskId);
 					if (!state) {
 						const item = await readBacklogItem(ctx.cwd, taskId);
@@ -649,12 +731,11 @@ Commands:
 
 					if (activeTaskId === taskId) {
 						activeTaskId = undefined;
-						pendingNewSession = false;
 						deactivateForgeTools();
 					}
 
 					deleteForge(ctx.cwd, taskId);
-					updateUI(ctx);
+					updateUI(ctx.cwd, ctx);
 					ctx.ui.notify(`Forge cancelled: ${taskId}`, "info");
 					return;
 				}
@@ -670,9 +751,9 @@ Commands:
 	// ── Event handlers ───────────────────────────────────────────────
 
 	// Inject phase-appropriate system prompt
-	pi.on("before_agent_start", async (event, _ctx) => {
+	pi.on("before_agent_start", async (event, ctx) => {
 		if (!activeTaskId) return;
-		const state = loadState(process.cwd(), activeTaskId);
+		const state = loadState(ctx.cwd, activeTaskId);
 		if (!state || state.status !== "active") return;
 
 		const snippet =
@@ -685,27 +766,24 @@ Commands:
 		};
 	});
 
-	// Block implementer from closing the forge backlog task + block non-finder/librarian agents during review
-	pi.on("tool_call", async (event, _ctx) => {
+	// Block backlog close during implementing + block non-finder/librarian agents during review
+	pi.on("tool_call", async (event, ctx) => {
 		if (!activeTaskId) return undefined;
-		const state = loadState(process.cwd(), activeTaskId);
+		const state = loadState(ctx.cwd, activeTaskId);
 		if (!state || state.status !== "active") return undefined;
 
 		const input = (event as { input: Record<string, unknown> }).input;
 
-		// During implementing: block closing the forge task
 		if (state.phase === "implementing" && event.toolName === "backlog") {
 			const command = typeof input["command"] === "string" ? input["command"] : "";
-			const closePattern = new RegExp(`^\\s*close\\s+${state.taskId}(\\s|$)`);
-			if (closePattern.test(command)) {
+			if (/^\s*close\s+/u.test(command)) {
 				return {
 					block: true,
-					reason: `Cannot close forge task ${state.taskId} during implementation. Call forge_done instead.`,
+					reason: "Cannot close backlog tasks during implementation. The reviewer handles that.",
 				};
 			}
 		}
 
-		// During reviewing: block agent spawn/send for non-finder/librarian
 		if (state.phase === "reviewing" && event.toolName === "agent") {
 			const action = typeof input["action"] === "string" ? input["action"] : "";
 			const agent = typeof input["agent"] === "string" ? input["agent"] : "";
@@ -724,61 +802,17 @@ Commands:
 		return undefined;
 	});
 
-	// After forge_done / forge_review(reject), create a fresh session
-	pi.on("turn_end", async (_event, _ctx) => {
-		if (!pendingNewSession) return;
-		pendingNewSession = false;
-
-		if (!capturedNewSession) return;
-		const newSession = capturedNewSession;
-
-		// Defer to next tick so the turn_end event processing completes first
-		setTimeout(async () => {
-			try {
-				await newSession();
-				// session_start handler will detect the active forge and inject prompt + tools + model
-			} catch {
-				// Failed to create session; forge state is saved, user can /forge resume
-			}
-		}, 0);
-	});
-
-	// On session start: if active forge, inject prompt + tools + model
+	// Notify about forges on session start
 	pi.on("session_start", async (_event, ctx) => {
-		// Default: no forge tools
 		deactivateForgeTools();
 
+		// If loop is running (activeTaskId set), the command handler drives everything -- skip notification
 		if (activeTaskId) {
-			const state = loadState(process.cwd(), activeTaskId);
-			if (state?.status === "active") {
-				activateForgeTools(state.phase);
-				updateUI(ctx);
-
-				// Apply reviewer model for review sessions
-				if (state.phase === "reviewing") {
-					await applyReviewerModel(ctx, state);
-				}
-
-				// Read task info and inject prompt
-				const item = await readBacklogItem(ctx.cwd, state.taskId);
-				const title = item?.title ?? state.taskId;
-				const description = item?.description ?? "(no description)";
-
-				if (state.phase === "implementing") {
-					pi.sendUserMessage(
-						buildImplementPrompt(state, title, description),
-					);
-				} else {
-					pi.sendUserMessage(
-						buildReviewPrompt(state, title, description),
-					);
-				}
-				return;
-			}
+			updateUI(ctx.cwd, ctx);
+			return;
 		}
 
-		// No active runtime forge -- notify about on-disk forges from previous runs
-		const onDisk = listForges(process.cwd()).filter((s) => s.status === "active" || s.status === "paused");
+		const onDisk = listForges(ctx.cwd).filter((s) => s.status === "active" || s.status === "paused");
 		if (onDisk.length > 0 && ctx.hasUI) {
 			const lines = onDisk.map(
 				(s) => `  ${s.taskId}: ${s.status} (${s.phase}, cycle ${s.cycle})`,
@@ -791,10 +825,10 @@ Commands:
 	});
 
 	// Save state on shutdown
-	pi.on("session_shutdown", async (_event, _ctx) => {
+	pi.on("session_shutdown", async (_event, ctx) => {
 		if (activeTaskId) {
-			const state = loadState(process.cwd(), activeTaskId);
-			if (state) saveState(process.cwd(), state);
+			const state = loadState(ctx.cwd, activeTaskId);
+			if (state) saveState(ctx.cwd, state);
 		}
 	});
 }
