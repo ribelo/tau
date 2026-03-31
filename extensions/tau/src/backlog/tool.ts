@@ -75,7 +75,7 @@ export type BacklogToolDetails = {
 const BACKLOG_MESSAGE_TYPE = "backlog";
 
 const TOOL_DESCRIPTION =
-	"Backlog planning tool. Provide a CLI-style command without a leading tool name. Examples: `list`, `ready`, `blocked`, `show <id>`, `create \"Title\" --type task --priority 2`, `update <id> --title \"New title\"`, `close <id> --reason \"Done\"`, `dep add <id-1> <id-2> --type blocks`, `comment <id> \"note\"`, `status`.";
+	"Backlog planning tool. Provide a CLI-style command without a leading tool name. Examples: `list`, `ready`, `blocked`, `show <id>`, `create \"Title\" --type task --priority 2`, `update <id> --title \"New title\"`, `close <id> --reason \"Done\"`, `dep add <id-1> <id-2> --type blocks`, `comment <id> \"note\"`, `status`. Use `--limit N` with list/ready/blocked/search to cap results.";
 
 const TOOL_PROMPT_SNIPPET =
 	"Backlog planning system for task tracking and event-sourced issue management";
@@ -99,7 +99,7 @@ const backlogParams = Type.Object({
 });
 
 const separator =
-	"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+	"──────────────────────────────────────────────────────────────────────────────";
 
 function normalizeWorkspaceRoot(cwd?: string): string {
 	return cwd ?? process.cwd();
@@ -266,7 +266,6 @@ function renderDependencyMutation(details: BacklogDependencyMutation, theme: The
 
 function renderStatusBlock(summary: BacklogStatusSummary, theme: Theme): Text {
 	let out = theme.fg("dim", separator);
-	out += `\n${theme.fg("toolTitle", theme.bold("Backlog Status"))}`;
 	const row = (label: string, value: number) => `\n  ${label.padEnd(20)}: ${theme.fg("toolOutput", String(value))}`;
 	out += row("Total Issues", summary.total_issues);
 	out += row("Open", summary.open_issues);
@@ -282,10 +281,9 @@ function renderStatusBlock(summary: BacklogStatusSummary, theme: Theme): Text {
 function renderHelpBlock(theme: Theme): Text {
 	const lines = [
 		theme.fg("dim", separator),
-		theme.fg("toolTitle", theme.bold("/backlog help")),
-		"backlog list [--status open] [--type task] [--priority 2] [--text query]",
-		"backlog ready",
-		"backlog blocked",
+		"backlog list [--status open] [--type task] [--priority 2] [--text query] [--limit 20]",
+		"backlog ready [--limit 20]",
+		"backlog blocked [--limit 20]",
 		"backlog show <id>",
 		'backlog create "Title" [--type task] [--priority 2] [--description "..."]',
 		'backlog update <id> [--title "..."] [--status open] [--priority 1] [--unset notes]',
@@ -575,6 +573,8 @@ export async function runBacklogCommand(command: string, cwd?: string): Promise<
 						: flagValue(parsed, "text");
 				const sortBy = flagValue(parsed, "sort", "sort_by") as SortField | undefined;
 				const order = flagValue(parsed, "order") as SortOrder | undefined;
+				const limitInput = parseNumber(flagValue(parsed, "limit"), "limit");
+				const limit = limitInput ?? 20;
 				const query: IssueQuery = {
 					...(status !== undefined ? { status } : {}),
 					...(issueType !== undefined ? { type: issueType } : {}),
@@ -586,7 +586,7 @@ export async function runBacklogCommand(command: string, cwd?: string): Promise<
 					...(order !== undefined ? { order } : {}),
 				};
 				const filtered = filterIssues(issues, query);
-				return { command, kind, ok: true, data: filtered };
+				return { command, kind, ok: true, data: filtered.slice(0, limit) };
 			}
 			case "show": {
 				const issueId = parsed.positional[1];
@@ -868,8 +868,37 @@ export function createBacklogToolDefinition(): ToolDefinition<typeof backlogPara
 		},
 
 		renderCall(args, theme) {
-			const cmd = typeof args?.command === "string" ? args.command.trim() : "";
-			let out = theme.fg("toolTitle", theme.bold(`backlog ${cmd}`.trim()));
+			const rawCmd = typeof args?.command === "string" ? args.command.trim() : "";
+			const parsed = parseCommand(rawCmd);
+
+			// Build header: backlog <verb> <positional args...>
+			const verb = parsed.positional[0] ?? "";
+			const positionalArgs = parsed.positional.slice(1);
+
+			// Format positional args
+			const formattedPositional = positionalArgs.map((arg) => arg);
+
+			const headerParts = ["backlog", verb, ...formattedPositional];
+			let out = theme.fg("toolTitle", theme.bold(headerParts.join(" ").trim()));
+
+			// Render flags below the header
+			const flagsToSkip = new Set(["cwd"]);
+			for (const [key, values] of parsed.flags) {
+				if (flagsToSkip.has(key)) continue;
+				if (values.length === 0) continue;
+
+				// Use the last value for single-value flags
+				const value = values[values.length - 1];
+				if (value === undefined) continue;
+
+				// Convert snake_case to display name (e.g., "issue_type" -> "type")
+				let displayKey = key;
+				if (key === "issue_type") displayKey = "type";
+				else if (key === "acceptance_criteria") displayKey = "acceptance-criteria";
+
+				out += `\n  ${theme.fg("toolTitle", `${displayKey}:`)} ${theme.fg("toolOutput", value)}`;
+			}
+
 			if (args?.cwd) {
 				out += `\n${theme.fg("muted", `cwd: ${args.cwd}`)}`;
 			}

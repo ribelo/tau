@@ -65,7 +65,17 @@ describe("backlog tool renderer", () => {
 				cwd: "/home/ribelo/projects/retailic/frisco-effect",
 			}),
 		);
-		expect(callRendered).toContain("backlog update tau-kjk --description");
+		// Header should only show verb + positional args
+		expect(callRendered).toContain("backlog update tau-kjk");
+		// Flags should appear below as metadata (multiline output)
+		// Values are not truncated but may wrap across multiple lines
+		expect(callRendered).toContain("description: Port the missing trustmate review area from the banana product");
+		expect(callRendered).toContain("page as a Storybook-friendly section: disclosure note, score summary cards,");
+		expect(callRendered).toContain("lightweight filter chrome, and review cards/list composition.");
+		expect(callRendered).toContain("design: Do not attempt to recreate the whole third-party widget runtime.");
+		expect(callRendered).toContain("Instead, build honest presentational React components that capture the visible");
+		expect(callRendered).toContain("acceptance-criteria: The product-page component system includes typed Tailwind");
+		expect(callRendered).toContain("components and stories for the visible trustmate reviews section, including");
 		expect(callRendered).toContain("cwd: /home/ribelo/projects/retailic/frisco-effect");
 
 		const resultRendered = normalizeRendered(
@@ -84,7 +94,7 @@ describe("backlog tool renderer", () => {
 				},
 			}),
 		);
-		expect(resultRendered).toContain("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+		expect(resultRendered).toContain("──────────────────────────────────────────────────────────────────────────────");
 		expect(resultRendered).toContain("□  tau-kjk       [P1]    [task]      (open)");
 		expect(resultRendered).toContain("Port product-page trustmate");
 		expect(resultRendered).toContain("reviews section and review cards");

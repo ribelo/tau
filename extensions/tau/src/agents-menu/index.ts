@@ -1,4 +1,14 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, Theme } from "@mariozechner/pi-coding-agent";
+import {
+	Container,
+	type Focusable,
+	getKeybindings,
+	Input,
+	Key,
+	matchesKey,
+	Spacer,
+	Text,
+} from "@mariozechner/pi-tui";
 import { AgentRegistry } from "../agent/agent-registry.js";
 import { buildToolDescription } from "../agent/tool.js";
 import type { AgentToolHandle } from "../agent/index.js";
@@ -37,11 +47,158 @@ function refreshToolDescription(agentTool: AgentToolHandle, registry: AgentRegis
 	agentTool.refresh(description);
 }
 
-function formatStatusSummary(allNames: string[]): string {
-	const disabled = allNames.filter((n) => isAgentDisabled(n));
-	if (disabled.length === 0) return "All agents enabled";
-	const enabled = allNames.filter((n) => !isAgentDisabled(n));
-	return `Enabled: ${enabled.join(", ")}\nDisabled: ${disabled.join(", ")}`;
+interface AgentItem {
+	name: string;
+	description: string;
+	enabled: boolean;
+}
+
+/**
+ * TUI component for toggling agents on/off. Stays open until Escape.
+ */
+class AgentsSelectorComponent extends Container implements Focusable {
+	private items: AgentItem[] = [];
+	private selectedIndex = 0;
+	private searchInput: Input;
+	private filteredItems: AgentItem[] = [];
+	private listContainer: Container;
+	private footerText: Text;
+	private doneFn: () => void;
+	private onToggle: (name: string, enabled: boolean) => void;
+	private theme: Theme;
+
+	private _focused = false;
+	get focused(): boolean {
+		return this._focused;
+	}
+	set focused(value: boolean) {
+		this._focused = value;
+		this.searchInput.focused = value;
+	}
+
+	constructor(
+		allNames: string[],
+		registry: AgentRegistry,
+		theme: Theme,
+		done: () => void,
+		onToggle: (name: string, enabled: boolean) => void,
+	) {
+		super();
+		this.theme = theme;
+		this.doneFn = done;
+		this.onToggle = onToggle;
+
+		this.items = allNames.map((name) => {
+			const def = registry.get(name);
+			const desc = def?.description.split("\n")[0]?.trim() ?? "";
+			return { name, description: desc, enabled: !isAgentDisabled(name) };
+		});
+		this.filteredItems = [...this.items];
+
+		// Search input
+		this.searchInput = new Input();
+		this.addChild(this.searchInput);
+		this.addChild(new Spacer(1));
+
+		// List
+		this.listContainer = new Container();
+		this.addChild(this.listContainer);
+
+		// Footer
+		this.addChild(new Spacer(1));
+		this.footerText = new Text(this.getFooterText(), 0, 0);
+		this.addChild(this.footerText);
+
+		this.updateList();
+	}
+
+	private getFooterText(): string {
+		const enabled = this.items.filter((i) => i.enabled).length;
+		const total = this.items.length;
+		return this.theme.fg("dim", `  Enter toggle · Esc close · ${enabled}/${total} enabled`);
+	}
+
+	private refresh(): void {
+		const query = this.searchInput.getValue().toLowerCase();
+		this.filteredItems = query
+			? this.items.filter((i) => i.name.toLowerCase().includes(query) || i.description.toLowerCase().includes(query))
+			: [...this.items];
+		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredItems.length - 1));
+		this.updateList();
+		this.footerText.setText(this.getFooterText());
+	}
+
+	private updateList(): void {
+		this.listContainer.clear();
+
+		if (this.filteredItems.length === 0) {
+			this.listContainer.addChild(new Text(this.theme.fg("muted", "  No matching agents"), 0, 0));
+			return;
+		}
+
+		for (let i = 0; i < this.filteredItems.length; i++) {
+			const item = this.filteredItems[i]!;
+			const isSelected = i === this.selectedIndex;
+			const prefix = isSelected ? this.theme.fg("accent", "> ") : "  ";
+			const marker = item.enabled ? this.theme.fg("success", "✔") : this.theme.fg("dim", "✗");
+			const nameText = isSelected ? this.theme.fg("accent", item.name) : item.name;
+			const desc = this.theme.fg("dim", ` ${item.description}`);
+			this.listContainer.addChild(new Text(`${prefix}${marker} ${nameText}${desc}`, 0, 0));
+		}
+	}
+
+	handleInput(data: string): void {
+		const kb = getKeybindings();
+
+		if (kb.matches(data, "tui.select.up")) {
+			if (this.filteredItems.length === 0) return;
+			this.selectedIndex = this.selectedIndex === 0 ? this.filteredItems.length - 1 : this.selectedIndex - 1;
+			this.updateList();
+			return;
+		}
+		if (kb.matches(data, "tui.select.down")) {
+			if (this.filteredItems.length === 0) return;
+			this.selectedIndex = this.selectedIndex === this.filteredItems.length - 1 ? 0 : this.selectedIndex + 1;
+			this.updateList();
+			return;
+		}
+
+		// Toggle on Enter
+		if (matchesKey(data, Key.enter)) {
+			const item = this.filteredItems[this.selectedIndex];
+			if (item) {
+				item.enabled = !item.enabled;
+				this.onToggle(item.name, item.enabled);
+				this.refresh();
+			}
+			return;
+		}
+
+		// Close on Escape
+		if (matchesKey(data, Key.escape)) {
+			this.doneFn();
+			return;
+		}
+
+		// Ctrl+C: clear search or close
+		if (matchesKey(data, Key.ctrl("c"))) {
+			if (this.searchInput.getValue()) {
+				this.searchInput.setValue("");
+				this.refresh();
+			} else {
+				this.doneFn();
+			}
+			return;
+		}
+
+		// Pass to search input
+		this.searchInput.handleInput(data);
+		this.refresh();
+	}
+
+	getSearchInput(): Input {
+		return this.searchInput;
+	}
 }
 
 export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHandle): void {
@@ -87,7 +244,7 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 						const enabled = !isAgentDisabled(name);
 						const def = registry.get(name);
 						const desc = def?.description.split("\n")[0]?.trim() ?? "";
-						const marker = enabled ? "✓" : "✗";
+						const marker = enabled ? "✔" : "✗";
 						return `${marker} ${name}: ${desc}`;
 					});
 					ctx.ui.notify(lines.join("\n"), "info");
@@ -105,7 +262,7 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 					setAgentEnabled(agentName, action === "enable");
 					refreshToolDescription(agentTool, registry);
 					const state = action === "enable" ? "enabled" : "disabled";
-					ctx.ui.notify(`Agent "${agentName}" ${state}\n${formatStatusSummary(allNames)}`, "info");
+					ctx.ui.notify(`Agent "${agentName}" ${state}`, "info");
 					return;
 				}
 
@@ -116,28 +273,20 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 				return;
 			}
 
-			// Single-shot selector: each option is a toggle action
-			const options = allNames.map((name: string) => {
-				const enabled = !isAgentDisabled(name);
-				const action = enabled ? "Disable" : "Enable";
-				return `${enabled ? "✓" : "✗"} ${name} → ${action}`;
+			// Interactive toggle selector using ctx.ui.custom
+			await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
+				const selector = new AgentsSelectorComponent(
+					allNames,
+					registry,
+					theme,
+					() => done(undefined as unknown as void),
+					(name, enabled) => {
+						setAgentEnabled(name, enabled);
+						refreshToolDescription(agentTool, registry);
+					},
+				);
+				return selector;
 			});
-
-			const choice = await ctx.ui.select("Toggle agent (select to flip)", options);
-			if (!choice) return;
-
-			// Extract agent name from "✓ <name> → Disable" or "✗ <name> → Enable"
-			const match = choice.match(/^[✓✗]\s+(\S+)\s+→/);
-			if (!match) return;
-			const agentName = match[1];
-
-			if (agentName && registry.has(agentName)) {
-				const currentlyEnabled = !isAgentDisabled(agentName);
-				setAgentEnabled(agentName, !currentlyEnabled);
-				refreshToolDescription(agentTool, registry);
-				const state = currentlyEnabled ? "disabled" : "enabled";
-				ctx.ui.notify(`Agent "${agentName}" ${state}\n${formatStatusSummary(allNames)}`, "info");
-			}
 		},
 	});
 }
