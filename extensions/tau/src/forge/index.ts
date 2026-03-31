@@ -366,10 +366,6 @@ export default function initForge(pi: ExtensionAPI): void {
 		},
 	});
 
-	// P2 fix: deactivate forge tools immediately after registration
-	// so they are not exposed in ordinary sessions before /forge start.
-	deactivateForgeTools();
-
 	// ── Commands ─────────────────────────────────────────────────────
 
 	const FORGE_HELP = `Forge -- implement-review loop on backlog items
@@ -671,6 +667,9 @@ Commands:
 
 	// Notify about active forges on session start
 	pi.on("session_start", async (_event, ctx) => {
+		// Deactivate forge tools by default; only activate if a forge is running
+		deactivateForgeTools();
+
 		const active = listForges(process.cwd()).filter((s) => s.status === "active");
 		if (active.length > 0 && ctx.hasUI) {
 			const lines = active.map(
