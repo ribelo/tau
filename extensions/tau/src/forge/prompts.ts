@@ -1,5 +1,37 @@
 import type { ForgeState } from "./types.js";
 
+const REVIEW_JSON_SCHEMA = `{
+  "findings": [
+    {
+      "title": "<≤ 80 chars, imperative>",
+      "body": "<valid Markdown explaining why this is a problem>",
+      "confidence_score": <float 0.0-1.0>,
+      "priority": <int 0-3>,
+      "code_location": {
+        "absolute_file_path": "<file path>",
+        "line_range": { "start": <int>, "end": <int> }
+      }
+    }
+  ],
+  "overall_correctness": "patch is correct" | "patch is incorrect",
+  "overall_explanation": "<1-3 sentence explanation>",
+  "overall_confidence_score": <float 0.0-1.0>
+}`;
+
+function reviewFeedbackSection(state: ForgeState): string {
+	if (!state.lastReview) {
+		return "First implementation cycle.";
+	}
+
+	return [
+		`## Review JSON (from cycle ${state.cycle - 1})`,
+		"",
+		"```json",
+		JSON.stringify(state.lastReview, null, 2),
+		"```",
+	].join("\n");
+}
+
 /** Build the IMPLEMENT prompt injected into the agent's user message. */
 export function buildImplementPrompt(
 	state: ForgeState,
@@ -10,11 +42,6 @@ export function buildImplementPrompt(
 		`FORGE: ${state.taskId} | Cycle ${state.cycle} | IMPLEMENT\n` +
 		`---`;
 
-	const feedbackSection =
-		state.lastFeedback
-			? `## Review Feedback (from cycle ${state.cycle - 1})\n\n${state.lastFeedback}`
-			: "First implementation cycle.";
-
 	return [
 		header,
 		"",
@@ -22,13 +49,12 @@ export function buildImplementPrompt(
 		"",
 		taskDescription,
 		"",
-		feedbackSection,
+		reviewFeedbackSection(state),
 		"",
 		"---",
 		"",
 		"Work on the task above. Add progress notes via `backlog comment`.",
-		"Call `forge_done` when this implementation pass is complete.",
-		"After calling forge_done, STOP. Do not continue working. A fresh review session starts automatically.",
+		"When your implementation pass is complete, stop normally. Forge will start review automatically after your turn ends.",
 		"Do NOT close the backlog task directly.",
 	].join("\n");
 }
@@ -50,14 +76,22 @@ export function buildReviewPrompt(
 		"",
 		taskDescription,
 		"",
+		"## Last Implementer Message",
+		"",
+		state.lastImplementerMessage ?? "(no implementer message captured)",
+		"",
 		"---",
 		"",
 		"Review the implementation work. Only finder and librarian agents are available.",
-		"Use the backlog tool to check task status. Close tasks that pass review.",
+		"Use the backlog tool to inspect task status.",
 		"",
-		"Call `forge_review` with your verdict:",
-		"- `{ verdict: 'complete' }` -- all work passes review",
-		"- `{ verdict: 'reject', feedback: '...' }` -- describe what needs fixing",
+		"Return ONLY a JSON object matching this schema. Do not wrap it in markdown fences. Do not add prose before or after the JSON.",
+		"",
+		"```json",
+		REVIEW_JSON_SCHEMA,
+		"```",
+		"",
+		"If there are no findings, return an empty findings array. If there are findings, include all blocking findings that the implementer must fix next.",
 	].join("\n");
 }
 
@@ -67,9 +101,8 @@ export function implementSystemSnippet(state: ForgeState): string {
 		`[FORGE - ${state.taskId} - Cycle ${state.cycle} - IMPLEMENTING]`,
 		"",
 		`You are implementing backlog task ${state.taskId}.`,
-		"When your implementation pass is done, call the forge_done tool.",
-		"After calling forge_done, STOP immediately. Do not emit further output.",
-		"A fresh review session starts automatically.",
+		"When your implementation pass is done, end your turn normally.",
+		"Forge will start a fresh review session automatically after your turn ends.",
 		"Do NOT close the backlog task. The reviewer handles that.",
 	].join("\n");
 }
@@ -81,9 +114,8 @@ export function reviewSystemSnippet(state: ForgeState): string {
 		"",
 		`You are reviewing implementation work on backlog task ${state.taskId}.`,
 		"Only finder and librarian agents are available. Other agents are blocked.",
-		"Close subtasks that pass review: `backlog close <subtask-id> --reason \"...\"`.",
-		"Evaluate the work, then call forge_review with your verdict.",
-		"- { verdict: 'complete' } when all work passes and all subtasks are closed",
-		"- { verdict: 'reject', feedback: '...' } to request changes",
+		"Your final message must be raw JSON matching the review schema from the user prompt.",
+		"If there are no findings, return an empty findings array.",
+		"If there are findings, include every blocking finding the implementer must fix next.",
 	].join("\n");
 }

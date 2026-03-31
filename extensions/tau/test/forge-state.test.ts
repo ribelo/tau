@@ -173,4 +173,33 @@ describe("forge state transitions", () => {
 		const loaded = loadState(cwd, state.taskId);
 		expect(loaded?.reviewer.model).toBe("claude-4-opus");
 	});
+
+	it("stores last implementer message and structured review result", () => {
+		const cwd = makeTmp();
+		const state = makeState({
+			lastImplementerMessage: "Implemented the fix.",
+			lastReview: {
+				findings: [
+					{
+						title: "Guard undefined auth header",
+						body: "The code still assumes the header exists.",
+						confidence_score: 0.88,
+						priority: 1,
+						code_location: {
+							absolute_file_path: "/tmp/auth.ts",
+							line_range: { start: 3, end: 5 },
+						},
+					},
+				],
+				overall_correctness: "patch is incorrect",
+				overall_explanation: "A blocking issue remains.",
+				overall_confidence_score: 0.9,
+			},
+		});
+		saveState(cwd, state);
+
+		const loaded = loadState(cwd, state.taskId);
+		expect(loaded?.lastImplementerMessage).toBe("Implemented the fix.");
+		expect(loaded?.lastReview?.findings[0]?.title).toBe("Guard undefined auth header");
+	});
 });

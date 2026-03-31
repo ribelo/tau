@@ -3,9 +3,7 @@ import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
-import { Text } from "@mariozechner/pi-tui";
-import type { ForgeState } from "./types.js";
+import type { ForgeReviewResult, ForgeState } from "./types.js";
 import {
 	loadState,
 	saveState,
@@ -25,8 +23,19 @@ import { parseMaterializedIssues } from "../backlog/materialize.js";
 import { setIssueStatus } from "../backlog/events.js";
 import { parseProviderModel } from "../shared/model-id.js";
 
-const TOOL_FORGE_DONE = "forge_done";
-const TOOL_FORGE_REVIEW = "forge_review";
+type AgentTextContent = {
+	readonly type: "text";
+	readonly text: string;
+};
+
+type AgentMessage = {
+	readonly role: string;
+	readonly content?: readonly AgentTextContent[];
+};
+
+type AgentEndEvent = {
+	readonly messages?: readonly AgentMessage[];
+};
 
 /** Read a backlog item's title and description via internal backlog API. */
 async function readBacklogItem(
@@ -84,16 +93,23 @@ function resolveModel(
 	return all.find((m) => m.name === modelId);
 }
 
+function currentModelId(
+	ctx: Pick<import("@mariozechner/pi-coding-agent").ExtensionContext, "model">,
+): string | undefined {
+	return ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
+}
+
 export default function initForge(pi: ExtensionAPI): void {
 	/** The task ID of the currently active forge in this session, if any. */
 	let activeTaskId: string | undefined;
+	let reviewToolRestore: string[] | undefined;
 
 	/** Resolve callback for the current waitForAgentEnd promise, if any. */
-	let agentEndResolve: (() => void) | undefined;
+	let agentEndResolve: ((event: AgentEndEvent) => void) | undefined;
 
 	/** Wait for the next agent_end event. Set up BEFORE sending a message. */
-	function waitForAgentEnd(): Promise<void> {
-		return new Promise<void>((resolve) => {
+	function waitForAgentEnd(): Promise<AgentEndEvent> {
+		return new Promise<AgentEndEvent>((resolve) => {
 			agentEndResolve = resolve;
 		});
 	}
@@ -102,26 +118,17 @@ export default function initForge(pi: ExtensionAPI): void {
 
 	const REVIEW_BLOCKED_TOOLS = ["edit", "write", "git_commit_with_user_approval"];
 
-	function activateForgeTools(phase: "implementing" | "reviewing"): void {
-		const current = pi.getActiveTools();
-		const without = current.filter(
-			(t) => t !== TOOL_FORGE_DONE && t !== TOOL_FORGE_REVIEW,
-		);
-		if (phase === "implementing") {
-			pi.setActiveTools([...without, TOOL_FORGE_DONE]);
-		} else {
-			const reviewTools = without.filter((t) => !REVIEW_BLOCKED_TOOLS.includes(t));
-			pi.setActiveTools([...reviewTools, TOOL_FORGE_REVIEW]);
+	function activateReviewTools(): void {
+		if (!reviewToolRestore) {
+			reviewToolRestore = [...pi.getActiveTools()];
 		}
+		pi.setActiveTools(reviewToolRestore.filter((t) => !REVIEW_BLOCKED_TOOLS.includes(t)));
 	}
 
-	function deactivateForgeTools(): void {
-		const current = pi.getActiveTools();
-		pi.setActiveTools(
-			current.filter(
-				(t) => t !== TOOL_FORGE_DONE && t !== TOOL_FORGE_REVIEW,
-			),
-		);
+	function restoreReviewTools(): void {
+		if (!reviewToolRestore) return;
+		pi.setActiveTools(reviewToolRestore);
+		reviewToolRestore = undefined;
 	}
 
 	// ── UI helpers ───────────────────────────────────────────────────
@@ -169,15 +176,213 @@ export default function initForge(pi: ExtensionAPI): void {
 	async function applyReviewerConfig(
 		ctx: import("@mariozechner/pi-coding-agent").ExtensionContext,
 		state: ForgeState,
-	): Promise<void> {
+	): Promise<{ readonly ok: true } | { readonly ok: false; readonly reason: string }> {
 		if (state.reviewer.model) {
 			const reviewerModel = resolveModel(ctx, state.reviewer.model);
-			if (reviewerModel) {
-				await pi.setModel(reviewerModel);
+			if (!reviewerModel) {
+				return {
+					ok: false,
+					reason: `Reviewer model not found: ${state.reviewer.model}`,
+				};
+			}
+			const ok = await pi.setModel(reviewerModel);
+			if (!ok) {
+				return {
+					ok: false,
+					reason: `No auth available for reviewer model: ${state.reviewer.model}`,
+				};
 			}
 		}
 		if (state.reviewer.thinking) {
 			pi.setThinkingLevel(state.reviewer.thinking as import("@mariozechner/pi-ai").ThinkingLevel);
+		}
+		return { ok: true };
+	}
+
+	function rememberImplementerConfig(
+		ctx: import("@mariozechner/pi-coding-agent").ExtensionContext,
+		state: ForgeState,
+		options?: { readonly overwrite?: boolean },
+	): void {
+		const overwrite = options?.overwrite === true;
+		if (!overwrite && state.implementer) return;
+
+		const model = currentModelId(ctx);
+		const thinking = pi.getThinkingLevel();
+		const next = {
+			...(model ? { model } : {}),
+			...(thinking ? { thinking } : {}),
+		};
+
+		if (
+			state.implementer?.model === next.model &&
+			state.implementer?.thinking === next.thinking
+		) {
+			return;
+		}
+
+		state.implementer = next;
+		saveState(ctx.cwd, state);
+	}
+
+	async function restoreImplementerConfig(
+		ctx: import("@mariozechner/pi-coding-agent").ExtensionContext,
+		state: ForgeState,
+	): Promise<{ readonly ok: true } | { readonly ok: false; readonly reason: string }> {
+		if (state.implementer?.model) {
+			const implementerModel = resolveModel(ctx, state.implementer.model);
+			if (!implementerModel) {
+				return {
+					ok: false,
+					reason: `Implementer model not found: ${state.implementer.model}`,
+				};
+			}
+			const ok = await pi.setModel(implementerModel);
+			if (!ok) {
+				return {
+					ok: false,
+					reason: `No auth available for implementer model: ${state.implementer.model}`,
+				};
+			}
+		}
+
+		if (state.implementer?.thinking) {
+			pi.setThinkingLevel(state.implementer.thinking as import("@mariozechner/pi-ai").ThinkingLevel);
+		}
+
+		return { ok: true };
+	}
+
+	function extractLastAssistantText(event: AgentEndEvent): string {
+		const lastAssistant = [...(event.messages ?? [])]
+			.reverse()
+			.find((message) => message.role === "assistant");
+		if (!lastAssistant?.content) return "";
+
+		return lastAssistant.content
+			.filter((part) => part.type === "text")
+			.map((part) => part.text)
+			.join("\n")
+			.trim();
+	}
+
+	function isRecord(value: unknown): value is Record<string, unknown> {
+		return typeof value === "object" && value !== null;
+	}
+
+	function isFiniteNumber(value: unknown): value is number {
+		return typeof value === "number" && Number.isFinite(value);
+	}
+
+	function parseReviewResult(text: string):
+		| { readonly ok: true; readonly value: ForgeReviewResult }
+		| { readonly ok: false; readonly reason: string } {
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(text) as unknown;
+		} catch (error) {
+			return {
+				ok: false,
+				reason: `Reviewer output is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+			};
+		}
+
+		if (!isRecord(parsed)) {
+			return { ok: false, reason: "Reviewer output must be a JSON object." };
+		}
+
+		const findings = parsed["findings"];
+		const overallCorrectness = parsed["overall_correctness"];
+		const overallExplanation = parsed["overall_explanation"];
+		const overallConfidenceScore = parsed["overall_confidence_score"];
+
+		if (!Array.isArray(findings)) {
+			return { ok: false, reason: "Reviewer JSON must include an array field 'findings'." };
+		}
+		if (
+			overallCorrectness !== "patch is correct" &&
+			overallCorrectness !== "patch is incorrect"
+		) {
+			return {
+				ok: false,
+				reason: "Reviewer JSON must include overall_correctness as 'patch is correct' or 'patch is incorrect'.",
+			};
+		}
+		if (typeof overallExplanation !== "string") {
+			return { ok: false, reason: "Reviewer JSON must include a string field 'overall_explanation'." };
+		}
+		if (!isFiniteNumber(overallConfidenceScore)) {
+			return { ok: false, reason: "Reviewer JSON must include a numeric field 'overall_confidence_score'." };
+		}
+
+		const normalizedFindings: ForgeReviewResult["findings"] = [];
+		for (const finding of findings) {
+			if (!isRecord(finding)) {
+				return { ok: false, reason: "Each finding must be a JSON object." };
+			}
+			if (typeof finding["title"] !== "string" || typeof finding["body"] !== "string") {
+				return { ok: false, reason: "Each finding must include string fields 'title' and 'body'." };
+			}
+			if (!isFiniteNumber(finding["confidence_score"]) || !isFiniteNumber(finding["priority"])) {
+				return { ok: false, reason: "Each finding must include numeric confidence_score and priority fields." };
+			}
+			const codeLocation = finding["code_location"];
+			if (!isRecord(codeLocation) || typeof codeLocation["absolute_file_path"] !== "string") {
+				return { ok: false, reason: "Each finding must include code_location.absolute_file_path." };
+			}
+			const lineRange = codeLocation["line_range"];
+			if (
+				!isRecord(lineRange) ||
+				!isFiniteNumber(lineRange["start"]) ||
+				!isFiniteNumber(lineRange["end"])
+			) {
+				return { ok: false, reason: "Each finding must include numeric code_location.line_range.start/end fields." };
+			}
+
+			normalizedFindings.push({
+				title: finding["title"],
+				body: finding["body"],
+				confidence_score: finding["confidence_score"],
+				priority: finding["priority"],
+				code_location: {
+					absolute_file_path: codeLocation["absolute_file_path"],
+					line_range: {
+						start: lineRange["start"],
+						end: lineRange["end"],
+					},
+				},
+			});
+		}
+
+		const value: ForgeReviewResult = {
+			findings: normalizedFindings,
+			overall_correctness: overallCorrectness,
+			overall_explanation: overallExplanation,
+			overall_confidence_score: overallConfidenceScore,
+		};
+		if (value.findings.length === 0 && value.overall_correctness !== "patch is correct") {
+			return {
+				ok: false,
+				reason: "Reviewer JSON is inconsistent: empty findings require overall_correctness to be 'patch is correct'.",
+			};
+		}
+
+		return { ok: true, value };
+	}
+
+	function pauseForge(
+		ctx: import("@mariozechner/pi-coding-agent").ExtensionContext,
+		state: ForgeState,
+		message: string,
+		level: "warning" | "error" = "warning",
+	): void {
+		state.status = "paused";
+		saveState(ctx.cwd, state);
+		activeTaskId = undefined;
+		restoreReviewTools();
+		updateUI(ctx.cwd, ctx);
+		if (ctx.hasUI) {
+			ctx.ui.notify(message, level);
 		}
 	}
 
@@ -200,42 +405,38 @@ export default function initForge(pi: ExtensionAPI): void {
 			const description = item?.description ?? "(no description)";
 
 			if (state.phase === "implementing") {
-				activateForgeTools("implementing");
+				rememberImplementerConfig(ctx, state, { overwrite: true });
+				restoreReviewTools();
 				updateUI(ctx.cwd, ctx);
 
 				const agentDone = waitForAgentEnd();
 				pi.sendUserMessage(
 					buildImplementPrompt(state, title, description),
 				);
-				await agentDone;
+				const event = await agentDone;
 
 				// Check what happened
 				const after = loadState(ctx.cwd, taskId);
 				if (!after || after.status !== "active") break;
 
-				if (after.phase !== "reviewing") {
-					// Agent finished without calling forge_done -- pause
-					after.status = "paused";
-					saveState(ctx.cwd, after);
-					activeTaskId = undefined;
-					deactivateForgeTools();
-					updateUI(ctx.cwd, ctx);
-					ctx.ui.notify(
-						"Implementation ended without forge_done. Forge paused. Use /forge resume to continue.",
-						"warning",
+				const implementerMessage = extractLastAssistantText(event);
+				if (implementerMessage.length === 0) {
+					pauseForge(
+						ctx,
+						after,
+						"Implementation ended without an assistant message. Forge paused. Use /forge resume to continue.",
 					);
 					break;
 				}
 
+				after.lastImplementerMessage = implementerMessage;
+				after.phase = "reviewing";
+				saveState(ctx.cwd, after);
+
 				// Transition to review: fresh session
 				const result = await ctx.newSession();
 				if (result.cancelled) {
-					after.status = "paused";
-					saveState(ctx.cwd, after);
-					activeTaskId = undefined;
-					deactivateForgeTools();
-					updateUI(ctx.cwd, ctx);
-					ctx.ui.notify("Session cancelled. Forge paused.", "warning");
+					pauseForge(ctx, after, "Session cancelled. Forge paused.");
 					break;
 				}
 
@@ -244,24 +445,77 @@ export default function initForge(pi: ExtensionAPI): void {
 			}
 
 			if (state.phase === "reviewing") {
-				await applyReviewerConfig(ctx, state);
-				activateForgeTools("reviewing");
+				rememberImplementerConfig(ctx, state);
+				const reviewerConfig = await applyReviewerConfig(ctx, state);
+				if (!reviewerConfig.ok) {
+					pauseForge(ctx, state, `Forge paused. ${reviewerConfig.reason}`, "error");
+					break;
+				}
+				activateReviewTools();
 				updateUI(ctx.cwd, ctx);
 
 				const agentDone = waitForAgentEnd();
 				pi.sendUserMessage(
 					buildReviewPrompt(state, title, description),
 				);
-				await agentDone;
+				const event = await agentDone;
 
 				// Check what happened
 				const after = loadState(ctx.cwd, taskId);
 				if (!after) break;
+				if (after.status !== "active") break;
 
-				if (after.status === "completed") {
+				const reviewText = extractLastAssistantText(event);
+				if (reviewText.length === 0) {
+					pauseForge(
+						ctx,
+						after,
+						"Review ended without a JSON response. Forge paused. Use /forge resume to continue.",
+					);
+					break;
+				}
+
+				const reviewResult = parseReviewResult(reviewText);
+				if (!reviewResult.ok) {
+					pauseForge(
+						ctx,
+						after,
+						`Review output is invalid. ${reviewResult.reason} Forge paused. Use /forge resume to continue.`,
+						"error",
+					);
+					break;
+				}
+
+				after.lastReview = reviewResult.value;
+				after.lastFeedback = reviewText;
+
+				if (reviewResult.value.findings.length === 0) {
+					const closed = await closeBacklogItem(
+						ctx.cwd,
+						after.taskId,
+						`Forge review passed after ${after.cycle} cycle(s).`,
+					);
+					if (!closed) {
+						pauseForge(
+							ctx,
+							after,
+							`Failed to close backlog item ${after.taskId}. Forge paused. Close it manually or resume after fixing backlog state.`,
+							"error",
+						);
+						break;
+					}
+
+					after.status = "completed";
+					after.completedAt = new Date().toISOString();
+					saveState(ctx.cwd, after);
+
+					const restored = await restoreImplementerConfig(ctx, after);
+					if (!restored.ok && ctx.hasUI) {
+						ctx.ui.notify(`Forge completed, but could not restore implementer config. ${restored.reason}`, "warning");
+					}
 					// Review approved, task closed
 					activeTaskId = undefined;
-					deactivateForgeTools();
+					restoreReviewTools();
 					updateUI(ctx.cwd, ctx);
 					ctx.ui.notify(
 						`Forge complete: ${taskId} (${after.cycle} cycles)`,
@@ -270,31 +524,20 @@ export default function initForge(pi: ExtensionAPI): void {
 					break;
 				}
 
-				if (after.status !== "active") break;
+				after.cycle++;
+				after.phase = "implementing";
+				saveState(ctx.cwd, after);
 
-				if (after.phase !== "implementing") {
-					// Reviewer finished without calling forge_review -- pause
-					after.status = "paused";
-					saveState(ctx.cwd, after);
-					activeTaskId = undefined;
-					deactivateForgeTools();
-					updateUI(ctx.cwd, ctx);
-					ctx.ui.notify(
-						"Review ended without forge_review. Forge paused. Use /forge resume to continue.",
-						"warning",
-					);
+				const restored = await restoreImplementerConfig(ctx, after);
+				if (!restored.ok) {
+					pauseForge(ctx, after, `Forge paused. ${restored.reason}`, "error");
 					break;
 				}
 
 				// Transition to implement: fresh session
 				const result = await ctx.newSession();
 				if (result.cancelled) {
-					after.status = "paused";
-					saveState(ctx.cwd, after);
-					activeTaskId = undefined;
-					deactivateForgeTools();
-					updateUI(ctx.cwd, ctx);
-					ctx.ui.notify("Session cancelled. Forge paused.", "warning");
+					pauseForge(ctx, after, "Session cancelled. Forge paused.");
 					break;
 				}
 
@@ -305,178 +548,6 @@ export default function initForge(pi: ExtensionAPI): void {
 			break; // unknown phase
 		}
 	}
-
-	// ── Tools ────────────────────────────────────────────────────────
-
-	pi.registerTool({
-		name: TOOL_FORGE_DONE,
-		label: "Forge Done",
-		description:
-			"Signal that this implementation pass is complete. Transitions forge to review phase.",
-		promptSnippet:
-			"Signal completion of the current forge implementation pass.",
-		promptGuidelines: [
-			"Call this when your implementation work for the current forge cycle is done.",
-			"After calling this, STOP immediately. Do not continue working.",
-		],
-		parameters: Type.Object({}),
-
-		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
-			if (!activeTaskId) {
-				return {
-					content: [{ type: "text", text: "No active forge." }],
-					details: {},
-				};
-			}
-
-			const state = loadState(ctx.cwd, activeTaskId);
-			if (!state || state.status !== "active" || state.phase !== "implementing") {
-				return {
-					content: [
-						{ type: "text", text: "Forge is not in IMPLEMENTING phase." },
-					],
-					details: {},
-				};
-			}
-
-			// Transition to reviewing -- the command handler loop detects this after waitForIdle
-			state.phase = "reviewing";
-			saveState(ctx.cwd, state);
-
-			return {
-				content: [
-					{
-						type: "text",
-						text: `Implementation complete (cycle ${state.cycle}). STOP now.`,
-					},
-				],
-				details: {},
-			};
-		},
-
-		renderCall(_args, theme) {
-			return new Text(theme.fg("toolTitle", theme.bold("forge_done")), 0, 0);
-		},
-
-		renderResult(result, _options, theme) {
-			const msg = result.content[0];
-			const text = msg?.type === "text" ? msg.text : "";
-			return new Text(theme.fg("muted", text), 0, 0);
-		},
-	});
-
-	pi.registerTool({
-		name: TOOL_FORGE_REVIEW,
-		label: "Forge Review",
-		description:
-			"Submit review verdict. 'complete' closes the task. 'reject' starts next implementation cycle.",
-		promptSnippet:
-			"Submit the review verdict for the current forge cycle.",
-		promptGuidelines: [
-			"Call with { verdict: 'complete' } when all requirements are met and subtasks are closed.",
-			"Call with { verdict: 'reject', feedback: '...' } to describe what needs fixing.",
-			"After calling this, STOP immediately. Do not continue working.",
-		],
-		parameters: Type.Union([
-			Type.Object({
-				verdict: Type.Literal("complete"),
-			}),
-			Type.Object({
-				verdict: Type.Literal("reject"),
-				feedback: Type.String({
-					description: "What is wrong and what to fix in the next cycle",
-				}),
-			}),
-		]),
-
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			if (!activeTaskId) {
-				return {
-					content: [{ type: "text", text: "No active forge." }],
-					details: {},
-				};
-			}
-
-			const state = loadState(ctx.cwd, activeTaskId);
-			if (!state || state.status !== "active" || state.phase !== "reviewing") {
-				return {
-					content: [
-						{ type: "text", text: "Forge is not in REVIEWING phase." },
-					],
-					details: {},
-				};
-			}
-
-			const verdict = (params as { verdict: string }).verdict;
-
-			if (verdict === "complete") {
-				// Close the backlog item
-				const closed = await closeBacklogItem(
-					ctx.cwd,
-					state.taskId,
-					"Forge review: complete",
-				);
-
-				if (!closed) {
-					return {
-						content: [
-							{
-								type: "text",
-								text: `Failed to close backlog item ${state.taskId}. Retry or close manually.`,
-							},
-						],
-						details: {},
-					};
-				}
-
-				state.status = "completed";
-				state.completedAt = new Date().toISOString();
-				saveState(ctx.cwd, state);
-
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Forge complete. Task ${state.taskId} closed after ${state.cycle} cycle(s). STOP now.`,
-						},
-					],
-					details: {},
-				};
-			}
-
-			// verdict === "reject"
-			const feedback = (params as { verdict: "reject"; feedback: string }).feedback;
-			state.lastFeedback = feedback;
-			state.cycle++;
-			state.phase = "implementing";
-			saveState(ctx.cwd, state);
-
-			return {
-				content: [
-					{
-						type: "text",
-						text: `Review rejected. Feedback saved for cycle ${state.cycle}. STOP now.`,
-					},
-				],
-				details: {},
-			};
-		},
-
-		renderCall(args, theme) {
-			const verdict = (args as { verdict?: string }).verdict ?? "?";
-			let text = theme.fg("toolTitle", theme.bold("forge_review "));
-			text += verdict === "complete"
-				? theme.fg("accent", "COMPLETE")
-				: theme.fg("warning", "REJECT");
-			return new Text(text, 0, 0);
-		},
-
-		renderResult(result, _options, theme) {
-			const msg = result.content[0];
-			const text = msg?.type === "text" ? msg.text : "";
-			return new Text(theme.fg("muted", text), 0, 0);
-		},
-	});
 
 	// ── Commands ─────────────────────────────────────────────────────
 
@@ -628,7 +699,7 @@ Commands:
 
 					const paused = activeTaskId;
 					activeTaskId = undefined;
-					deactivateForgeTools();
+					restoreReviewTools();
 					updateUI(ctx.cwd, ctx);
 					ctx.ui.notify(`Forge paused: ${paused}`, "info");
 					return;
@@ -677,6 +748,7 @@ Commands:
 						state.status = "paused";
 						saveState(ctx.cwd, state);
 						activeTaskId = undefined;
+						restoreReviewTools();
 						ctx.ui.notify("Session cancelled. Forge remains paused.", "warning");
 						return;
 					}
@@ -772,7 +844,7 @@ Commands:
 
 					if (activeTaskId === taskId) {
 						activeTaskId = undefined;
-						deactivateForgeTools();
+						restoreReviewTools();
 					}
 
 					deleteForge(ctx.cwd, taskId);
@@ -792,11 +864,11 @@ Commands:
 	// ── Event handlers ───────────────────────────────────────────────
 
 	// Resolve the forge loop's wait when the agent finishes
-	pi.on("agent_end", async (_event, _ctx) => {
+	pi.on("agent_end", async (event, _ctx) => {
 		if (agentEndResolve) {
 			const resolve = agentEndResolve;
 			agentEndResolve = undefined;
-			resolve();
+			resolve(event as AgentEndEvent);
 		}
 	});
 
@@ -859,7 +931,7 @@ Commands:
 
 	// Notify about forges on session start
 	pi.on("session_start", async (_event, ctx) => {
-		deactivateForgeTools();
+		restoreReviewTools();
 
 		// If loop is running (activeTaskId set), the command handler drives everything -- skip notification
 		if (activeTaskId) {
