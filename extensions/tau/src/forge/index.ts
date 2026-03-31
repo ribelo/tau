@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import type {
 	ExtensionAPI,
 } from "@mariozechner/pi-coding-agent";
@@ -18,6 +19,8 @@ import {
 	reviewSystemSnippet,
 } from "./prompts.js";
 import { readMaterializedIssuesCache } from "../backlog/materialize.js";
+import { resolveBacklogPaths } from "../backlog/contract.js";
+import { parseMaterializedIssues } from "../backlog/materialize.js";
 import { setIssueStatus } from "../backlog/events.js";
 
 const TOOL_FORGE_DONE = "forge_done";
@@ -381,9 +384,54 @@ Commands:
 	pi.registerCommand("forge", {
 		description: "Forge -- implement-review loop on backlog items",
 		getArgumentCompletions(prefix: string) {
-			const subs = ["start", "stop", "resume", "status", "set", "cancel"];
-			const matching = subs.filter((s) => s.startsWith(prefix));
-			return matching.map((s) => ({ label: s, value: s }));
+			const tokens = prefix.trimStart().split(/\s+/);
+			// First token: subcommand
+			if (tokens.length <= 1) {
+				const subs = ["start", "stop", "resume", "status", "set", "cancel"];
+				const partial = tokens[0] ?? "";
+				const matching = subs.filter((s) => s.startsWith(partial));
+				return matching.length > 0
+					? matching.map((s) => ({ label: s, value: s }))
+					: null;
+			}
+
+			const sub = tokens[0];
+			const partial = tokens[1] ?? "";
+
+			// Second token: task-id for commands that need one
+			if (tokens.length === 2) {
+				if (sub === "start") {
+					// Suggest open backlog items (sync read of cache file)
+					try {
+						const paths = resolveBacklogPaths(process.cwd());
+						const raw = fs.readFileSync(paths.materializedIssuesPath, "utf-8");
+						const issues = parseMaterializedIssues(raw);
+						return issues
+							.filter((i) => i.status !== "closed" && i.status !== "tombstone")
+							.filter((i) => i.id.startsWith(partial))
+							.slice(0, 20)
+							.map((i) => ({ label: i.id, value: i.id, description: i.title }));
+					} catch {
+						return null;
+					}
+				}
+				if (sub === "resume") {
+					// Suggest paused forges
+					const forges = listForges(process.cwd()).filter((s) => s.status === "paused");
+					return forges
+						.filter((s) => s.taskId.startsWith(partial))
+						.map((s) => ({ label: s.taskId, value: s.taskId, description: `paused, cycle ${s.cycle}` }));
+				}
+				if (sub === "set" || sub === "cancel") {
+					// Suggest all forges
+					const forges = listForges(process.cwd());
+					return forges
+						.filter((s) => s.taskId.startsWith(partial))
+						.map((s) => ({ label: s.taskId, value: s.taskId, description: `${s.status}, cycle ${s.cycle}` }));
+				}
+			}
+
+			return null;
 		},
 
 		async handler(args, ctx) {
