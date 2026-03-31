@@ -423,11 +423,28 @@ Commands:
 						.map((s) => ({ label: s.taskId, value: s.taskId, description: `paused, cycle ${s.cycle}` }));
 				}
 				if (sub === "set" || sub === "cancel") {
-					// Suggest all forges
+					// Suggest existing forges first, then open backlog items for set
 					const forges = listForges(process.cwd());
-					return forges
+					const forgeItems = forges
 						.filter((s) => s.taskId.startsWith(partial))
 						.map((s) => ({ label: s.taskId, value: s.taskId, description: `${s.status}, cycle ${s.cycle}` }));
+					if (forgeItems.length > 0) return forgeItems;
+					// For set: fall through to backlog items so user can pre-configure
+					if (sub === "set") {
+						try {
+							const paths = resolveBacklogPaths(process.cwd());
+							const raw = fs.readFileSync(paths.materializedIssuesPath, "utf-8");
+							const issues = parseMaterializedIssues(raw);
+							return issues
+								.filter((i) => i.status !== "closed" && i.status !== "tombstone")
+								.filter((i) => i.id.startsWith(partial))
+								.slice(0, 20)
+								.map((i) => ({ label: i.id, value: i.id, description: i.title }));
+						} catch {
+							return null;
+						}
+					}
+					return null;
 				}
 			}
 
@@ -627,10 +644,22 @@ Commands:
 						return;
 					}
 
-					const state = loadState(ctx.cwd, taskId);
+					// Create a paused forge if none exists yet (pre-configuration)
+					let state = loadState(ctx.cwd, taskId);
 					if (!state) {
-						ctx.ui.notify(`No forge found for ${taskId}.`, "error");
-						return;
+						const item = await readBacklogItem(ctx.cwd, taskId);
+						if (!item) {
+							ctx.ui.notify(`Backlog item ${taskId} not found.`, "error");
+							return;
+						}
+						state = {
+							taskId,
+							phase: "implementing",
+							cycle: 1,
+							status: "paused",
+							reviewer: {},
+							startedAt: new Date().toISOString(),
+						};
 					}
 
 					state.reviewer = { ...state.reviewer, model: modelId };
