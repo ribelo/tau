@@ -28,11 +28,12 @@ export function buildImplementPrompt(
 		"",
 		"Work on the task above. Add progress notes via `backlog comment`.",
 		"Call `forge_done` when this implementation pass is complete.",
+		"After calling forge_done, STOP. Do not continue working. A fresh review session starts automatically.",
 		"Do NOT close the backlog task directly.",
 	].join("\n");
 }
 
-/** Build the REVIEW prompt injected into the same session after forge_done. */
+/** Build the REVIEW prompt injected at the start of the review session. */
 export function buildReviewPrompt(
 	state: ForgeState,
 	taskTitle: string,
@@ -51,12 +52,12 @@ export function buildReviewPrompt(
 		"",
 		"---",
 		"",
-		"Review the implementation work done in this session.",
-		"Evaluate whether the task requirements are met.",
+		"Review the implementation work. Only finder and librarian agents are available.",
+		"Use the backlog tool to check task status. Close tasks that pass review.",
 		"",
 		"Call `forge_review` with your verdict:",
-		"- `{ verdict: 'complete' }` -- task is done, close it",
-		"- `{ verdict: 'reject', feedback: '...' }` -- describe what is wrong; forge pauses for fresh session",
+		"- `{ verdict: 'complete' }` -- all work passes review",
+		"- `{ verdict: 'reject', feedback: '...' }` -- describe what needs fixing",
 	].join("\n");
 }
 
@@ -67,7 +68,9 @@ export function implementSystemSnippet(state: ForgeState): string {
 		"",
 		`You are implementing backlog task ${state.taskId}.`,
 		"When your implementation pass is done, call the forge_done tool.",
-		"Do NOT close the backlog task. The reviewer will handle that.",
+		"After calling forge_done, STOP immediately. Do not emit further output.",
+		"A fresh review session starts automatically.",
+		"Do NOT close the backlog task. The reviewer handles that.",
 	].join("\n");
 }
 
@@ -77,8 +80,10 @@ export function reviewSystemSnippet(state: ForgeState): string {
 		`[FORGE - ${state.taskId} - Cycle ${state.cycle} - REVIEWING]`,
 		"",
 		`You are reviewing implementation work on backlog task ${state.taskId}.`,
+		"Only finder and librarian agents are available. Other agents are blocked.",
+		"Close subtasks that pass review: `backlog close <subtask-id> --reason \"...\"`.",
 		"Evaluate the work, then call forge_review with your verdict.",
-		"- { verdict: 'complete' } to close the task",
+		"- { verdict: 'complete' } when all work passes and all subtasks are closed",
 		"- { verdict: 'reject', feedback: '...' } to request changes",
 	].join("\n");
 }

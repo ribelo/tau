@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import type {
 	ExtensionAPI,
+	ExtensionCommandContext,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { Text } from "@mariozechner/pi-tui";
@@ -75,6 +76,12 @@ export default function initForge(pi: ExtensionAPI): void {
 	/** The task ID of the currently active forge in this session, if any. */
 	let activeTaskId: string | undefined;
 
+	/** Captured newSession from command context for automatic session transitions. */
+	let capturedNewSession: ExtensionCommandContext["newSession"] | undefined;
+
+	/** Set after forge_done / forge_review(reject). Cleared by turn_end handler. */
+	let pendingNewSession = false;
+
 	// ── Tool activation helpers ──────────────────────────────────────
 
 	function activateForgeTools(phase: "implementing" | "reviewing"): void {
@@ -138,10 +145,7 @@ export default function initForge(pi: ExtensionAPI): void {
 		ctx.ui.setWidget("forge", lines);
 	}
 
-	/** The model that was active before the reviewer model was applied. */
-	let implementerModel: import("@mariozechner/pi-ai").Model<import("@mariozechner/pi-ai").Api> | undefined;
-
-	/** Apply reviewer model if configured. Saves current model for later restore. */
+	/** Apply reviewer model if configured. */
 	async function applyReviewerModel(
 		ctx: import("@mariozechner/pi-coding-agent").ExtensionContext,
 		state: ForgeState,
@@ -149,20 +153,7 @@ export default function initForge(pi: ExtensionAPI): void {
 		if (!state.reviewer.model) return;
 		const reviewerModel = resolveModel(ctx, state.reviewer.model);
 		if (!reviewerModel) return;
-		implementerModel = ctx.model;
-		const ok = await pi.setModel(reviewerModel);
-		if (!ok) {
-			// Model switch failed (e.g. no API key); clear saved model so we don't restore garbage
-			implementerModel = undefined;
-		}
-	}
-
-	/** Restore the implementer model after review phase. */
-	async function restoreImplementerModel(): Promise<void> {
-		if (implementerModel) {
-			await pi.setModel(implementerModel);
-			implementerModel = undefined;
-		}
+		await pi.setModel(reviewerModel);
 	}
 
 	// ── Tools ────────────────────────────────────────────────────────
@@ -171,12 +162,12 @@ export default function initForge(pi: ExtensionAPI): void {
 		name: TOOL_FORGE_DONE,
 		label: "Forge Done",
 		description:
-			"Signal that this implementation pass is complete. Transitions forge to review phase.",
+			"Signal that this implementation pass is complete. Transitions forge to review phase in a fresh session.",
 		promptSnippet:
 			"Signal completion of the current forge implementation pass to start the review phase.",
 		promptGuidelines: [
 			"Call this when your implementation work for the current forge cycle is done.",
-			"Do not call this outside an active forge IMPLEMENTING phase.",
+			"After calling this, STOP. Do not continue working. A fresh review session starts automatically.",
 		],
 		parameters: Type.Object({}),
 
@@ -201,27 +192,18 @@ export default function initForge(pi: ExtensionAPI): void {
 			// Transition to reviewing
 			state.phase = "reviewing";
 			saveState(ctx.cwd, state);
-			activateForgeTools("reviewing");
-			updateUI(ctx);
 
-			// Apply reviewer model if configured
-			await applyReviewerModel(ctx, state);
+			// Deactivate tools -- session_start in the new session will activate the right ones
+			deactivateForgeTools();
 
-			// Read backlog item for review prompt
-			const item = await readBacklogItem(ctx.cwd, state.taskId);
-			const title = item?.title ?? state.taskId;
-			const description = item?.description ?? "(no description)";
-
-			// Inject review prompt into same session
-			pi.sendUserMessage(buildReviewPrompt(state, title, description), {
-				deliverAs: "followUp",
-			});
+			// Signal turn_end handler to create fresh session
+			pendingNewSession = true;
 
 			return {
 				content: [
 					{
 						type: "text",
-						text: `Implementation pass complete. Transitioning to review phase (cycle ${state.cycle}).`,
+						text: `Implementation complete (cycle ${state.cycle}). Fresh review session starting.`,
 					},
 				],
 				details: {},
@@ -243,12 +225,13 @@ export default function initForge(pi: ExtensionAPI): void {
 		name: TOOL_FORGE_REVIEW,
 		label: "Forge Review",
 		description:
-			"Submit review verdict. 'complete' closes the task. 'reject' sends feedback for next implementation cycle.",
+			"Submit review verdict. 'complete' closes the task. 'reject' starts a fresh implementation cycle.",
 		promptSnippet:
 			"Submit the review verdict for the current forge cycle.",
 		promptGuidelines: [
-			"Call with { verdict: 'complete' } when the implementation meets all requirements.",
+			"Call with { verdict: 'complete' } when the implementation meets all requirements and all subtasks are closed.",
 			"Call with { verdict: 'reject', feedback: '...' } to describe what needs fixing.",
+			"After calling this, STOP. Do not continue working.",
 		],
 		parameters: Type.Union([
 			Type.Object({
@@ -283,7 +266,7 @@ export default function initForge(pi: ExtensionAPI): void {
 			const verdict = (params as { verdict: string }).verdict;
 
 			if (verdict === "complete") {
-				// Close the backlog item via internal API
+				// Close the backlog item
 				const closed = await closeBacklogItem(
 					ctx.cwd,
 					state.taskId,
@@ -311,9 +294,6 @@ export default function initForge(pi: ExtensionAPI): void {
 				deactivateForgeTools();
 				updateUI(ctx);
 
-				// Restore implementer model if reviewer model was applied
-				await restoreImplementerModel();
-
 				return {
 					content: [
 						{
@@ -330,23 +310,19 @@ export default function initForge(pi: ExtensionAPI): void {
 			state.lastFeedback = feedback;
 			state.cycle++;
 			state.phase = "implementing";
-			// Pause so /forge resume starts a fresh session via ctx.newSession()
-			state.status = "paused";
 			saveState(ctx.cwd, state);
 
-			const taskId = activeTaskId;
-			activeTaskId = undefined;
+			// Deactivate tools -- session_start in the new session will activate the right ones
 			deactivateForgeTools();
-			updateUI(ctx);
 
-			// Restore implementer model before next cycle
-			await restoreImplementerModel();
+			// Signal turn_end handler to create fresh session
+			pendingNewSession = true;
 
 			return {
 				content: [
 					{
 						type: "text",
-						text: `Review rejected. Feedback saved for cycle ${state.cycle}. Run /forge resume ${taskId} to start fresh session.`,
+						text: `Review rejected. Feedback saved for cycle ${state.cycle}. Fresh implementation session starting.`,
 					},
 				],
 				details: {},
@@ -452,6 +428,9 @@ Commands:
 		},
 
 		async handler(args, ctx) {
+			// Capture newSession for automatic transitions in forge_done / forge_review
+			capturedNewSession = ctx.newSession.bind(ctx);
+
 			const tokens = args.trim().split(/\s+/);
 			const cmd = tokens[0];
 			const rest = tokens.slice(1);
@@ -491,14 +470,17 @@ Commands:
 						return;
 					}
 
-					const state: ForgeState = {
-						taskId,
-						phase: "implementing",
-						cycle: 1,
-						status: "active",
-						reviewer: {},
-						startedAt: new Date().toISOString(),
-					};
+					// If pre-configured via /forge set, reuse that state
+					const state: ForgeState = prev?.status === "paused"
+						? { ...prev, status: "active", cycle: 1, phase: "implementing", startedAt: new Date().toISOString() }
+						: {
+							taskId,
+							phase: "implementing",
+							cycle: 1,
+							status: "active",
+							reviewer: {},
+							startedAt: new Date().toISOString(),
+						};
 
 					saveState(ctx.cwd, state);
 					activeTaskId = taskId;
@@ -530,6 +512,7 @@ Commands:
 
 					const paused = activeTaskId;
 					activeTaskId = undefined;
+					pendingNewSession = false;
 					deactivateForgeTools();
 					updateUI(ctx);
 					ctx.ui.notify(`Forge paused: ${paused}`, "info");
@@ -568,40 +551,21 @@ Commands:
 					state.status = "active";
 					saveState(ctx.cwd, state);
 					activeTaskId = taskId;
-					activateForgeTools(state.phase);
-					updateUI(ctx);
-
-					const item = await readBacklogItem(ctx.cwd, taskId);
-					const title = item?.title ?? taskId;
-					const description = item?.description ?? "(no description)";
 
 					ctx.ui.notify(
 						`Forge resumed: ${taskId} (${state.phase}, cycle ${state.cycle})`,
 						"info",
 					);
 
-					// Resume in a fresh session for implementing phase
-					if (state.phase === "implementing") {
-						const result = await ctx.newSession();
-						if (result.cancelled) {
-							// User cancelled new session; revert to paused
-							state.status = "paused";
-							saveState(ctx.cwd, state);
-							activeTaskId = undefined;
-							deactivateForgeTools();
-							updateUI(ctx);
-							ctx.ui.notify("New session cancelled. Forge remains paused.", "warning");
-							return;
-						}
-						pi.sendUserMessage(
-							buildImplementPrompt(state, title, description),
-						);
-					} else {
-						// Reapply reviewer model when resuming in reviewing phase
-						await applyReviewerModel(ctx, state);
-						pi.sendUserMessage(
-							buildReviewPrompt(state, title, description),
-						);
+					// Create fresh session -- session_start handler injects prompt + tools + model
+					const result = await ctx.newSession();
+					if (result.cancelled) {
+						state.status = "paused";
+						saveState(ctx.cwd, state);
+						activeTaskId = undefined;
+						deactivateForgeTools();
+						updateUI(ctx);
+						ctx.ui.notify("New session cancelled. Forge remains paused.", "warning");
 					}
 					return;
 				}
@@ -685,6 +649,7 @@ Commands:
 
 					if (activeTaskId === taskId) {
 						activeTaskId = undefined;
+						pendingNewSession = false;
 						deactivateForgeTools();
 					}
 
@@ -720,51 +685,108 @@ Commands:
 		};
 	});
 
-	// Block implementer from closing the forge backlog task
+	// Block implementer from closing the forge backlog task + block non-finder/librarian agents during review
 	pi.on("tool_call", async (event, _ctx) => {
 		if (!activeTaskId) return undefined;
 		const state = loadState(process.cwd(), activeTaskId);
-		if (!state || state.status !== "active" || state.phase !== "implementing") return undefined;
+		if (!state || state.status !== "active") return undefined;
 
-		// Only intercept backlog tool calls
-		if (event.toolName !== "backlog") return undefined;
 		const input = (event as { input: Record<string, unknown> }).input;
-		const command = typeof input["command"] === "string" ? input["command"] : "";
 
-		// Check if trying to close the forge task
-		const closePattern = new RegExp(`^\\s*close\\s+${state.taskId}(\\s|$)`);
-		if (closePattern.test(command)) {
-			return {
-				block: true,
-				reason: `Cannot close forge task ${state.taskId} during implementation. Call forge_done instead.`,
-			};
+		// During implementing: block closing the forge task
+		if (state.phase === "implementing" && event.toolName === "backlog") {
+			const command = typeof input["command"] === "string" ? input["command"] : "";
+			const closePattern = new RegExp(`^\\s*close\\s+${state.taskId}(\\s|$)`);
+			if (closePattern.test(command)) {
+				return {
+					block: true,
+					reason: `Cannot close forge task ${state.taskId} during implementation. Call forge_done instead.`,
+				};
+			}
 		}
+
+		// During reviewing: block agent spawn/send for non-finder/librarian
+		if (state.phase === "reviewing" && event.toolName === "agent") {
+			const action = typeof input["action"] === "string" ? input["action"] : "";
+			const agent = typeof input["agent"] === "string" ? input["agent"] : "";
+			if (
+				(action === "spawn" || action === "send") &&
+				agent !== "finder" &&
+				agent !== "librarian"
+			) {
+				return {
+					block: true,
+					reason: `During forge review, only finder and librarian agents are allowed. Cannot ${action} ${agent}.`,
+				};
+			}
+		}
+
 		return undefined;
 	});
 
-	// Notify about active forges on session start
+	// After forge_done / forge_review(reject), create a fresh session
+	pi.on("turn_end", async (_event, _ctx) => {
+		if (!pendingNewSession) return;
+		pendingNewSession = false;
+
+		if (!capturedNewSession) return;
+		const newSession = capturedNewSession;
+
+		// Defer to next tick so the turn_end event processing completes first
+		setTimeout(async () => {
+			try {
+				await newSession();
+				// session_start handler will detect the active forge and inject prompt + tools + model
+			} catch {
+				// Failed to create session; forge state is saved, user can /forge resume
+			}
+		}, 0);
+	});
+
+	// On session start: if active forge, inject prompt + tools + model
 	pi.on("session_start", async (_event, ctx) => {
-		// Deactivate forge tools by default; only activate if a forge is running
+		// Default: no forge tools
 		deactivateForgeTools();
 
-		const active = listForges(process.cwd()).filter((s) => s.status === "active");
-		if (active.length > 0 && ctx.hasUI) {
-			const lines = active.map(
-				(s) => `  ${s.taskId}: ${s.phase}, cycle ${s.cycle}`,
-			);
-			ctx.ui.notify(
-				`Active forges:\n${lines.join("\n")}\n\nUse /forge resume <task-id> to continue`,
-				"info",
-			);
-		}
-
-		// Restore tool activation if there's an active forge
 		if (activeTaskId) {
 			const state = loadState(process.cwd(), activeTaskId);
 			if (state?.status === "active") {
 				activateForgeTools(state.phase);
 				updateUI(ctx);
+
+				// Apply reviewer model for review sessions
+				if (state.phase === "reviewing") {
+					await applyReviewerModel(ctx, state);
+				}
+
+				// Read task info and inject prompt
+				const item = await readBacklogItem(ctx.cwd, state.taskId);
+				const title = item?.title ?? state.taskId;
+				const description = item?.description ?? "(no description)";
+
+				if (state.phase === "implementing") {
+					pi.sendUserMessage(
+						buildImplementPrompt(state, title, description),
+					);
+				} else {
+					pi.sendUserMessage(
+						buildReviewPrompt(state, title, description),
+					);
+				}
+				return;
 			}
+		}
+
+		// No active runtime forge -- notify about on-disk forges from previous runs
+		const onDisk = listForges(process.cwd()).filter((s) => s.status === "active" || s.status === "paused");
+		if (onDisk.length > 0 && ctx.hasUI) {
+			const lines = onDisk.map(
+				(s) => `  ${s.taskId}: ${s.status} (${s.phase}, cycle ${s.cycle})`,
+			);
+			ctx.ui.notify(
+				`Forges on disk:\n${lines.join("\n")}\n\nUse /forge resume <task-id> to continue`,
+				"info",
+			);
 		}
 	});
 
