@@ -787,14 +787,19 @@ Commands:
 		if (state.phase === "reviewing" && event.toolName === "agent") {
 			const action = typeof input["action"] === "string" ? input["action"] : "";
 			const agent = typeof input["agent"] === "string" ? input["agent"] : "";
-			if (
-				(action === "spawn" || action === "send") &&
-				agent !== "finder" &&
-				agent !== "librarian"
-			) {
+			// Block spawn/send for non-finder/librarian, and block wait on unknown agents
+			if (action === "spawn" || action === "send") {
+				if (agent !== "finder" && agent !== "librarian") {
+					return {
+						block: true,
+						reason: `During forge review, only finder and librarian agents are allowed. Cannot ${action} ${agent}.`,
+					};
+				}
+			}
+			if (action === "wait") {
 				return {
 					block: true,
-					reason: `During forge review, only finder and librarian agents are allowed. Cannot ${action} ${agent}.`,
+					reason: "During forge review, agent wait is not allowed. Use finder or librarian directly.",
 				};
 			}
 		}
