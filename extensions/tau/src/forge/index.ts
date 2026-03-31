@@ -23,6 +23,7 @@ import { readMaterializedIssuesCache } from "../backlog/materialize.js";
 import { resolveBacklogPaths } from "../backlog/contract.js";
 import { parseMaterializedIssues } from "../backlog/materialize.js";
 import { setIssueStatus } from "../backlog/events.js";
+import { parseProviderModel } from "../shared/model-id.js";
 
 const TOOL_FORGE_DONE = "forge_done";
 const TOOL_FORGE_REVIEW = "forge_review";
@@ -64,12 +65,23 @@ async function closeBacklogItem(
 	}
 }
 
-/** Resolve a model object from a model ID string via the model registry. */
+/** Resolve a model object from a model ID string via the model registry.
+ * Accepts both plain id ("gpt-5.4-mini") and qualified "provider/id" format. */
 function resolveModel(
 	ctx: { modelRegistry: import("@mariozechner/pi-coding-agent").ModelRegistry },
 	modelId: string,
 ): import("@mariozechner/pi-ai").Model<import("@mariozechner/pi-ai").Api> | undefined {
-	return ctx.modelRegistry.getAll().find((m) => m.id === modelId);
+	const all = ctx.modelRegistry.getAll();
+	// Try exact id match first
+	const exact = all.find((m) => m.id === modelId);
+	if (exact) return exact;
+	// Try provider/id format
+	const parsed = parseProviderModel(modelId);
+	if (parsed) {
+		return all.find((m) => m.provider === parsed.provider && m.id === parsed.modelId);
+	}
+	// Try matching by name
+	return all.find((m) => m.name === modelId);
 }
 
 export default function initForge(pi: ExtensionAPI): void {
