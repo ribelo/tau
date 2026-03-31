@@ -30,8 +30,8 @@ describe("footer backlog hygiene", () => {
 
 	it("resolves the nearest workspace root and reads backlog cache state", async () => {
 		await withTempWorkspace(async (workspaceRoot) => {
-			const first = await createIssue(workspaceRoot, { title: "Alpha", actor: "test" });
-			await createIssue(workspaceRoot, { title: "Beta", actor: "test" });
+			const first = await createIssue(workspaceRoot, { title: "Alpha", actor: "test", prefix: "test" });
+			await createIssue(workspaceRoot, { title: "Beta", actor: "test", prefix: "test" });
 			await setIssueStatus(workspaceRoot, {
 				issueId: first.id,
 				actor: "test",

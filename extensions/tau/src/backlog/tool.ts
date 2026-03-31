@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { Text, type AutocompleteItem } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
@@ -74,13 +75,13 @@ export type BacklogToolDetails = {
 const BACKLOG_MESSAGE_TYPE = "backlog";
 
 const TOOL_DESCRIPTION =
-	"Tau backlog planning tool. Provide a CLI-style command without a leading tool name. Examples: `list`, `ready`, `blocked`, `show tau-123`, `create \"Title\" --type task --priority 2`, `update tau-123 --title \"New title\"`, `close tau-123 --reason \"Done\"`, `dep add tau-1 tau-2 --type blocks`, `comment tau-1 \"note\"`, `status`.";
+	"Backlog planning tool. Provide a CLI-style command without a leading tool name. Examples: `list`, `ready`, `blocked`, `show <id>`, `create \"Title\" --type task --priority 2`, `update <id> --title \"New title\"`, `close <id> --reason \"Done\"`, `dep add <id-1> <id-2> --type blocks`, `comment <id> \"note\"`, `status`.";
 
 const TOOL_PROMPT_SNIPPET =
 	"Backlog planning system for task tracking and event-sourced issue management";
 
 const TOOL_PROMPT_GUIDELINES = [
-	"Use the backlog tool for planning and issue tracking in tau.",
+	"Use the backlog tool for planning and issue tracking.",
 	"Prefer ready work whose blockers are satisfied.",
 	"Use `backlog show <id>` to inspect issue details before changing them.",
 ] as const;
@@ -88,7 +89,7 @@ const TOOL_PROMPT_GUIDELINES = [
 const backlogParams = Type.Object({
 	command: Type.String({
 		description:
-			"Backlog command to run. Omit any leading tool name. Examples: `list`, `ready`, `show tau-xyz`, `create \"Title\" --type task`, `dep add tau-1 tau-2 --type blocks`.",
+			"Backlog command to run. Omit any leading tool name. Examples: `list`, `ready`, `show <id>`, `create \"Title\" --type task`, `dep add <id-1> <id-2> --type blocks`.",
 	}),
 	cwd: Type.Optional(
 		Type.String({
@@ -551,6 +552,7 @@ function createFieldsFromFlags(parsed: ParsedCommand): Readonly<Record<string, u
 
 export async function runBacklogCommand(command: string, cwd?: string): Promise<BacklogToolDetails> {
 	const workspaceRoot = normalizeWorkspaceRoot(cwd);
+	const projectName = basename(workspaceRoot);
 	const parsed = parseCommand(command);
 	const kind = commandKind(parsed);
 
@@ -602,11 +604,13 @@ export async function runBacklogCommand(command: string, cwd?: string): Promise<
 				const createInput: {
 					title: string;
 					actor: string;
+					prefix: string;
 					id?: string;
 					fields: Readonly<Record<string, unknown>>;
 				} = {
 					title,
-					actor: "tau-backlog",
+					actor: "backlog",
+					prefix: projectName,
 					fields: createFieldsFromFlags(parsed),
 				};
 				const explicitId = flagValue(parsed, "id");
@@ -642,7 +646,7 @@ export async function runBacklogCommand(command: string, cwd?: string): Promise<
 					reason?: string;
 				} = {
 					issueId,
-					actor: "tau-backlog",
+					actor: "backlog",
 					status: "closed",
 				};
 				const reason = flagValue(parsed, "reason");
@@ -659,7 +663,7 @@ export async function runBacklogCommand(command: string, cwd?: string): Promise<
 				}
 				const reopened = await setIssueStatus(workspaceRoot, {
 					issueId,
-					actor: "tau-backlog",
+					actor: "backlog",
 					status: "open",
 				});
 				return { command, kind, ok: true, data: reopened };
@@ -672,7 +676,7 @@ export async function runBacklogCommand(command: string, cwd?: string): Promise<
 				}
 				const issue = await addIssueComment(workspaceRoot, {
 					issueId,
-					actor: "tau-backlog",
+					actor: "backlog",
 					text,
 				});
 				const comment = issue.comments?.at(-1);
@@ -694,7 +698,7 @@ export async function runBacklogCommand(command: string, cwd?: string): Promise<
 				}
 				await addIssueDependency(workspaceRoot, {
 					issueId,
-					actor: "tau-backlog",
+					actor: "backlog",
 					dependsOnId,
 					type: flagValue(parsed, "type") ?? "blocks",
 				});
@@ -719,7 +723,7 @@ export async function runBacklogCommand(command: string, cwd?: string): Promise<
 					type?: string;
 				} = {
 					issueId,
-					actor: "tau-backlog",
+					actor: "backlog",
 					dependsOnId,
 				};
 				const dependencyType = flagValue(parsed, "type");
@@ -890,7 +894,7 @@ export default function initBacklog(pi: ExtensionAPI): void {
 	}));
 
 	pi.on("before_agent_start", async (event) => ({
-		systemPrompt: `Backlog integration: Prefer the \`backlog\` tool for tau planning operations.\n\n${event.systemPrompt}`,
+		systemPrompt: `Backlog integration: Prefer the \`backlog\` tool for planning operations.\n\n${event.systemPrompt}`,
 	}));
 
 	pi.registerCommand("backlog", {

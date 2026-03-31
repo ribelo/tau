@@ -129,10 +129,13 @@ export async function createIssue(workspaceRoot: string, input: CreateIssueInput
 	return withBacklogWriteLock(workspaceRoot, async () => {
 		const currentIssues = await loadCurrentIssuesUnlocked(workspaceRoot);
 		const existingIds = new Set(currentIssues.map((issue) => issue.id));
+		if (!input.id && !input.prefix) {
+			throw new Error("createIssue requires either an explicit id or a prefix for id generation");
+		}
 		const issueId =
 			input.id ??
 			generateIssueId({
-				prefix: input.prefix ?? "tau",
+				prefix: input.prefix!,
 				title: input.title,
 				description: typeof input.fields?.["description"] === "string" ? input.fields["description"] : "",
 				creator: input.actor,
