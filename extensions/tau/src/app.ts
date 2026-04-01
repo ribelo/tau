@@ -9,6 +9,7 @@ import { Footer, FooterLive } from "./services/footer.js";
 import { PromptModes, PromptModesLive } from "./services/prompt-modes.js";
 import { Persistence, PersistenceLive } from "./services/persistence.js";
 import { CuratedMemory, CuratedMemoryLive } from "./services/curated-memory.js";
+import { Ralph, RalphLive } from "./services/ralph.js";
 import { SkillManager, SkillManagerLive } from "./services/skill-manager.js";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import initExa from "./exa/index.js";
@@ -39,6 +40,7 @@ import { AgentRegistry } from "./agent/agent-registry.js";
 import { buildToolDescription } from "./agent/tool.js";
 import { createSkillMarkerRuntime } from "./skill-marker/index.js";
 import { installSqliteExperimentalWarningFilter } from "./shared/sqlite-warning.js";
+import { RalphRepoLive } from "./ralph/repo.js";
 
 const PersistenceLayer = PersistenceLive;
 const SandboxLayer = SandboxLive.pipe(
@@ -72,6 +74,27 @@ const createMainLayer = (agentRuntimeBridge: AgentRuntimeBridgeService) => {
 		Layer.provide(SandboxLayer),
 	);
 
+	const hasActiveSubagents = (): Effect.Effect<boolean, never, never> =>
+		Effect.promise(() =>
+			agentRuntimeBridge.runPromise(
+				Effect.gen(function* () {
+					const control = yield* AgentControl;
+					return yield* control.list;
+				}),
+			),
+		).pipe(
+			Effect.map((agents) =>
+				agents.some(
+					(agent) => agent.status.state === "pending" || agent.status.state === "running",
+				),
+			),
+			Effect.catch(() => Effect.succeed(false)),
+		);
+
+	const RalphLayer = RalphLive({
+		hasActiveSubagents,
+	}).pipe(Layer.provideMerge(RalphRepoLive), Layer.provide(NodeFileSystem.layer));
+
 	return Layer.mergeAll(
 		PersistenceLayer,
 		SandboxLayer,
@@ -80,11 +103,12 @@ const createMainLayer = (agentRuntimeBridge: AgentRuntimeBridgeService) => {
 		CuratedMemoryLayer,
 		SkillManagerLayer,
 		AgentLayer,
+		RalphLayer,
 	).pipe(Layer.provide(PiLoggerLive));
 };
 
 type TauRuntime = ManagedRuntime.ManagedRuntime<
-	Persistence | Sandbox | Footer | PromptModes | CuratedMemory | AgentControl | SkillManager,
+	Persistence | Sandbox | Footer | PromptModes | CuratedMemory | AgentControl | SkillManager | Ralph,
 	never
 >;
 
@@ -126,6 +150,7 @@ export const startTau = (pi: ExtensionAPI) => {
 		currentRuntime.runPromise(effect);
 	const runSkillManager = <A, E>(effect: Effect.Effect<A, E, SkillManager>) =>
 		currentRuntime.runPromise(effect);
+	const runRalph = <A, E>(effect: Effect.Effect<A, E, Ralph>) => currentRuntime.runPromise(effect);
 
 	const startup = Effect.gen(function* () {
 			const { default: initBacklog } = yield* Effect.promise(() => import("./backlog/tool.js"));
@@ -164,7 +189,7 @@ export const startTau = (pi: ExtensionAPI) => {
 				initSkillManage(pi, runSkillManager);
 				initNudge(pi);
 				initRequestUserInput(pi);
-				initRalph(pi, agentRuntimeBridge);
+				initRalph(pi, runRalph);
 				initForge(pi);
 			});
 
@@ -173,6 +198,13 @@ export const startTau = (pi: ExtensionAPI) => {
 			yield* Effect.sync(() => {
 				const agentToolHandle = initAgent(pi, agentRuntimeBridge, agentToolDescription);
 				initAgentsMenu(pi, agentToolHandle);
+				pi.on("session_shutdown", async () => {
+					if (disposed) return;
+					disposed = true;
+					await Effect.runPromise(Fiber.interrupt(rootFiber));
+					await currentRuntime.dispose();
+					runtime = undefined;
+				});
 			});
 	});
 
@@ -195,14 +227,6 @@ export const startTau = (pi: ExtensionAPI) => {
 
 	const rootFiber = currentRuntime.runFork(program);
 	let disposed = false;
-
-	pi.on("session_shutdown", async () => {
-		if (disposed) return;
-		disposed = true;
-		await Effect.runPromise(Fiber.interrupt(rootFiber));
-		await currentRuntime.dispose();
-		runtime = undefined;
-	});
 
 	return { fiber: rootFiber, ready };
 };

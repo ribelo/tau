@@ -188,4 +188,38 @@ describe("runTau runtime", () => {
 
 		expect(editorSetCount).toBeGreaterThan(0);
 	});
+
+	it("runs Ralph session shutdown before app runtime disposal", async () => {
+		const pi = makePiStub() as ExtensionAPI & {
+			readonly __eventHandlers: Map<string, Array<(payload: unknown, ctx?: unknown) => unknown>>;
+		};
+
+		const startup = tau(pi);
+		await startup;
+
+		const sessionShutdownHandlers = pi.__eventHandlers.get("session_shutdown") ?? [];
+		expect(sessionShutdownHandlers.length).toBeGreaterThan(1);
+
+		const ctx = {
+			cwd: process.cwd(),
+			hasUI: true,
+			sessionManager: {
+				getEntries: () => [],
+				getBranch: () => [],
+				getSessionId: () => "test-session",
+				getSessionFile: () => undefined,
+			},
+			ui: {
+				setStatus: () => undefined,
+				setWidget: () => undefined,
+				notify: () => undefined,
+				setFooter: () => () => undefined,
+				getEditorText: () => "",
+			},
+		} as unknown;
+
+		for (const handler of sessionShutdownHandlers) {
+			await expect(Promise.resolve(handler({ type: "session_shutdown" }, ctx))).resolves.toBeUndefined();
+		}
+	});
 });
