@@ -34,9 +34,134 @@ import { isAgentDisabled } from "../agents-menu/index.js";
 
 const MAX_SUBMIT_RESULT_RETRIES = 3;
 
+type AssistantTextPart = { type: string; text?: string };
+
+type AssistantLikeMessage = {
+	role: "assistant";
+	content?: ReadonlyArray<AssistantTextPart>;
+	stopReason?: string;
+	errorMessage?: string;
+};
+
 function truncateStr(s: string, max: number): string {
 	if (s.length <= max) return s;
 	return s.slice(0, max - 3) + "...";
+}
+
+function getAssistantText(message: AssistantLikeMessage | undefined): string {
+	if (!message) {
+		return "";
+	}
+
+	return (
+		message.content
+			?.filter(
+				(part): part is { type: "text"; text: string } =>
+					part.type === "text" && typeof part.text === "string",
+			)
+			.map((part) => part.text)
+			.join("\n") ?? ""
+	);
+}
+
+function getAssistantFailureReason(
+	message: AssistantLikeMessage | undefined,
+	fallback: string,
+): string {
+	const text = getAssistantText(message);
+	return message?.errorMessage || text || fallback;
+}
+
+function getLastAssistantMessage(messages: readonly unknown[]): AssistantLikeMessage | undefined {
+	const last = messages[messages.length - 1];
+	if (!last || typeof last !== "object") {
+		return undefined;
+	}
+
+	const candidate = last as Partial<AssistantLikeMessage> & { role?: unknown };
+	return candidate.role === "assistant"
+		? (candidate as AssistantLikeMessage)
+		: undefined;
+}
+
+function waitForSessionSettlement(
+	session: AgentSession,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+	return new Promise((resolve) => {
+		let pendingFailureTimer: ReturnType<typeof setTimeout> | undefined = undefined;
+
+		const clearPendingFailureTimer = (): void => {
+			if (pendingFailureTimer !== undefined) {
+				clearTimeout(pendingFailureTimer);
+				pendingFailureTimer = undefined;
+			}
+		};
+
+		const finish = (result: { ok: true } | { ok: false; reason: string }): void => {
+			clearPendingFailureTimer();
+			unsubscribe();
+			resolve(result);
+		};
+
+		const settleFromCurrentState = (): void => {
+			if (session.isStreaming || session.isCompacting) {
+				return;
+			}
+
+			const assistant = getLastAssistantMessage(session.messages);
+			if (assistant?.stopReason === "error") {
+				clearPendingFailureTimer();
+				pendingFailureTimer = setTimeout(() => {
+					pendingFailureTimer = undefined;
+					finish({
+						ok: false,
+						reason: getAssistantFailureReason(assistant, "Agent ended with error"),
+					});
+				}, 0);
+				return;
+			}
+
+			finish({ ok: true });
+		};
+
+		const unsubscribe = session.subscribe((event) => {
+			if (event.type === "auto_compaction_start") {
+				clearPendingFailureTimer();
+				return;
+			}
+
+			if (event.type === "auto_compaction_end") {
+				clearPendingFailureTimer();
+				if (event.errorMessage) {
+					finish({ ok: false, reason: event.errorMessage });
+					return;
+				}
+				if (!event.willRetry) {
+					setTimeout(settleFromCurrentState, 0);
+				}
+				return;
+			}
+
+			if (event.type === "agent_end") {
+				const assistant = getLastAssistantMessage(event.messages);
+				if (assistant?.stopReason === "error") {
+					clearPendingFailureTimer();
+					pendingFailureTimer = setTimeout(() => {
+						pendingFailureTimer = undefined;
+						finish({
+							ok: false,
+							reason: getAssistantFailureReason(assistant, "Agent ended with error"),
+						});
+					}, 0);
+					return;
+				}
+
+				finish({ ok: true });
+			}
+		});
+
+		settleFromCurrentState();
+	});
 }
 
 // Extract human-readable args for tool display
@@ -227,6 +352,7 @@ export class AgentWorker implements Agent {
 	private turns = 0;
 	private toolCalls = 0;
 	private workedMs = 0;
+	private terminalState: "completed" | "failed" | "shutdown" | undefined = undefined;
 	private turnStartTime: number | undefined = undefined;
 	private tools: ToolRecord[] = [];
 	private pendingTools: Map<string, ToolRecord> = new Map();
@@ -276,7 +402,15 @@ export class AgentWorker implements Agent {
 		this.publishStatus(this.currentRunningStatus());
 	}
 
+	private publishRunningStatusIfNotFinal(): void {
+		if (this.terminalState !== undefined) {
+			return;
+		}
+		this.publishRunningStatus();
+	}
+
 	private publishFailed(reason: string): void {
+		this.terminalState = "failed";
 		this.publishStatus({
 			state: "failed",
 			reason,
@@ -288,6 +422,7 @@ export class AgentWorker implements Agent {
 	}
 
 	private publishCompleted(message: string | undefined): void {
+		this.terminalState = "completed";
 		this.publishStatus({
 			state: "completed",
 			message,
@@ -481,6 +616,7 @@ export class AgentWorker implements Agent {
 
 		this.sessionUnsubscribe = session.subscribe((event) => {
 			if (event.type === "turn_start") {
+				agent.terminalState = undefined;
 				agent.turns++;
 				agent.turnStartTime = Date.now();
 				agent.publishRunningStatus();
@@ -489,7 +625,7 @@ export class AgentWorker implements Agent {
 					agent.workedMs += Date.now() - agent.turnStartTime;
 					agent.turnStartTime = undefined;
 				}
-				agent.publishRunningStatus();
+				agent.publishRunningStatusIfNotFinal();
 			} else if (event.type === "tool_execution_start") {
 				agent.toolCalls++;
 				const argsPreview = truncateStr(formatToolArgs(event.toolName, event.args), 100);
@@ -514,38 +650,25 @@ export class AgentWorker implements Agent {
 						isError: event.isError,
 					});
 				}
-				agent.publishRunningStatus();
+				agent.publishRunningStatusIfNotFinal();
+			} else if (event.type === "auto_compaction_start") {
+				agent.publishRunningStatusIfNotFinal();
+			} else if (event.type === "auto_compaction_end") {
+				if (event.errorMessage) {
+					agent.publishRunningStatusIfNotFinal();
+					return;
+				}
+				agent.publishRunningStatusIfNotFinal();
 			} else if (event.type === "agent_end") {
 				if (agent.turnStartTime !== undefined) {
 					agent.workedMs += Date.now() - agent.turnStartTime;
 					agent.turnStartTime = undefined;
 				}
 
-				const lastMsg = event.messages[event.messages.length - 1];
-
-				const assistantMsg =
-					lastMsg?.role === "assistant"
-						? (lastMsg as {
-								role: "assistant";
-								content: Array<{ type: string; text?: string }>;
-								stopReason?: string;
-								errorMessage?: string;
-							})
-						: undefined;
+				const assistantMsg = getLastAssistantMessage(event.messages);
 
 				if (assistantMsg?.stopReason === "error") {
-					const reason =
-						assistantMsg.errorMessage ||
-						assistantMsg.content
-							.filter(
-								(p): p is { type: "text"; text: string } =>
-									p.type === "text" && typeof p.text === "string",
-							)
-							.map((p) => p.text)
-							.join("\n") ||
-						"Agent ended with error (no details provided)";
-
-					agent.publishFailed(reason);
+					agent.publishRunningStatusIfNotFinal();
 					return;
 				}
 
@@ -557,13 +680,7 @@ export class AgentWorker implements Agent {
 						return;
 					}
 					// Explicit interrupt/close — do NOT retry, honor the abort.
-					const textContent = assistantMsg.content
-						.filter(
-							(p): p is { type: "text"; text: string } =>
-								p.type === "text" && typeof p.text === "string",
-						)
-						.map((p) => p.text)
-						.join("\n");
+					const textContent = getAssistantText(assistantMsg);
 
 					if (!textContent) {
 						agent.publishFailed("Agent was aborted before producing a response");
@@ -592,15 +709,7 @@ export class AgentWorker implements Agent {
 					return;
 				}
 
-				const message = assistantMsg
-					? assistantMsg.content
-							.filter(
-								(p): p is { type: "text"; text: string } =>
-									p.type === "text" && typeof p.text === "string",
-							)
-							.map((p) => p.text)
-							.join("\n")
-					: undefined;
+				const message = assistantMsg ? getAssistantText(assistantMsg) : undefined;
 
 				agent.publishCompleted(message);
 			}
@@ -676,29 +785,14 @@ export class AgentWorker implements Agent {
 					`${modelLabel}: ${err instanceof Error ? err.message : String(err)}`,
 			});
 
-			const last = worker.session.messages[worker.session.messages.length - 1];
-			const assistantMsg =
-				last && last.role === "assistant"
-					? (last as {
-							role: "assistant";
-							content?: Array<{ type: string; text?: string }>;
-							stopReason?: string;
-							errorMessage?: string;
-						})
-					: undefined;
+			const settled = yield* Effect.tryPromise({
+				try: () => waitForSessionSettlement(worker.session),
+				catch: (err) =>
+					`${modelLabel}: ${err instanceof Error ? err.message : String(err)}`,
+			});
 
-			if (assistantMsg?.stopReason === "error") {
-				const reason =
-					assistantMsg.errorMessage ||
-					assistantMsg.content
-						?.filter(
-							(p): p is { type: "text"; text: string } =>
-								p.type === "text" && typeof p.text === "string",
-						)
-						.map((p) => p.text)
-						.join("\n") ||
-					"Agent ended with error";
-				return yield* Effect.fail(`${modelLabel}: ${reason}`);
+			if (!settled.ok) {
+				return yield* Effect.fail(`${modelLabel}: ${settled.reason}`);
 			}
 		});
 	}
@@ -761,6 +855,7 @@ export class AgentWorker implements Agent {
 		return Effect.gen(function* () {
 			const submissionId = `sub-${nanoid(12)}`;
 			worker.submitResultRetries = 0;
+			worker.terminalState = undefined;
 
 			yield* SubscriptionRef.set(worker.statusRef, worker.currentRunningStatus());
 
@@ -798,6 +893,7 @@ export class AgentWorker implements Agent {
 				worker.sessionUnsubscribe = undefined;
 			}
 			setWorkerApprovalBroker(worker.session.sessionId, undefined);
+			worker.terminalState = "shutdown";
 			yield* SubscriptionRef.set(worker.statusRef, { state: "shutdown" });
 		});
 	}
