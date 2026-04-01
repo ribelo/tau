@@ -11,7 +11,6 @@ import { Persistence, PersistenceLive } from "./services/persistence.js";
 import { CuratedMemory, CuratedMemoryLive } from "./services/curated-memory.js";
 import { SkillManager, SkillManagerLive } from "./services/skill-manager.js";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import initBacklog from "./backlog/tool.js";
 import initExa from "./exa/index.js";
 import initMemory from "./memory/index.js";
 import initSkillManage from "./skill-manage/index.js";
@@ -39,6 +38,7 @@ import {
 import { AgentRegistry } from "./agent/agent-registry.js";
 import { buildToolDescription } from "./agent/tool.js";
 import { createSkillMarkerRuntime } from "./skill-marker/index.js";
+import { installSqliteExperimentalWarningFilter } from "./shared/sqlite-warning.js";
 
 const PersistenceLayer = PersistenceLive;
 const SandboxLayer = SandboxLive.pipe(
@@ -93,6 +93,7 @@ export const runTau = (pi: ExtensionAPI) => {
 };
 
 export const startTau = (pi: ExtensionAPI) => {
+	installSqliteExperimentalWarningFilter();
 	let runtime: TauRuntime | undefined;
 	let readySettled = false;
 	let resolveReady!: () => void;
@@ -127,6 +128,7 @@ export const startTau = (pi: ExtensionAPI) => {
 		currentRuntime.runPromise(effect);
 
 	const startup = Effect.gen(function* () {
+			const { default: initBacklog } = yield* Effect.promise(() => import("./backlog/tool.js"));
 			const persistence = yield* Persistence;
 			const sandbox = yield* Sandbox;
 			const footer = yield* Footer;
