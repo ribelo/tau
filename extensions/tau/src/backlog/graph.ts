@@ -1,3 +1,6 @@
+import { Effect } from "effect";
+
+import { BacklogDependencyCycleError } from "./errors.js";
 import type { DependencyType, Issue } from "./schema.js";
 
 export type Graph = ReadonlyMap<string, ReadonlySet<string>>;
@@ -9,13 +12,6 @@ const CycleEdgeTypes = new Set<DependencyType>([
 	"waits-for",
 	"delegated-from",
 ]);
-
-export class BacklogDependencyCycleError extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "BacklogDependencyCycleError";
-	}
-}
 
 export const isCycleEdgeType = (depType: DependencyType): boolean => CycleEdgeTypes.has(depType);
 
@@ -116,16 +112,24 @@ export function listDependents(issueId: string, issues: ReadonlyArray<Issue>): R
 	return related;
 }
 
-export function assertNoDependencyCycles(issues: ReadonlyArray<Issue>): void {
-	const graph = buildGraph(issues);
-	for (const [issueId, targets] of graph.entries()) {
-		for (const target of targets) {
-			if (wouldCreateCycle(graph, issueId, target)) {
-				throw new BacklogDependencyCycleError(
-					`Dependency cycle detected between ${issueId} and ${target}`,
-				);
+export const assertNoDependencyCycles = (
+	issues: ReadonlyArray<Issue>,
+): Effect.Effect<void, BacklogDependencyCycleError, never> =>
+	Effect.gen(function* () {
+		const graph = buildGraph(issues);
+		for (const [issueId, targets] of graph.entries()) {
+			for (const target of targets) {
+				if (wouldCreateCycle(graph, issueId, target)) {
+					return yield* Effect.fail(
+						new BacklogDependencyCycleError({
+							issueId,
+							dependsOnId: target,
+							dependencyType: "blocks",
+						}),
+					);
+				}
 			}
 		}
-	}
-}
+	});
 
+export const assertNoDependencyCyclesEffect = assertNoDependencyCycles;

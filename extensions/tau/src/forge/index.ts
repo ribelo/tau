@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { Effect } from "effect";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
@@ -17,11 +18,16 @@ import {
 	implementSystemSnippet,
 	reviewSystemSnippet,
 } from "./prompts.js";
-import { readMaterializedIssuesCache } from "../backlog/materialize.js";
+import { BacklogCommandServiceForWorkspace, setIssueStatus } from "../backlog/events.js";
 import { resolveBacklogPaths } from "../backlog/contract.js";
-import { parseMaterializedIssues } from "../backlog/materialize.js";
-import { setIssueStatus } from "../backlog/events.js";
+import { BacklogCommandService } from "../backlog/services.js";
 import { parseProviderModel } from "../shared/model-id.js";
+
+type CachedIssuePreview = {
+	readonly id: string;
+	readonly title: string;
+	readonly status?: string;
+};
 
 type AgentTextContent = {
 	readonly type: "text";
@@ -43,8 +49,12 @@ async function readBacklogItem(
 	taskId: string,
 ): Promise<{ title: string; description: string } | undefined> {
 	try {
-		const issues = await readMaterializedIssuesCache(cwd);
-		const issue = issues.find((i) => i.id === taskId);
+		const issue = await Effect.runPromise(
+			Effect.gen(function* () {
+				const service = yield* BacklogCommandService;
+				return yield* service.show(taskId);
+			}).pipe(Effect.provide(BacklogCommandServiceForWorkspace(cwd))),
+		);
 		if (!issue) return undefined;
 		return {
 			title: issue.title,
@@ -55,6 +65,44 @@ async function readBacklogItem(
 	}
 }
 
+function asCachedIssuePreview(value: unknown): CachedIssuePreview | undefined {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		return undefined;
+	}
+	const record = value as Record<string, unknown>;
+	const id = record["id"];
+	const title = record["title"];
+	if (typeof id !== "string" || id.length === 0 || typeof title !== "string" || title.length === 0) {
+		return undefined;
+	}
+	const status = record["status"];
+	return {
+		id,
+		title,
+		...(typeof status === "string" ? { status } : {}),
+	};
+}
+
+function readCachedIssuesSync(cwd: string): ReadonlyArray<CachedIssuePreview> {
+	try {
+		const paths = resolveBacklogPaths(cwd);
+		const raw = fs.readFileSync(paths.materializedIssuesPath, "utf-8");
+		const trimmed = raw.trim();
+		if (trimmed.length === 0) {
+			return [];
+		}
+		return trimmed
+			.split(/\n+/u)
+			.map((line) => {
+				const parsed = JSON.parse(line) as unknown;
+				return asCachedIssuePreview(parsed);
+			})
+			.filter((issue): issue is CachedIssuePreview => issue !== undefined);
+	} catch {
+		return [];
+	}
+}
+
 /** Close a backlog item via internal backlog API. Returns true on success. */
 async function closeBacklogItem(
 	cwd: string,
@@ -62,12 +110,12 @@ async function closeBacklogItem(
 	reason: string,
 ): Promise<boolean> {
 	try {
-		await setIssueStatus(cwd, {
+		await Effect.runPromise(setIssueStatus(cwd, {
 			issueId: taskId,
 			actor: "forge",
 			status: "closed",
 			reason,
-		});
+		}));
 		return true;
 	} catch {
 		return false;
@@ -579,18 +627,11 @@ Commands:
 
 			if (tokens.length === 2) {
 				if (sub === "start") {
-					try {
-						const paths = resolveBacklogPaths(process.cwd());
-						const raw = fs.readFileSync(paths.materializedIssuesPath, "utf-8");
-						const issues = parseMaterializedIssues(raw);
-						return issues
-							.filter((i) => i.status !== "closed" && i.status !== "tombstone")
-							.filter((i) => i.id.startsWith(partial))
-							.slice(0, 20)
-							.map((i) => ({ label: i.id, value: `${sub} ${i.id}`, description: i.title }));
-					} catch {
-						return null;
-					}
+					return readCachedIssuesSync(process.cwd())
+						.filter((i) => i.status !== "closed" && i.status !== "tombstone")
+						.filter((i) => i.id.startsWith(partial))
+						.slice(0, 20)
+						.map((i) => ({ label: i.id, value: `${sub} ${i.id}`, description: i.title }));
 				}
 				if (sub === "resume") {
 					const forges = listForges(process.cwd()).filter((s) => s.status === "paused");
@@ -605,18 +646,11 @@ Commands:
 						.map((s) => ({ label: s.taskId, value: `${sub} ${s.taskId}`, description: `${s.status}, cycle ${s.cycle}` }));
 					if (forgeItems.length > 0) return forgeItems;
 					if (sub === "set") {
-						try {
-							const paths = resolveBacklogPaths(process.cwd());
-							const raw = fs.readFileSync(paths.materializedIssuesPath, "utf-8");
-							const issues = parseMaterializedIssues(raw);
-							return issues
-								.filter((i) => i.status !== "closed" && i.status !== "tombstone")
-								.filter((i) => i.id.startsWith(partial))
-								.slice(0, 20)
-								.map((i) => ({ label: i.id, value: `${sub} ${i.id}`, description: i.title }));
-						} catch {
-							return null;
-						}
+						return readCachedIssuesSync(process.cwd())
+							.filter((i) => i.status !== "closed" && i.status !== "tombstone")
+							.filter((i) => i.id.startsWith(partial))
+							.slice(0, 20)
+							.map((i) => ({ label: i.id, value: `${sub} ${i.id}`, description: i.title }));
 					}
 					return null;
 				}

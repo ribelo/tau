@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Effect } from "effect";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -194,12 +195,12 @@ describe("forge transitions from model output", () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 
-		await createIssue(cwd, {
+		await Effect.runPromise(createIssue(cwd, {
 			id: "tau-xyz",
 			title: "Forge task",
 			actor: "test",
 			fields: { status: "open", issue_type: "task", description: "Fix the forge flow." },
-		});
+		}));
 
 		const implementerModel: ModelRef = {
 			provider: "anthropic",
@@ -280,12 +281,12 @@ describe("forge transitions from model output", () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 
-		await createIssue(cwd, {
+		await Effect.runPromise(createIssue(cwd, {
 			id: "tau-done",
 			title: "Forge complete task",
 			actor: "test",
 			fields: { status: "open", issue_type: "task", description: "Ship the final patch." },
-		});
+		}));
 
 		const implementerModel: ModelRef = {
 			provider: "anthropic",

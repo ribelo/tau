@@ -1,5 +1,7 @@
 import path from "node:path";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
+
+import { BacklogContractValidationError } from "./errors.js";
 
 export const BACKLOG_STORAGE = Object.freeze({
 	rootDir: ".pi/backlog",
@@ -92,12 +94,32 @@ export const BacklogEventSchema = Schema.Union([
 ] as const);
 export type BacklogEvent = Schema.Schema.Type<typeof BacklogEventSchema>;
 
-export class BacklogContractError extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "BacklogContractError";
-	}
-}
+const decodeRecordedAtSchema = Schema.decodeUnknownEffect(BacklogRecordedAtSchema);
+const decodeBacklogEventSchema = Schema.decodeUnknownEffect(BacklogEventSchema);
+
+export const decodeBacklogRecordedAt = (
+	value: unknown,
+): Effect.Effect<string, BacklogContractValidationError, never> =>
+	decodeRecordedAtSchema(value).pipe(
+		Effect.mapError((error) =>
+			new BacklogContractValidationError({
+				reason: String(error),
+				entity: "backlog.recorded_at",
+			}),
+		),
+	);
+
+export const decodeBacklogEvent = (
+	value: unknown,
+): Effect.Effect<BacklogEvent, BacklogContractValidationError, never> =>
+	decodeBacklogEventSchema(value).pipe(
+		Effect.mapError((error) =>
+			new BacklogContractValidationError({
+				reason: String(error),
+				entity: "backlog.event",
+			}),
+		),
+	);
 
 export type BacklogFieldClock = {
 	readonly recorded_at: string;
@@ -132,11 +154,8 @@ type MutableBacklogMaterializedIssue = {
 };
 
 function parseRecordedAt(recordedAt: string): number {
-	if (!isCanonicalRecordedAt(recordedAt)) {
-		throw new BacklogContractError(`Invalid recorded_at timestamp: ${recordedAt}`);
-	}
 	const timestamp = Date.parse(recordedAt);
-	return timestamp;
+	return Number.isNaN(timestamp) ? 0 : timestamp;
 }
 
 function compareEventOrder(
@@ -150,19 +169,27 @@ function compareEventOrder(
 	return a.event_id.localeCompare(b.event_id);
 }
 
-function assertOriginFields(issueId: string, fields: BacklogFieldValues): void {
+function originFieldsError(issueId: string, fields: BacklogFieldValues): BacklogContractValidationError | undefined {
 	const idValue = fields["id"];
 	if (typeof idValue !== "string" || idValue !== issueId) {
-		throw new BacklogContractError(
-			`Origin event for issue ${issueId} must set fields.id to the same issue id`,
-		);
+		return new BacklogContractValidationError({
+			reason: `Origin event for issue ${issueId} must set fields.id to the same issue id`,
+			entity: "backlog.event",
+		});
 	}
+	return undefined;
 }
 
-function assertImmutableIssueId(event: Extract<BacklogEvent, { kind: "issue.updated" }>): void {
+function immutableIssueIdError(
+	event: Extract<BacklogEvent, { kind: "issue.updated" }>,
+): BacklogContractValidationError | undefined {
 	if ("id" in event.set_fields || event.unset_fields.includes("id")) {
-		throw new BacklogContractError(`Update event ${event.event_id} cannot modify issue id ${event.issue_id}`);
+		return new BacklogContractValidationError({
+			reason: `Update event ${event.event_id} cannot modify issue id ${event.issue_id}`,
+			entity: "backlog.event",
+		});
 	}
+	return undefined;
 }
 
 function shouldReplaceRevision(
@@ -243,58 +270,83 @@ export function sortBacklogEvents(events: ReadonlyArray<BacklogEvent>): Readonly
 	return [...events].sort(compareBacklogEvents);
 }
 
-export function replayBacklogEvents(
+export const replayBacklogEvents = (
 	events: ReadonlyArray<BacklogEvent>,
-): ReadonlyMap<string, BacklogMaterializedIssue> {
-	const issues = new Map<string, MutableBacklogMaterializedIssue>();
+): Effect.Effect<ReadonlyMap<string, BacklogMaterializedIssue>, BacklogContractValidationError, never> =>
+	Effect.gen(function* () {
+		const issues = new Map<string, MutableBacklogMaterializedIssue>();
 
-	for (const event of sortBacklogEvents(events)) {
-		const existing = issues.get(event.issue_id);
+		for (const event of sortBacklogEvents(events)) {
+			const existing = issues.get(event.issue_id);
 
-		switch (event.kind) {
-			case "issue.created": {
-				if (existing) {
-					throw new BacklogContractError(`Issue ${event.issue_id} already has an origin event`);
+			switch (event.kind) {
+				case "issue.created": {
+					if (existing) {
+						return yield* Effect.fail(
+							new BacklogContractValidationError({
+								reason: `Issue ${event.issue_id} already has an origin event`,
+								entity: "backlog.event",
+							}),
+						);
+					}
+					const originError = originFieldsError(event.issue_id, event.fields);
+					if (originError) {
+						return yield* Effect.fail(originError);
+					}
+					const state: MutableBacklogMaterializedIssue = {
+						issue_id: event.issue_id,
+						origin_kind: event.kind,
+						revisions: new Map(),
+					};
+					applyFieldSet(state, event, event.fields);
+					issues.set(event.issue_id, state);
+					break;
 				}
-				assertOriginFields(event.issue_id, event.fields);
-				const state: MutableBacklogMaterializedIssue = {
-					issue_id: event.issue_id,
-					origin_kind: event.kind,
-					revisions: new Map(),
-				};
-				applyFieldSet(state, event, event.fields);
-				issues.set(event.issue_id, state);
-				break;
-			}
-			case "issue.imported": {
-				if (existing) {
-					throw new BacklogContractError(`Issue ${event.issue_id} already has an origin event`);
+				case "issue.imported": {
+					if (existing) {
+						return yield* Effect.fail(
+							new BacklogContractValidationError({
+								reason: `Issue ${event.issue_id} already has an origin event`,
+								entity: "backlog.event",
+							}),
+						);
+					}
+					const originError = originFieldsError(event.issue_id, event.fields);
+					if (originError) {
+						return yield* Effect.fail(originError);
+					}
+					const state: MutableBacklogMaterializedIssue = {
+						issue_id: event.issue_id,
+						origin_kind: event.kind,
+						revisions: new Map(),
+					};
+					applyFieldSet(state, event, event.fields);
+					issues.set(event.issue_id, state);
+					break;
 				}
-				assertOriginFields(event.issue_id, event.fields);
-				const state: MutableBacklogMaterializedIssue = {
-					issue_id: event.issue_id,
-					origin_kind: event.kind,
-					revisions: new Map(),
-				};
-				applyFieldSet(state, event, event.fields);
-				issues.set(event.issue_id, state);
-				break;
-			}
-			case "issue.updated": {
-				if (!existing) {
-					throw new BacklogContractError(
-						`Update event ${event.event_id} references issue ${event.issue_id} before an origin event`,
-					);
+				case "issue.updated": {
+					if (!existing) {
+						return yield* Effect.fail(
+							new BacklogContractValidationError({
+								reason: `Update event ${event.event_id} references issue ${event.issue_id} before an origin event`,
+								entity: "backlog.event",
+							}),
+						);
+					}
+					const immutableError = immutableIssueIdError(event);
+					if (immutableError) {
+						return yield* Effect.fail(immutableError);
+					}
+					applyFieldSet(existing, event, event.set_fields);
+					applyFieldUnset(existing, event, event.unset_fields);
+					break;
 				}
-				assertImmutableIssueId(event);
-				applyFieldSet(existing, event, event.set_fields);
-				applyFieldUnset(existing, event, event.unset_fields);
-				break;
 			}
 		}
-	}
 
-	return new Map(
-		Array.from(issues.entries(), ([issueId, issue]) => [issueId, materializeIssue(issue)]),
-	);
-}
+		return new Map(
+			Array.from(issues.entries(), ([issueId, issue]) => [issueId, materializeIssue(issue)]),
+		);
+	});
+
+export const replayBacklogEventsEffect = replayBacklogEvents;

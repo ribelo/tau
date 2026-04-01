@@ -1,5 +1,7 @@
+import { Cause, Effect, Option } from "effect";
 import { describe, expect, it } from "vitest";
 
+import { BacklogContractValidationError } from "../src/backlog/errors.js";
 import {
 	assertNoDependencyCycles,
 	buildGraph,
@@ -8,12 +10,12 @@ import {
 	listDependents,
 	wouldCreateCycle,
 } from "../src/backlog/graph.js";
-import { filterIssues } from "../src/backlog/query.js";
+import { decodeIssueQuery, filterIssues } from "../src/backlog/query.js";
 import { decodeIssue, type Issue } from "../src/backlog/schema.js";
 
 function makeIssue(overrides: Partial<Issue> & { id: string; title: string }): Issue {
 	const { id, title, ...rest } = overrides;
-	return decodeIssue({
+	return Effect.runSync(decodeIssue({
 		id,
 		title,
 		priority: 2,
@@ -22,7 +24,7 @@ function makeIssue(overrides: Partial<Issue> & { id: string; title: string }): I
 		created_at: "2026-02-01T00:00:00.000Z",
 		updated_at: "2026-02-01T00:00:00.000Z",
 		...rest,
-	});
+	}));
 }
 
 describe("backlog graph and query", () => {
@@ -91,6 +93,25 @@ describe("backlog graph and query", () => {
 		]);
 	});
 
+	it("decodes issue queries with typed errors", async () => {
+		const valid = await Effect.runPromise(
+			decodeIssueQuery({ status: ["open"], ready: true, sortBy: "priority", order: "asc" }),
+		);
+		expect(valid.ready).toBe(true);
+
+		const invalid = await Effect.runPromise(
+			Effect.exit(decodeIssueQuery({ status: ["open"], sortBy: "invalid-field" })),
+		);
+		expect(invalid._tag).toBe("Failure");
+		if (invalid._tag === "Failure") {
+			const failure = Cause.findErrorOption(invalid.cause);
+			expect(Option.isSome(failure)).toBe(true);
+			if (Option.isSome(failure)) {
+				expect(failure.value).toBeInstanceOf(BacklogContractValidationError);
+			}
+		}
+	});
+
 	it("rejects dependency cycles", () => {
 		const a = makeIssue({
 			id: "a",
@@ -103,6 +124,6 @@ describe("backlog graph and query", () => {
 			dependencies: [{ issue_id: "b", depends_on_id: "a", type: "blocks", created_at: "2026-02-01T00:00:00.000Z" }],
 		});
 
-		expect(() => assertNoDependencyCycles([a, b])).toThrow();
+		expect(() => Effect.runSync(assertNoDependencyCycles([a, b]))).toThrow();
 	});
 });

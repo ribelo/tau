@@ -2,19 +2,21 @@ import { basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { Text, type AutocompleteItem } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
+import { Effect } from "effect";
 
 import {
 	addIssueComment,
 	addIssueDependency,
+	BacklogCommandServiceForWorkspace,
 	createIssue,
 	removeIssueDependency,
 	setIssueStatus,
 	updateIssueFields,
 } from "./events.js";
 import { listDependencies, listDependents } from "./graph.js";
-import { readMaterializedIssuesCache } from "./materialize.js";
-import { filterIssues, type IssueQuery, type SortField, type SortOrder } from "./query.js";
+import { type IssueQuery, type SortField, type SortOrder } from "./query.js";
 import type { Comment, Issue } from "./schema.js";
+import { BacklogCommandService, type BacklogCommandServiceApi } from "./services.js";
 
 type Theme = {
 	fg: (key: string, s: string) => string;
@@ -457,25 +459,16 @@ function parseNumber(value: string | undefined, flagName: string): number | unde
 	return parsed;
 }
 
-function buildStatusSummary(issues: ReadonlyArray<Issue>): BacklogStatusSummary {
-	return {
-		total_issues: issues.length,
-		open_issues: issues.filter((issue) => issue.status === "open").length,
-		in_progress_issues: issues.filter((issue) => issue.status === "in_progress").length,
-		closed_issues: issues.filter((issue) => issue.status === "closed" || issue.status === "tombstone").length,
-		blocked_issues: filterIssues(issues, { blocked: true }).length,
-		ready_issues: filterIssues(issues, { ready: true }).length,
-		deferred_issues: issues.filter((issue) => issue.status === "deferred").length,
-		pinned_issues: issues.filter((issue) => issue.pinned === true).length,
-	};
-}
-
-function requireIssue(issues: ReadonlyArray<Issue>, issueId: string): Issue {
-	const issue = issues.find((entry) => entry.id === issueId);
-	if (!issue) {
-		throw new Error(`Issue not found: ${issueId}`);
-	}
-	return issue;
+async function runWithBacklogCommandService<A>(
+	workspaceRoot: string,
+	run: (service: BacklogCommandServiceApi) => Effect.Effect<A, unknown, never>,
+): Promise<A> {
+	return Effect.runPromise(
+		Effect.gen(function* () {
+			const service = yield* BacklogCommandService;
+			return yield* run(service);
+		}).pipe(Effect.provide(BacklogCommandServiceForWorkspace(workspaceRoot))),
+	);
 }
 
 function dependencyDirection(parsed: ParsedCommand): "up" | "down" {
@@ -484,6 +477,39 @@ function dependencyDirection(parsed: ParsedCommand): "up" | "down" {
 		return direction ?? "up";
 	}
 	throw new Error(`Invalid dependency direction: ${direction}`);
+}
+
+function formatBacklogError(error: unknown): string {
+	if (error instanceof Error && error.message.trim().length > 0) {
+		return error.message;
+	}
+
+	if (typeof error === "object" && error !== null) {
+		const record = error as Record<string, unknown>;
+		const reason = record["reason"];
+		if (typeof reason === "string" && reason.trim().length > 0) {
+			return reason;
+		}
+		const usage = record["usage"];
+		if (typeof usage === "string" && usage.trim().length > 0) {
+			return usage;
+		}
+		const issueId = record["issueId"];
+		if (typeof issueId === "string" && issueId.trim().length > 0) {
+			return `Issue not found: ${issueId}`;
+		}
+		const tag = record["_tag"];
+		if (typeof tag === "string" && tag.trim().length > 0) {
+			return tag;
+		}
+	}
+
+	if (error instanceof Error && error.name.trim().length > 0) {
+		return error.name;
+	}
+
+	const rendered = String(error);
+	return rendered.trim().length > 0 ? rendered : "Backlog command failed";
 }
 
 function buildDependencyTree(
@@ -563,7 +589,6 @@ export async function runBacklogCommand(command: string, cwd?: string): Promise<
 			case "ready":
 			case "blocked":
 			case "search": {
-				const issues = await readMaterializedIssuesCache(workspaceRoot);
 				const status = flagValue(parsed, "status");
 				const issueType = flagValue(parsed, "type", "issue_type");
 				const priority = parseNumber(flagValue(parsed, "priority"), "priority");
@@ -585,16 +610,18 @@ export async function runBacklogCommand(command: string, cwd?: string): Promise<
 					...(sortBy !== undefined ? { sortBy } : {}),
 					...(order !== undefined ? { order } : {}),
 				};
-				const filtered = filterIssues(issues, query);
-				return { command, kind, ok: true, data: filtered.slice(0, limit) };
+				const commandServiceIssues = await runWithBacklogCommandService(workspaceRoot, (service) =>
+					service.list(query),
+				);
+				return { command, kind, ok: true, data: commandServiceIssues.slice(0, limit) };
 			}
 			case "show": {
 				const issueId = parsed.positional[1];
 				if (!issueId) {
 					throw new Error("Usage: backlog show <id>");
 				}
-				const issues = await readMaterializedIssuesCache(workspaceRoot);
-				return { command, kind, ok: true, data: requireIssue(issues, issueId) };
+				const issue = await runWithBacklogCommandService(workspaceRoot, (service) => service.show(issueId));
+				return { command, kind, ok: true, data: issue };
 			}
 			case "create": {
 				const title = parsed.positional.slice(1).join(" ") || flagValue(parsed, "title");
@@ -617,7 +644,7 @@ export async function runBacklogCommand(command: string, cwd?: string): Promise<
 				if (explicitId !== undefined) {
 					createInput.id = explicitId;
 				}
-				const issue = await createIssue(workspaceRoot, createInput);
+				const issue = await Effect.runPromise(createIssue(workspaceRoot, createInput));
 				return { command, kind, ok: true, data: issue };
 			}
 			case "update": {
@@ -631,7 +658,9 @@ export async function runBacklogCommand(command: string, cwd?: string): Promise<
 				if (unsetFields.length > 0) {
 					updateOptions.unsetFields = unsetFields;
 				}
-				const updated = await updateIssueFields(workspaceRoot, issueId, "tau-backlog", patch, updateOptions);
+				const updated = await Effect.runPromise(
+					updateIssueFields(workspaceRoot, issueId, "tau-backlog", patch, updateOptions),
+				);
 				return { command, kind, ok: true, data: updated };
 			}
 			case "close": {
@@ -653,7 +682,7 @@ export async function runBacklogCommand(command: string, cwd?: string): Promise<
 				if (reason !== undefined) {
 					statusInput.reason = reason;
 				}
-				const closed = await setIssueStatus(workspaceRoot, statusInput);
+				const closed = await Effect.runPromise(setIssueStatus(workspaceRoot, statusInput));
 				return { command, kind, ok: true, data: closed };
 			}
 			case "reopen": {
@@ -661,11 +690,11 @@ export async function runBacklogCommand(command: string, cwd?: string): Promise<
 				if (!issueId) {
 					throw new Error("Usage: backlog reopen <id>");
 				}
-				const reopened = await setIssueStatus(workspaceRoot, {
+				const reopened = await Effect.runPromise(setIssueStatus(workspaceRoot, {
 					issueId,
 					actor: "backlog",
 					status: "open",
-				});
+				}));
 				return { command, kind, ok: true, data: reopened };
 			}
 			case "comment": {
@@ -674,11 +703,11 @@ export async function runBacklogCommand(command: string, cwd?: string): Promise<
 				if (!issueId || !text) {
 					throw new Error("Usage: backlog comment <id> \"text\"");
 				}
-				const issue = await addIssueComment(workspaceRoot, {
+				const issue = await Effect.runPromise(addIssueComment(workspaceRoot, {
 					issueId,
 					actor: "backlog",
 					text,
-				});
+				}));
 				const comment = issue.comments?.at(-1);
 				return { command, kind, ok: true, data: comment ? [comment] : [] };
 			}
@@ -687,8 +716,8 @@ export async function runBacklogCommand(command: string, cwd?: string): Promise<
 				if (!issueId) {
 					throw new Error("Usage: backlog comments <id>");
 				}
-				const issues = await readMaterializedIssuesCache(workspaceRoot);
-				return { command, kind, ok: true, data: requireIssue(issues, issueId).comments ?? [] };
+				const issue = await runWithBacklogCommandService(workspaceRoot, (service) => service.show(issueId));
+				return { command, kind, ok: true, data: issue.comments ?? [] };
 			}
 			case "dep_add": {
 				const issueId = parsed.positional[2];
@@ -696,12 +725,12 @@ export async function runBacklogCommand(command: string, cwd?: string): Promise<
 				if (!issueId || !dependsOnId) {
 					throw new Error("Usage: backlog dep add <id> <target> [--type blocks]");
 				}
-				await addIssueDependency(workspaceRoot, {
+				await Effect.runPromise(addIssueDependency(workspaceRoot, {
 					issueId,
 					actor: "backlog",
 					dependsOnId,
 					type: flagValue(parsed, "type") ?? "blocks",
-				});
+				}));
 				const mutation: BacklogDependencyMutation = {
 					issue_id: issueId,
 					depends_on_id: dependsOnId,
@@ -730,7 +759,7 @@ export async function runBacklogCommand(command: string, cwd?: string): Promise<
 				if (dependencyType !== undefined) {
 					removeInput.type = dependencyType;
 				}
-				await removeIssueDependency(workspaceRoot, removeInput);
+				await Effect.runPromise(removeIssueDependency(workspaceRoot, removeInput));
 				const mutation: BacklogDependencyMutation = {
 					issue_id: issueId,
 					depends_on_id: dependsOnId,
@@ -745,8 +774,8 @@ export async function runBacklogCommand(command: string, cwd?: string): Promise<
 				if (!issueId) {
 					throw new Error(`Usage: backlog dep ${kind === "dep_tree" ? "tree" : "list"} <id> [--direction up|down]`);
 				}
-				const issues = await readMaterializedIssuesCache(workspaceRoot);
-				requireIssue(issues, issueId);
+				const issues = await runWithBacklogCommandService(workspaceRoot, (service) => service.list({}));
+				await runWithBacklogCommandService(workspaceRoot, (service) => service.show(issueId));
 				const direction = dependencyDirection(parsed);
 				const related = direction === "up" ? listDependencies(issueId, issues) : listDependents(issueId, issues);
 				if (kind === "dep_tree") {
@@ -755,8 +784,18 @@ export async function runBacklogCommand(command: string, cwd?: string): Promise<
 				return { command, kind, ok: true, data: related };
 			}
 			case "status": {
-				const issues = await readMaterializedIssuesCache(workspaceRoot);
-				return { command, kind, ok: true, data: buildStatusSummary(issues) };
+				const summary = await runWithBacklogCommandService(workspaceRoot, (service) => service.status());
+				const output: BacklogStatusSummary = {
+					total_issues: summary.total,
+					open_issues: summary.open,
+					in_progress_issues: summary.inProgress,
+					closed_issues: summary.closed,
+					blocked_issues: summary.blocked,
+					ready_issues: summary.ready,
+					deferred_issues: summary.deferred,
+					pinned_issues: summary.pinned,
+				};
+				return { command, kind, ok: true, data: output };
 			}
 			case "unknown":
 			default:
@@ -772,7 +811,7 @@ export async function runBacklogCommand(command: string, cwd?: string): Promise<
 			command,
 			kind: kind === "unknown" ? "error" : kind,
 			ok: false,
-			outputText: error instanceof Error ? error.message : String(error),
+			outputText: formatBacklogError(error),
 		};
 	}
 }

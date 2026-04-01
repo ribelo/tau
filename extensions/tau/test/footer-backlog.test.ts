@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Effect } from "effect";
 
 import { createIssue, setIssueStatus } from "../src/backlog/events.js";
 import { countInProgressIssues, readFooterBacklogInProgressCount } from "../src/services/footer.js";
@@ -30,13 +31,15 @@ describe("footer backlog hygiene", () => {
 
 	it("resolves the nearest workspace root and reads backlog cache state", async () => {
 		await withTempWorkspace(async (workspaceRoot) => {
-			const first = await createIssue(workspaceRoot, { title: "Alpha", actor: "test", prefix: "test" });
-			await createIssue(workspaceRoot, { title: "Beta", actor: "test", prefix: "test" });
-			await setIssueStatus(workspaceRoot, {
+			const first = await Effect.runPromise(
+				createIssue(workspaceRoot, { title: "Alpha", actor: "test", prefix: "test" }),
+			);
+			await Effect.runPromise(createIssue(workspaceRoot, { title: "Beta", actor: "test", prefix: "test" }));
+			await Effect.runPromise(setIssueStatus(workspaceRoot, {
 				issueId: first.id,
 				actor: "test",
 				status: "in_progress",
-			});
+			}));
 
 			const nested = path.join(workspaceRoot, "packages", "tau", "src");
 			await fs.mkdir(nested, { recursive: true });

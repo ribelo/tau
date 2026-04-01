@@ -1,18 +1,48 @@
-import type { DependencyType, Issue, IssueStatus, IssueType } from "./schema.js";
+import { Effect, Schema } from "effect";
 
-export type SortField = "priority" | "created_at" | "updated_at";
-export type SortOrder = "asc" | "desc";
+import { BacklogContractValidationError } from "./errors.js";
+import {
+	IssueStatusSchema,
+	IssueTypeSchema,
+	type DependencyType,
+	type Issue,
+} from "./schema.js";
 
-export type IssueQuery = {
-	readonly status?: IssueStatus | ReadonlyArray<IssueStatus>;
-	readonly type?: IssueType | ReadonlyArray<IssueType>;
-	readonly priority?: number | ReadonlyArray<number>;
-	readonly text?: string;
-	readonly ready?: boolean;
-	readonly blocked?: boolean;
-	readonly sortBy?: SortField;
-	readonly order?: SortOrder;
-};
+export const SortFieldSchema = Schema.Union([
+	Schema.Literal("priority"),
+	Schema.Literal("created_at"),
+	Schema.Literal("updated_at"),
+] as const);
+export type SortField = Schema.Schema.Type<typeof SortFieldSchema>;
+
+export const SortOrderSchema = Schema.Union([Schema.Literal("asc"), Schema.Literal("desc")] as const);
+export type SortOrder = Schema.Schema.Type<typeof SortOrderSchema>;
+
+export const IssueQuerySchema = Schema.Struct({
+	status: Schema.optional(Schema.Union([IssueStatusSchema, Schema.Array(IssueStatusSchema)] as const)),
+	type: Schema.optional(Schema.Union([IssueTypeSchema, Schema.Array(IssueTypeSchema)] as const)),
+	priority: Schema.optional(Schema.Union([Schema.Number, Schema.Array(Schema.Number)] as const)),
+	text: Schema.optional(Schema.String),
+	ready: Schema.optional(Schema.Boolean),
+	blocked: Schema.optional(Schema.Boolean),
+	sortBy: Schema.optional(SortFieldSchema),
+	order: Schema.optional(SortOrderSchema),
+});
+export type IssueQuery = Schema.Schema.Type<typeof IssueQuerySchema>;
+
+const decodeIssueQuerySchema = Schema.decodeUnknownEffect(IssueQuerySchema);
+
+export const decodeIssueQuery = (
+	value: unknown,
+): Effect.Effect<IssueQuery, BacklogContractValidationError, never> =>
+	decodeIssueQuerySchema(value).pipe(
+		Effect.mapError((error) =>
+			new BacklogContractValidationError({
+				reason: String(error),
+				entity: "backlog.query",
+			}),
+		),
+	);
 
 const BlockingDependencyTypes = new Set<DependencyType>([
 	"blocks",

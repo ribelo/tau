@@ -1,19 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 import {
 	BACKLOG_CACHE_POLICY,
 	BACKLOG_STORAGE,
-	BacklogContractError,
-	BacklogEventSchema,
 	BacklogRecordedAtSchema,
 	compareBacklogEvents,
+	decodeBacklogEvent,
 	replayBacklogEvents,
 	resolveBacklogPaths,
 	sortBacklogEvents,
 } from "../src/backlog/contract.js";
+import { BacklogContractValidationError } from "../src/backlog/errors.js";
 
-const decodeBacklogEvent = Schema.decodeUnknownSync(BacklogEventSchema);
+const decodeEvent = (value: unknown) => Effect.runSync(decodeBacklogEvent(value));
 
 describe("backlog contract", () => {
 	it("defines tracked events and ignored cache paths", () => {
@@ -46,7 +46,7 @@ describe("backlog contract", () => {
 		expect(() => Schema.decodeUnknownSync(BacklogRecordedAtSchema)("2026-03-29T12:00:00.123+02:00")).toThrow();
 		expect(() => Schema.decodeUnknownSync(BacklogRecordedAtSchema)("2026-02-29T12:00:00.000Z")).toThrow();
 		expect(() =>
-			decodeBacklogEvent({
+			decodeEvent({
 				schema_version: 1,
 				event_id: "evt-bad-ts",
 				issue_id: "tau-1",
@@ -57,7 +57,7 @@ describe("backlog contract", () => {
 			}),
 		).toThrow();
 		expect(() =>
-			decodeBacklogEvent({
+			decodeEvent({
 				schema_version: 1,
 				event_id: "evt-impossible-ts",
 				issue_id: "tau-1",
@@ -70,7 +70,7 @@ describe("backlog contract", () => {
 	});
 
 	it("orders replay by recorded_at then event_id", () => {
-		const late = decodeBacklogEvent({
+		const late = decodeEvent({
 			schema_version: 1,
 			event_id: "evt-200",
 			issue_id: "tau-1",
@@ -80,7 +80,7 @@ describe("backlog contract", () => {
 			set_fields: { status: "in_progress" },
 			unset_fields: [],
 		});
-		const firstTieBreaker = decodeBacklogEvent({
+		const firstTieBreaker = decodeEvent({
 			schema_version: 1,
 			event_id: "evt-001",
 			issue_id: "tau-1",
@@ -89,7 +89,7 @@ describe("backlog contract", () => {
 			kind: "issue.created",
 			fields: { id: "tau-1", title: "One" },
 		});
-		const secondTieBreaker = decodeBacklogEvent({
+		const secondTieBreaker = decodeEvent({
 			schema_version: 1,
 			event_id: "evt-002",
 			issue_id: "tau-1",
@@ -109,8 +109,8 @@ describe("backlog contract", () => {
 	});
 
 	it("replays concurrent same-issue edits with field-level last-write-wins", () => {
-		const issue = replayBacklogEvents([
-			decodeBacklogEvent({
+		const issue = Effect.runSync(replayBacklogEvents([
+			decodeEvent({
 				schema_version: 1,
 				event_id: "evt-001",
 				issue_id: "tau-1",
@@ -124,7 +124,7 @@ describe("backlog contract", () => {
 					status: "open",
 				},
 			}),
-			decodeBacklogEvent({
+			decodeEvent({
 				schema_version: 1,
 				event_id: "evt-010",
 				issue_id: "tau-1",
@@ -134,7 +134,7 @@ describe("backlog contract", () => {
 				set_fields: { status: "in_progress" },
 				unset_fields: [],
 			}),
-			decodeBacklogEvent({
+			decodeEvent({
 				schema_version: 1,
 				event_id: "evt-011",
 				issue_id: "tau-1",
@@ -144,7 +144,7 @@ describe("backlog contract", () => {
 				set_fields: { priority: 1, title: "Backlog contract v2" },
 				unset_fields: [],
 			}),
-			decodeBacklogEvent({
+			decodeEvent({
 				schema_version: 1,
 				event_id: "evt-012",
 				issue_id: "tau-1",
@@ -154,7 +154,7 @@ describe("backlog contract", () => {
 				set_fields: { status: "blocked" },
 				unset_fields: ["priority"],
 			}),
-		]).get("tau-1");
+		])).get("tau-1");
 
 		expect(issue).toBeDefined();
 		expect(issue?.fields).toEqual({
@@ -175,8 +175,8 @@ describe("backlog contract", () => {
 	});
 
 	it("preserves imported issue ids and unknown imported fields", () => {
-		const issue = replayBacklogEvents([
-			decodeBacklogEvent({
+		const issue = Effect.runSync(replayBacklogEvents([
+			decodeEvent({
 				schema_version: 1,
 				event_id: "evt-import-001",
 				issue_id: "tau-legacy-7",
@@ -195,7 +195,7 @@ describe("backlog contract", () => {
 					},
 				},
 			}),
-		]).get("tau-legacy-7");
+		])).get("tau-legacy-7");
 
 		expect(issue?.origin_kind).toBe("issue.imported");
 		expect(issue?.fields["id"]).toBe("tau-legacy-7");
@@ -204,8 +204,8 @@ describe("backlog contract", () => {
 
 	it("rejects updates before an origin event", () => {
 		expect(() =>
-			replayBacklogEvents([
-				decodeBacklogEvent({
+				Effect.runSync(replayBacklogEvents([
+					decodeEvent({
 					schema_version: 1,
 					event_id: "evt-002",
 					issue_id: "tau-1",
@@ -215,7 +215,7 @@ describe("backlog contract", () => {
 					set_fields: { status: "open" },
 					unset_fields: [],
 				}),
-			]),
-		).toThrow(BacklogContractError);
+			])),
+		).toThrow(BacklogContractValidationError);
 	});
 });

@@ -1,4 +1,6 @@
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
+
+import { BacklogContractValidationError } from "./errors.js";
 
 export const IssueStatusSchema = Schema.String.check(Schema.isMinLength(1));
 export type IssueStatus = Schema.Schema.Type<typeof IssueStatusSchema>;
@@ -100,6 +102,31 @@ const IssueKnownFieldsSchema = Schema.Struct({
 export const IssueFieldsSchema = Schema.StructWithRest(IssueKnownFieldsSchema, [IssueExtraFields]);
 export type Issue = Schema.Schema.Type<typeof IssueFieldsSchema>;
 
-export const decodeIssue = Schema.decodeUnknownSync(IssueFieldsSchema);
-export const encodeIssue = Schema.encodeSync(IssueFieldsSchema);
+export type EncodedIssue = Schema.Codec.Encoded<typeof IssueFieldsSchema>;
 
+const decodeIssueSchema = Schema.decodeUnknownEffect(IssueFieldsSchema);
+const encodeIssueSchema = Schema.encodeUnknownEffect(IssueFieldsSchema);
+
+export const decodeIssue = (
+	value: unknown,
+): Effect.Effect<Issue, BacklogContractValidationError, never> =>
+	decodeIssueSchema(value).pipe(
+		Effect.mapError((error) =>
+			new BacklogContractValidationError({
+				reason: String(error),
+				entity: "backlog.issue",
+			}),
+		),
+	);
+
+export const encodeIssue = (
+	issue: Issue,
+): Effect.Effect<EncodedIssue, BacklogContractValidationError, never> =>
+	encodeIssueSchema(issue).pipe(
+		Effect.mapError((error) =>
+			new BacklogContractValidationError({
+				reason: String(error),
+				entity: "backlog.issue",
+			}),
+		),
+	);

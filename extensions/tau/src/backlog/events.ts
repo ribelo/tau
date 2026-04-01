@@ -1,42 +1,40 @@
-import * as fs from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 
-import { Schema } from "effect";
+import { Effect, Layer, Option, Schema } from "effect";
+import { NodeFileSystem } from "@effect/platform-node";
 
 import {
 	BacklogIssueCreatedEventSchema,
 	BacklogIssueUpdatedEventSchema,
-	resolveBacklogPaths,
 	type BacklogEvent,
 } from "./contract.js";
 import {
-	assertBacklogEventCanBeApplied,
-	rebuildBacklogCacheUnlocked,
-	readBacklogEventsFromWorkspaceUnlocked,
-	withBacklogWriteLock,
-} from "./materialize.js";
+	BacklogCommandUsageError,
+	BacklogContractValidationError,
+	BacklogIssueNotFoundError,
+	BacklogLegacyImportError,
+	BacklogStorageError,
+} from "./errors.js";
+import { generateIssueIdEffect } from "./id.js";
+import { filterIssues, type IssueQuery } from "./query.js";
+import { BacklogConfigLive, BacklogInfrastructureLive, BacklogLegacyImportLive } from "./repository.js";
+import { decodeIssue, encodeIssue, type Comment, type Dependency, type Issue, type IssueStatus } from "./schema.js";
 import {
-	decodeIssue,
-	encodeIssue,
-	type Comment,
-	type Dependency,
-	type Issue,
-	type IssueStatus,
-} from "./schema.js";
-import { generateIssueId } from "./id.js";
-import {
-	importBeadsIfNeededUnlocked,
-	writeEventFile,
-} from "./storage.js";
+	type AddCommentInput,
+	type AddDependencyInput,
+	type BacklogCommandMutationError,
+	type BacklogCommandQueryError,
+	BacklogCommandService,
+	type BacklogStatusSummary,
+	BacklogLegacyImport,
+	BacklogRepository,
+	type CreateIssueInput,
+	type RemoveDependencyInput,
+	type SetIssueStatusInput,
+	type UpdateIssueInput,
+} from "./services.js";
 
-export class BacklogIssueNotFoundError extends Error {
-	constructor(issueId: string) {
-		super(`Issue not found: ${issueId}`);
-		this.name = "BacklogIssueNotFoundError";
-	}
-}
-
-type CreateIssueInput = {
+type CreateIssueInputLegacy = {
 	readonly title: string;
 	readonly actor: string;
 	readonly id?: string;
@@ -45,7 +43,7 @@ type CreateIssueInput = {
 	readonly fields?: Readonly<Record<string, unknown>>;
 };
 
-type UpdateIssueInput = {
+type UpdateIssueInputLegacy = {
 	readonly issueId: string;
 	readonly actor: string;
 	readonly recorded_at?: string;
@@ -53,7 +51,7 @@ type UpdateIssueInput = {
 	readonly unsetFields?: ReadonlyArray<string>;
 };
 
-type StatusUpdateInput = {
+type StatusUpdateInputLegacy = {
 	readonly issueId: string;
 	readonly actor: string;
 	readonly status: IssueStatus;
@@ -61,7 +59,7 @@ type StatusUpdateInput = {
 	readonly recorded_at?: string;
 };
 
-type DependencyMutationInput = {
+type DependencyMutationInputLegacy = {
 	readonly issueId: string;
 	readonly actor: string;
 	readonly dependsOnId: string;
@@ -69,7 +67,7 @@ type DependencyMutationInput = {
 	readonly recorded_at?: string;
 };
 
-type RemoveDependencyInput = {
+type RemoveDependencyInputLegacy = {
 	readonly issueId: string;
 	readonly actor: string;
 	readonly dependsOnId: string;
@@ -77,241 +75,528 @@ type RemoveDependencyInput = {
 	readonly recorded_at?: string;
 };
 
-type AddCommentInput = {
+type AddCommentInputLegacy = {
 	readonly issueId: string;
 	readonly actor: string;
 	readonly text: string;
 	readonly recorded_at?: string;
 };
 
-const decodeCreatedEvent = Schema.decodeUnknownSync(BacklogIssueCreatedEventSchema);
-const decodeUpdatedEvent = Schema.decodeUnknownSync(BacklogIssueUpdatedEventSchema);
+const decodeCreatedEventSchema = Schema.decodeUnknownEffect(BacklogIssueCreatedEventSchema);
+const decodeUpdatedEventSchema = Schema.decodeUnknownEffect(BacklogIssueUpdatedEventSchema);
 
-function nowIso(): string {
-	return new Date().toISOString();
-}
+const decodeCreatedEvent = (
+	value: unknown,
+): Effect.Effect<Extract<BacklogEvent, { kind: "issue.created" }>, BacklogContractValidationError, never> =>
+	decodeCreatedEventSchema(value).pipe(
+		Effect.mapError(
+			(error) =>
+				new BacklogContractValidationError({
+					reason: String(error),
+					entity: "backlog.event",
+				}),
+		),
+	);
 
-async function invalidateBacklogCache(workspaceRoot: string): Promise<void> {
-	const paths = resolveBacklogPaths(workspaceRoot);
-	await fs.rm(paths.materializedIssuesPath, { force: true });
-}
+const decodeUpdatedEvent = (
+	value: unknown,
+): Effect.Effect<Extract<BacklogEvent, { kind: "issue.updated" }>, BacklogContractValidationError, never> =>
+	decodeUpdatedEventSchema(value).pipe(
+		Effect.mapError(
+			(error) =>
+				new BacklogContractValidationError({
+					reason: String(error),
+					entity: "backlog.event",
+				}),
+		),
+	);
 
-async function appendEventUnlocked(workspaceRoot: string, event: BacklogEvent): Promise<ReadonlyArray<Issue>> {
-	const existingEvents = await readBacklogEventsFromWorkspaceUnlocked(workspaceRoot);
-	assertBacklogEventCanBeApplied(existingEvents, event);
-	await writeEventFile(workspaceRoot, event);
-	await invalidateBacklogCache(workspaceRoot);
-	return rebuildBacklogCacheUnlocked(workspaceRoot);
-}
+const nowIso = (): string => new Date().toISOString();
 
-export async function importBeadsIfNeeded(workspaceRoot: string): Promise<ReadonlyArray<Issue>> {
-	return withBacklogWriteLock(workspaceRoot, () => importBeadsIfNeededUnlocked(workspaceRoot));
-}
-
-async function loadCurrentIssuesUnlocked(workspaceRoot: string): Promise<ReadonlyArray<Issue>> {
-	await importBeadsIfNeededUnlocked(workspaceRoot);
-	return rebuildBacklogCacheUnlocked(workspaceRoot);
-}
-
-function requireIssue(issues: ReadonlyArray<Issue>, issueId: string): Issue {
+const requireIssue = (
+	issues: ReadonlyArray<Issue>,
+	issueId: string,
+): Effect.Effect<Issue, BacklogIssueNotFoundError, never> => {
 	const issue = issues.find((candidate) => candidate.id === issueId);
 	if (!issue) {
-		throw new BacklogIssueNotFoundError(issueId);
+		return Effect.fail(new BacklogIssueNotFoundError({ issueId }));
 	}
-	return issue;
-}
+	return Effect.succeed(issue);
+};
 
-function uniqueLabels(labels: ReadonlyArray<string> | undefined): ReadonlyArray<string> | undefined {
-	return labels ? [...new Set(labels)] : undefined;
-}
+const uniqueLabels = (labels: ReadonlyArray<string> | undefined): ReadonlyArray<string> | undefined =>
+	labels ? [...new Set(labels)] : undefined;
 
-export async function createIssue(workspaceRoot: string, input: CreateIssueInput): Promise<Issue> {
-	return withBacklogWriteLock(workspaceRoot, async () => {
-		const currentIssues = await loadCurrentIssuesUnlocked(workspaceRoot);
-		const existingIds = new Set(currentIssues.map((issue) => issue.id));
-		if (!input.id && !input.prefix) {
-			throw new Error("createIssue requires either an explicit id or a prefix for id generation");
-		}
-		const issueId =
-			input.id ??
-			generateIssueId({
-				prefix: input.prefix!,
-				title: input.title,
-				description: typeof input.fields?.["description"] === "string" ? input.fields["description"] : "",
-				creator: input.actor,
-				timestamp: new Date(input.recorded_at ?? nowIso()),
-				existingIds,
-				existingTopLevelCount: currentIssues.filter((issue) => !issue.id.includes(".")).length,
+const statusSummary = (issues: ReadonlyArray<Issue>): BacklogStatusSummary => ({
+	total: issues.length,
+	open: issues.filter((issue) => issue.status === "open").length,
+	inProgress: issues.filter((issue) => issue.status === "in_progress").length,
+	closed: issues.filter((issue) => issue.status === "closed" || issue.status === "tombstone").length,
+	blocked: filterIssues(issues, { blocked: true }).length,
+	ready: filterIssues(issues, { ready: true }).length,
+	deferred: issues.filter((issue) => issue.status === "deferred").length,
+	pinned: issues.filter((issue) => issue.pinned === true).length,
+});
+
+export const BacklogCommandServiceLive = Layer.effect(
+	BacklogCommandService,
+	Effect.gen(function* () {
+		const repository = yield* BacklogRepository;
+
+		const loadCurrentIssuesForMutation = (): Effect.Effect<
+			ReadonlyArray<Issue>,
+			BacklogCommandMutationError | BacklogCommandQueryError,
+			never
+		> => repository.readMaterializedIssues();
+
+		const loadCurrentIssuesForQuery = (): Effect.Effect<ReadonlyArray<Issue>, BacklogCommandQueryError, never> =>
+			repository.withWriteLock(repository.readMaterializedIssues()).pipe(
+				Effect.catchTag("BacklogLockError", (error) =>
+					Effect.fail(
+						new BacklogStorageError({
+							operation: "query-read-lock",
+							path: ".pi/backlog/cache/.lock",
+							reason: "Failed to acquire write lock for backlog query read",
+							cause: error,
+						}),
+					),
+				),
+			);
+
+		const updateIssueUnlocked = (
+			input: UpdateIssueInput,
+		): Effect.Effect<Issue, BacklogCommandMutationError, never> =>
+			Effect.gen(function* () {
+				const issues = yield* loadCurrentIssuesForMutation();
+				yield* requireIssue(issues, input.issueId);
+				const recordedAt = Option.getOrElse(input.recordedAt, nowIso);
+				const event = yield* decodeUpdatedEvent({
+					schema_version: 1,
+					event_id: `update-${randomUUID()}`,
+					issue_id: input.issueId,
+					recorded_at: recordedAt,
+					actor: input.actor,
+					kind: "issue.updated",
+					set_fields: input.setFields,
+					unset_fields: [...input.unsetFields],
+				});
+				yield* repository.appendEvent(event);
+				const nextIssues = yield* repository.rebuildMaterializedIssues();
+				return yield* requireIssue(nextIssues, input.issueId);
 			});
 
-		const recordedAt = input.recorded_at ?? nowIso();
-		const candidate = decodeIssue({
-			id: issueId,
-			title: input.title,
-			status: "open",
-			priority: 2,
-			issue_type: "task",
-			created_at: recordedAt,
-			created_by: input.actor,
-			updated_at: recordedAt,
-			...input.fields,
-		});
-		const event = decodeCreatedEvent({
-			schema_version: 1,
-			event_id: `create-${randomUUID()}`,
-			issue_id: issueId,
-			recorded_at: recordedAt,
-			actor: input.actor,
-			kind: "issue.created",
-			fields: encodeIssue(candidate),
-		});
-		const issues = await appendEventUnlocked(workspaceRoot, event);
-		return requireIssue(issues, issueId);
-	});
-}
+		const create = (
+			input: CreateIssueInput,
+		): Effect.Effect<Issue, BacklogCommandMutationError, never> =>
+			repository.withWriteLock(
+				Effect.gen(function* () {
+					const currentIssues = yield* loadCurrentIssuesForMutation();
+					const existingIds = new Set(currentIssues.map((issue) => issue.id));
 
-async function updateIssueUnlocked(workspaceRoot: string, input: UpdateIssueInput): Promise<Issue> {
-	const issues = await loadCurrentIssuesUnlocked(workspaceRoot);
-	requireIssue(issues, input.issueId);
-	const event = decodeUpdatedEvent({
-		schema_version: 1,
-		event_id: `update-${randomUUID()}`,
-		issue_id: input.issueId,
-		recorded_at: input.recorded_at ?? nowIso(),
-		actor: input.actor,
-		kind: "issue.updated",
-		set_fields: input.setFields,
-		unset_fields: [...(input.unsetFields ?? [])],
-	});
-	const nextIssues = await appendEventUnlocked(workspaceRoot, event);
-	return requireIssue(nextIssues, input.issueId);
-}
+					if (Option.isNone(input.id) && Option.isNone(input.prefix)) {
+						return yield* Effect.fail(
+							new BacklogCommandUsageError({
+								command: "create",
+								usage: "create \"Title\" --id <id> | create \"Title\" --prefix <prefix>",
+								reason: "create requires either an explicit id or a prefix for id generation",
+							}),
+						);
+					}
 
-export async function updateIssue(workspaceRoot: string, input: UpdateIssueInput): Promise<Issue> {
-	return withBacklogWriteLock(workspaceRoot, () => updateIssueUnlocked(workspaceRoot, input));
-}
+					const issueId = yield* Option.match(input.id, {
+						onSome: Effect.succeed,
+						onNone: () =>
+							Option.match(input.prefix, {
+								onSome: (prefix) =>
+									generateIssueIdEffect({
+										prefix,
+										title: input.title,
+										description:
+											typeof input.fields["description"] === "string" ? input.fields["description"] : "",
+										creator: input.actor,
+										timestamp: new Date(Option.getOrElse(input.recordedAt, nowIso)),
+										existingIds,
+										existingTopLevelCount: currentIssues.filter((issue) => !issue.id.includes(".")).length,
+									}),
+								onNone: () =>
+									Effect.fail(
+										new BacklogCommandUsageError({
+											command: "create",
+											usage: "create \"Title\" --id <id> | create \"Title\" --prefix <prefix>",
+											reason: "Missing issue id and prefix",
+										}),
+									),
+							}),
+					});
 
-export async function setIssueStatus(workspaceRoot: string, input: StatusUpdateInput): Promise<Issue> {
-	const recordedAt = input.recorded_at ?? nowIso();
-	const setFields: Record<string, unknown> = {
-		status: input.status,
-		updated_at: recordedAt,
-	};
-	const unsetFields: string[] = [];
-	if (input.status === "closed" || input.status === "tombstone") {
-		setFields["closed_at"] = recordedAt;
-		if (input.reason !== undefined) {
-			setFields["close_reason"] = input.reason;
-		}
-	} else {
-		unsetFields.push("closed_at", "close_reason");
-	}
+					const recordedAt = Option.getOrElse(input.recordedAt, nowIso);
+					const candidate = yield* decodeIssue({
+						id: issueId,
+						title: input.title,
+						status: "open",
+						priority: 2,
+						issue_type: "task",
+						created_at: recordedAt,
+						created_by: input.actor,
+						updated_at: recordedAt,
+						...input.fields,
+					});
+					const encodedCandidate = yield* encodeIssue(candidate);
+					const event = yield* decodeCreatedEvent({
+						schema_version: 1,
+						event_id: `create-${randomUUID()}`,
+						issue_id: issueId,
+						recorded_at: recordedAt,
+						actor: input.actor,
+						kind: "issue.created",
+						fields: encodedCandidate,
+					});
 
-	return updateIssue(workspaceRoot, {
-		issueId: input.issueId,
-		actor: input.actor,
-		recorded_at: recordedAt,
-		setFields,
-		unsetFields,
-	});
-}
+					yield* repository.appendEvent(event);
+					const issues = yield* repository.rebuildMaterializedIssues();
+					return yield* requireIssue(issues, issueId);
+				}),
+			);
 
-export async function addIssueDependency(
-	workspaceRoot: string,
-	input: DependencyMutationInput,
-): Promise<Issue> {
-	return withBacklogWriteLock(workspaceRoot, async () => {
-		const issues = await loadCurrentIssuesUnlocked(workspaceRoot);
-		const issue = requireIssue(issues, input.issueId);
-		requireIssue(issues, input.dependsOnId);
-		const recordedAt = input.recorded_at ?? nowIso();
-		const dependency: Dependency = {
-			issue_id: input.issueId,
-			depends_on_id: input.dependsOnId,
-			type: input.type,
-			created_at: recordedAt,
-			created_by: input.actor,
+		const update = (
+			input: UpdateIssueInput,
+		): Effect.Effect<Issue, BacklogCommandMutationError, never> =>
+			repository.withWriteLock(updateIssueUnlocked(input));
+
+		const setStatus = (
+			input: SetIssueStatusInput,
+		): Effect.Effect<Issue, BacklogCommandMutationError, never> => {
+			const recordedAt = Option.getOrElse(input.recordedAt, nowIso);
+			const setFields: Record<string, unknown> = {
+				status: input.status,
+				updated_at: recordedAt,
+			};
+			const unsetFields: string[] = [];
+
+			if (input.status === "closed" || input.status === "tombstone") {
+				setFields["closed_at"] = recordedAt;
+				if (Option.isSome(input.reason)) {
+					setFields["close_reason"] = input.reason.value;
+				}
+			} else {
+				unsetFields.push("closed_at", "close_reason");
+			}
+
+			return update({
+				issueId: input.issueId,
+				actor: input.actor,
+				recordedAt: Option.some(recordedAt),
+				setFields,
+				unsetFields,
+			});
 		};
-		const dependencies = [...(issue.dependencies ?? [])];
-		if (!dependencies.some((entry) => entry.depends_on_id === dependency.depends_on_id && entry.type === dependency.type)) {
-			dependencies.push(dependency);
-		}
-		return updateIssueUnlocked(workspaceRoot, {
-			issueId: input.issueId,
-			actor: input.actor,
-			recorded_at: recordedAt,
-			setFields: { dependencies, updated_at: recordedAt },
-		});
-	});
-}
 
-export async function removeIssueDependency(
-	workspaceRoot: string,
-	input: RemoveDependencyInput,
-): Promise<Issue> {
-	return withBacklogWriteLock(workspaceRoot, async () => {
-		const issues = await loadCurrentIssuesUnlocked(workspaceRoot);
-		const issue = requireIssue(issues, input.issueId);
-		const recordedAt = input.recorded_at ?? nowIso();
-		const dependencies = (issue.dependencies ?? []).filter(
-			(entry) =>
-				!(
-					entry.depends_on_id === input.dependsOnId &&
-					(input.type === undefined || entry.type === input.type)
+		const addDependency = (
+			input: AddDependencyInput,
+		): Effect.Effect<Issue, BacklogCommandMutationError, never> =>
+			repository.withWriteLock(
+				Effect.gen(function* () {
+					const issues = yield* loadCurrentIssuesForMutation();
+					const issue = yield* requireIssue(issues, input.issueId);
+					yield* requireIssue(issues, input.dependsOnId);
+					const recordedAt = Option.getOrElse(input.recordedAt, nowIso);
+					const dependency: Dependency = {
+						issue_id: input.issueId,
+						depends_on_id: input.dependsOnId,
+						type: input.dependencyType,
+						created_at: recordedAt,
+						created_by: input.actor,
+					};
+
+					const dependencies = [...(issue.dependencies ?? [])];
+					if (
+						!dependencies.some(
+							(entry) =>
+								entry.depends_on_id === dependency.depends_on_id && entry.type === dependency.type,
+						)
+					) {
+						dependencies.push(dependency);
+					}
+
+					return yield* updateIssueUnlocked({
+						issueId: input.issueId,
+						actor: input.actor,
+						recordedAt: Option.some(recordedAt),
+						setFields: { dependencies, updated_at: recordedAt },
+						unsetFields: [],
+					});
+				}),
+			);
+
+		const removeDependency = (
+			input: RemoveDependencyInput,
+		): Effect.Effect<Issue, BacklogCommandMutationError, never> =>
+			repository.withWriteLock(
+				Effect.gen(function* () {
+					const issues = yield* loadCurrentIssuesForMutation();
+					const issue = yield* requireIssue(issues, input.issueId);
+					const recordedAt = Option.getOrElse(input.recordedAt, nowIso);
+					const dependencies = (issue.dependencies ?? []).filter(
+						(entry) =>
+							!(
+								entry.depends_on_id === input.dependsOnId &&
+								(Option.isNone(input.dependencyType) || entry.type === input.dependencyType.value)
+							),
+					);
+
+					return yield* updateIssueUnlocked({
+						issueId: input.issueId,
+						actor: input.actor,
+						recordedAt: Option.some(recordedAt),
+						setFields: { dependencies, updated_at: recordedAt },
+						unsetFields: [],
+					});
+				}),
+			);
+
+		const addComment = (
+			input: AddCommentInput,
+		): Effect.Effect<Issue, BacklogCommandMutationError, never> =>
+			repository.withWriteLock(
+				Effect.gen(function* () {
+					const issues = yield* loadCurrentIssuesForMutation();
+					const issue = yield* requireIssue(issues, input.issueId);
+					const recordedAt = Option.getOrElse(input.recordedAt, nowIso);
+					const nextCommentId = Math.max(0, ...(issue.comments ?? []).map((comment) => comment.id)) + 1;
+					const comments = [
+						...(issue.comments ?? []),
+						{
+							id: nextCommentId,
+							issue_id: input.issueId,
+							author: input.actor,
+							text: input.text,
+							created_at: recordedAt,
+						} satisfies Comment,
+					];
+
+					return yield* updateIssueUnlocked({
+						issueId: input.issueId,
+						actor: input.actor,
+						recordedAt: Option.some(recordedAt),
+						setFields: { comments, updated_at: recordedAt },
+						unsetFields: [],
+					});
+				}),
+			);
+
+		const list = (
+			query: IssueQuery,
+		): Effect.Effect<ReadonlyArray<Issue>, BacklogCommandQueryError, never> =>
+			loadCurrentIssuesForQuery().pipe(Effect.map((issues) => filterIssues(issues, query)));
+
+		const show = (issueId: string): Effect.Effect<Issue, BacklogCommandQueryError, never> =>
+			Effect.gen(function* () {
+				const issues = yield* loadCurrentIssuesForQuery();
+				return yield* requireIssue(issues, issueId);
+			});
+
+		const ready = (): Effect.Effect<ReadonlyArray<Issue>, BacklogCommandQueryError, never> =>
+			list({ ready: true });
+
+		const blocked = (): Effect.Effect<ReadonlyArray<Issue>, BacklogCommandQueryError, never> =>
+			list({ blocked: true });
+
+		const search = (
+			text: string,
+			limit: Option.Option<number>,
+		): Effect.Effect<ReadonlyArray<Issue>, BacklogCommandQueryError, never> =>
+			list({ text }).pipe(
+				Effect.map((issues) =>
+					Option.match(limit, {
+						onNone: () => issues,
+						onSome: (value) => issues.slice(0, value),
+					}),
 				),
+			);
+
+		const status = (): Effect.Effect<BacklogStatusSummary, BacklogCommandQueryError, never> =>
+			loadCurrentIssuesForQuery().pipe(Effect.map((issues) => statusSummary(issues)));
+
+		return BacklogCommandService.of({
+			create,
+			update,
+			setStatus,
+			addDependency,
+			removeDependency,
+			addComment,
+			list,
+			show,
+			ready,
+			blocked,
+			search,
+			status,
+		});
+	}),
+);
+
+export const BacklogCommandServiceForWorkspace = (workspaceRoot: string) =>
+	BacklogCommandServiceLive.pipe(Layer.provide(BacklogInfrastructureLive(workspaceRoot)));
+
+const withCommands = <A, E>(
+	workspaceRoot: string,
+	effect: Effect.Effect<A, E, BacklogCommandService>,
+): Effect.Effect<A, E, never> =>
+	effect.pipe(Effect.provide(BacklogCommandServiceForWorkspace(workspaceRoot)));
+
+export const importBeadsIfNeeded = (
+	workspaceRoot: string,
+	): Effect.Effect<ReadonlyArray<Issue>, BacklogLegacyImportError | BacklogStorageError | BacklogContractValidationError, never> =>
+	Effect.gen(function* () {
+		const repository = yield* BacklogRepository;
+		const importer = yield* BacklogLegacyImport;
+		return yield* repository.withWriteLock(importer.importIfNeeded()).pipe(
+			Effect.catchTag("BacklogLockError", (error) =>
+				Effect.fail(
+					new BacklogStorageError({
+						operation: "legacy-import-lock",
+						path: workspaceRoot,
+						reason: "Failed to acquire write lock for legacy import",
+						cause: error,
+					}),
+				),
+			),
 		);
-		return updateIssueUnlocked(workspaceRoot, {
-			issueId: input.issueId,
-			actor: input.actor,
-			recorded_at: recordedAt,
-			setFields: { dependencies, updated_at: recordedAt },
-		});
-	});
-}
+	}).pipe(
+		Effect.provide(BacklogInfrastructureLive(workspaceRoot)),
+		Effect.provide(
+			BacklogLegacyImportLive.pipe(
+				Layer.provide(BacklogConfigLive(workspaceRoot)),
+				Layer.provide(NodeFileSystem.layer),
+			),
+		),
+	);
 
-export async function addIssueComment(workspaceRoot: string, input: AddCommentInput): Promise<Issue> {
-	return withBacklogWriteLock(workspaceRoot, async () => {
-		const issues = await loadCurrentIssuesUnlocked(workspaceRoot);
-		const issue = requireIssue(issues, input.issueId);
-		const recordedAt = input.recorded_at ?? nowIso();
-		const nextCommentId = Math.max(0, ...(issue.comments ?? []).map((comment) => comment.id)) + 1;
-		const comments = [
-			...(issue.comments ?? []),
-			{
-				id: nextCommentId,
-				issue_id: input.issueId,
-				author: input.actor,
+export const createIssue = (
+	workspaceRoot: string,
+	input: CreateIssueInputLegacy,
+): Effect.Effect<Issue, BacklogCommandMutationError, never> =>
+	withCommands(
+		workspaceRoot,
+		Effect.gen(function* () {
+			const commands = yield* BacklogCommandService;
+			return yield* commands.create({
+				title: input.title,
+				actor: input.actor,
+				id: Option.fromNullishOr(input.id),
+				prefix: Option.fromNullishOr(input.prefix),
+				recordedAt: Option.fromNullishOr(input.recorded_at),
+				fields: input.fields ?? {},
+			});
+		}),
+	);
+
+export const updateIssue = (
+	workspaceRoot: string,
+	input: UpdateIssueInputLegacy,
+): Effect.Effect<Issue, BacklogCommandMutationError, never> =>
+	withCommands(
+		workspaceRoot,
+		Effect.gen(function* () {
+			const commands = yield* BacklogCommandService;
+			return yield* commands.update({
+				issueId: input.issueId,
+				actor: input.actor,
+				recordedAt: Option.fromNullishOr(input.recorded_at),
+				setFields: input.setFields,
+				unsetFields: [...(input.unsetFields ?? [])],
+			});
+		}),
+	);
+
+export const setIssueStatus = (
+	workspaceRoot: string,
+	input: StatusUpdateInputLegacy,
+): Effect.Effect<Issue, BacklogCommandMutationError, never> =>
+	withCommands(
+		workspaceRoot,
+		Effect.gen(function* () {
+			const commands = yield* BacklogCommandService;
+			return yield* commands.setStatus({
+				issueId: input.issueId,
+				actor: input.actor,
+				status: input.status,
+				reason: Option.fromNullishOr(input.reason),
+				recordedAt: Option.fromNullishOr(input.recorded_at),
+			});
+		}),
+	);
+
+export const addIssueDependency = (
+	workspaceRoot: string,
+	input: DependencyMutationInputLegacy,
+): Effect.Effect<Issue, BacklogCommandMutationError, never> =>
+	withCommands(
+		workspaceRoot,
+		Effect.gen(function* () {
+			const commands = yield* BacklogCommandService;
+			return yield* commands.addDependency({
+				issueId: input.issueId,
+				actor: input.actor,
+				dependsOnId: input.dependsOnId,
+				dependencyType: input.type,
+				recordedAt: Option.fromNullishOr(input.recorded_at),
+			});
+		}),
+	);
+
+export const removeIssueDependency = (
+	workspaceRoot: string,
+	input: RemoveDependencyInputLegacy,
+): Effect.Effect<Issue, BacklogCommandMutationError, never> =>
+	withCommands(
+		workspaceRoot,
+		Effect.gen(function* () {
+			const commands = yield* BacklogCommandService;
+			return yield* commands.removeDependency({
+				issueId: input.issueId,
+				actor: input.actor,
+				dependsOnId: input.dependsOnId,
+				dependencyType: Option.fromNullishOr(input.type),
+				recordedAt: Option.fromNullishOr(input.recorded_at),
+			});
+		}),
+	);
+
+export const addIssueComment = (
+	workspaceRoot: string,
+	input: AddCommentInputLegacy,
+): Effect.Effect<Issue, BacklogCommandMutationError, never> =>
+	withCommands(
+		workspaceRoot,
+		Effect.gen(function* () {
+			const commands = yield* BacklogCommandService;
+			return yield* commands.addComment({
+				issueId: input.issueId,
+				actor: input.actor,
 				text: input.text,
-				created_at: recordedAt,
-			} satisfies Comment,
-		];
-		return updateIssueUnlocked(workspaceRoot, {
-			issueId: input.issueId,
-			actor: input.actor,
-			recorded_at: recordedAt,
-			setFields: { comments, updated_at: recordedAt },
-		});
-	});
-}
+				recordedAt: Option.fromNullishOr(input.recorded_at),
+			});
+		}),
+	);
 
-export async function updateIssueFields(
+export const updateIssueFields = (
 	workspaceRoot: string,
 	issueId: string,
 	actor: string,
 	patch: Partial<Issue>,
 	options?: { readonly unsetFields?: ReadonlyArray<string>; readonly recorded_at?: string },
-): Promise<Issue> {
+): Effect.Effect<Issue, BacklogCommandMutationError, never> => {
 	const recordedAt = options?.recorded_at ?? nowIso();
 	const setFields: Record<string, unknown> = { ...patch, updated_at: recordedAt };
 	if ("labels" in setFields && Array.isArray(setFields["labels"])) {
 		setFields["labels"] = uniqueLabels(setFields["labels"] as ReadonlyArray<string>);
 	}
-	const updateInput: UpdateIssueInput = {
+
+	return updateIssue(workspaceRoot, {
 		issueId,
 		actor,
 		recorded_at: recordedAt,
 		setFields,
 		...(options?.unsetFields ? { unsetFields: options.unsetFields } : {}),
-	};
-	return updateIssue(workspaceRoot, updateInput);
-}
+	});
+};

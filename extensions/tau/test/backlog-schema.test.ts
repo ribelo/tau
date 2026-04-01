@@ -1,9 +1,10 @@
+import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { decodeIssue, encodeIssue } from "../src/backlog/schema.js";
 
 describe("backlog schema", () => {
-	it("roundtrips unknown fields", () => {
+	it("roundtrips unknown fields", async () => {
 		const raw = {
 			id: "tau-abc",
 			title: "Keep unknown",
@@ -15,8 +16,8 @@ describe("backlog schema", () => {
 			custom_field: { nested: ["a", "b"], flag: true },
 		};
 
-		const issue = decodeIssue(raw);
-		const encoded = encodeIssue(issue);
+		const issue = await Effect.runPromise(decodeIssue(raw));
+		const encoded = await Effect.runPromise(encodeIssue(issue));
 
 		expect(encoded["custom_field"]).toEqual(raw.custom_field);
 		expect(encoded.id).toBe(raw.id);

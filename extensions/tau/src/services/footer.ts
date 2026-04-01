@@ -11,7 +11,8 @@ import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import * as path from "node:path";
 
 import { PiAPI } from "../effect/pi.js";
-import { readMaterializedIssuesCache } from "../backlog/materialize.js";
+import { BacklogInfrastructureLive } from "../backlog/repository.js";
+import { BacklogRepository } from "../backlog/services.js";
 import type { Issue } from "../backlog/schema.js";
 import { isRecord } from "../shared/json.js";
 import { findNearestWorkspaceRoot } from "../shared/discovery.js";
@@ -119,8 +120,14 @@ export const countInProgressIssues = (issues: ReadonlyArray<Issue>): number =>
 
 export async function readFooterBacklogInProgressCount(cwd: string): Promise<number> {
 	const workspaceRoot = findNearestWorkspaceRoot(cwd);
-	const issues = await readMaterializedIssuesCache(workspaceRoot);
-	return countInProgressIssues(issues);
+	const inProgressCount = await Effect.runPromise(
+		Effect.gen(function* () {
+			const repository = yield* BacklogRepository;
+			const issues = yield* repository.withWriteLock(repository.readMaterializedIssues());
+			return countInProgressIssues(issues);
+		}).pipe(Effect.provide(BacklogInfrastructureLive(workspaceRoot))),
+	);
+	return inProgressCount;
 }
 
 const computeTotalCost = (ctx: ExtensionContext): number => {

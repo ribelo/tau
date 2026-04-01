@@ -1,11 +1,7 @@
 import { createHash } from "node:crypto";
+import { Effect } from "effect";
 
-export class BacklogIdError extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "BacklogIdError";
-	}
-}
+import { BacklogIdGenerationError } from "./errors.js";
 
 const base36Alphabet = "0123456789abcdefghijklmnopqrstuvwxyz";
 
@@ -92,7 +88,7 @@ function computeAdaptiveLength(count: number): number {
 	return 8;
 }
 
-export function generateIssueId(params: {
+const generateIssueId = (params: {
 	readonly prefix: string;
 	readonly title: string;
 	readonly description?: string;
@@ -100,7 +96,7 @@ export function generateIssueId(params: {
 	readonly timestamp: Date;
 	readonly existingIds: ReadonlySet<string>;
 	readonly existingTopLevelCount: number;
-}): string {
+}): string | undefined => {
 	const baseLength = computeAdaptiveLength(params.existingTopLevelCount);
 
 	for (let length = Math.min(baseLength, 8); length <= 8; length += 1) {
@@ -121,16 +117,56 @@ export function generateIssueId(params: {
 		}
 	}
 
-	throw new BacklogIdError("Failed to generate unique issue id");
-}
+	return undefined;
+};
 
-export function generateChildId(parentId: string, childNumber: number, maxDepth = 3): string {
+const generateChildId = (parentId: string, childNumber: number, maxDepth = 3): string | undefined => {
 	const depth = parentId.split(".").length - 1;
 	if (depth >= maxDepth) {
-		throw new BacklogIdError(`Maximum hierarchy depth (${maxDepth}) exceeded for ${parentId}`);
+		return undefined;
 	}
 	return `${parentId}.${childNumber}`;
-}
+};
+
+export const generateIssueIdEffect = (params: {
+	readonly prefix: string;
+	readonly title: string;
+	readonly description?: string;
+	readonly creator: string;
+	readonly timestamp: Date;
+	readonly existingIds: ReadonlySet<string>;
+	readonly existingTopLevelCount: number;
+}): Effect.Effect<string, BacklogIdGenerationError, never> =>
+	Effect.gen(function* () {
+		const id = generateIssueId(params);
+		if (id) {
+			return id;
+		}
+		return yield* Effect.fail(
+			new BacklogIdGenerationError({
+				prefix: params.prefix,
+				reason: "Failed to generate unique issue id",
+			}),
+		);
+	});
+
+export const generateChildIdEffect = (
+	parentId: string,
+	childNumber: number,
+	maxDepth = 3,
+): Effect.Effect<string, BacklogIdGenerationError, never> =>
+	Effect.gen(function* () {
+		const childId = generateChildId(parentId, childNumber, maxDepth);
+		if (childId) {
+			return childId;
+		}
+		return yield* Effect.fail(
+			new BacklogIdGenerationError({
+				prefix: parentId,
+				reason: `Maximum hierarchy depth (${maxDepth}) exceeded for ${parentId}`,
+			}),
+		);
+	});
 
 export function nextChildNumber(parentId: string, existingIds: ReadonlySet<string>): number {
 	let maxChild = 0;
@@ -153,4 +189,3 @@ export function nextChildNumber(parentId: string, existingIds: ReadonlySet<strin
 
 	return maxChild + 1;
 }
-

@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { Effect } from "effect";
 
 import {
-	BacklogIdError,
-	generateChildId,
+	generateChildIdEffect,
 	generateHashId,
-	generateIssueId,
+	generateIssueIdEffect,
 	nextChildNumber,
 } from "../src/backlog/id.js";
+import { BacklogIdGenerationError } from "../src/backlog/errors.js";
 
 const timestamp = new Date("2026-01-01T00:00:00Z");
 
@@ -23,53 +24,53 @@ describe("backlog id generation", () => {
 	});
 
 	it("generates unique issue ids", () => {
-		const first = generateIssueId({
+		const first = Effect.runSync(generateIssueIdEffect({
 			prefix: "tau",
 			title: "test",
 			creator: "user",
 			timestamp,
 			existingIds: new Set(),
 			existingTopLevelCount: 0,
-		});
+		}));
 
-		const second = generateIssueId({
+		const second = Effect.runSync(generateIssueIdEffect({
 			prefix: "tau",
 			title: "test",
 			creator: "user",
 			timestamp,
 			existingIds: new Set([first]),
 			existingTopLevelCount: 1,
-		});
+		}));
 
 		expect(first).not.toBe(second);
 	});
 
 	it("uses longer ids when collision count is high", () => {
-		const lowCount = generateIssueId({
+		const lowCount = Effect.runSync(generateIssueIdEffect({
 			prefix: "tau",
 			title: "a",
 			creator: "u",
 			timestamp,
 			existingIds: new Set(),
 			existingTopLevelCount: 5,
-		});
+		}));
 
-		const highCount = generateIssueId({
+		const highCount = Effect.runSync(generateIssueIdEffect({
 			prefix: "tau",
 			title: "a",
 			creator: "u",
 			timestamp,
 			existingIds: new Set(),
 			existingTopLevelCount: 50_000,
-		});
+		}));
 
 		expect(highCount.split("-")[1]?.length).toBeGreaterThan(lowCount.split("-")[1]?.length ?? 0);
 	});
 
 	it("supports child ids and depth checks", () => {
-		expect(generateChildId("tau-abc", 1)).toBe("tau-abc.1");
-		expect(generateChildId("tau-abc.1", 3)).toBe("tau-abc.1.3");
-		expect(() => generateChildId("tau-abc.1.2.3", 1, 3)).toThrow(BacklogIdError);
+		expect(Effect.runSync(generateChildIdEffect("tau-abc", 1))).toBe("tau-abc.1");
+		expect(Effect.runSync(generateChildIdEffect("tau-abc.1", 3))).toBe("tau-abc.1.3");
+		expect(() => Effect.runSync(generateChildIdEffect("tau-abc.1.2.3", 1, 3))).toThrow(BacklogIdGenerationError);
 	});
 
 	it("finds the next child number", () => {
@@ -78,4 +79,3 @@ describe("backlog id generation", () => {
 		expect(nextChildNumber("tau-abc", new Set(["tau-abc.1", "tau-abc.1.5"]))).toBe(2);
 	});
 });
-
