@@ -487,7 +487,10 @@ describe("memory tool runtime", () => {
 			);
 
 			expect(reloadedStart[0]).toEqual({ systemPrompt: expect.stringContaining("tau-project-memory-next-agent-start") });
-			expect(reloadedStart[0]).toEqual({ systemPrompt: expect.stringContaining(projectMemoryPath(cwd)) });
+			// Memory index format now includes entry summaries with scope/type, not file paths
+			expect(reloadedStart[0]).toEqual({ systemPrompt: expect.stringContaining('scope="project"') });
+			// Prompt guidance tells the model to use read action
+			expect(reloadedStart[0]).toEqual({ systemPrompt: expect.stringContaining("action `read`") });
 		} finally {
 			process.chdir(previousCwd);
 			await runtime.dispose();

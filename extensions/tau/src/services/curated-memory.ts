@@ -15,12 +15,15 @@ import {
 	type MemoryBucketSnapshot,
 	type MemorySnapshot,
 	type MemoryScope,
+	type MemoryIndex,
 	charCount,
 	createMemoryEntry,
+	makeMemoryIndex,
 	migrateLegacyMarkdownToJsonl,
 	normalizeMemoryContent,
 	parseMemoryEntries,
-	renderMemorySnapshotXml,
+	parseMemoryEntriesWithMigration,
+	renderMemoryIndexXml,
 	serializeMemoryEntries,
 } from "../memory/format.js";
 import {
@@ -39,8 +42,9 @@ const USER_SCOPE_CHAR_LIMIT = 1024;
 const LOCK_STALE_MS = 5_000;
 
 interface FrozenSnapshot {
-	readonly rendered: string;
-	readonly snapshot: MemorySnapshot;
+	readonly renderedIndex: string;
+	readonly index: MemoryIndex;
+	readonly entriesSnapshot: MemoryEntriesSnapshot;
 }
 
 interface LockMetadata {
@@ -164,15 +168,20 @@ function entryContents(entries: readonly MemoryEntry[]): string[] {
 	return entries.map((entry) => entry.content);
 }
 
-async function readJsonlScope(scope: MemoryScope, cwd: string): Promise<MemoryEntry[]> {
+interface ReadJsonlScopeResult {
+	readonly entries: MemoryEntry[];
+	readonly migrated: boolean;
+}
+
+async function readJsonlScope(scope: MemoryScope, cwd: string): Promise<ReadJsonlScopeResult> {
 	const raw = await fs.readFile(scopePath(scope, cwd), "utf-8");
-	return parseMemoryEntries(raw);
+	return parseMemoryEntriesWithMigration(raw, { scope });
 }
 
 async function migrateLegacyScope(scope: MemoryScope, cwd: string): Promise<MemoryEntry[]> {
 	const raw = await fs.readFile(legacyScopePath(scope, cwd), "utf-8");
-	const migrated = migrateLegacyMarkdownToJsonl(raw);
-	const entries = parseMemoryEntries(migrated);
+	const migrated = migrateLegacyMarkdownToJsonl(raw, { scope });
+	const entries = parseMemoryEntries(migrated, { scope });
 	await atomicWrite(scope, cwd, entries);
 	try {
 		await fs.unlink(legacyScopePath(scope, cwd));
@@ -186,7 +195,18 @@ async function migrateLegacyScope(scope: MemoryScope, cwd: string): Promise<Memo
 
 async function readScope(scope: MemoryScope, cwd: string): Promise<MemoryEntry[]> {
 	try {
-		return await readJsonlScope(scope, cwd);
+		const jsonl = await readJsonlScope(scope, cwd);
+		if (!jsonl.migrated) {
+			return jsonl.entries;
+		}
+
+		return await withFileLock(scope, cwd, async () => {
+			const lockedJsonl = await readJsonlScope(scope, cwd);
+			if (lockedJsonl.migrated) {
+				await atomicWrite(scope, cwd, lockedJsonl.entries);
+			}
+			return lockedJsonl.entries;
+		});
 	} catch (err: unknown) {
 		if (!isNodeError(err, "ENOENT")) {
 			throw err;
@@ -196,7 +216,11 @@ async function readScope(scope: MemoryScope, cwd: string): Promise<MemoryEntry[]
 	try {
 		return await withFileLock(scope, cwd, async () => {
 			try {
-				return await readJsonlScope(scope, cwd);
+				const jsonl = await readJsonlScope(scope, cwd);
+				if (jsonl.migrated) {
+					await atomicWrite(scope, cwd, jsonl.entries);
+				}
+				return jsonl.entries;
 			} catch (err: unknown) {
 				if (!isNodeError(err, "ENOENT")) {
 					throw err;
@@ -367,19 +391,22 @@ async function loadEntriesSnapshotValue(cwd: string): Promise<MemoryEntriesSnaps
 	};
 }
 
-function makeFrozenSnapshot(snapshot: MemorySnapshot): FrozenSnapshot {
+function makeFrozenSnapshot(entriesSnapshot: MemoryEntriesSnapshot): FrozenSnapshot {
+	const index = makeMemoryIndex(entriesSnapshot);
 	return {
-		snapshot,
-		rendered: renderMemorySnapshotXml(snapshot, { includeEmpty: false }),
+		entriesSnapshot,
+		index,
+		renderedIndex: renderMemoryIndexXml(index),
 	};
 }
 
 function makeEmptyFrozenSnapshot(cwd: string): FrozenSnapshot {
-	return makeFrozenSnapshot({
-		project: makeBucketSnapshot("project", cwd, []),
-		global: makeBucketSnapshot("global", cwd, []),
-		user: makeBucketSnapshot("user", cwd, []),
-	});
+	const entriesSnapshot: MemoryEntriesSnapshot = {
+		project: makeBucketEntriesSnapshot("project", cwd, []),
+		global: makeBucketEntriesSnapshot("global", cwd, []),
+		user: makeBucketEntriesSnapshot("user", cwd, []),
+	};
+	return makeFrozenSnapshot(entriesSnapshot);
 }
 
 export class CuratedMemory extends ServiceMap.Service<
@@ -401,6 +428,7 @@ export class CuratedMemory extends ServiceMap.Service<
 			id: MemoryEntryId | string,
 			cwd: string,
 		) => Effect.Effect<MutationResult, MemoryMutationError>;
+		readonly read: (id: string, cwd: string) => Effect.Effect<MemoryEntry, MemoryNoMatch | MemoryFileError>;
 		readonly setup: Effect.Effect<void, never, Scope.Scope>;
 	}
 >()("CuratedMemory") {}
@@ -425,7 +453,7 @@ export const CuratedMemoryLive = Layer.effect(
 			});
 
 		const reloadFrozenSnapshot = (cwd: string): Effect.Effect<void, MemoryFileError> =>
-			getSnapshot(cwd).pipe(
+			getEntriesSnapshot(cwd).pipe(
 				Effect.map(makeFrozenSnapshot),
 				Effect.flatMap((snapshot) => Ref.set(snapshotRef, snapshot)),
 			);
@@ -435,7 +463,7 @@ export const CuratedMemoryLive = Layer.effect(
 			Effect.runSync(
 				Ref.get(snapshotRef).pipe(
 					Effect.map((snapshot) => {
-						rendered = snapshot.rendered;
+						rendered = snapshot.renderedIndex;
 					}),
 				),
 			);
@@ -488,7 +516,7 @@ export const CuratedMemoryLive = Layer.effect(
 				}
 
 				const currentChars = charCount(entryContents(entries));
-				const entry = createMemoryEntry(trimmed);
+				const entry = createMemoryEntry(trimmed, { scope });
 				const nextEntries = [...entries, entry];
 				const nextChars = charCount(entryContents(nextEntries));
 				const limit = scopeLimitForScope(scope);
@@ -534,9 +562,12 @@ export const CuratedMemoryLive = Layer.effect(
 
 				const candidate = [...entries];
 				const currentChars = charCount(entryContents(entries));
+				const currentEntry = candidate[index]!;
 				const entry = createMemoryEntry(newTrimmed, {
-					id: candidate[index]!.id,
-					createdAt: candidate[index]!.createdAt,
+					scope,
+					type: currentEntry.type,
+					id: currentEntry.id,
+					createdAt: currentEntry.createdAt,
 					updatedAt: DateTime.nowUnsafe(),
 				});
 				candidate[index] = entry;
@@ -582,6 +613,29 @@ export const CuratedMemoryLive = Layer.effect(
 			});
 		};
 
+		const read = (id: string, cwd: string): Effect.Effect<MemoryEntry, MemoryNoMatch | MemoryFileError> => {
+			const trimmedId = id.trim();
+			if (!trimmedId) {
+				return Effect.fail(new MemoryNoMatch({ id: "" }));
+			}
+
+			return getEntriesSnapshot(cwd).pipe(
+				Effect.map((snapshot) => {
+					const allEntries = [
+						...snapshot.project.entries,
+						...snapshot.global.entries,
+						...snapshot.user.entries,
+					];
+					const entry = allEntries.find((e) => e.id === trimmedId);
+					if (!entry) {
+						return Effect.fail(new MemoryNoMatch({ id: trimmedId }));
+					}
+					return Effect.succeed(entry);
+				}),
+				Effect.flatMap((result) => result),
+			);
+		};
+
 		return CuratedMemory.of({
 			getSnapshot,
 			getEntriesSnapshot,
@@ -590,6 +644,7 @@ export const CuratedMemoryLive = Layer.effect(
 			add,
 			update,
 			remove,
+			read,
 			setup: Effect.gen(function* () {
 				yield* reloadFrozenSnapshot(process.cwd()).pipe(Effect.orElseSucceed(() => undefined));
 				yield* Effect.sync(() => {
@@ -603,7 +658,12 @@ export const CuratedMemoryLive = Layer.effect(
 						if (!block) {
 							return { systemPrompt: event.systemPrompt };
 						}
-						return { systemPrompt: `${event.systemPrompt}\n\n${block}` };
+						const guidance = [
+							block,
+							"",
+							"The index above shows only summaries. Use `memory` tool with action `read` and the entry `id` to fetch full content before relying on any entry.",
+						].join("\n");
+						return { systemPrompt: `${event.systemPrompt}\n\n${guidance}` };
 					});
 				});
 			}),

@@ -1,10 +1,21 @@
 import { DateTime, Schema } from "effect";
 import { nanoid } from "nanoid";
 
-export type MemoryScope = "project" | "global" | "user";
+const MemoryScopeSchema = Schema.Union([
+	Schema.Literal("project"),
+	Schema.Literal("global"),
+	Schema.Literal("user"),
+]);
+
+export type MemoryScope = typeof MemoryScopeSchema.Type;
 
 const ID_SIZE = 12;
+const SUMMARY_MAX_CHARS = 140;
+const DEFAULT_SCOPE: MemoryScope = "global";
+const DEFAULT_TYPE = "fact";
+
 const NANO_ID_PATTERN = /^[A-Za-z0-9_-]{12,}$/u;
+const MEMORY_TYPE_PATTERN = /^[a-z][a-z0-9_-]{0,31}$/u;
 
 export const MemoryEntryId = Schema.String.check(
 	Schema.makeFilter((value) => NANO_ID_PATTERN.test(value) || "expected a nanoid"),
@@ -19,8 +30,27 @@ const MemoryEntryContent = Schema.String.check(
 	),
 );
 
+const MemoryEntryTypeSchema = Schema.String.check(
+	Schema.makeFilter(
+		(value) => MEMORY_TYPE_PATTERN.test(value) || "expected a lowercase memory type",
+	),
+);
+
+export type MemoryEntryType = typeof MemoryEntryTypeSchema.Type;
+
+const MemoryEntrySummary = Schema.String.check(
+	Schema.makeFilter(
+		(value) =>
+			(value.trim().length > 0 && value.length <= SUMMARY_MAX_CHARS) ||
+			`memory summary must be 1-${SUMMARY_MAX_CHARS} chars`,
+	),
+);
+
 export class MemoryEntry extends Schema.Class<MemoryEntry>("MemoryEntry")({
 	id: MemoryEntryId,
+	scope: MemoryScopeSchema,
+	type: MemoryEntryTypeSchema,
+	summary: MemoryEntrySummary,
 	content: MemoryEntryContent,
 	createdAt: Schema.DateTimeUtcFromString,
 	updatedAt: Schema.DateTimeUtcFromString,
@@ -30,6 +60,9 @@ export type MemoryEntryJson = typeof MemoryEntry.Encoded;
 
 export interface CreateMemoryEntryOptions {
 	readonly id?: string;
+	readonly scope?: MemoryScope;
+	readonly type?: string;
+	readonly summary?: string;
 	readonly now?: MemoryTimestamp;
 	readonly createdAt?: MemoryTimestamp;
 	readonly updatedAt?: MemoryTimestamp;
@@ -38,6 +71,18 @@ export interface CreateMemoryEntryOptions {
 export interface LegacyMemoryMigrationOptions {
 	readonly now?: MemoryTimestamp;
 	readonly createId?: () => string;
+	readonly scope?: MemoryScope;
+	readonly type?: string;
+}
+
+export interface ParseMemoryEntryOptions {
+	readonly scope?: MemoryScope;
+	readonly defaultType?: string;
+}
+
+export interface ParseMemoryEntriesResult {
+	readonly entries: MemoryEntry[];
+	readonly migrated: boolean;
 }
 
 export interface MemoryBucketSnapshot {
@@ -70,6 +115,19 @@ export interface MemoryEntriesSnapshot {
 	readonly user: MemoryBucketEntriesSnapshot;
 }
 
+export interface MemoryIndexEntry {
+	readonly id: MemoryEntryId;
+	readonly scope: MemoryScope;
+	readonly type: string;
+	readonly summary: string;
+}
+
+export interface MemoryIndex {
+	readonly project: readonly MemoryIndexEntry[];
+	readonly global: readonly MemoryIndexEntry[];
+	readonly user: readonly MemoryIndexEntry[];
+}
+
 export const ENTRY_DELIMITER = "\n§\n";
 
 const decodeMemoryEntry = Schema.decodeUnknownSync(MemoryEntry);
@@ -77,6 +135,94 @@ const encodeMemoryEntry = Schema.encodeUnknownSync(MemoryEntry);
 
 export function normalizeMemoryContent(value: string): string {
 	return value.replace(/\r\n?/gu, "\n").trim();
+}
+
+export function normalizeMemoryType(value: string): string {
+	return value.trim().toLowerCase();
+}
+
+export function normalizeMemorySummary(value: string): string {
+	const normalized = normalizeMemoryContent(value)
+		.split("\n")
+		.map((line) => line.trim())
+		.filter((line) => line.length > 0)
+		.join(" ");
+
+	if (normalized.length <= SUMMARY_MAX_CHARS) {
+		return normalized;
+	}
+
+	return `${normalized.slice(0, Math.max(0, SUMMARY_MAX_CHARS - 1)).trimEnd()}…`;
+}
+
+function summarizeMemoryContent(content: string): string {
+	return normalizeMemorySummary(content);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readString(record: Record<string, unknown>, key: string): string | undefined {
+	const value = record[key];
+	return typeof value === "string" ? value : undefined;
+}
+
+function readScope(record: Record<string, unknown>): MemoryScope | undefined {
+	const value = record["scope"];
+	if (value === "project" || value === "global" || value === "user") {
+		return value;
+	}
+	return undefined;
+}
+
+function resolveScope(
+	parsedScope: MemoryScope | undefined,
+	requestedScope: MemoryScope | undefined,
+): MemoryScope {
+	return requestedScope ?? parsedScope ?? DEFAULT_SCOPE;
+}
+
+function normalizeParsedMemoryEntry(
+	value: unknown,
+	options: ParseMemoryEntryOptions,
+): { readonly candidate: unknown; readonly migrated: boolean } {
+	if (!isRecord(value)) {
+		return { candidate: value, migrated: false };
+	}
+
+	const sourceContent = readString(value, "content");
+	const normalizedContent = normalizeMemoryContent(sourceContent ?? "");
+	const parsedScope = readScope(value);
+	const scope = resolveScope(parsedScope, options.scope);
+	const sourceType = readString(value, "type");
+	const type = normalizeMemoryType(sourceType ?? options.defaultType ?? DEFAULT_TYPE);
+	const sourceSummary = readString(value, "summary");
+	const summary = normalizeMemorySummary(sourceSummary ?? summarizeMemoryContent(normalizedContent));
+
+	const migrated =
+		!("scope" in value) ||
+		!("type" in value) ||
+		!("summary" in value) ||
+		parsedScope !== scope ||
+		sourceType === undefined ||
+		normalizeMemoryType(sourceType) !== type ||
+		sourceSummary === undefined ||
+		normalizeMemorySummary(sourceSummary) !== summary ||
+		sourceContent === undefined ||
+		normalizeMemoryContent(sourceContent) !== normalizedContent;
+
+	const candidate = {
+		id: value["id"],
+		scope,
+		type,
+		summary,
+		content: normalizedContent,
+		createdAt: value["createdAt"],
+		updatedAt: value["updatedAt"],
+	};
+
+	return { candidate, migrated };
 }
 
 function formatTimestamp(value: MemoryTimestamp): string {
@@ -89,10 +235,16 @@ export function createMemoryEntry(
 ): MemoryEntry {
 	const createdAt = options.createdAt ?? options.now ?? DateTime.nowUnsafe();
 	const updatedAt = options.updatedAt ?? createdAt;
+	const normalizedContent = normalizeMemoryContent(content);
+	const normalizedType = normalizeMemoryType(options.type ?? DEFAULT_TYPE);
+	const normalizedSummary = normalizeMemorySummary(options.summary ?? summarizeMemoryContent(normalizedContent));
 
 	return decodeMemoryEntry({
 		id: options.id ?? nanoid(ID_SIZE),
-		content: normalizeMemoryContent(content),
+		scope: options.scope ?? DEFAULT_SCOPE,
+		type: normalizedType,
+		summary: normalizedSummary,
+		content: normalizedContent,
 		createdAt: formatTimestamp(createdAt),
 		updatedAt: formatTimestamp(updatedAt),
 	});
@@ -107,24 +259,54 @@ export function serializeMemoryEntries(entries: readonly MemoryEntry[]): string 
 }
 
 export function parseMemoryEntry(line: string): MemoryEntry {
+	return parseMemoryEntryWithMigration(line).entry;
+}
+
+function parseMemoryEntryWithMigration(
+	line: string,
+	options: ParseMemoryEntryOptions = {},
+): { readonly entry: MemoryEntry; readonly migrated: boolean } {
 	const trimmed = line.trim();
 	if (!trimmed) {
 		throw new Error("Cannot parse an empty JSONL memory entry");
 	}
 
 	const parsed = JSON.parse(trimmed) as unknown;
-	return decodeMemoryEntry(parsed);
+	const normalized = normalizeParsedMemoryEntry(parsed, options);
+	return {
+		entry: decodeMemoryEntry(normalized.candidate),
+		migrated: normalized.migrated,
+	};
 }
 
-export function parseMemoryEntries(raw: string): MemoryEntry[] {
+export function parseMemoryEntriesWithMigration(
+	raw: string,
+	options: ParseMemoryEntryOptions = {},
+): ParseMemoryEntriesResult {
 	if (!raw.trim()) {
-		return [];
+		return { entries: [], migrated: false };
 	}
 
-	return raw
+	let migrated = false;
+	const entries = raw
 		.split("\n")
 		.filter((line) => line.trim().length > 0)
-		.map(parseMemoryEntry);
+		.map((line) => {
+			const parsed = parseMemoryEntryWithMigration(line, options);
+			if (parsed.migrated) {
+				migrated = true;
+			}
+			return parsed.entry;
+		});
+
+	return { entries, migrated };
+}
+
+export function parseMemoryEntries(
+	raw: string,
+	options: ParseMemoryEntryOptions = {},
+): MemoryEntry[] {
+	return parseMemoryEntriesWithMigration(raw, options).entries;
 }
 
 export function migrateLegacyEntries(
@@ -137,6 +319,8 @@ export function migrateLegacyEntries(
 		createMemoryEntry(content, {
 			createdAt: timestamp,
 			updatedAt: timestamp,
+			...(options.scope !== undefined ? { scope: options.scope } : {}),
+			...(options.type !== undefined ? { type: options.type } : {}),
 			...(options.createId ? { id: options.createId() } : {}),
 		}),
 	);
@@ -208,4 +392,56 @@ export function renderMemorySnapshotXml(
 	}
 
 	return ["<memory_snapshot>", ...buckets.map(renderBucketXml), "</memory_snapshot>"].join("\n");
+}
+
+function renderIndexEntryXml(entry: MemoryIndexEntry): string {
+	return `  <entry id="${escapeXml(entry.id)}" scope="${entry.scope}" type="${escapeXml(entry.type)}">${escapeXml(entry.summary)}</entry>`;
+}
+
+function renderBucketIndexXml(bucket: MemoryScope, entries: readonly MemoryIndexEntry[]): string {
+	if (entries.length === 0) {
+		return "";
+	}
+	const lines = [`<${bucketTag(bucket)}>`];
+	for (const entry of entries) {
+		lines.push(renderIndexEntryXml(entry));
+	}
+	lines.push(`</${bucketTag(bucket)}>`);
+	return lines.join("\n");
+}
+
+export function renderMemoryIndexXml(index: MemoryIndex): string {
+	const project = renderBucketIndexXml("project", index.project);
+	const global = renderBucketIndexXml("global", index.global);
+	const user = renderBucketIndexXml("user", index.user);
+
+	const parts = [project, global, user].filter((part) => part.length > 0);
+	if (parts.length === 0) {
+		return "";
+	}
+
+	return ["<memory_index>", ...parts, "</memory_index>"].join("\n");
+}
+
+export function makeMemoryIndex(snapshot: MemoryEntriesSnapshot): MemoryIndex {
+	return {
+		project: snapshot.project.entries.map((entry) => ({
+			id: entry.id,
+			scope: entry.scope,
+			type: entry.type,
+			summary: entry.summary,
+		})),
+		global: snapshot.global.entries.map((entry) => ({
+			id: entry.id,
+			scope: entry.scope,
+			type: entry.type,
+			summary: entry.summary,
+		})),
+		user: snapshot.user.entries.map((entry) => ({
+			id: entry.id,
+			scope: entry.scope,
+			type: entry.type,
+			summary: entry.summary,
+		})),
+	};
 }

@@ -9,7 +9,7 @@ import type {
 	MemoryScope,
 } from "./format.js";
 
-export type MemoryToolAction = "add" | "update" | "remove";
+export type MemoryToolAction = "add" | "update" | "remove" | "read";
 
 export type MemoryToolDetails = {
 	readonly success: boolean;
@@ -77,6 +77,8 @@ function actionLabel(action: MemoryToolAction | undefined): string {
 			return "memory update";
 		case "remove":
 			return "memory remove";
+		case "read":
+			return "memory read";
 		default:
 			return "memory";
 	}
@@ -151,7 +153,7 @@ export function renderMemoriesMessage(details: MemoriesMessageDetails, theme: Th
 	}
 
 	out.push(
-		`\n\n  ${theme.fg("dim", "id".padEnd(21))}  ${theme.fg("dim", "size".padStart(9))}  ${theme.fg("dim", "scope".padEnd(7))}  ${theme.fg("dim", "preview")}`,
+		`\n\n  ${theme.fg("dim", "id".padEnd(21))}  ${theme.fg("dim", "size".padStart(9))}  ${theme.fg("dim", "scope".padEnd(7))}  ${theme.fg("dim", "type".padEnd(10))}  ${theme.fg("dim", "summary")}`,
 	);
 
 	if (entries.length === 0) {
@@ -161,8 +163,9 @@ export function renderMemoriesMessage(details: MemoriesMessageDetails, theme: Th
 
 	for (const { scope, entry } of entries) {
 		const size = `${entry.content.length} chars`.padStart(9);
+		const typeCol = entry.type.padEnd(10);
 		out.push(
-			`\n  ${theme.fg("accent", entry.id)}  ${theme.fg("muted", size)}  ${scopeColumn(scope, theme)}  ${theme.fg("toolOutput", previewContent(entry.content, 88))}`,
+			`\n  ${theme.fg("accent", entry.id)}  ${theme.fg("muted", size)}  ${scopeColumn(scope, theme)}  ${theme.fg("muted", typeCol)}  ${theme.fg("toolOutput", previewContent(entry.summary, 72))}`,
 		);
 	}
 

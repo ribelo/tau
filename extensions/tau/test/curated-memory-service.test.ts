@@ -7,7 +7,7 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 
 import { PiAPILive } from "../src/effect/pi.js";
 import { createMemoryEntry, ENTRY_DELIMITER, parseMemoryEntries, serializeMemoryEntries } from "../src/memory/format.js";
-import { MemoryDuplicateEntry, MemoryEntryTooLarge } from "../src/memory/errors.js";
+import { MemoryDuplicateEntry, MemoryEntryTooLarge, MemoryNoMatch } from "../src/memory/errors.js";
 import { CuratedMemory, CuratedMemoryLive } from "../src/services/curated-memory.js";
 
 const getCuratedMemory = Effect.gen(function* () {
@@ -126,9 +126,21 @@ describe("CuratedMemory service", () => {
 	it("keeps the injected XML snapshot frozen until session_start reload", async () => {
 		await fs.mkdir(globalMemoryDir(tempHome), { recursive: true });
 		await fs.mkdir(projectMemoryDir(workspaceRoot), { recursive: true });
-		await fs.writeFile(globalMemoryPath(tempHome), serializeMemoryEntries([createMemoryEntry("alpha")]), "utf8");
-		await fs.writeFile(projectMemoryPath(workspaceRoot), serializeMemoryEntries([createMemoryEntry("project-alpha")]), "utf8");
-		await fs.writeFile(userMemoryPath(tempHome), serializeMemoryEntries([createMemoryEntry("rafa")]), "utf8");
+		await fs.writeFile(
+			globalMemoryPath(tempHome),
+			serializeMemoryEntries([createMemoryEntry("alpha", { scope: "global" })]),
+			"utf8",
+		);
+		await fs.writeFile(
+			projectMemoryPath(workspaceRoot),
+			serializeMemoryEntries([createMemoryEntry("project-alpha", { scope: "project" })]),
+			"utf8",
+		);
+		await fs.writeFile(
+			userMemoryPath(tempHome),
+			serializeMemoryEntries([createMemoryEntry("rafa", { scope: "user" })]),
+			"utf8",
+		);
 
 		const { pi, emit } = makePiStub();
 		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
@@ -139,18 +151,23 @@ describe("CuratedMemory service", () => {
 			await emit("session_start", {}, workspaceRoot);
 			await new Promise((resolve) => setTimeout(resolve, 50));
 
-			const [initial] = await emit("before_agent_start", { systemPrompt: "base" }, workspaceRoot);
-			expect(initial).toEqual({
-				systemPrompt: expect.stringContaining("<memory_snapshot>"),
-			});
-			expect(initial).toEqual({
-				systemPrompt: expect.stringContaining(globalMemoryPath(tempHome)),
-			});
-			expect(initial).toEqual({
-				systemPrompt: expect.stringContaining(projectMemoryPath(workspaceRoot)),
-			});
-
-			await runtime.runPromise(memory.add("global", "beta", workspaceRoot));
+		const [initial] = await emit("before_agent_start", { systemPrompt: "base" }, workspaceRoot);
+		expect(initial).toEqual({
+			systemPrompt: expect.stringContaining("<memory_index>"),
+		});
+		expect(initial).toEqual({
+			systemPrompt: expect.stringContaining('scope="global"'),
+		});
+		expect(initial).toEqual({
+			systemPrompt: expect.stringContaining('scope="project"'),
+		});
+		expect(initial).toEqual({
+			systemPrompt: expect.stringContaining('scope="user"'),
+		});
+		// Should contain summaries, not full content paths
+		expect(initial).toEqual({
+			systemPrompt: expect.stringContaining("alpha"),
+		});			await runtime.runPromise(memory.add("global", "beta", workspaceRoot));
 
 			const [stillFrozen] = await emit("before_agent_start", { systemPrompt: "base" }, workspaceRoot);
 			expect(stillFrozen).toEqual({
@@ -227,10 +244,14 @@ describe("CuratedMemory service", () => {
 			const memory = await runtime.runPromise(getCuratedMemory);
 			await runtime.runPromise(memory.add("global", "new-entry", workspaceRoot));
 
-			expect(parseMemoryEntries(await fs.readFile(globalMemoryPath(tempHome), "utf8")).map((entry) => entry.content)).toEqual([
-				"existing-entry",
-				"new-entry",
-			]);
+			const entries = parseMemoryEntries(await fs.readFile(globalMemoryPath(tempHome), "utf8"), {
+				scope: "global",
+			});
+
+			expect(entries.map((entry) => entry.content)).toEqual(["existing-entry", "new-entry"]);
+			expect(entries.map((entry) => entry.scope)).toEqual(["global", "global"]);
+			expect(entries[0]?.type).toBe("fact");
+			expect(entries[0]?.summary).toBe("existing-entry");
 		} finally {
 			await runtime.dispose();
 		}
@@ -400,6 +421,54 @@ describe("CuratedMemory service", () => {
 
 			expect(parseMemoryEntries(await fs.readFile(globalMemoryPath(tempHome), "utf8")).map((entry) => entry.content)).toEqual(["gamma"]);
 			await expect(fs.access(lockPath)).rejects.toThrow();
+		} finally {
+			await runtime.dispose();
+		}
+	});
+
+	it("reads entries by id from any scope", async () => {
+		await fs.mkdir(globalMemoryDir(tempHome), { recursive: true });
+		await fs.mkdir(projectMemoryDir(workspaceRoot), { recursive: true });
+
+		const { pi } = makePiStub();
+		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
+
+		try {
+			const memory = await runtime.runPromise(getCuratedMemory);
+			const projectEntry = await runtime.runPromise(memory.add("project", "project-specific content", workspaceRoot));
+			const globalEntry = await runtime.runPromise(memory.add("global", "global-shared content", workspaceRoot));
+			const userEntry = await runtime.runPromise(memory.add("user", "user-specific content", workspaceRoot));
+
+			// Read each entry by id
+			const readProject = await runtime.runPromise(memory.read(projectEntry.entry.id, workspaceRoot));
+			expect(readProject.id).toBe(projectEntry.entry.id);
+			expect(readProject.content).toBe("project-specific content");
+			expect(readProject.scope).toBe("project");
+
+			const readGlobal = await runtime.runPromise(memory.read(globalEntry.entry.id, workspaceRoot));
+			expect(readGlobal.id).toBe(globalEntry.entry.id);
+			expect(readGlobal.content).toBe("global-shared content");
+			expect(readGlobal.scope).toBe("global");
+
+			const readUser = await runtime.runPromise(memory.read(userEntry.entry.id, workspaceRoot));
+			expect(readUser.id).toBe(userEntry.entry.id);
+			expect(readUser.content).toBe("user-specific content");
+			expect(readUser.scope).toBe("user");
+		} finally {
+			await runtime.dispose();
+		}
+	});
+
+	it("fails to read with clear error for non-existent id", async () => {
+		await fs.mkdir(globalMemoryDir(tempHome), { recursive: true });
+		await fs.mkdir(projectMemoryDir(workspaceRoot), { recursive: true });
+
+		const { pi } = makePiStub();
+		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
+
+		try {
+			const memory = await runtime.runPromise(getCuratedMemory);
+			await expect(runtime.runPromise(memory.read("nonexistent123", workspaceRoot))).rejects.toBeInstanceOf(MemoryNoMatch);
 		} finally {
 			await runtime.dispose();
 		}

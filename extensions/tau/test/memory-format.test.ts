@@ -7,13 +7,18 @@ import {
 	charCount,
 	createMemoryEntry,
 	joinEntries,
+	makeMemoryIndex,
 	migrateLegacyEntries,
 	migrateLegacyMarkdownToJsonl,
 	normalizeMemoryContent,
+	normalizeMemorySummary,
 	parseMemoryEntries,
+	parseMemoryEntriesWithMigration,
 	parseEntries,
+	renderMemoryIndexXml,
 	renderMemorySnapshotXml,
 	serializeMemoryEntries,
+	type MemoryEntriesSnapshot,
 	type MemorySnapshot,
 } from "../src/memory/format.js";
 
@@ -62,12 +67,17 @@ describe("memory format helpers", () => {
 
 		const entry = createMemoryEntry("  alpha\r\nbeta  ", {
 			id: "123456789012",
+			scope: "project",
+			type: "preference",
 			createdAt,
 			updatedAt,
 		});
 
 		expect(entry).toBeInstanceOf(MemoryEntry);
 		expect(entry.id).toBe("123456789012");
+		expect(entry.scope).toBe("project");
+		expect(entry.type).toBe("preference");
+		expect(entry.summary).toBe("alpha beta");
 		expect(entry.content).toBe("alpha\nbeta");
 		expect(DateTime.formatIso(entry.createdAt)).toBe("2024-01-02T03:04:05.000Z");
 		expect(DateTime.formatIso(entry.updatedAt)).toBe("2024-01-03T04:05:06.000Z");
@@ -76,11 +86,15 @@ describe("memory format helpers", () => {
 	it("serializes and parses JSONL memory entries", () => {
 		const first = createMemoryEntry("alpha", {
 			id: "123456789012",
+			scope: "project",
+			type: "fact",
 			createdAt: parseTimestamp("2024-01-02T03:04:05.000Z"),
 			updatedAt: parseTimestamp("2024-01-02T03:04:05.000Z"),
 		});
 		const second = createMemoryEntry("beta", {
 			id: "abcdefghijAB",
+			scope: "global",
+			type: "constraint",
 			createdAt: parseTimestamp("2024-01-04T03:04:05.000Z"),
 			updatedAt: parseTimestamp("2024-01-05T03:04:05.000Z"),
 		});
@@ -90,12 +104,18 @@ describe("memory format helpers", () => {
 			[
 				JSON.stringify({
 					id: "123456789012",
+					scope: "project",
+					type: "fact",
+					summary: "alpha",
 					content: "alpha",
 					createdAt: "2024-01-02T03:04:05.000Z",
 					updatedAt: "2024-01-02T03:04:05.000Z",
 				}),
 				JSON.stringify({
 					id: "abcdefghijAB",
+					scope: "global",
+					type: "constraint",
+					summary: "beta",
 					content: "beta",
 					createdAt: "2024-01-04T03:04:05.000Z",
 					updatedAt: "2024-01-05T03:04:05.000Z",
@@ -109,6 +129,9 @@ describe("memory format helpers", () => {
 			"123456789012",
 			"abcdefghijAB",
 		]);
+		expect(parsed.map((entry) => entry.scope)).toEqual(["project", "global"]);
+		expect(parsed.map((entry) => entry.type)).toEqual(["fact", "constraint"]);
+		expect(parsed.map((entry) => entry.summary)).toEqual(["alpha", "beta"]);
 		expect(parsed.map((entry) => entry.content)).toEqual(["alpha", "beta"]);
 		expect(parsed.map((entry) => DateTime.formatIso(entry.createdAt))).toEqual([
 			"2024-01-02T03:04:05.000Z",
@@ -116,7 +139,7 @@ describe("memory format helpers", () => {
 		]);
 	});
 
-	it("parses previously stored default-length nanoid ids", () => {
+	it("migrates legacy JSONL entries missing scope/type/summary", () => {
 		const parsed = parseMemoryEntries(
 			JSON.stringify({
 				id: "itoVz1h0QCl_78gmCgjPG",
@@ -124,11 +147,33 @@ describe("memory format helpers", () => {
 				createdAt: "2024-01-02T03:04:05.000Z",
 				updatedAt: "2024-01-02T03:04:05.000Z",
 			}),
+			{ scope: "user" },
 		);
 
 		expect(parsed).toHaveLength(1);
 		expect(parsed[0]?.id).toBe("itoVz1h0QCl_78gmCgjPG");
+		expect(parsed[0]?.scope).toBe("user");
+		expect(parsed[0]?.type).toBe("fact");
+		expect(parsed[0]?.summary).toBe("alpha");
 		expect(parsed[0]?.content).toBe("alpha");
+	});
+
+	it("reports migration when parsed entries are normalized to canonical shape", () => {
+		const parsed = parseMemoryEntriesWithMigration(
+			JSON.stringify({
+				id: "123456789012",
+				content: "  alpha\n beta  ",
+				createdAt: "2024-01-02T03:04:05.000Z",
+				updatedAt: "2024-01-02T03:04:05.000Z",
+			}),
+			{ scope: "project", defaultType: "context" },
+		);
+
+		expect(parsed.migrated).toBe(true);
+		expect(parsed.entries[0]?.scope).toBe("project");
+		expect(parsed.entries[0]?.type).toBe("context");
+		expect(parsed.entries[0]?.summary).toBe("alpha beta");
+		expect(parsed.entries[0]?.content).toBe("alpha\n beta");
 	});
 
 	it("rejects invalid JSONL memory entries via Effect Schema validation", () => {
@@ -162,6 +207,8 @@ describe("memory format helpers", () => {
 
 		const entries = migrateLegacyEntries(raw, {
 			now,
+			scope: "project",
+			type: "workflow",
 			createId: () => `${++nextId}`.padStart(12, "0"),
 		});
 
@@ -170,14 +217,24 @@ describe("memory format helpers", () => {
 			"000000000002",
 		]);
 		expect(entries.map((entry) => entry.content)).toEqual(["first entry", "second entry"]);
+		expect(entries.map((entry) => entry.scope)).toEqual(["project", "project"]);
+		expect(entries.map((entry) => entry.type)).toEqual(["workflow", "workflow"]);
+		expect(entries.map((entry) => entry.summary)).toEqual(["first entry", "second entry"]);
 		expect(entries.map((entry) => DateTime.formatIso(entry.createdAt))).toEqual([
 			"2024-01-02T03:04:05.000Z",
 			"2024-01-02T03:04:05.000Z",
 		]);
 		expect(migrateLegacyMarkdownToJsonl(raw, {
 			now,
+			scope: "global",
+			type: "constraint",
 			createId: () => "aaaaaaaaAAAA",
-		})).toContain('"id":"aaaaaaaaAAAA"');
+		})).toContain('"type":"constraint"');
+	});
+
+	it("derives compact summaries from full content", () => {
+		expect(normalizeMemorySummary("  alpha\n\n beta\n gamma  ")).toBe("alpha beta gamma");
+		expect(normalizeMemorySummary("x".repeat(180))).toHaveLength(140);
 	});
 
 	it("parses trimmed entries and removes empty segments", () => {
@@ -292,5 +349,190 @@ describe("memory format helpers", () => {
 		);
 
 		expect(rendered).toContain('usage_percent="66"');
+	});
+});
+
+describe("memory index rendering", () => {
+	function makeEntriesSnapshot(): MemoryEntriesSnapshot {
+		const createdAt = parseTimestamp("2024-01-02T03:04:05.000Z");
+		const updatedAt = parseTimestamp("2024-01-02T03:04:05.000Z");
+
+		return {
+			project: {
+				bucket: "project",
+				path: "/workspace/.pi/tau/memories/PROJECT.jsonl",
+				entries: [
+					createMemoryEntry("project content alpha", {
+						id: "proj12345678",
+						scope: "project",
+						type: "fact",
+						createdAt,
+						updatedAt,
+					}),
+				],
+				chars: 100,
+				limitChars: 2048,
+				usagePercent: 5,
+			},
+			global: {
+				bucket: "global",
+				path: "/home/test/.pi/agent/tau/memories/MEMORY.jsonl",
+				entries: [
+					createMemoryEntry("global preference beta", {
+						id: "glob12345678",
+						scope: "global",
+						type: "preference",
+						createdAt,
+						updatedAt,
+					}),
+				],
+				chars: 100,
+				limitChars: 2048,
+				usagePercent: 5,
+			},
+			user: {
+				bucket: "user",
+				path: "/home/test/.pi/agent/tau/memories/USER.jsonl",
+				entries: [
+					createMemoryEntry("user context gamma", {
+						id: "user12345678",
+						scope: "user",
+						type: "context",
+						createdAt,
+						updatedAt,
+					}),
+				],
+				chars: 50,
+				limitChars: 1024,
+				usagePercent: 5,
+			},
+		};
+	}
+
+	it("creates a memory index from entries snapshot", () => {
+		const snapshot = makeEntriesSnapshot();
+		const index = makeMemoryIndex(snapshot);
+
+		expect(index.project).toHaveLength(1);
+		expect(index.project[0]).toEqual({
+			id: "proj12345678",
+			scope: "project",
+			type: "fact",
+			summary: "project content alpha",
+		});
+
+		expect(index.global).toHaveLength(1);
+		expect(index.global[0]).toEqual({
+			id: "glob12345678",
+			scope: "global",
+			type: "preference",
+			summary: "global preference beta",
+		});
+
+		expect(index.user).toHaveLength(1);
+		expect(index.user[0]).toEqual({
+			id: "user12345678",
+			scope: "user",
+			type: "context",
+			summary: "user context gamma",
+		});
+	});
+
+	it("renders an empty memory index when all scopes are empty", () => {
+		const emptySnapshot: MemoryEntriesSnapshot = {
+			project: { bucket: "project", path: "", entries: [], chars: 0, limitChars: 2048, usagePercent: 0 },
+			global: { bucket: "global", path: "", entries: [], chars: 0, limitChars: 2048, usagePercent: 0 },
+			user: { bucket: "user", path: "", entries: [], chars: 0, limitChars: 1024, usagePercent: 0 },
+		};
+		const index = makeMemoryIndex(emptySnapshot);
+		const rendered = renderMemoryIndexXml(index);
+
+		expect(rendered).toBe("");
+	});
+
+	it("renders memory index with entry id, scope, type, and summary", () => {
+		const snapshot = makeEntriesSnapshot();
+		const index = makeMemoryIndex(snapshot);
+		const rendered = renderMemoryIndexXml(index);
+
+		expect(rendered).toContain('<memory_index>');
+		expect(rendered).toContain('</memory_index>');
+		expect(rendered).toContain('<project_memory>');
+		expect(rendered).toContain('</project_memory>');
+		expect(rendered).toContain('<global_memory>');
+		expect(rendered).toContain('</global_memory>');
+		expect(rendered).toContain('<user_memory>');
+		expect(rendered).toContain('</user_memory>');
+
+		// Check entry format
+		expect(rendered).toContain('<entry id="proj12345678" scope="project" type="fact">project content alpha</entry>');
+		expect(rendered).toContain('<entry id="glob12345678" scope="global" type="preference">global preference beta</entry>');
+		expect(rendered).toContain('<entry id="user12345678" scope="user" type="context">user context gamma</entry>');
+	});
+
+	it("escapes special XML characters in index entries", () => {
+		const createdAt = parseTimestamp("2024-01-02T03:04:05.000Z");
+		const updatedAt = parseTimestamp("2024-01-02T03:04:05.000Z");
+		const snapshot: MemoryEntriesSnapshot = {
+			project: {
+				bucket: "project",
+				path: "/workspace/.pi/tau/memories/PROJECT.jsonl",
+				entries: [
+					createMemoryEntry("content with <special> & \"chars\"", {
+						id: "test12345678",
+						scope: "project",
+						type: "fact",
+						createdAt,
+						updatedAt,
+					}),
+				],
+				chars: 50,
+				limitChars: 2048,
+				usagePercent: 2,
+			},
+			global: { bucket: "global", path: "", entries: [], chars: 0, limitChars: 2048, usagePercent: 0 },
+			user: { bucket: "user", path: "", entries: [], chars: 0, limitChars: 1024, usagePercent: 0 },
+		};
+
+		const index = makeMemoryIndex(snapshot);
+		const rendered = renderMemoryIndexXml(index);
+
+		expect(rendered).toContain('&lt;special&gt;');
+		expect(rendered).toContain('&amp;');
+		expect(rendered).toContain('&quot;chars&quot;');
+		expect(rendered).not.toContain('<special>');
+	});
+
+	it("omits empty scopes from memory index", () => {
+		const createdAt = parseTimestamp("2024-01-02T03:04:05.000Z");
+		const updatedAt = parseTimestamp("2024-01-02T03:04:05.000Z");
+		const snapshot: MemoryEntriesSnapshot = {
+			project: { bucket: "project", path: "", entries: [], chars: 0, limitChars: 2048, usagePercent: 0 },
+			global: {
+				bucket: "global",
+				path: "/home/test/.pi/agent/tau/memories/MEMORY.jsonl",
+				entries: [
+					createMemoryEntry("only global entry", {
+						id: "glob12345678",
+						scope: "global",
+						type: "fact",
+						createdAt,
+						updatedAt,
+					}),
+				],
+				chars: 50,
+				limitChars: 2048,
+				usagePercent: 2,
+			},
+			user: { bucket: "user", path: "", entries: [], chars: 0, limitChars: 1024, usagePercent: 0 },
+		};
+
+		const index = makeMemoryIndex(snapshot);
+		const rendered = renderMemoryIndexXml(index);
+
+		expect(rendered).toContain('<memory_index>');
+		expect(rendered).toContain('<global_memory>');
+		expect(rendered).not.toContain('<project_memory>');
+		expect(rendered).not.toContain('<user_memory>');
 	});
 });

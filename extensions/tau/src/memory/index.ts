@@ -18,14 +18,14 @@ import {
 const StringEnum = <T extends string[]>(values: [...T]) => Type.Unsafe<T[number]>({ type: "string", enum: values });
 
 const MemoryToolParams = Type.Object({
-	action: StringEnum(["add", "update", "remove"]),
-	target: StringEnum(["project", "global", "user"]),
+	action: StringEnum(["add", "update", "remove", "read"]),
+	target: Type.Optional(Type.String({ description: "Target scope. Required for add, update, remove." })),
 	content: Type.Optional(Type.String({ description: "Entry content. Required for add and update." })),
-	id: Type.Optional(Type.String({ description: "Exact memory entry id. Required for update and remove." })),
+	id: Type.Optional(Type.String({ description: "Exact memory entry id. Required for update, remove, and read." })),
 });
 type MemoryToolParams = Static<typeof MemoryToolParams>;
 
-const TOOL_DESCRIPTION = "Save durable information to persistent memory that survives across sessions. Memory is injected into future sessions, so keep it compact and focused on facts that will still matter later.\n\nWHEN TO SAVE (do this proactively, do not wait to be asked):\n- User corrects you or says 'remember this' / 'don't do that again'\n- User shares a preference, habit, or personal detail (name, role, timezone, coding style)\n- You discover something about the environment (OS, installed tools, project structure)\n- You learn a convention, API quirk, or workflow specific to this user's setup\n\nPRIORITY: User preferences and corrections > environment facts > procedural knowledge. The most valuable memory prevents the user from having to repeat themselves.\n\nDo NOT save task progress, session outcomes, completed-work logs, or temporary TODO state.\n\nTHREE TARGETS:\n- 'project': workspace-specific facts. Stored at the nearest workspace root in .pi/tau/memories/PROJECT.jsonl (2048 chars total)\n- 'global': notes that apply across projects. Stored in ~/.pi/agent/tau/memories/MEMORY.jsonl (2048 chars total)\n- 'user': who the user is - name, role, preferences, communication style, pet peeves. Stored in ~/.pi/agent/tau/memories/USER.jsonl (1024 chars total)\n\nACTIONS: add (new entry), update (replace an existing entry by id), remove (delete an existing entry by id). No read action - memory is already in the system prompt.\n\nEvery successful action returns the affected memory entry. Per-scope total limits are enforced independently.\n\nSKIP: trivial/obvious info, things easily re-discovered, raw data dumps, temporary TODO state.";
+const TOOL_DESCRIPTION = "Save and retrieve durable information to persistent memory that survives across sessions. Memory is injected into future sessions as a compact index, so keep it focused on facts that will still matter later.\n\nWHEN TO SAVE (do this proactively, do not wait to be asked):\n- User corrects you or says 'remember this' / 'don't do that again'\n- User shares a preference, habit, or personal detail (name, role, timezone, coding style)\n- You discover something about the environment (OS, installed tools, project structure)\n- You learn a convention, API quirk, or workflow specific to this user's setup\n\nPRIORITY: User preferences and corrections > environment facts > procedural knowledge. The most valuable memory prevents the user from having to repeat themselves.\n\nDo NOT save task progress, session outcomes, completed-work logs, or temporary TODO state.\n\nTHREE TARGETS:\n- 'project': workspace-specific facts. Stored at the nearest workspace root in .pi/tau/memories/PROJECT.jsonl (2048 chars total)\n- 'global': notes that apply across projects. Stored in ~/.pi/agent/tau/memories/MEMORY.jsonl (2048 chars total)\n- 'user': who the user is - name, role, preferences, communication style, pet peeves. Stored in ~/.pi/agent/tau/memories/USER.jsonl (1024 chars total)\n\nACTIONS: add (new entry), update (replace an existing entry by id), remove (delete an existing entry by id), read (fetch full entry by id).\n\nIMPORTANT: The system prompt only shows memory summaries (id, scope, type, summary). Use the read action to fetch the full content when a summary looks relevant.\n\nEvery successful action returns the affected memory entry. Per-scope total limits are enforced independently.\n\nSKIP: trivial/obvious info, things easily re-discovered, raw data dumps, temporary TODO state.";
 
 type ToolDetails = MemoryToolDetails;
 
@@ -79,7 +79,7 @@ function describeMemoryCommandError(error: unknown): string {
 }
 
 function formatEntry(entry: MemoryEntry): string {
-	return [`id: ${entry.id}`, `chars: ${entry.content.length}`, `content:\n${entry.content}`].join("\n");
+	return [`id: ${entry.id}`, `scope: ${entry.scope}`, `type: ${entry.type}`, `summary: ${entry.summary}`, `chars: ${entry.content.length}`, `content:\n${entry.content}`].join("\n");
 }
 
 function formatResult(result: MutationResult, message: string): string {
@@ -90,6 +90,11 @@ type SuccessfulMutation = {
 	readonly text: string;
 	readonly entry: MemoryEntry;
 	readonly bucket: MemoryBucketSnapshot;
+};
+
+type ReadResult = {
+	readonly entry: MemoryEntry;
+	readonly isRead: true;
 };
 
 function attachBucket(
@@ -184,19 +189,27 @@ export function createMemoryToolDefinition(
 				switch (params.action) {
 					case "add": {
 						if (!content) return "Content is required for 'add' action.";
+						if (!target) return "target is required for 'add' action.";
 						const result = yield* memory.add(target, content, ctx.cwd);
 						return yield* attachBucket(memory, result, `Added entry to ${target} memory.`, ctx.cwd);
 					}
 					case "update": {
 						if (!id) return "id is required for 'update' action.";
 						if (!content) return "content is required for 'update' action.";
+						if (!target) return "target is required for 'update' action.";
 						const result = yield* memory.update(target, id, content, ctx.cwd);
 						return yield* attachBucket(memory, result, `Updated ${target} memory.`, ctx.cwd);
 					}
 					case "remove": {
 						if (!id) return "id is required for 'remove' action.";
+						if (!target) return "target is required for 'remove' action.";
 						const result = yield* memory.remove(target, id, ctx.cwd);
 						return yield* attachBucket(memory, result, `Removed entry from ${target} memory.`, ctx.cwd);
+					}
+					case "read": {
+						if (!id) return "id is required for 'read' action.";
+						const entry = yield* memory.read(id, ctx.cwd);
+						return { entry, isRead: true } satisfies ReadResult;
 					}
 				}
 			});
@@ -205,6 +218,13 @@ export function createMemoryToolDefinition(
 				const result = await runEffect(program);
 				if (typeof result === "string") {
 					return toolFail(result, { action, scope: target, ...requestDetails(id, content) });
+				}
+				if ("isRead" in result) {
+					return toolOk(formatEntry(result.entry), {
+						action,
+						entry: result.entry,
+						...requestDetails(id, content),
+					});
 				}
 				return toolOk(result.text, {
 					action,
