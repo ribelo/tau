@@ -340,6 +340,17 @@ describe("DreamRunner", () => {
 	});
 
 	describe("spawnManual", () => {
+		it("returns a task handle when dream startup succeeds", async () => {
+			const handle = await runWithRunner(
+				Effect.gen(function* () {
+					const runner = yield* DreamRunner;
+					return yield* runner.spawnManual(defaultRequest);
+				}),
+			);
+
+			expect(handle.taskId).toMatch(/^[A-Za-z0-9_-]+$/);
+		});
+
 		it("fails when lock is held", async () => {
 			const lockLayer = makeMockLock({
 				inspectResult: Option.some({

@@ -1,4 +1,4 @@
-import { Clock, Effect, Fiber, HashMap, Layer, Option, Ref, ServiceMap, Stream, SubscriptionRef } from "effect";
+import { Clock, Effect, Fiber, Layer, Option, Ref, ServiceMap, Stream, SubscriptionRef } from "effect";
 import { nanoid } from "nanoid";
 
 import type { MemoryFileError, MemoryMutationError } from "../memory/errors.js";
@@ -85,22 +85,26 @@ const applyProgressEvent = (
 export const DreamTaskRegistryLive = Layer.effect(
 	DreamTaskRegistry,
 	Effect.gen(function* () {
-		const tasksRef = yield* Ref.make(HashMap.empty<DreamTaskId, DreamTaskRecord>());
+		const tasksRef = yield* Ref.make(new Map<DreamTaskId, DreamTaskRecord>());
 
 		const getRecord = Effect.fn("DreamTaskRegistry.getRecord")(
 			function* (taskId: DreamTaskId) {
 				const tasks = yield* Ref.get(tasksRef);
-				const recordOption = HashMap.get(tasks, taskId);
-				if (Option.isNone(recordOption)) {
+				const record = tasks.get(taskId);
+				if (record === undefined) {
 					return yield* Effect.die(taskNotFound(taskId));
 				}
-				return recordOption.value;
+				return record;
 			},
 		);
 
 		const setRecord = Effect.fn("DreamTaskRegistry.setRecord")(
 			function* (taskId: DreamTaskId, record: DreamTaskRecord) {
-				yield* Ref.update(tasksRef, (tasks) => HashMap.set(tasks, taskId, record));
+				yield* Ref.update(tasksRef, (tasks) => {
+					const next = new Map(tasks);
+					next.set(taskId, record);
+					return next;
+				});
 			},
 		);
 
@@ -129,7 +133,11 @@ export const DreamTaskRegistryLive = Layer.effect(
 					updates,
 				};
 
-				yield* Ref.update(tasksRef, (tasks) => HashMap.set(tasks, taskId, record));
+				yield* Ref.update(tasksRef, (tasks) => {
+					const next = new Map(tasks);
+					next.set(taskId, record);
+					return next;
+				});
 
 				return { taskId } satisfies DreamTaskHandle;
 			},
