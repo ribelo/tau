@@ -38,10 +38,14 @@ type SentUserMessage = {
 };
 
 type Notifications = Array<{ readonly message: string; readonly level: string }>;
+type WidgetUpdates = Array<readonly string[] | undefined>;
+type StatusUpdates = Array<string | undefined>;
 
 type ContextHarness = {
 	readonly ctx: ExtensionCommandContext;
 	readonly notifications: Notifications;
+	readonly widgetUpdates: WidgetUpdates;
+	readonly statusUpdates: StatusUpdates;
 	readonly newSessionCalls: ReadonlyArray<unknown>;
 	readonly switchSessionCalls: readonly string[];
 	readonly setSessionFile: (next: string) => void;
@@ -135,6 +139,8 @@ function makeContext(
 	newSessionPlan: readonly NewSessionPlan[] = [{ cancelled: false }],
 ): ContextHarness {
 	const notifications: Notifications = [];
+	const widgetUpdates: WidgetUpdates = [];
+	const statusUpdates: StatusUpdates = [];
 	const newSessionCalls: unknown[] = [];
 	const switchSessionCalls: string[] = [];
 	let sessionFile = path.join(cwd, ".pi", "sessions", "controller.session.json");
@@ -155,8 +161,12 @@ function makeContext(
 			getSessionFile: () => sessionFile,
 		},
 		ui: {
-			setStatus: () => undefined,
-			setWidget: () => undefined,
+			setStatus: (_key: string, text: string | undefined) => {
+				statusUpdates.push(text);
+			},
+			setWidget: (_key: string, content: string[] | undefined) => {
+				widgetUpdates.push(content);
+			},
 			setFooter: () => () => undefined,
 			setEditorComponent: () => undefined,
 			notify: (message: string, level: string) => {
@@ -201,6 +211,8 @@ function makeContext(
 	return {
 		ctx,
 		notifications,
+		widgetUpdates,
+		statusUpdates,
 		newSessionCalls,
 		switchSessionCalls,
 		setSessionFile: (next) => {
@@ -431,6 +443,44 @@ describe("ralph adapter boundary freeze", () => {
 		expect(
 			context.notifications.some((entry) => entry.message.includes("Ralph state is invalid")),
 		).toBe(true);
+	});
+
+	it("keeps the Ralph widget visible on session_start while a current loop is active", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const context = makeContext(cwd);
+		const controllerSession = context.getSessionFile();
+		const unrelatedSession = path.join(cwd, ".pi", "sessions", "other.session.json");
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+
+		await ralphRuntime.run(
+			Effect.gen(function* () {
+				const ralph = yield* Ralph;
+				yield* ralph.startLoopState(cwd, {
+					loopName: "ui-loop",
+					taskFile: path.join(".pi", "ralph", "ui-loop.md"),
+					maxIterations: 50,
+					itemsPerIteration: 0,
+					reflectEvery: 0,
+					reflectInstructions: "reflect",
+					controllerSessionFile: Option.some(controllerSession),
+					defaultTaskTemplate: "# Task\n",
+				});
+			}),
+		);
+
+		context.setSessionFile(unrelatedSession);
+		const piHarness = makePiHarness();
+		initRalph(piHarness.pi, ralphRuntime.run);
+
+		await piHarness.fire("session_start", { type: "session_start" }, context.ctx);
+
+		expect(context.widgetUpdates.at(-1)).toEqual(
+			expect.arrayContaining(["Ralph Wiggum", "Loop: ui-loop"]),
+		);
+		expect(context.statusUpdates.at(-1)).toContain("ui-loop");
 	});
 
 	it("keeps session actions command-owned: tools/events do not call newSession or switchSession", async () => {

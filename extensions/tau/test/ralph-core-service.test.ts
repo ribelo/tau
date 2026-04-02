@@ -115,6 +115,37 @@ describe("ralph core service", () => {
 		}
 	});
 
+	it("preserves the current Ralph loop across session sync misses so the UI can stay visible", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+		const controllerSessionFile = path.join(cwd, ".pi", "sessions", "controller.session.json");
+		const unrelatedSessionFile = path.join(cwd, ".pi", "sessions", "other.session.json");
+
+		const result = await Effect.runPromise(
+			Effect.gen(function* () {
+				const ralph = yield* Ralph;
+				yield* ralph.startLoopState(cwd, {
+					loopName: "visible-loop",
+					taskFile: path.join(".pi", "ralph", "visible-loop.md"),
+					maxIterations: 50,
+					itemsPerIteration: 0,
+					reflectEvery: 0,
+					reflectInstructions: "reflect",
+					controllerSessionFile: Option.some(controllerSessionFile),
+					defaultTaskTemplate: "# Task\n",
+				});
+				yield* ralph.syncCurrentLoopFromSession(cwd, unrelatedSessionFile);
+				return yield* ralph.resolveLoopForUi(cwd, unrelatedSessionFile);
+			}).pipe(Effect.provide(ralphLayer)),
+		);
+
+		expect(Option.isSome(result)).toBe(true);
+		if (Option.isSome(result)) {
+			expect(result.value.name).toBe("visible-loop");
+			expect(result.value.status).toBe("active");
+		}
+	});
+
 	it("registers and scopes pending agent_end waits before follow-up dispatch", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);

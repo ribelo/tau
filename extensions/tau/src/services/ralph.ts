@@ -348,7 +348,9 @@ export const RalphLive = (config: RalphLiveConfig) =>
 				"Ralph.syncCurrentLoopFromSession",
 			)(function* (cwd, sessionFile) {
 				const scoped = yield* repo.findLoopBySessionFile(cwd, sessionFile);
-				yield* setCurrentLoop(Option.map(scoped, (loop) => loop.name));
+				if (Option.isSome(scoped)) {
+					yield* setCurrentLoop(Option.some(scoped.value.name));
+				}
 			});
 
 			const persistOwnedLoopOnShutdown: RalphService["persistOwnedLoopOnShutdown"] = Effect.fn(
