@@ -467,7 +467,7 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 					}
 
 					const handle = yield* reg.create(request);
-					const fiber = yield* Effect.forkChild(
+					const fiber = yield* Effect.forkDetach(
 						Effect.scoped(runOnceWithProgress(request, handle.taskId)),
 					);
 					// Fiber is only used for interruption; type-cast is safe
@@ -501,7 +501,7 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 					}
 
 					const handle = yield* reg.create(request);
-					const fiber = yield* Effect.forkChild(
+					const fiber = yield* Effect.forkDetach(
 						Effect.scoped(runOnceWithProgress(request, handle.taskId)),
 					);
 					yield* reg.attach(

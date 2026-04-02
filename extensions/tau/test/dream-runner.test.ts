@@ -1,4 +1,4 @@
-import { Clock, Effect, Fiber, Layer, Option, Ref, Scope } from "effect";
+import { Clock, Effect, Fiber, Layer, ManagedRuntime, Option, Ref, Scope } from "effect";
 import { describe, expect, it } from "vitest";
 
 import type {
@@ -221,6 +221,21 @@ function runnerLayer(
 	);
 }
 
+function persistentRunnerLayer(
+	overrides: Parameters<typeof runnerLayer>[0] = {},
+): Layer.Layer<DreamRunner | DreamTaskRegistry> {
+	const registryLayer = DreamTaskRegistryLive;
+	const runnerWithRegistry = DreamRunnerLive(overrides.config ?? testRunnerConfig).pipe(
+		Layer.provide(overrides.lock ?? makeMockLock()),
+		Layer.provide(overrides.scheduler ?? makeMockScheduler()),
+		Layer.provide(registryLayer),
+		Layer.provide(overrides.subagent ?? makeMockSubagent(makePlan())),
+		Layer.provide(overrides.memory ?? makeMockMemory()),
+	);
+
+	return Layer.merge(registryLayer, runnerWithRegistry);
+}
+
 function runWithRunner<A, E>(
 	effect: Effect.Effect<A, E, DreamRunner>,
 	overrides?: Parameters<typeof runnerLayer>[0],
@@ -349,6 +364,45 @@ describe("DreamRunner", () => {
 			);
 
 			expect(handle.taskId).toMatch(/^[A-Za-z0-9_-]+$/);
+		});
+
+		it("continues running after spawnManual returns", async () => {
+			const subagent = Layer.succeed(
+				DreamSubagent,
+				DreamSubagent.of({
+					plan: () =>
+						Effect.sleep("10 millis").pipe(
+							Effect.as(makePlan()),
+						),
+				}),
+			);
+
+			const runtime = ManagedRuntime.make(
+				persistentRunnerLayer({ subagent }),
+			);
+
+			try {
+				const handle = await runtime.runPromise(
+					Effect.gen(function* () {
+						const runner = yield* DreamRunner;
+						return yield* runner.spawnManual(defaultRequest);
+					}),
+				);
+
+				await new Promise((resolve) => setTimeout(resolve, 50));
+
+				const state = await runtime.runPromise(
+					Effect.gen(function* () {
+						const registry = yield* DreamTaskRegistry;
+						return yield* registry.get(handle.taskId);
+					}),
+				);
+
+				expect(state.phase).not.toBe("queued");
+				expect(state.status).toBe("completed");
+			} finally {
+				await runtime.dispose();
+			}
 		});
 
 		it("fails when lock is held", async () => {
