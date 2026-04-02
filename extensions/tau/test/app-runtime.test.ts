@@ -121,6 +121,20 @@ describe("runTau runtime", () => {
 		}
 	});
 
+	it("registers the dream command during startup", async () => {
+		const pi = makePiStub() as ExtensionAPI & {
+			readonly __registeredCommands: string[];
+		};
+		const fiber = runTau(pi);
+
+		try {
+			await new Promise((resolve) => setTimeout(resolve, 200));
+			expect(pi.__registeredCommands).toContain("dream");
+		} finally {
+			await Effect.runPromise(Fiber.interrupt(fiber));
+		}
+	});
+
 	it("keeps the scoped runtime alive for background loops", async () => {
 		const fiber = runTau(makePiStub());
 

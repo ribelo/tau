@@ -23,6 +23,11 @@ import {
 	type DreamGateError,
 	type DreamLockError,
 } from "./errors.js";
+import {
+	dreamTranscriptRoot,
+	isDreamTranscriptFile,
+	parseDreamTranscriptSessionId,
+} from "./transcripts.js";
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 3_600_000;
@@ -78,10 +83,6 @@ function dreamLockPath(cwd: string): string {
 	return path.join(cwd, ".pi", "tau", "dream.lock");
 }
 
-function sessionsRootPath(cwd: string): string {
-	return path.join(cwd, ".pi", "sessions");
-}
-
 function readDirEntries(dirPath: string): Effect.Effect<ReadonlyArray<Dirent>, DreamLockIoError> {
 	return Effect.tryPromise({
 		try: () => fs.readdir(dirPath, { withFileTypes: true }),
@@ -102,7 +103,7 @@ function readDirEntries(dirPath: string): Effect.Effect<ReadonlyArray<Dirent>, D
 	);
 }
 
-function collectTranscriptJsonFiles(
+function collectTranscriptFiles(
 	dirPath: string,
 ): Effect.Effect<ReadonlyArray<string>, DreamLockIoError> {
 	return Effect.gen(function* () {
@@ -112,12 +113,12 @@ function collectTranscriptJsonFiles(
 		for (const entry of entries) {
 			const absolutePath = path.join(dirPath, entry.name);
 			if (entry.isDirectory()) {
-				const nestedFiles = yield* collectTranscriptJsonFiles(absolutePath);
+				const nestedFiles = yield* collectTranscriptFiles(absolutePath);
 				files.push(...nestedFiles);
 				continue;
 			}
 
-			if (entry.isFile() && entry.name.endsWith(".json")) {
+			if (entry.isFile() && isDreamTranscriptFile(entry.name)) {
 				files.push(absolutePath);
 			}
 		}
@@ -159,8 +160,8 @@ function scanTranscriptCandidates(
 	currentSessionId: string | undefined,
 ): Effect.Effect<ReadonlyArray<DreamTranscriptCandidate>, DreamLockIoError> {
 	return Effect.gen(function* () {
-		const transcriptRoot = sessionsRootPath(cwd);
-		const transcriptFiles = yield* collectTranscriptJsonFiles(transcriptRoot);
+		const transcriptRoot = dreamTranscriptRoot(cwd);
+		const transcriptFiles = yield* collectTranscriptFiles(transcriptRoot);
 		const candidates: Array<DreamTranscriptCandidate> = [];
 
 		for (const transcriptPath of transcriptFiles) {
@@ -169,7 +170,11 @@ function scanTranscriptCandidates(
 				continue;
 			}
 
-			const sessionId = path.basename(transcriptPath, ".json");
+			const sessionId = parseDreamTranscriptSessionId(transcriptPath);
+			if (sessionId === null) {
+				continue;
+			}
+
 			if (currentSessionId !== undefined && sessionId === currentSessionId) {
 				continue;
 			}

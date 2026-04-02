@@ -32,6 +32,11 @@ import { DreamLock } from "./lock.js";
 import { DreamScheduler } from "./scheduler.js";
 import { DreamTaskRegistry } from "./task-registry.js";
 import { DreamSubagent, type DreamSubagentContext } from "./subagent.js";
+import {
+	dreamTranscriptRoot,
+	isDreamTranscriptFile,
+	parseDreamTranscriptSessionId,
+} from "./transcripts.js";
 import { CuratedMemory, type MutationResult } from "../services/curated-memory.js";
 import type { MemoryFileError, MemoryMutationError } from "../memory/errors.js";
 
@@ -70,10 +75,6 @@ export interface DreamRunnerLiveConfig {
 // Transcript scanning helpers
 // ---------------------------------------------------------------------------
 
-function sessionsRootPath(cwd: string): string {
-	return path.join(cwd, ".pi", "sessions");
-}
-
 function isNodeError(err: unknown, code: string): boolean {
 	return (
 		typeof err === "object" &&
@@ -103,7 +104,7 @@ function readDirSafe(dirPath: string): Effect.Effect<ReadonlyArray<Dirent>, Drea
 	);
 }
 
-function collectJsonFiles(dirPath: string): Effect.Effect<ReadonlyArray<string>, DreamLockIoError> {
+function collectTranscriptFiles(dirPath: string): Effect.Effect<ReadonlyArray<string>, DreamLockIoError> {
 	return Effect.gen(function* () {
 		const entries = yield* readDirSafe(dirPath);
 		const files: string[] = [];
@@ -111,9 +112,9 @@ function collectJsonFiles(dirPath: string): Effect.Effect<ReadonlyArray<string>,
 		for (const entry of entries) {
 			const fullPath = path.join(dirPath, entry.name);
 			if (entry.isDirectory()) {
-				const nested = yield* collectJsonFiles(fullPath);
+				const nested = yield* collectTranscriptFiles(fullPath);
 				files.push(...nested);
-			} else if (entry.isFile() && entry.name.endsWith(".json")) {
+			} else if (entry.isFile() && isDreamTranscriptFile(entry.name)) {
 				files.push(fullPath);
 			}
 		}
@@ -149,8 +150,8 @@ function scanTranscripts(
 	currentSessionId: string | undefined,
 ): Effect.Effect<ReadonlyArray<DreamTranscriptCandidate>, DreamLockIoError> {
 	return Effect.gen(function* () {
-		const root = sessionsRootPath(cwd);
-		const files = yield* collectJsonFiles(root);
+		const root = dreamTranscriptRoot(cwd);
+		const files = yield* collectTranscriptFiles(root);
 		const candidates: DreamTranscriptCandidate[] = [];
 
 		for (const filePath of files) {
@@ -159,7 +160,11 @@ function scanTranscripts(
 				continue;
 			}
 
-			const sessionId = path.basename(filePath, ".json");
+			const sessionId = parseDreamTranscriptSessionId(filePath);
+			if (sessionId === null) {
+				continue;
+			}
+
 			if (currentSessionId !== undefined && sessionId === currentSessionId) {
 				continue;
 			}

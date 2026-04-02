@@ -41,6 +41,16 @@ import { buildToolDescription } from "./agent/tool.js";
 import { createSkillMarkerRuntime } from "./skill-marker/index.js";
 import { installSqliteExperimentalWarningFilter } from "./shared/sqlite-warning.js";
 import { RalphRepoLive } from "./ralph/repo.js";
+import initDream from "./dream/init.js";
+import { DreamLockLive } from "./dream/lock.js";
+import { DreamSchedulerLive } from "./dream/scheduler.js";
+import { DreamSubagentLive } from "./dream/subagent.js";
+import { DreamTaskRegistryLive } from "./dream/task-registry.js";
+import { loadDreamConfig } from "./dream/config-loader.js";
+import type { DreamLock } from "./dream/lock.js";
+import type { DreamScheduler } from "./dream/scheduler.js";
+import type { DreamTaskRegistry } from "./dream/task-registry.js";
+import type { DreamSubagent } from "./dream/subagent.js";
 
 const PersistenceLayer = PersistenceLive;
 const SandboxLayer = SandboxLive.pipe(
@@ -54,6 +64,7 @@ const FooterLayer = FooterLive.pipe(
 );
 const PromptModesLayer = PromptModesLive.pipe(Layer.provide(PersistenceLayer));
 const CuratedMemoryLayer = CuratedMemoryLive;
+const DreamSchedulerLayer = DreamSchedulerLive({ loadConfig: loadDreamConfig });
 const skillMutationCallback: { current: () => void } = { current: () => {} };
 const SkillManagerLayer = SkillManagerLive({
 	onSkillMutated: () => skillMutationCallback.current(),
@@ -101,6 +112,10 @@ const createMainLayer = (agentRuntimeBridge: AgentRuntimeBridgeService) => {
 		FooterLayer,
 		PromptModesLayer,
 		CuratedMemoryLayer,
+		DreamLockLive,
+		DreamSchedulerLayer,
+		DreamTaskRegistryLive,
+		DreamSubagentLive,
 		SkillManagerLayer,
 		AgentLayer,
 		RalphLayer,
@@ -108,7 +123,18 @@ const createMainLayer = (agentRuntimeBridge: AgentRuntimeBridgeService) => {
 };
 
 type TauRuntime = ManagedRuntime.ManagedRuntime<
-	Persistence | Sandbox | Footer | PromptModes | CuratedMemory | AgentControl | SkillManager | Ralph,
+	| Persistence
+	| Sandbox
+	| Footer
+	| PromptModes
+	| CuratedMemory
+	| AgentControl
+	| SkillManager
+	| Ralph
+	| DreamLock
+	| DreamScheduler
+	| DreamTaskRegistry
+	| DreamSubagent,
 	never
 >;
 
@@ -148,6 +174,13 @@ export const startTau = (pi: ExtensionAPI) => {
 	runtime = currentRuntime;
 	const runCuratedMemory = <A, E>(effect: Effect.Effect<A, E, CuratedMemory>) =>
 		currentRuntime.runPromise(effect);
+	const runDream = <A, E>(
+		effect: Effect.Effect<
+			A,
+			E,
+			CuratedMemory | DreamLock | DreamScheduler | DreamTaskRegistry | DreamSubagent
+		>,
+	) => currentRuntime.runPromise(effect);
 	const runSkillManager = <A, E>(effect: Effect.Effect<A, E, SkillManager>) =>
 		currentRuntime.runPromise(effect);
 	const runRalph = <A, E>(effect: Effect.Effect<A, E, Ralph>) => currentRuntime.runPromise(effect);
@@ -186,6 +219,7 @@ export const startTau = (pi: ExtensionAPI) => {
 				});
 				initSkillMarker(pi, skillMarker);
 				initMemory(pi, runCuratedMemory);
+				initDream(pi, runDream);
 				initSkillManage(pi, runSkillManager);
 				initNudge(pi);
 				initRequestUserInput(pi);

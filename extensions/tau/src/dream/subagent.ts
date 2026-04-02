@@ -25,7 +25,6 @@ import type {
 } from "./domain.js";
 import { DreamConsolidationPlan as DreamConsolidationPlanSchema } from "./domain.js";
 import {
-	DreamSubagentAborted,
 	DreamSubagentInvalidPlan,
 	DreamSubagentSpawnFailed,
 	type DreamSubagentError,
@@ -141,6 +140,34 @@ interface SessionFailure {
 	readonly reason: string;
 }
 
+interface TurnLimitExceeded {
+	readonly _tag: "turn_limit_exceeded";
+	readonly maxTurns: number;
+}
+
+interface PromptFailed {
+	readonly _tag: "prompt_failed";
+	readonly error: unknown;
+}
+
+function isTurnLimitExceeded(
+	value: SessionResult | SessionFailure | TurnLimitExceeded | PromptFailed,
+): value is TurnLimitExceeded {
+	return "_tag" in value && value._tag === "turn_limit_exceeded";
+}
+
+function isPromptFailed(
+	value: SessionResult | SessionFailure | TurnLimitExceeded | PromptFailed,
+): value is PromptFailed {
+	return "_tag" in value && value._tag === "prompt_failed";
+}
+
+type TurnLimitSession = Pick<AgentSession, "abort"> & {
+	readonly agent: {
+		subscribe: AgentSession["agent"]["subscribe"];
+	};
+};
+
 /**
  * Subscribe to the session and wait for the agent_end event.
  * Returns the last assistant text or a failure reason.
@@ -182,6 +209,50 @@ function waitForSessionEnd(session: AgentSession): Promise<SessionResult | Sessi
 			resolve({ ok: true, text });
 		});
 	});
+}
+
+function createTurnLimitGuard(
+	session: TurnLimitSession,
+	maxTurns: number,
+): {
+	readonly promise: Promise<TurnLimitExceeded>;
+	readonly dispose: () => void;
+} {
+	let disposed = false;
+	let turns = 1;
+	let unsubscribe: (() => void) | undefined;
+
+	const dispose = () => {
+		if (disposed) {
+			return;
+		}
+
+		disposed = true;
+		unsubscribe?.();
+		unsubscribe = undefined;
+	};
+
+	const promise = new Promise<TurnLimitExceeded>((resolve) => {
+		unsubscribe = session.agent.subscribe((event) => {
+			if (disposed || event.type !== "turn_start") {
+				return;
+			}
+
+			turns += 1;
+			if (turns <= maxTurns) {
+				return;
+			}
+
+			dispose();
+			resolve({
+				_tag: "turn_limit_exceeded",
+				maxTurns,
+			});
+			void session.abort();
+		});
+	});
+
+	return { promise, dispose };
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +328,7 @@ function planImpl(
 		});
 
 		const session = sessionResult.session;
+		const turnLimitGuard = createTurnLimitGuard(session, request.model.maxTurns);
 
 		// ── Prompt and wait ──────────────────────────────────────────
 		yield* onEvent({
@@ -266,24 +338,53 @@ function planImpl(
 		});
 
 		const endPromise = waitForSessionEnd(session);
-
-		yield* Effect.tryPromise({
-			try: () =>
-				session.prompt(
-					"Begin the 4-phase memory consolidation. Read the transcript files listed above, then return your consolidation plan as a single JSON object.",
-					{ source: "extension" },
-				),
-			catch: (error) =>
-				new DreamSubagentSpawnFailed({
-					reason: `Failed to prompt dream subagent: ${String(error)}`,
-				}),
+		const promptPromise = session.prompt(
+			"Begin the 4-phase memory consolidation. Read the transcript files listed above, then return your consolidation plan as a single JSON object.",
+			{ source: "extension" },
+		);
+		const promptFailurePromise: Promise<PromptFailed> = new Promise((resolve) => {
+			void promptPromise.catch((error) => {
+				resolve({ _tag: "prompt_failed", error });
+			});
 		});
 
 		const result = yield* Effect.tryPromise({
-			try: () => endPromise,
-			catch: (error) =>
-				new DreamSubagentAborted(),
-		});
+			try: async (): Promise<SessionResult | SessionFailure | TurnLimitExceeded> => {
+				const outcome = await Promise.race([
+					endPromise,
+					turnLimitGuard.promise,
+					promptFailurePromise,
+				]);
+
+				if (isPromptFailed(outcome)) {
+					throw outcome.error;
+				}
+
+				if (isTurnLimitExceeded(outcome)) {
+					await promptPromise.catch(() => undefined);
+					return outcome;
+				}
+
+				await promptPromise;
+				return outcome;
+			},
+			catch: (_error) =>
+				new DreamSubagentSpawnFailed({
+					reason: `Failed to prompt dream subagent: ${String(_error)}`,
+				}),
+		}).pipe(
+			Effect.ensuring(
+				Effect.sync(() => {
+					turnLimitGuard.dispose();
+				}),
+			),
+		);
+
+		if (isTurnLimitExceeded(result)) {
+			return yield* new DreamSubagentSpawnFailed({
+				reason: `Dream subagent exceeded maxTurns=${result.maxTurns}`,
+			});
+		}
 
 		if (!result.ok) {
 			return yield* new DreamSubagentSpawnFailed({ reason: result.reason });
@@ -325,6 +426,7 @@ function planImpl(
 // ---------------------------------------------------------------------------
 
 export { formatMemorySnapshotForPrompt as _formatMemorySnapshotForPrompt };
+export { createTurnLimitGuard as _createTurnLimitGuard };
 export { stripCodeFences as _stripCodeFences };
 export { isAssistantMessage as _isAssistantMessage };
 

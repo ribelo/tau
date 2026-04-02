@@ -1,8 +1,10 @@
 import { DateTime, Schema } from "effect";
 import { describe, expect, it } from "vitest";
+import type { AgentEvent } from "@mariozechner/pi-agent-core";
 
 import {
 	_formatMemorySnapshotForPrompt as formatMemorySnapshotForPrompt,
+	_createTurnLimitGuard as createTurnLimitGuard,
 	_stripCodeFences as stripCodeFences,
 	_isAssistantMessage as isAssistantMessage,
 } from "../src/dream/subagent.js";
@@ -96,6 +98,44 @@ describe("isAssistantMessage", () => {
 
 	it("rejects missing content", () => {
 		expect(isAssistantMessage({ role: "assistant" })).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// turn limit guard
+// ---------------------------------------------------------------------------
+
+describe("createTurnLimitGuard", () => {
+	it("treats the first dream turn as already started and aborts before the next turn would exceed maxTurns", async () => {
+		const listeners: Array<(event: AgentEvent) => void> = [];
+		let aborts = 0;
+		const turnStartEvent = { type: "turn_start" } as unknown as AgentEvent;
+
+		const guard = createTurnLimitGuard(
+			{
+				agent: {
+					subscribe: (listener) => {
+						listeners.push(listener);
+						return () => undefined;
+					},
+				},
+				abort: async () => {
+					aborts += 1;
+				},
+			},
+			2,
+		);
+
+		listeners[0]?.(turnStartEvent);
+		expect(aborts).toBe(0);
+
+		listeners[0]?.(turnStartEvent);
+
+		await expect(guard.promise).resolves.toEqual({
+			_tag: "turn_limit_exceeded",
+			maxTurns: 2,
+		});
+		expect(aborts).toBe(1);
 	});
 });
 
