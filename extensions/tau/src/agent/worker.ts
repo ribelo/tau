@@ -8,7 +8,8 @@ import {
 	DefaultResourceLoader,
 	type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
-import type { Model, Api, ThinkingLevel, Message } from "@mariozechner/pi-ai";
+import type { StreamFn } from "@mariozechner/pi-agent-core";
+import type { Model, Api, ThinkingLevel, Context, SimpleStreamOptions } from "@mariozechner/pi-ai";
 import { stream, streamSimple } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
 import { Effect, SubscriptionRef, Stream } from "effect";
@@ -25,6 +26,7 @@ import { createApplyPatchToolDefinition } from "../sandbox/apply-patch.js";
 import { createBacklogToolDefinition } from "../backlog/tool.js";
 import { createExaToolDefinitions } from "../exa/index.js";
 import { createMemoryToolDefinition } from "../memory/index.js";
+import { isRecord } from "../shared/json.js";
 
 import type { ApprovalBroker } from "./approval-broker.js";
 import { createWorkerAgentTool, type RunAgentControlPromise } from "./runtime.js";
@@ -203,54 +205,109 @@ You are a worker agent spawned by an orchestrator. Follow these rules:
 8. **Only your final message is returned** - Make it a clear summary.
 `;
 
-function toolOnlyStreamFn(
-	model: Model<Api>,
-	context: Message[],
-	options?: Record<string, unknown>,
-) {
-	// Build options without undefined values (exactOptionalPropertyTypes compliance)
-	const base: Record<string, unknown> = {
-		maxTokens:
-			(options?.["maxTokens"] as number | undefined) || Math.min(model.maxTokens, 32000),
+function mergePayloadOverrides(
+	payload: unknown,
+	overrides: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+	const base = isRecord(payload) ? payload : {};
+	return {
+		...base,
+		...overrides,
 	};
-	if (options?.["temperature"] !== undefined) base["temperature"] = options["temperature"];
-	if (options?.["signal"] !== undefined) base["signal"] = options["signal"];
-	if (options?.["apiKey"] !== undefined) base["apiKey"] = options["apiKey"];
-	if (options?.["sessionId"] !== undefined) base["sessionId"] = options["sessionId"];
+}
 
+function wrapPayloadOverrides(
+	existing: SimpleStreamOptions["onPayload"] | undefined,
+	overrides: Readonly<Record<string, unknown>>,
+): NonNullable<SimpleStreamOptions["onPayload"]> {
+	return async (payload, currentModel) => {
+		const nextPayload = existing
+			? await existing(payload, currentModel)
+			: undefined;
+		return mergePayloadOverrides(nextPayload === undefined ? payload : nextPayload, overrides);
+	};
+}
+
+function buildToolOnlyOptions(
+	model: Model<Api>,
+	options: SimpleStreamOptions | undefined,
+	providerOverrides: Readonly<Record<string, unknown>>,
+	payloadOverrides?: Readonly<Record<string, unknown>>,
+	omitKeys: ReadonlyArray<keyof SimpleStreamOptions> = [],
+): Record<string, unknown> {
+	const next: Record<string, unknown> = {
+		...options,
+		...providerOverrides,
+		maxTokens: options?.maxTokens ?? Math.min(model.maxTokens, 32000),
+	};
+
+	for (const key of omitKeys) {
+		delete next[key];
+	}
+
+	if (payloadOverrides !== undefined) {
+		next["onPayload"] = wrapPayloadOverrides(options?.onPayload, payloadOverrides);
+	}
+
+	return next;
+}
+
+export const toolOnlyStreamFn: StreamFn = (
+	model: Model<Api>,
+	context: Context,
+	options?: SimpleStreamOptions,
+) => {
 	const api = model.api as string;
-	const ctx = { messages: context };
 
 	switch (api) {
 		case "anthropic-messages":
-			return stream(model as Model<"anthropic-messages">, ctx, {
-				...base,
+			return stream(model as Model<"anthropic-messages">, context, buildToolOnlyOptions(model, options, {
 				thinkingEnabled: false,
 				toolChoice: "any",
-			});
+			}));
 		case "openai-completions":
-			return stream(model as Model<"openai-completions">, ctx, {
-				...base,
+			return stream(model as Model<"openai-completions">, context, buildToolOnlyOptions(model, options, {
 				toolChoice: "required",
-			});
+			}));
 		case "google-generative-ai":
 		case "google-vertex":
 		case "google-gemini-cli":
-			return stream(model as Model<"google-generative-ai">, ctx, {
-				...base,
+			return stream(model as Model<"google-generative-ai">, context, buildToolOnlyOptions(model, options, {
 				toolChoice: "any",
 				thinking: { enabled: false },
-			});
+			}));
 		case "bedrock-converse-stream":
 		case "amazon-bedrock":
-			return stream(model as Model<"bedrock-converse-stream">, ctx, {
-				...base,
-				toolChoice: "any",
-			});
+			return stream(
+				model as Model<"bedrock-converse-stream">,
+				context,
+				buildToolOnlyOptions(
+					model,
+					options,
+					{
+						toolChoice: "any",
+					},
+					undefined,
+					["reasoning", "thinkingBudgets"],
+				),
+			);
 		default:
-			return streamSimple(model, { messages: context }, options);
+			return streamSimple(
+				model,
+				context,
+				buildToolOnlyOptions(
+					model,
+					options,
+					api === "mistral-conversations"
+						? { toolChoice: "required" }
+						: {},
+					api === "openai-responses" || api === "openai-codex-responses" || api === "azure-openai-responses"
+						? { tool_choice: "required" }
+						: undefined,
+				) as SimpleStreamOptions,
+			);
 	}
-}
+};
 
 export function createWorkerCustomTools(
 	agentTool: ToolDefinition,
@@ -584,8 +641,7 @@ export class AgentWorker implements Agent {
 			wireSession(session, sandboxConfig, opts.approvalBroker);
 
 			if (opts.resultSchema) {
-				session.agent.streamFn =
-					toolOnlyStreamFn as unknown as typeof session.agent.streamFn;
+				session.agent.streamFn = toolOnlyStreamFn;
 			}
 
 			agent = new AgentWorker(
@@ -748,8 +804,7 @@ export class AgentWorker implements Agent {
 				worker.infra.approvalBroker,
 			);
 			if (worker.infra.resultSchema) {
-				newSession.agent.streamFn =
-					toolOnlyStreamFn as unknown as typeof newSession.agent.streamFn;
+				newSession.agent.streamFn = toolOnlyStreamFn;
 			}
 			worker.subscribeToSession(newSession);
 		});
@@ -855,6 +910,7 @@ export class AgentWorker implements Agent {
 		return Effect.gen(function* () {
 			const submissionId = `sub-${nanoid(12)}`;
 			worker.submitResultRetries = 0;
+			worker.structuredOutput = undefined;
 			worker.terminalState = undefined;
 
 			yield* SubscriptionRef.set(worker.statusRef, worker.currentRunningStatus());

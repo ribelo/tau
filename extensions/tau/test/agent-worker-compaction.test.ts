@@ -75,7 +75,10 @@ class FakeAgentSession {
 	}
 }
 
-const makeWorker = async (session: FakeAgentSession): Promise<{
+const makeWorker = async (
+	session: FakeAgentSession,
+	resultSchema?: unknown,
+): Promise<{
 	readonly worker: AgentWorker;
 	readonly statusRef: SubscriptionRef.SubscriptionRef<Status>;
 }> => {
@@ -116,7 +119,7 @@ const makeWorker = async (session: FakeAgentSession): Promise<{
 		statusRef,
 		{
 			definition,
-			resultSchema: undefined,
+			resultSchema,
 		},
 		definition.models,
 		undefined,
@@ -235,12 +238,27 @@ describe("AgentWorker overflow compaction handling", () => {
 
 		const { worker } = await makeWorker(session);
 
-		await expect(
+	await expect(
 			Effect.runPromise(
 				(worker as unknown as {
 					promptSession(message: string, modelLabel: string): Effect.Effect<void, string>;
 				}).promptSession("continue", "openai/gpt-5-codex"),
 			),
 		).resolves.toBeUndefined();
+	});
+
+	it("clears stale structured output before starting a new prompt", async () => {
+		const session = new FakeAgentSession(async () => undefined);
+		const { worker } = await makeWorker(session, {
+			type: "object",
+			properties: {
+				ok: { type: "boolean" },
+			},
+		});
+
+		(worker as unknown as { structuredOutput?: unknown }).structuredOutput = { stale: true };
+
+		await expect(Effect.runPromise(worker.prompt("next task"))).resolves.toMatch(/^sub-/u);
+		expect((worker as unknown as { structuredOutput?: unknown }).structuredOutput).toBeUndefined();
 	});
 });
