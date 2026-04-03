@@ -26,7 +26,7 @@ import { DreamLock, type DreamLease, type DreamLockInfo } from "../src/dream/loc
 import { DreamScheduler, type DreamSchedulerApi } from "../src/dream/scheduler.js";
 import { DreamTaskRegistry, DreamTaskRegistryLive, type DreamRunError } from "../src/dream/task-registry.js";
 import { DreamSubagent, type DreamSubagentContext } from "../src/dream/subagent.js";
-import { DreamRunner, DreamRunnerLive, type DreamRunnerLiveConfig } from "../src/dream/runner.js";
+import { DreamRunner, DreamRunnerLive, type DreamRunnerLiveConfig, _deriveTranscriptReviewLimit, _selectDreamTranscriptCandidates } from "../src/dream/runner.js";
 import { CuratedMemory, type MutationResult } from "../src/services/curated-memory.js";
 import type { MemoryEntriesSnapshot, MemoryEntry, MemoryBucketEntriesSnapshot } from "../src/memory/format.js";
 import type { MemoryFileError, MemoryMutationError } from "../src/memory/errors.js";
@@ -463,6 +463,37 @@ describe("DreamRunner", () => {
 			);
 
 			expect(Option.isNone(result)).toBe(true);
+		});
+	});
+
+	describe("transcript candidate selection", () => {
+		it("derives limit as maxTurns - 2, minimum 1", () => {
+			expect(_deriveTranscriptReviewLimit(8)).toBe(6);
+			expect(_deriveTranscriptReviewLimit(4)).toBe(2);
+			expect(_deriveTranscriptReviewLimit(2)).toBe(1);
+			expect(_deriveTranscriptReviewLimit(1)).toBe(1);
+		});
+
+		it("caps candidates to maxTurns - 2", () => {
+			const candidates: DreamTranscriptCandidate[] = Array.from({ length: 20 }, (_, i) => ({
+				sessionId: `sess-${i}`,
+				path: `/fake/sess-${i}.jsonl`,
+				touchedAt: 1000 + i,
+			}));
+
+			const selected = _selectDreamTranscriptCandidates(candidates, 8);
+			expect(selected).toHaveLength(6);
+			expect(selected[0]!.sessionId).toBe("sess-0");
+		});
+
+		it("passes all through when count is within limit", () => {
+			const candidates: DreamTranscriptCandidate[] = [
+				{ sessionId: "s1", path: "/a.jsonl", touchedAt: 100 },
+				{ sessionId: "s2", path: "/b.jsonl", touchedAt: 200 },
+			];
+
+			const selected = _selectDreamTranscriptCandidates(candidates, 8);
+			expect(selected).toHaveLength(2);
 		});
 	});
 });

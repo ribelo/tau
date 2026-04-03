@@ -268,6 +268,11 @@ function describeError(error: unknown): string {
 		return `Dream configuration error: ${String(error)}`;
 	}
 
+	if (tagged._tag === "DreamSubagentSpawnFailed" || tagged._tag === "DreamSubagentInvalidPlan") {
+		const reason = "reason" in error ? (error as { reason: string }).reason : tagged._tag;
+		return `Dream failed: ${reason}`;
+	}
+
 	return `Dream failed: ${tagged._tag}`;
 }
 

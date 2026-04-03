@@ -72,6 +72,23 @@ export interface DreamRunnerLiveConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Transcript candidate selection
+// ---------------------------------------------------------------------------
+
+/** Reserve 2 turns for orient+response; rest are available for file reads. */
+function deriveTranscriptReviewLimit(maxTurns: number): number {
+	return Math.max(1, maxTurns - 2);
+}
+
+function selectTranscriptCandidates(
+	candidates: ReadonlyArray<DreamTranscriptCandidate>,
+	maxTurns: number,
+): ReadonlyArray<DreamTranscriptCandidate> {
+	const limit = deriveTranscriptReviewLimit(maxTurns);
+	return candidates.slice(0, limit);
+}
+
+// ---------------------------------------------------------------------------
 // Transcript scanning helpers
 // ---------------------------------------------------------------------------
 
@@ -239,10 +256,14 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 
 					const lastCompletedAt = yield* scheduler.readLastCompletedAt(request.cwd);
 					const sinceMs = lastCompletedAt ?? 0;
-					const transcriptCandidates = yield* scanTranscripts(
+					const allCandidates = yield* scanTranscripts(
 						request.cwd,
 						sinceMs,
 						request.currentSessionId,
+					);
+					const transcriptCandidates = selectTranscriptCandidates(
+						allCandidates,
+						dreamConfig.subagent.maxTurns,
 					);
 
 					const nowIso = new Date().toISOString();
@@ -343,18 +364,29 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 					);
 					const sinceMs = lastCompletedAt ?? 0;
 
-					const transcriptCandidates = yield* scanTranscripts(
+					const allCandidates = yield* scanTranscripts(
 						request.cwd,
 						sinceMs,
 						request.currentSessionId,
 					).pipe(
 						Effect.catch((err: DreamLockIoError) => failTask(taskId, err)),
 					);
+					const transcriptCandidates = selectTranscriptCandidates(
+						allCandidates,
+						dreamConfig.subagent.maxTurns,
+					);
 
 					yield* progress(taskId, {
 						_tag: "SessionsDiscovered",
-						total: transcriptCandidates.length,
+						total: allCandidates.length,
 					});
+
+					if (transcriptCandidates.length < allCandidates.length) {
+						yield* progress(taskId, {
+							_tag: "Note",
+							text: `Reviewing ${transcriptCandidates.length} of ${allCandidates.length} most recent sessions (maxTurns=${dreamConfig.subagent.maxTurns})`,
+						});
+					}
 
 					// Consolidate
 					yield* progress(taskId, {
@@ -520,3 +552,6 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 			});
 		}),
 	);
+
+export { deriveTranscriptReviewLimit as _deriveTranscriptReviewLimit };
+export { selectTranscriptCandidates as _selectDreamTranscriptCandidates };

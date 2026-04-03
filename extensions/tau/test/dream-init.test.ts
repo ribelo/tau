@@ -7,8 +7,8 @@ import type {
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 
-import initDream from "../src/dream/init.js";
-import { DreamLockHeld } from "../src/dream/errors.js";
+import initDream, { _describeDreamError } from "../src/dream/init.js";
+import { DreamLockHeld, DreamSubagentSpawnFailed } from "../src/dream/errors.js";
 import type { DreamTaskState } from "../src/dream/domain.js";
 
 type EventHandler = (event: unknown, ctx: ExtensionContext) => Promise<void> | void;
@@ -323,5 +323,21 @@ describe("initDream", () => {
 		await handler?.({ type: "session_start" }, ctx);
 
 		expect(notifyCalls).toEqual([]);
+	});
+
+	describe("describeError", () => {
+		it("surfaces the reason from DreamSubagentSpawnFailed", () => {
+			const err = new DreamSubagentSpawnFailed({ reason: "exceeded maxTurns=8" });
+			expect(_describeDreamError(err)).toBe("Dream failed: exceeded maxTurns=8");
+		});
+
+		it("shows DreamLockHeld as a human message", () => {
+			const err = new DreamLockHeld({ path: "/tmp/lock" });
+			expect(_describeDreamError(err)).toBe("Another dream run is already in progress.");
+		});
+
+		it("handles plain errors", () => {
+			expect(_describeDreamError(new TypeError("boom"))).toBe("Dream failed: TypeError: boom");
+		});
 	});
 });
