@@ -6,30 +6,30 @@ export const DreamThinking = Schema.Literals(["low", "medium", "high", "xhigh"])
 export type DreamThinking = typeof DreamThinking.Type;
 
 export const DreamModelConfigInput = Schema.Struct({
-	model: Schema.optional(Schema.String),
-	thinking: Schema.optional(DreamThinking),
-	maxTurns: Schema.optional(Schema.Number),
+	model: Schema.String,
+	thinking: DreamThinking,
+	maxTurns: Schema.Number,
 });
 export type DreamModelConfigInput = typeof DreamModelConfigInput.Type;
 
 export const ManualDreamConfigInput = Schema.Struct({
-	enabled: Schema.optional(Schema.Boolean),
+	enabled: Schema.Boolean,
 });
 export type ManualDreamConfigInput = typeof ManualDreamConfigInput.Type;
 
 export const AutoDreamConfigInput = Schema.Struct({
-	enabled: Schema.optional(Schema.Boolean),
-	minHoursSinceLastRun: Schema.optional(Schema.Number),
-	minSessionsSinceLastRun: Schema.optional(Schema.Number),
-	scanThrottleMinutes: Schema.optional(Schema.Number),
+	enabled: Schema.Boolean,
+	minHoursSinceLastRun: Schema.Number,
+	minSessionsSinceLastRun: Schema.Number,
+	scanThrottleMinutes: Schema.Number,
 });
 export type AutoDreamConfigInput = typeof AutoDreamConfigInput.Type;
 
 export const DreamConfigInput = Schema.Struct({
-	enabled: Schema.optional(Schema.Boolean),
-	manual: Schema.optional(ManualDreamConfigInput),
-	auto: Schema.optional(AutoDreamConfigInput),
-	subagent: Schema.optional(DreamModelConfigInput),
+	enabled: Schema.Boolean,
+	manual: ManualDreamConfigInput,
+	auto: AutoDreamConfigInput,
+	subagent: DreamModelConfigInput,
 });
 export type DreamConfigInput = typeof DreamConfigInput.Type;
 

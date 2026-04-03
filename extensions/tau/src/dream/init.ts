@@ -269,7 +269,7 @@ function describeError(error: unknown): string {
 		tagged._tag === "DreamConfigMissingModel" ||
 		tagged._tag === "DreamConfigInvalidThreshold"
 	) {
-		return `Dream configuration error: ${String(error)}`;
+		return `Dream configuration error: define tau.dream explicitly (enabled/manual/auto/subagent.model/subagent.thinking/subagent.maxTurns). Dream has no implicit defaults. Details: ${String(error)}`;
 	}
 
 	if (tagged._tag === "DreamSubagentSpawnFailed" || tagged._tag === "DreamSubagentInvalidPlan") {

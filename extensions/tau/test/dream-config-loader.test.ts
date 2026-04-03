@@ -41,22 +41,23 @@ async function writeJson(filePath: string, value: unknown): Promise<void> {
 }
 
 describe("loadDreamConfig", () => {
-	it("merges dream settings and falls back to the plan preset model", async () => {
+	it("loads explicit dream settings with project override", async () => {
 		await withTempWorkspace(async ({ cwd, userSettingsPath }) => {
 			await writeJson(userSettingsPath, {
 				tau: {
-					promptModes: {
-						presets: {
-							plan: {
-								model: "openai/gpt-5.4-mini",
-								thinking: "medium",
-							},
-						},
-					},
 					dream: {
+						enabled: true,
+						manual: { enabled: true },
 						auto: {
 							enabled: true,
+							minHoursSinceLastRun: 24,
 							minSessionsSinceLastRun: 3,
+							scanThrottleMinutes: 10,
+						},
+						subagent: {
+							model: "openai/gpt-5.4-mini",
+							thinking: "medium",
+							maxTurns: 12,
 						},
 					},
 				},
@@ -67,7 +68,7 @@ describe("loadDreamConfig", () => {
 					dream: {
 						manual: { enabled: false },
 						auto: { scanThrottleMinutes: 15 },
-						subagent: { maxTurns: 12 },
+						subagent: { maxTurns: 10 },
 					},
 				},
 			});
@@ -82,24 +83,54 @@ describe("loadDreamConfig", () => {
 			expect(config.auto.scanThrottleMinutes).toBe(15);
 			expect(config.subagent.model).toBe("openai/gpt-5.4-mini");
 			expect(config.subagent.thinking).toBe("medium");
-			expect(config.subagent.maxTurns).toBe(12);
+			expect(config.subagent.maxTurns).toBe(10);
 		});
 	});
 
-	it("fails when no dream model or plan preset model is configured", async () => {
+	it("fails when tau.dream is not configured", async () => {
 		await withTempWorkspace(async ({ cwd, userSettingsPath }) => {
 			await writeJson(userSettingsPath, {});
-			await writeJson(path.join(cwd, ".pi", "settings.json"), {
+			await writeJson(path.join(cwd, ".pi", "settings.json"), {});
+
+			await expect(Effect.runPromise(loadDreamConfig(cwd))).rejects.toMatchObject({
+				_tag: "DreamConfigDecodeError",
+			});
+		});
+	});
+
+	it("does not fall back to prompt-mode presets", async () => {
+		await withTempWorkspace(async ({ cwd, userSettingsPath }) => {
+			await writeJson(userSettingsPath, {
 				tau: {
+					promptModes: {
+						presets: {
+							plan: {
+								model: "openai/gpt-5.4-mini",
+								thinking: "high",
+							},
+						},
+					},
 					dream: {
 						enabled: true,
+						manual: { enabled: true },
+						auto: {
+							enabled: false,
+							minHoursSinceLastRun: 24,
+							minSessionsSinceLastRun: 5,
+							scanThrottleMinutes: 10,
+						},
+						subagent: {
+							thinking: "high",
+							maxTurns: 8,
+						},
 					},
 				},
 			});
 
+			await writeJson(path.join(cwd, ".pi", "settings.json"), {});
+
 			await expect(Effect.runPromise(loadDreamConfig(cwd))).rejects.toMatchObject({
-				_tag: "DreamConfigMissingModel",
-				path: "tau.dream.subagent.model",
+				_tag: "DreamConfigDecodeError",
 			});
 		});
 	});
@@ -108,11 +139,19 @@ describe("loadDreamConfig", () => {
 		await withTempWorkspace(async ({ cwd, userSettingsPath }) => {
 			await writeJson(userSettingsPath, {
 				tau: {
-					promptModes: {
-						presets: {
-							plan: {
-								model: "openai/gpt-5.4-mini",
-							},
+					dream: {
+						enabled: true,
+						manual: { enabled: true },
+						auto: {
+							enabled: false,
+							minHoursSinceLastRun: 24,
+							minSessionsSinceLastRun: 5,
+							scanThrottleMinutes: 10,
+						},
+						subagent: {
+							model: "openai/gpt-5.4-mini",
+							thinking: "high",
+							maxTurns: 8,
 						},
 					},
 				},
@@ -139,11 +178,19 @@ describe("loadDreamConfig", () => {
 		await withTempWorkspace(async ({ cwd, userSettingsPath }) => {
 			await writeJson(userSettingsPath, {
 				tau: {
-					promptModes: {
-						presets: {
-							plan: {
-								model: "openai/gpt-5.4-mini",
-							},
+					dream: {
+						enabled: true,
+						manual: { enabled: true },
+						auto: {
+							enabled: false,
+							minHoursSinceLastRun: 24,
+							minSessionsSinceLastRun: 5,
+							scanThrottleMinutes: 10,
+						},
+						subagent: {
+							model: "openai/gpt-5.4-mini",
+							thinking: "high",
+							maxTurns: 8,
 						},
 					},
 				},

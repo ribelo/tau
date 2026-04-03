@@ -56,10 +56,10 @@ Placed under `tau.dream`:
 }
 ```
 
-Defaults:
-- `manual.enabled = true`
-- `auto.enabled = false` (for rollout safety)
-- Thresholds: 24 hours, 5 sessions, 10-minute scan throttle
+Configuration policy:
+- Dream requires an explicit `tau.dream` block.
+- Dream applies no implicit defaults for enablement, model, thinking, or thresholds.
+- Partial configuration fails fast with a decode/config error.
 
 ---
 
@@ -137,13 +137,11 @@ export interface DreamConfigLoader {
 ```
 
 **Resolution rules:**
-1. Decode `settings.tau.dream` with `DreamConfigInput`
-2. Normalize defaults
-3. Resolve `subagent.model` / `subagent.thinking` from `tau.dream.subagent`
-4. If omitted there, fall back to a dedicated preset such as `tau.promptModes.presets.plan`
-5. If still unresolved, fail with `DreamConfigMissingModel`
+1. Decode merged `settings.tau.dream` (user + project) with `DreamConfigInput`
+2. Validate thresholds (`>= 0`) and `subagent.maxTurns` (positive integer)
+3. Fail fast on any missing or invalid field
 
-That keeps dream on a **specific** model/thinking pair and never on the ambient session model.
+That keeps dream on a **specific, explicitly configured** model/thinking pair and never on the ambient session model.
 
 ---
 
