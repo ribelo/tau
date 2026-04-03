@@ -231,7 +231,11 @@ function clearTaskStatus(ctx: ExtensionContext): void {
 }
 
 function formatCompletion(state: DreamTaskState): string {
-	return `Dream complete: reviewed ${state.sessionsReviewed} session(s), applied ${state.operationsApplied} memory operation(s).`;
+	const base = `Dream complete: reviewed ${state.sessionsReviewed} session(s), applied ${state.operationsApplied}/${state.operationsPlanned} operation(s).`;
+	if (state.latestMessage) {
+		return `${base} ${state.latestMessage.slice(0, 120)}${state.latestMessage.length > 120 ? "..." : ""}`;
+	}
+	return base;
 }
 
 function dreamWidgetLines(state: DreamTaskState): string[] {

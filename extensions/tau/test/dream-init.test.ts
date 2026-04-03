@@ -231,7 +231,7 @@ describe("initDream", () => {
 		expect(statusCalls).toContainEqual({ key: "dream", value: "dream: gather (1/2 ops)" });
 		expect(notifyCalls[1]).toMatchObject({
 			level: "info",
-			message: "Dream complete: reviewed 3 session(s), applied 2 memory operation(s).",
+			message: "Dream complete: reviewed 3 session(s), applied 2/2 operation(s).",
 		});
 		expect(statusCalls.at(-1)).toEqual({ key: "dream", value: undefined });
 	});
@@ -286,7 +286,7 @@ describe("initDream", () => {
 		expect(getCount).toBeGreaterThan(0);
 		expect(notifyCalls).toContainEqual({
 			level: "info",
-			message: "Dream complete: reviewed 2 session(s), applied 1 memory operation(s).",
+			message: "Dream complete: reviewed 2 session(s), applied 1/1 operation(s).",
 		});
 	});
 

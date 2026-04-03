@@ -417,6 +417,13 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 						total: plan.operations.length,
 					});
 
+					if (plan.summary) {
+						yield* progress(taskId, {
+							_tag: "Note",
+							text: plan.summary.slice(0, 200),
+						});
+					}
+
 					// Apply
 					yield* progress(taskId, {
 						_tag: "PhaseChanged",
