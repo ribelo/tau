@@ -94,6 +94,7 @@ describe("loadDreamConfig", () => {
 
 			await expect(Effect.runPromise(loadDreamConfig(cwd))).rejects.toMatchObject({
 				_tag: "DreamConfigDecodeError",
+				reason: expect.stringContaining("tau.dream.enabled"),
 			});
 		});
 	});
@@ -131,6 +132,7 @@ describe("loadDreamConfig", () => {
 
 			await expect(Effect.runPromise(loadDreamConfig(cwd))).rejects.toMatchObject({
 				_tag: "DreamConfigDecodeError",
+				reason: expect.stringContaining("tau.dream.subagent.model"),
 			});
 		});
 	});

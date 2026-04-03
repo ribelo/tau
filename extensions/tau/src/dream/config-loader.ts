@@ -13,6 +13,63 @@ import {
 
 const decodeDreamConfigInput = Schema.decodeUnknownEffect(DreamConfigInput);
 
+function missingDreamFieldPaths(dream: AnyRecord): ReadonlyArray<string> {
+	const missing: Array<string> = [];
+
+	if (dream["enabled"] === undefined) {
+		missing.push("tau.dream.enabled");
+	}
+
+	const manual = dream["manual"];
+	if (!isRecord(manual) || manual["enabled"] === undefined) {
+		missing.push("tau.dream.manual.enabled");
+	}
+
+	const auto = dream["auto"];
+	if (!isRecord(auto)) {
+		missing.push(
+			"tau.dream.auto.enabled",
+			"tau.dream.auto.minHoursSinceLastRun",
+			"tau.dream.auto.minSessionsSinceLastRun",
+			"tau.dream.auto.scanThrottleMinutes",
+		);
+	} else {
+		if (auto["enabled"] === undefined) {
+			missing.push("tau.dream.auto.enabled");
+		}
+		if (auto["minHoursSinceLastRun"] === undefined) {
+			missing.push("tau.dream.auto.minHoursSinceLastRun");
+		}
+		if (auto["minSessionsSinceLastRun"] === undefined) {
+			missing.push("tau.dream.auto.minSessionsSinceLastRun");
+		}
+		if (auto["scanThrottleMinutes"] === undefined) {
+			missing.push("tau.dream.auto.scanThrottleMinutes");
+		}
+	}
+
+	const subagent = dream["subagent"];
+	if (!isRecord(subagent)) {
+		missing.push(
+			"tau.dream.subagent.model",
+			"tau.dream.subagent.thinking",
+			"tau.dream.subagent.maxTurns",
+		);
+	} else {
+		if (subagent["model"] === undefined) {
+			missing.push("tau.dream.subagent.model");
+		}
+		if (subagent["thinking"] === undefined) {
+			missing.push("tau.dream.subagent.thinking");
+		}
+		if (subagent["maxTurns"] === undefined) {
+			missing.push("tau.dream.subagent.maxTurns");
+		}
+	}
+
+	return missing;
+}
+
 function readDreamNamespace(settings: unknown): AnyRecord {
 	if (!isRecord(settings)) {
 		return {};
@@ -64,6 +121,13 @@ export function loadDreamConfig(cwd: string): Effect.Effect<DreamConfig, DreamCo
 		);
 
 		const mergedDreamSettings = mergeDreamSettings(userSettings, projectSettings);
+		const missingFields = missingDreamFieldPaths(mergedDreamSettings);
+		if (missingFields.length > 0) {
+			return yield* new DreamConfigDecodeError({
+				reason: `Missing required dream config fields: ${missingFields.join(", ")}`,
+			});
+		}
+
 		const decoded = yield* decodeDreamConfigInput(mergedDreamSettings).pipe(
 			Effect.mapError(
 				(error) => new DreamConfigDecodeError({ reason: String(error) }),

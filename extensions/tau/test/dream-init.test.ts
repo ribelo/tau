@@ -8,7 +8,12 @@ import type {
 } from "@mariozechner/pi-coding-agent";
 
 import initDream, { _describeDreamError } from "../src/dream/init.js";
-import { DreamLockHeld, DreamSubagentSpawnFailed } from "../src/dream/errors.js";
+import {
+	DreamConfigDecodeError,
+	DreamConfigInvalidThreshold,
+	DreamLockHeld,
+	DreamSubagentSpawnFailed,
+} from "../src/dream/errors.js";
 import type { DreamTaskState } from "../src/dream/domain.js";
 
 type EventHandler = (event: unknown, ctx: ExtensionContext) => Promise<void> | void;
@@ -326,6 +331,25 @@ describe("initDream", () => {
 	});
 
 	describe("describeError", () => {
+		it("shows missing config fields clearly", () => {
+			const err = new DreamConfigDecodeError({
+				reason: "Missing required dream config fields: tau.dream.enabled, tau.dream.subagent.model",
+			});
+			expect(_describeDreamError(err)).toBe(
+				"Dream configuration error: Missing required dream config fields: tau.dream.enabled, tau.dream.subagent.model",
+			);
+		});
+
+		it("shows invalid threshold details", () => {
+			const err = new DreamConfigInvalidThreshold({
+				field: "subagent.maxTurns",
+				value: 0,
+			});
+			expect(_describeDreamError(err)).toBe(
+				"Dream configuration error: invalid value for subagent.maxTurns (0)",
+			);
+		});
+
 		it("surfaces the reason from DreamSubagentSpawnFailed", () => {
 			const err = new DreamSubagentSpawnFailed({ reason: "exceeded maxTurns=8" });
 			expect(_describeDreamError(err)).toBe("Dream failed: exceeded maxTurns=8");

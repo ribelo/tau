@@ -265,11 +265,20 @@ function describeError(error: unknown): string {
 	}
 
 	if (
-		tagged._tag === "DreamConfigDecodeError" ||
-		tagged._tag === "DreamConfigMissingModel" ||
-		tagged._tag === "DreamConfigInvalidThreshold"
+		tagged._tag === "DreamConfigDecodeError"
 	) {
-		return `Dream configuration error: define tau.dream explicitly (enabled/manual/auto/subagent.model/subagent.thinking/subagent.maxTurns). Dream has no implicit defaults. Details: ${String(error)}`;
+		const reason = "reason" in error ? String((error as { reason: unknown }).reason) : String(error);
+		return `Dream configuration error: ${reason}`;
+	}
+
+	if (tagged._tag === "DreamConfigMissingModel") {
+		return "Dream configuration error: missing tau.dream.subagent.model";
+	}
+
+	if (tagged._tag === "DreamConfigInvalidThreshold") {
+		const field = "field" in error ? String((error as { field: unknown }).field) : "unknown";
+		const value = "value" in error ? String((error as { value: unknown }).value) : "unknown";
+		return `Dream configuration error: invalid value for ${field} (${value})`;
 	}
 
 	if (tagged._tag === "DreamSubagentSpawnFailed" || tagged._tag === "DreamSubagentInvalidPlan") {
