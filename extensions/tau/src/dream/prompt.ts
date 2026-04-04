@@ -21,8 +21,10 @@ function formatBucketForPrompt(bucket: MemoryBucketEntriesSnapshot): string {
 	if (bucket.entries.length === 0) {
 		return `${header}\n  (empty)`;
 	}
+	// Render compact index (id/scope/type/summary) instead of full content.
+	// The model can use `memory read <id>` to fetch full content when needed.
 	const lines = bucket.entries.map(
-		(e: MemoryEntry) => `  [${e.id}] (scope=${e.scope}, type=${e.type}) ${e.content}`,
+		(e: MemoryEntry) => `  [${e.id}] (scope=${e.scope}, type=${e.type}) ${e.summary}`,
 	);
 	return `${header}\n${lines.join("\n")}`;
 }
@@ -64,9 +66,9 @@ You have direct access to tools: \`memory\` (add/update/remove/read) and \`dream
 ## 4-phase procedure
 
 ### Phase 1: ORIENT
-- Review the memory snapshot below
+- Review the memory snapshot below (shows id/scope/type/summary only)
+- Use \`memory read <id>\` to fetch the full content of entries you need to evaluate
 - Identify duplicates, stale facts, gaps
-- Use \`memory read <id>\` if you need the full content of a summary entry
 
 ### Phase 2: GATHER
 - Read the transcript files listed below
@@ -102,7 +104,7 @@ Rules for entries:
 ## Transcript paths to review
 ${transcriptList}
 
-## Current memory snapshot
+## Current memory snapshot (compact index -- use \`memory read <id>\` for full content)
 ${memoryText}
 
 ## REQUIRED FINAL ACTION

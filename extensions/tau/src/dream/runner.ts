@@ -252,13 +252,36 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 
 			// ── helpers ────────────────────────────────────────────────
 
-			/** Create a memory tool that the subagent can use to mutate memory. */
-			function createSubagentMemoryTool(): ToolDefinition {
-				return createMemoryToolDefinition((effect) =>
+			/** Create a memory tool that the subagent can use to mutate memory.
+			 *  Returns the tool and a mutable counter for tracking mutations at
+			 *  the runner level (so the failure path can advance the scheduler). */
+			function createTrackedMemoryTool(): {
+				readonly tool: ToolDefinition;
+				readonly getMutationCount: () => number;
+			} {
+				const baseTool = createMemoryToolDefinition((effect) =>
 					Effect.runPromise(
 						effect.pipe(Effect.provideService(CuratedMemory, CuratedMemory.of(mem))),
 					),
 				) as unknown as ToolDefinition;
+
+				let mutations = 0;
+
+				const tracked: ToolDefinition = {
+					...baseTool,
+					async execute(toolCallId, rawParams, signal, onUpdate, ctx) {
+						const result = await baseTool.execute(toolCallId, rawParams, signal, onUpdate, ctx);
+						const params = rawParams as Record<string, unknown> | undefined;
+						const action = params?.["action"];
+						const isError = result && typeof result === "object" && "isError" in result && (result as Record<string, unknown>)["isError"];
+						if (!isError && (action === "add" || action === "update" || action === "remove")) {
+							mutations += 1;
+						}
+						return result;
+					},
+				};
+
+				return { tool: tracked, getMutationCount: () => mutations };
 			}
 
 			function progress(taskId: string, event: DreamProgressEvent): Effect.Effect<void> {
@@ -267,6 +290,28 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 
 			function failTask(taskId: string, err: DreamRunError): Effect.Effect<never> {
 				return reg.fail(taskId, err).pipe(Effect.flatMap(() => Effect.interrupt));
+			}
+
+			/** Best-effort scheduler checkpoint advance after a failed run that
+			 *  already made durable memory mutations. Prevents re-processing the
+			 *  same transcripts while partial writes have already been persisted. */
+			function advanceSchedulerOnFailure(
+				request: DreamRunRequest,
+				startedAt: number,
+				mutations: number,
+			): Effect.Effect<void> {
+				return Effect.gen(function* () {
+					const finishedAt = yield* Clock.currentTimeMillis;
+					yield* scheduler.markCompleted(request.cwd, {
+						mode: request.mode,
+						startedAt,
+						finishedAt,
+						summary: `Partial run (${mutations} mutations before failure)`,
+						reviewedSessions: [],
+						memoryMutations: mutations,
+						noChanges: false,
+					});
+				}).pipe(Effect.catch(() => Effect.void));
 			}
 
 			// ── runOnce (scoped -- caller wraps in Effect.scoped) ──────
@@ -298,7 +343,7 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 					const runId = nanoid(12);
 					const finishCapture: DreamFinishCapture = { value: undefined };
 					const dreamFinishTool = createDreamFinishToolForSubagent(runId, finishCapture);
-					const memoryTool = createSubagentMemoryTool();
+					const { tool: memoryTool } = createTrackedMemoryTool();
 
 					const subagentResult = yield* subagent.run(
 						{
@@ -409,7 +454,7 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 					const runId = nanoid(12);
 					const finishCapture: DreamFinishCapture = { value: undefined };
 					const dreamFinishTool = createDreamFinishToolForSubagent(runId, finishCapture);
-					const memoryTool = createSubagentMemoryTool();
+					const { tool: memoryTool, getMutationCount } = createTrackedMemoryTool();
 
 					const subagentResult = yield* subagent
 						.run(
@@ -427,11 +472,26 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 							(event: DreamProgressEvent) => progress(taskId, event),
 						)
 						.pipe(
-							Effect.catch((err: DreamSubagentError) => failTask(taskId, err)),
+							Effect.catch((err: DreamSubagentError) => {
+								// If the subagent failed but already made memory mutations,
+								// advance the scheduler checkpoint so the same transcripts
+								// aren't re-processed (those mutations are already durable).
+								const mutations = getMutationCount();
+								if (mutations > 0) {
+									return advanceSchedulerOnFailure(
+										request, startedAt, mutations,
+									).pipe(Effect.flatMap(() => failTask(taskId, err)));
+								}
+								return failTask(taskId, err);
+							}),
 						);
 
 					// Check if dream_finish was called
 					if (finishCapture.value === undefined) {
+						const mutations = getMutationCount();
+						if (mutations > 0) {
+							yield* advanceSchedulerOnFailure(request, startedAt, mutations);
+						}
 						yield* failTask(
 							taskId,
 							new DreamSubagentNoFinish({

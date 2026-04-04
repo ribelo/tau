@@ -79,6 +79,10 @@ interface ForegroundDreamRun {
 	readonly startedAt: number;
 	readonly lease: ManualDreamLease;
 	readonly transcriptCandidates: ReadonlyArray<DreamTranscriptCandidate>;
+	/** Set by /dream cancel. Prevents dream_finish from recording completion. */
+	cancelled: boolean;
+	/** Set by dream_finish. Distinguishes clean finish from agent_end without finish. */
+	finished: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -182,11 +186,16 @@ export default function initDream(
 					return;
 				}
 
-				// Release lock and clean up
-				await releaseForegroundRun(runEffect, activeForegroundRuns, sessionId);
+				// Mark cancelled but keep lock held until agent_end to prevent
+				// overlapping runs. The model may continue executing tool calls
+				// until the agent turn ends, but dream_finish will reject.
+				active.cancelled = true;
 				clearTaskStatus(ctx);
 				if (ctx.hasUI) {
-					ctx.ui.notify(`Dream cancelled (run ${active.runId}).`, "info");
+					ctx.ui.notify(
+						`Dream cancelled (run ${active.runId}). Lock held until agent turn ends.`,
+						"info",
+					);
 				}
 				return;
 			}
@@ -280,6 +289,8 @@ export default function initDream(
 					startedAt: Date.now(),
 					lease,
 					transcriptCandidates,
+					cancelled: false,
+					finished: false,
 				};
 
 				activeForegroundRuns.set(sessionId, run);
@@ -327,7 +338,12 @@ export default function initDream(
 			if (run !== undefined) {
 				await releaseForegroundRun(runEffect, activeForegroundRuns, sessionId);
 				clearTaskStatus(ctx);
-				if (ctx.hasUI) {
+
+				if (run.cancelled) {
+					// Already notified at cancel time, nothing more to say
+				} else if (run.finished) {
+					// Clean completion, dream_finish already showed the result
+				} else if (ctx.hasUI) {
 					ctx.ui.notify(
 						`Dream failed: run ${run.runId} ended without dream_finish.`,
 						"warning",
@@ -461,6 +477,22 @@ function createDreamFinishTool(
 				};
 			}
 
+			if (run.cancelled) {
+				return {
+					isError: true,
+					content: [{ type: "text", text: "Dream run was cancelled. Stop processing." }],
+					details: {},
+				};
+			}
+
+			if (run.finished) {
+				return {
+					isError: true,
+					content: [{ type: "text", text: "dream_finish already called for this run." }],
+					details: {},
+				};
+			}
+
 			if (params.runId !== run.runId) {
 				return {
 					isError: true,
@@ -470,6 +502,11 @@ function createDreamFinishTool(
 			}
 
 			try {
+				// Mark finished BEFORE doing bookkeeping so subsequent memory
+				// calls in the same turn see the flag via the cancelled/finished
+				// check above (dream_finish rejects double-calls).
+				run.finished = true;
+
 				// Mark scheduler complete and reload frozen snapshot
 				await deps.runEffect(
 					Effect.gen(function* () {
@@ -493,20 +530,23 @@ function createDreamFinishTool(
 					}),
 				);
 
-				// Release lock and clean up
-				await releaseForegroundRun(deps.runEffect, deps.activeForegroundRuns, sessionId);
+				// Do NOT release lock or remove from map here.
+				// Lock is released in the agent_end handler to prevent
+				// post-finish memory mutations from racing with a new dream run.
 				clearTaskStatus(ctx);
 
 				return {
 					content: [
 						{
 							type: "text",
-							text: `Dream complete: reviewed ${params.reviewedSessions.length} session(s). ${params.summary}`,
+							text: `Dream complete: reviewed ${params.reviewedSessions.length} session(s). ${params.summary}. Do not make further memory changes.`,
 						},
 					],
 					details: {},
 				};
 			} catch (error) {
+				// Revert finished flag so agent_end reports failure correctly
+				run.finished = false;
 				return {
 					isError: true,
 					content: [{ type: "text", text: `dream_finish failed: ${describeError(error)}` }],
