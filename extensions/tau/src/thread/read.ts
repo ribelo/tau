@@ -220,7 +220,7 @@ function formatTranscript(entries: SessionEntry[]): string {
 
     switch (role) {
       case "user":
-        parts.push(`**User:** ${text}`);
+        parts.push(`**User:** ${text.slice(0, 2000)}${text.length > 2000 ? "..." : ""}`);
         break;
       case "assistant":
         parts.push(`**Assistant:** ${text.slice(0, 2000)}${text.length > 2000 ? "..." : ""}`);
@@ -237,6 +237,22 @@ function formatTranscript(entries: SessionEntry[]): string {
   }
 
   return parts.join("\n\n");
+}
+
+/**
+ * Ensure formatted transcript does not exceed max size
+ */
+function capTranscript(text: string, maxSize: number, truncated: boolean): { text: string; truncated: boolean } {
+  if (text.length <= maxSize) {
+    return { text, truncated };
+  }
+  const trimmed = text.slice(0, maxSize);
+  const note = "\n\n[Output truncated due to size limit.]";
+  const withNote = trimmed + note;
+  return {
+    text: withNote.length > maxSize ? trimmed : withNote,
+    truncated: true,
+  };
 }
 
 /**
@@ -296,10 +312,33 @@ export function readThreadContent(
         const firstEntry = selectedEntries[0];
         const recent = selectedEntries.slice(-20);
         selectedEntries = firstEntry ? [firstEntry, ...recent] : recent;
+        // Re-check size after reduction
+        const reducedText = formatTranscript(selectedEntries);
+        if (reducedText.length > MAX_CONTENT_SIZE) {
+          const capped = capTranscript(reducedText, MAX_CONTENT_SIZE, true);
+          const result: ReadThreadResult = {
+            ok: true,
+            threadID: header.id,
+            resolvedPath: sessionPath,
+            title,
+            cwd,
+            createdAt,
+            updatedAt,
+            parentThreadId,
+            totalMessages,
+            includedMessages: selectedEntries.length,
+            truncated: capped.truncated,
+            content: capped.text,
+          };
+          return result;
+        }
       }
     }
 
-    const content = formatTranscript(selectedEntries);
+    let content = formatTranscript(selectedEntries);
+    const capped = capTranscript(content, MAX_CONTENT_SIZE, truncated);
+    content = capped.text;
+    truncated = capped.truncated;
 
     const result: ReadThreadResult = {
       ok: true,

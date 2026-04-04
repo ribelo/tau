@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { SessionManager, type SessionInfo } from "@mariozechner/pi-coding-agent";
 import type { SessionCatalogEntry, ThreadInfo } from "./types.js";
-import { ThreadCatalogError } from "./errors.js";
+import { ThreadAmbiguousError, ThreadCatalogError } from "./errors.js";
 
 // In-memory cache for session catalog entries
 const catalogCache = new Map<string, { mtimeMs: number; entry: SessionCatalogEntry }>();
@@ -261,7 +261,10 @@ export function searchGlobalSessions(
 export function findSessionById(
   threadID: string,
   cwd: string
-): Effect.Effect<Option.Option<SessionCatalogEntry>, ThreadCatalogError> {
+): Effect.Effect<
+  Option.Option<SessionCatalogEntry>,
+  ThreadCatalogError | ThreadAmbiguousError
+> {
   return Effect.gen(function* () {
     // First try local sessions
     const localSessions = yield* Effect.tryPromise({
@@ -305,6 +308,14 @@ export function findSessionById(
       });
       return Option.some(entry);
     }
+    if (prefixMatches.length > 1) {
+      return yield* Effect.fail(
+        new ThreadAmbiguousError({
+          threadID,
+          matches: prefixMatches.map((s) => ({ id: s.id, path: s.path })),
+        })
+      );
+    }
 
     // If no unique local match, try global
     const allSessions = yield* Effect.tryPromise({
@@ -346,6 +357,14 @@ export function findSessionById(
       });
       return Option.some(entry);
     }
+    if (globalPrefixMatches.length > 1) {
+      return yield* Effect.fail(
+        new ThreadAmbiguousError({
+          threadID,
+          matches: globalPrefixMatches.map((s) => ({ id: s.id, path: s.path })),
+        })
+      );
+    }
 
     return Option.none();
   });
@@ -360,7 +379,7 @@ export function resolveThreadPath(
   cwd: string
 ): Effect.Effect<
   Option.Option<{ path: string; entry: SessionCatalogEntry }>,
-  ThreadCatalogError
+  ThreadCatalogError | ThreadAmbiguousError
 > {
   return Effect.gen(function* () {
     // If it's a path that exists, use it directly
@@ -404,12 +423,5 @@ export function resolveThreadPath(
     // Try to find by ID
     const found = yield* findSessionById(threadID, cwd);
     return Option.map(found, (entry) => ({ path: entry.path, entry }));
-  }).pipe(
-    Effect.catch((error) => {
-      if (error instanceof ThreadCatalogError) {
-        return Effect.fail(error);
-      }
-      throw error;
-    })
-  );
+  });
 }

@@ -13,7 +13,7 @@ import {
   renderReadThreadResult,
 } from "./renderer.js";
 import type { FindThreadResult, ReadThreadResult } from "./types.js";
-import { ThreadNotFoundError } from "./errors.js";
+import { ThreadAmbiguousError, ThreadNotFoundError } from "./errors.js";
 
 // =============================================================================
 // TypeBox Parameters
@@ -72,15 +72,16 @@ export function createThreadToolDefinitions(): ToolDefinition[] {
         return new Text(renderFindThreadResult(details, options.expanded, theme), 0, 0);
       },
 
-      async execute(_toolCallId, params, _signal, onUpdate) {
+      async execute(_toolCallId, params, _signal, onUpdate, _ctx) {
         onUpdate?.({
           content: [{ type: "text", text: "Searching threads…" }],
           details: {},
         });
 
         const typedParams = params as { query: string };
+        const cwd = _ctx?.cwd ?? process.cwd();
 
-        const program = findThreads(typedParams.query, process.cwd());
+        const program = findThreads(typedParams.query, cwd);
         const result = await Effect.runPromise(program);
 
         // Format text content for LLM
@@ -137,7 +138,7 @@ export function createThreadToolDefinitions(): ToolDefinition[] {
         );
       },
 
-      async execute(_toolCallId, params, _signal, onUpdate) {
+      async execute(_toolCallId, params, _signal, onUpdate, _ctx) {
         onUpdate?.({
           content: [{ type: "text", text: "Reading thread…" }],
           details: {},
@@ -147,11 +148,12 @@ export function createThreadToolDefinitions(): ToolDefinition[] {
         const goal = typedParams.goal
           ? Option.some(typedParams.goal)
           : Option.none();
+        const cwd = _ctx?.cwd ?? process.cwd();
 
         const program = readThread(
           typedParams.threadID,
           goal,
-          process.cwd()
+          cwd
         ).pipe(
           Effect.catch((error) => {
             if (error instanceof ThreadNotFoundError) {
@@ -160,7 +162,7 @@ export function createThreadToolDefinitions(): ToolDefinition[] {
                 threadID: typedParams.threadID,
                 resolvedPath: "",
                 title: "Not Found",
-                cwd: process.cwd(),
+                cwd,
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString(),
                 parentThreadId: undefined,
@@ -168,6 +170,25 @@ export function createThreadToolDefinitions(): ToolDefinition[] {
                 includedMessages: 0,
                 truncated: false,
                 content: `Thread "${typedParams.threadID}" not found.`,
+              });
+            }
+            if (error instanceof ThreadAmbiguousError) {
+              return Effect.succeed({
+                ok: true as const,
+                threadID: typedParams.threadID,
+                resolvedPath: "",
+                title: "Ambiguous Match",
+                cwd,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+                parentThreadId: undefined,
+                totalMessages: 0,
+                includedMessages: 0,
+                truncated: false,
+                content:
+                  `Thread ID "${typedParams.threadID}" is ambiguous. ` +
+                  `Multiple sessions match:\n` +
+                  error.matches.map((m) => `  - ${m.id} (${m.path})`).join("\n"),
               });
             }
             throw error;

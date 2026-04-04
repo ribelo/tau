@@ -6,7 +6,11 @@ import {
   resolveThreadPath,
 } from "./search.js";
 import { readThreadContent } from "./read.js";
-import { ThreadCatalogError, ThreadNotFoundError } from "./errors.js";
+import {
+  ThreadAmbiguousError,
+  ThreadCatalogError,
+  ThreadNotFoundError,
+} from "./errors.js";
 
 const MAX_RESULTS = 10;
 
@@ -18,19 +22,28 @@ export function findThreads(
   cwd: string
 ): Effect.Effect<FindThreadResult, ThreadCatalogError> {
   return Effect.gen(function* () {
-    // First search local sessions
-    let threads = yield* searchLocalSessions(query, cwd);
+    // Search local and global sessions in parallel
+    const [localThreads, globalThreads] = yield* Effect.all([
+      searchLocalSessions(query, cwd),
+      searchGlobalSessions(query, cwd),
+    ]);
 
-    // If no local results, search globally
-    if (threads.length === 0) {
-      threads = yield* searchGlobalSessions(query, cwd);
-    }
+    // Deduplicate by ID, keeping local entries first
+    const seen = new Set<string>(localThreads.map((t) => t.id));
+    const merged = [
+      ...localThreads,
+      ...globalThreads.filter((t) => !seen.has(t.id)),
+    ]
+      .sort((a, b) => b.score - a.score)
+      .slice(0, MAX_RESULTS);
 
     return {
       ok: true as const,
       query,
-      threads,
-      hasMore: threads.length >= MAX_RESULTS,
+      threads: merged,
+      hasMore:
+        localThreads.length >= MAX_RESULTS ||
+        globalThreads.length >= MAX_RESULTS,
     };
   });
 }
@@ -42,7 +55,10 @@ export function readThread(
   threadID: string,
   goal: Option.Option<string>,
   cwd: string
-): Effect.Effect<ReadThreadResult, ThreadCatalogError | ThreadNotFoundError> {
+): Effect.Effect<
+  ReadThreadResult,
+  ThreadCatalogError | ThreadNotFoundError | ThreadAmbiguousError
+> {
   return Effect.gen(function* () {
     const resolved = yield* resolveThreadPath(threadID, cwd);
 
