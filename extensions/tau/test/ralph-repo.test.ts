@@ -18,7 +18,7 @@ function makeTempDir(): string {
 function makeLoopState(loopName: string): LoopState {
 	return {
 		name: loopName,
-		taskFile: path.join(".pi", "ralph", `${loopName}.md`),
+		taskFile: path.join(".pi", "ralph", "tasks", `${loopName}.md`),
 		iteration: 2,
 		maxIterations: 50,
 		itemsPerIteration: 0,
@@ -99,10 +99,10 @@ describe("ralph repo", () => {
 			}).pipe(Effect.provide(ralphRepoLayer)),
 		);
 
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "sleepy-loop.state.json"))).toBe(false);
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "archive", "sleepy-loop.state.json"))).toBe(true);
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "sleepy-loop.md"))).toBe(false);
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "archive", "sleepy-loop.md"))).toBe(true);
+		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "state", "sleepy-loop.state.json"))).toBe(false);
+		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "archive", "state", "sleepy-loop.state.json"))).toBe(true);
+		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "tasks", "sleepy-loop.md"))).toBe(false);
+		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "archive", "tasks", "sleepy-loop.md"))).toBe(true);
 	});
 
 	it("archives loop task files when loop names start with the archive prefix", async () => {
@@ -125,7 +125,32 @@ describe("ralph repo", () => {
 			}).pipe(Effect.provide(ralphRepoLayer)),
 		);
 
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "archive-loop.md"))).toBe(false);
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "archive", "archive-loop.md"))).toBe(true);
+		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "tasks", "archive-loop.md"))).toBe(false);
+		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "archive", "tasks", "archive-loop.md"))).toBe(true);
+	});
+
+	it("fails fast when legacy flat layout is detected", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		fs.mkdirSync(path.join(cwd, ".pi", "ralph"), { recursive: true });
+		fs.writeFileSync(path.join(cwd, ".pi", "ralph", "legacy-loop.state.json"), "{}", "utf-8");
+
+		await expect(
+			Effect.runPromise(
+				Effect.gen(function* () {
+					const repo = yield* RalphRepo;
+					return yield* repo.listLoops(cwd);
+				}).pipe(Effect.provide(ralphRepoLayer)),
+			),
+		).rejects.toSatisfy((err: unknown) => {
+			return (
+				typeof err === "object" &&
+				err !== null &&
+				"reason" in err &&
+				typeof err.reason === "string" &&
+				err.reason.includes("Legacy Ralph layout detected")
+			);
+		});
 	});
 });

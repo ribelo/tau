@@ -22,7 +22,7 @@ function makeTempDir(): string {
 function makeState(loopName: string, sessionFile: string): LoopState {
 	return {
 		name: loopName,
-		taskFile: path.join(".pi", "ralph", `${loopName}.md`),
+		taskFile: path.join(".pi", "ralph", "tasks", `${loopName}.md`),
 		iteration: 3,
 		maxIterations: 50,
 		itemsPerIteration: 0,
@@ -126,7 +126,7 @@ describe("ralph core service", () => {
 				const ralph = yield* Ralph;
 				yield* ralph.startLoopState(cwd, {
 					loopName: "visible-loop",
-					taskFile: path.join(".pi", "ralph", "visible-loop.md"),
+					taskFile: path.join(".pi", "ralph", "tasks", "visible-loop.md"),
 					maxIterations: 50,
 					itemsPerIteration: 0,
 					reflectEvery: 0,
@@ -164,7 +164,7 @@ describe("ralph core service", () => {
 					controllerSessionFile: Option.some(controllerSessionFile),
 					activeIterationSessionFile: Option.none(),
 				});
-				yield* repo.writeTaskFile(cwd, path.join(".pi", "ralph", `${loopName}.md`), "# Task\n");
+				yield* repo.writeTaskFile(cwd, path.join(".pi", "ralph", "tasks", `${loopName}.md`), "# Task\n");
 
 				const followUpStarted = yield* Deferred.make<void>();
 				const releaseFollowUp = yield* Deferred.make<void>();
@@ -294,14 +294,14 @@ describe("ralph core service", () => {
 
 		expect(beforeNuke.archived.status).toBe("archived");
 		expect(beforeNuke.cleaned.cleanedLoops).toEqual(["done-a", "done-b"]);
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "sleepy-loop.state.json"))).toBe(false);
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "sleepy-loop.md"))).toBe(false);
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "archive", "sleepy-loop.state.json"))).toBe(true);
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "archive", "sleepy-loop.md"))).toBe(true);
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "done-a.state.json"))).toBe(false);
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "done-a.md"))).toBe(false);
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "done-b.state.json"))).toBe(false);
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "done-b.md"))).toBe(false);
+		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "state", "sleepy-loop.state.json"))).toBe(false);
+		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "tasks", "sleepy-loop.md"))).toBe(false);
+		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "archive", "state", "sleepy-loop.state.json"))).toBe(true);
+		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "archive", "tasks", "sleepy-loop.md"))).toBe(true);
+		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "state", "done-a.state.json"))).toBe(false);
+		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "tasks", "done-a.md"))).toBe(false);
+		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "state", "done-b.state.json"))).toBe(false);
+		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "tasks", "done-b.md"))).toBe(false);
 
 		const nuked = await Effect.runPromise(
 			Effect.gen(function* () {

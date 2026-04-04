@@ -84,7 +84,7 @@ function makeTempDir(): string {
 }
 
 function loopStatePath(cwd: string, loopName: string): string {
-	return path.join(cwd, ".pi", "ralph", `${loopName}.state.json`);
+	return path.join(cwd, ".pi", "ralph", "state", `${loopName}.state.json`);
 }
 
 function readLoopState(cwd: string, loopName: string) {
@@ -105,7 +105,8 @@ function writeLoopState(
 ): void {
 	const filePath = loopStatePath(cwd, loopName);
 	fs.mkdirSync(path.dirname(filePath), { recursive: true });
-	const taskFile = path.join(".pi", "ralph", `${loopName}.md`);
+	const taskFile = path.join(".pi", "ralph", "tasks", `${loopName}.md`);
+	fs.mkdirSync(path.join(cwd, path.dirname(taskFile)), { recursive: true });
 	fs.writeFileSync(path.join(cwd, taskFile), "# Task\n", "utf-8");
 	fs.writeFileSync(
 		filePath,

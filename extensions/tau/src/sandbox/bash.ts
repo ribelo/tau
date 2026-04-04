@@ -5,6 +5,7 @@ import { execSync } from "node:child_process";
 
 import type { FilesystemMode, NetworkMode } from "./config.js";
 import { collectTempRoots, safeRealpath } from "../shared/fs.js";
+import { WORKSPACE_PROTECTED_RULES } from "./workspace-path-policy.js";
 
 /**
  * Check if bwrap is available on the system.
@@ -160,11 +161,19 @@ export async function wrapCommandWithSandbox(opts: {
 		// Workspace binding comes after home so it takes precedence (writable overlay)
 		args.push("--bind", resolvedWorkspace, resolvedWorkspace);
 		// Protect sensitive subpaths as read-only within the writable workspace
-		const protectedSubpaths = [".pi", ".git"];
-		for (const sub of protectedSubpaths) {
-			const subpath = path.join(resolvedWorkspace, sub);
+		for (const rule of WORKSPACE_PROTECTED_RULES) {
+			const subpath = path.join(resolvedWorkspace, rule.rootSegment);
 			if (exists(subpath)) {
 				args.push("--ro-bind", subpath, subpath);
+			}
+		}
+		// Writable exceptions must come AFTER the parent readonly bind to override it
+		for (const rule of WORKSPACE_PROTECTED_RULES) {
+			for (const exc of rule.writableExceptionSegments) {
+				const excPath = path.join(resolvedWorkspace, exc);
+				if (exists(excPath)) {
+					args.push("--bind", excPath, excPath);
+				}
 			}
 		}
 	} else if (filesystemMode === "danger-full-access") {

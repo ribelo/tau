@@ -107,3 +107,80 @@ describe("checkWriteAllowed symlink hardening", () => {
 		expect(result).toEqual({ allowed: true });
 	});
 });
+
+describe("checkWriteAllowed workspace protected path policy", () => {
+	it("allows writes to .pi/ralph/tasks", () => {
+		const workspaceRoot = makeTempDir("tau-fs-workspace-");
+		const tasksDir = path.join(workspaceRoot, ".pi", "ralph", "tasks");
+		fs.mkdirSync(tasksDir, { recursive: true });
+
+		const result = checkWriteAllowed({
+			targetPath: path.join(tasksDir, "loop.md"),
+			workspaceRoot,
+			filesystemMode: "workspace-write",
+		});
+
+		expect(result).toEqual({ allowed: true });
+	});
+
+	it("denies writes to .pi/ralph/state", () => {
+		const workspaceRoot = makeTempDir("tau-fs-workspace-");
+		const stateDir = path.join(workspaceRoot, ".pi", "ralph", "state");
+		fs.mkdirSync(stateDir, { recursive: true });
+
+		const result = checkWriteAllowed({
+			targetPath: path.join(stateDir, "loop.state.json"),
+			workspaceRoot,
+			filesystemMode: "workspace-write",
+		});
+
+		expectDenied(result, "protected workspace metadata under .pi/");
+	});
+
+	it("denies writes to .pi/backlog", () => {
+		const workspaceRoot = makeTempDir("tau-fs-workspace-");
+		const backlogDir = path.join(workspaceRoot, ".pi", "backlog");
+		fs.mkdirSync(backlogDir, { recursive: true });
+
+		const result = checkWriteAllowed({
+			targetPath: path.join(backlogDir, "events", "issue.json"),
+			workspaceRoot,
+			filesystemMode: "workspace-write",
+		});
+
+		expectDenied(result, "protected workspace metadata under .pi/");
+	});
+
+	it("denies writes to .pi/settings.json", () => {
+		const workspaceRoot = makeTempDir("tau-fs-workspace-");
+		const piDir = path.join(workspaceRoot, ".pi");
+		fs.mkdirSync(piDir, { recursive: true });
+
+		const result = checkWriteAllowed({
+			targetPath: path.join(piDir, "settings.json"),
+			workspaceRoot,
+			filesystemMode: "workspace-write",
+		});
+
+		expectDenied(result, "protected workspace metadata under .pi/");
+	});
+
+	it("denies .pi/ralph/tasks symlink traversal into protected state", () => {
+		const workspaceRoot = makeTempDir("tau-fs-workspace-");
+		const tasksDir = path.join(workspaceRoot, ".pi", "ralph", "tasks");
+		const stateDir = path.join(workspaceRoot, ".pi", "ralph", "state");
+		fs.mkdirSync(tasksDir, { recursive: true });
+		fs.mkdirSync(stateDir, { recursive: true });
+
+		const escapeLink = path.join(tasksDir, "escape");
+		fs.symlinkSync(stateDir, escapeLink);
+
+		const result = checkWriteAllowed({
+			targetPath: path.join(escapeLink, "loop.state.json"),
+			workspaceRoot,
+			filesystemMode: "workspace-write",
+		});
+
+		expectDenied(result, "protected workspace metadata under .pi/");
+	});
+});

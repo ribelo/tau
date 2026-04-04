@@ -15,7 +15,7 @@ describe("ralph fresh-session helpers", () => {
 	it("decodes persisted state with explicit null-backed option fields", () => {
 		const state = decodeLoopStateSync({
 			name: "legacy-loop",
-			taskFile: ".pi/ralph/legacy-loop.md",
+			taskFile: ".pi/ralph/tasks/legacy-loop.md",
 			iteration: 3,
 			maxIterations: 50,
 			itemsPerIteration: 0,
@@ -42,7 +42,7 @@ describe("ralph fresh-session helpers", () => {
 		expect(() =>
 			decodeLoopStateSync({
 				name: "controller-loop",
-				taskFile: ".pi/ralph/controller-loop.md",
+				taskFile: ".pi/ralph/tasks/controller-loop.md",
 				iteration: 1,
 				maxIterations: 10,
 				itemsPerIteration: 0,
@@ -67,7 +67,7 @@ describe("ralph fresh-session helpers", () => {
 	it("matches controller and iteration session files", () => {
 		const normalized = decodeLoopStateSync({
 			name: "session-loop",
-			taskFile: ".pi/ralph/session-loop.md",
+			taskFile: ".pi/ralph/tasks/session-loop.md",
 			iteration: 2,
 			maxIterations: 10,
 			itemsPerIteration: 0,

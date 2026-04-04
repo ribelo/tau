@@ -3,6 +3,7 @@ import * as path from "node:path";
 
 import type { FilesystemMode } from "./config.js";
 import { collectTempRoots, isPathInsideRoot, safeRealpath } from "../shared/fs.js";
+import { classifyWorkspacePath } from "./workspace-path-policy.js";
 
 type FsCheckResult = { allowed: true } | { allowed: false; reason: string };
 
@@ -160,24 +161,6 @@ function isInTempDir(resolvedTargetPath: string, tempRoots: readonly string[]): 
 	return false;
 }
 
-function isGitPath(resolvedTargetPath: string, workspaceRoot: string): boolean {
-	const gitDir = safeRealpath(path.join(workspaceRoot, ".git"));
-	return (
-		isPathInsideRoot(resolvedTargetPath, gitDir) ||
-		resolvedTargetPath.includes(`${path.sep}.git${path.sep}`) ||
-		resolvedTargetPath.endsWith(`${path.sep}.git`)
-	);
-}
-
-function isPiConfigPath(resolvedTargetPath: string, workspaceRoot: string): boolean {
-	const piDir = safeRealpath(path.join(workspaceRoot, ".pi"));
-	return (
-		isPathInsideRoot(resolvedTargetPath, piDir) ||
-		resolvedTargetPath.includes(`${path.sep}.pi${path.sep}`) ||
-		resolvedTargetPath.endsWith(`${path.sep}.pi`)
-	);
-}
-
 export function checkWriteAllowed(opts: {
 	targetPath: string;
 	workspaceRoot: string;
@@ -233,16 +216,17 @@ export function checkWriteAllowed(opts: {
 
 	const resolvedTargetPath = resolveFromNearestExistingAncestor(absoluteTargetPath);
 
-	if (isGitPath(resolvedTargetPath, resolvedWorkspaceRoot)) {
+	const classification = classifyWorkspacePath(resolvedTargetPath, resolvedWorkspaceRoot);
+	if (classification.kind === "protected") {
+		if (classification.root.endsWith(`${path.sep}.git`) || classification.root.endsWith(".git")) {
+			return {
+				allowed: false,
+				reason: `Write to .git/ is blocked for security (path: ${resolvedTargetPath}). Use /sandbox to enable danger-full-access mode if needed.`,
+			};
+		}
 		return {
 			allowed: false,
-			reason: `Write to .git/ is blocked for security (path: ${resolvedTargetPath}). Use /sandbox to enable danger-full-access mode if needed.`,
-		};
-	}
-	if (isPiConfigPath(resolvedTargetPath, resolvedWorkspaceRoot)) {
-		return {
-			allowed: false,
-			reason: `Write to .pi/ is blocked to prevent sandbox config tampering (path: ${resolvedTargetPath}). Use /sandbox to enable danger-full-access mode if needed.`,
+			reason: `Write to protected workspace metadata under .pi/ is blocked (path: ${resolvedTargetPath}). Use /sandbox to enable danger-full-access mode if needed.`,
 		};
 	}
 

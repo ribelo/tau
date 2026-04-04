@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { Effect, FileSystem, Layer, Option, ServiceMap } from "effect";
@@ -7,9 +8,14 @@ import {
 	encodeLoopStateJson,
 	type LoopState,
 } from "./schema.js";
-import { type RalphContractValidationError } from "./errors.js";
-
-export const RALPH_DIR = ".pi/ralph";
+import { RalphContractValidationError } from "./errors.js";
+import {
+	RALPH_DIR,
+	RALPH_TASKS_DIR,
+	RALPH_STATE_DIR,
+	RALPH_ARCHIVE_TASKS_DIR,
+	RALPH_ARCHIVE_STATE_DIR,
+} from "./paths.js";
 
 const LOOP_STATE_EXT = ".state.json";
 const LOOP_TASK_EXT = ".md";
@@ -50,18 +56,21 @@ export function ralphDir(cwd: string): string {
 	return path.resolve(cwd, RALPH_DIR);
 }
 
-export function archiveDir(cwd: string): string {
-	return path.join(ralphDir(cwd), "archive");
-}
-
 function isPathInside(parentDir: string, candidatePath: string): boolean {
 	const relative = path.relative(parentDir, candidatePath);
 	return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
-function getPath(cwd: string, name: string, ext: string, archived = false): string {
-	const dir = archived ? archiveDir(cwd) : ralphDir(cwd);
-	return path.join(dir, `${name}${ext}`);
+function getStatePath(cwd: string, name: string, archived = false): string {
+	return archived
+		? path.join(path.resolve(cwd, RALPH_ARCHIVE_STATE_DIR), `${name}${LOOP_STATE_EXT}`)
+		: path.join(path.resolve(cwd, RALPH_STATE_DIR), `${name}${LOOP_STATE_EXT}`);
+}
+
+function getTaskPath(cwd: string, name: string, archived = false): string {
+	return archived
+		? path.join(path.resolve(cwd, RALPH_ARCHIVE_TASKS_DIR), `${name}${LOOP_TASK_EXT}`)
+		: path.join(path.resolve(cwd, RALPH_TASKS_DIR), `${name}${LOOP_TASK_EXT}`);
 }
 
 const readOptionalFile = (
@@ -94,6 +103,29 @@ const atomicWriteFileString = (
 		yield* fs.writeFileString(tempPath, content).pipe(Effect.orDie);
 		yield* fs.rename(tempPath, filePath).pipe(Effect.orDie);
 	});
+
+function makeLegacyLayoutError(): RalphContractValidationError {
+	return new RalphContractValidationError({
+		reason:
+			"Legacy Ralph layout detected under .pi/ralph. Please archive or remove old flat files (e.g., run `/ralph nuke --yes`), then restart.",
+		entity: "ralph.legacy_layout",
+	});
+}
+
+async function detectLegacyLayout(cwd: string): Promise<boolean> {
+	const root = ralphDir(cwd);
+	try {
+		const entries = await fs.promises.readdir(root);
+		for (const entry of entries) {
+			if (entry.endsWith(LOOP_STATE_EXT) || entry.endsWith(LOOP_TASK_EXT)) {
+				return true;
+			}
+		}
+	} catch {
+		// Directory does not exist or is unreadable — not legacy
+	}
+	return false;
+}
 
 export interface RalphRepoService {
 	readonly loadState: (
@@ -148,7 +180,10 @@ export const RalphRepoLive = Layer.effect(
 
 		const loadState: RalphRepoService["loadState"] = Effect.fn("RalphRepo.loadState")(
 			function* (cwd, name, archived = false) {
-				const filePath = getPath(cwd, name, LOOP_STATE_EXT, archived);
+				if (!archived && (yield* Effect.promise(() => detectLegacyLayout(cwd)))) {
+					return yield* Effect.fail(makeLegacyLayoutError());
+				}
+				const filePath = getStatePath(cwd, name, archived);
 				const contentOption = yield* readOptionalFile(fs, filePath);
 				if (Option.isNone(contentOption)) {
 					return Option.none();
@@ -160,7 +195,7 @@ export const RalphRepoLive = Layer.effect(
 
 		const saveState: RalphRepoService["saveState"] = Effect.fn("RalphRepo.saveState")(
 			function* (cwd, state, archived = false) {
-				const filePath = getPath(cwd, state.name, LOOP_STATE_EXT, archived);
+				const filePath = getStatePath(cwd, state.name, archived);
 				const encoded = yield* encodeLoopStateJson(state);
 				yield* atomicWriteFileString(fs, filePath, encoded);
 			},
@@ -168,7 +203,13 @@ export const RalphRepoLive = Layer.effect(
 
 		const listLoops: RalphRepoService["listLoops"] = Effect.fn("RalphRepo.listLoops")(
 			function* (cwd, archived = false) {
-				const dir = archived ? archiveDir(cwd) : ralphDir(cwd);
+				if (!archived && (yield* Effect.promise(() => detectLegacyLayout(cwd)))) {
+					return yield* Effect.fail(makeLegacyLayoutError());
+				}
+
+				const dir = archived
+					? path.resolve(cwd, RALPH_ARCHIVE_STATE_DIR)
+					: path.resolve(cwd, RALPH_STATE_DIR);
 				const exists = yield* fs.exists(dir).pipe(Effect.orDie);
 				if (!exists) {
 					return [];
@@ -230,7 +271,7 @@ export const RalphRepoLive = Layer.effect(
 
 		const deleteState: RalphRepoService["deleteState"] = Effect.fn("RalphRepo.deleteState")(
 			function* (cwd, name, archived = false) {
-				yield* fs.remove(getPath(cwd, name, LOOP_STATE_EXT, archived), { force: true }).pipe(
+				yield* fs.remove(getStatePath(cwd, name, archived), { force: true }).pipe(
 					Effect.orDie,
 				);
 			},
@@ -239,34 +280,34 @@ export const RalphRepoLive = Layer.effect(
 		const deleteTaskByLoopName: RalphRepoService["deleteTaskByLoopName"] = Effect.fn(
 			"RalphRepo.deleteTaskByLoopName",
 		)(function* (cwd, name, archived = false) {
-			yield* fs.remove(getPath(cwd, name, LOOP_TASK_EXT, archived), { force: true }).pipe(
+			yield* fs.remove(getTaskPath(cwd, name, archived), { force: true }).pipe(
 				Effect.orDie,
 			);
 		});
 
-			const archiveLoop: RalphRepoService["archiveLoop"] = Effect.fn("RalphRepo.archiveLoop")(
-				function* (cwd, state) {
-					const srcState = getPath(cwd, state.name, LOOP_STATE_EXT, false);
-					const dstState = getPath(cwd, state.name, LOOP_STATE_EXT, true);
-					yield* ensureParentDirectory(fs, dstState);
-					const hasState = yield* fs.exists(srcState).pipe(Effect.orDie);
-					if (hasState) {
-						yield* fs.rename(srcState, dstState).pipe(Effect.orDie);
-					}
+		const archiveLoop: RalphRepoService["archiveLoop"] = Effect.fn("RalphRepo.archiveLoop")(
+			function* (cwd, state) {
+				const srcState = getStatePath(cwd, state.name, false);
+				const dstState = getStatePath(cwd, state.name, true);
+				yield* ensureParentDirectory(fs, dstState);
+				const hasState = yield* fs.exists(srcState).pipe(Effect.orDie);
+				if (hasState) {
+					yield* fs.rename(srcState, dstState).pipe(Effect.orDie);
+				}
 
-					const srcTask = path.resolve(cwd, state.taskFile);
-					const ralphRoot = ralphDir(cwd);
-					const archiveRoot = archiveDir(cwd);
-					if (isPathInside(ralphRoot, srcTask) && !isPathInside(archiveRoot, srcTask)) {
-						const dstTask = getPath(cwd, state.name, LOOP_TASK_EXT, true);
-						yield* ensureParentDirectory(fs, dstTask);
-						const hasTask = yield* fs.exists(srcTask).pipe(Effect.orDie);
-						if (hasTask) {
-							yield* fs.rename(srcTask, dstTask).pipe(Effect.orDie);
-						}
+				const srcTask = path.resolve(cwd, state.taskFile);
+				const ralphRoot = ralphDir(cwd);
+				const archiveRoot = path.resolve(cwd, RALPH_ARCHIVE_TASKS_DIR);
+				if (isPathInside(ralphRoot, srcTask) && !isPathInside(archiveRoot, srcTask)) {
+					const dstTask = getTaskPath(cwd, state.name, true);
+					yield* ensureParentDirectory(fs, dstTask);
+					const hasTask = yield* fs.exists(srcTask).pipe(Effect.orDie);
+					if (hasTask) {
+						yield* fs.rename(srcTask, dstTask).pipe(Effect.orDie);
 					}
-				},
-			);
+				}
+			},
+		);
 
 		const existsRalphDirectory: RalphRepoService["existsRalphDirectory"] = Effect.fn(
 			"RalphRepo.existsRalphDirectory",

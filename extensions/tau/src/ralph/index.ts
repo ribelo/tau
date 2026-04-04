@@ -17,7 +17,7 @@ import {
 	type RalphService,
 } from "../services/ralph.js";
 import { RalphContractValidationError } from "./errors.js";
-import { RALPH_DIR } from "./repo.js";
+import { RALPH_TASKS_DIR } from "./paths.js";
 import {
 	sanitizeLoopName,
 	type LoopState,
@@ -275,7 +275,7 @@ export default function initRalph(
 							? path.basename(parsed.name, path.extname(parsed.name))
 							: parsed.name;
 						const loopName = sanitizeLoopName(sourceLoopName);
-						const taskFile = isPath ? parsed.name : path.join(RALPH_DIR, `${loopName}.md`);
+						const taskFile = isPath ? parsed.name : path.join(RALPH_TASKS_DIR, `${loopName}.md`);
 
 						const controllerSessionFile = sessionFileFromContext(ctx);
 						const start = await withRalph((ralph) =>

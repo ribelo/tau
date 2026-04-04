@@ -3,7 +3,8 @@ import * as path from "node:path";
 import { Clock, Deferred, Effect, Layer, Option, Ref, ServiceMap } from "effect";
 import type { AgentEndEvent } from "@mariozechner/pi-coding-agent";
 
-import { RALPH_DIR, RalphRepo } from "../ralph/repo.js";
+import { RalphRepo } from "../ralph/repo.js";
+import { RALPH_TASKS_DIR } from "../ralph/paths.js";
 import type { RalphContractValidationError } from "../ralph/errors.js";
 import type { LoopState } from "../ralph/schema.js";
 
@@ -444,7 +445,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					} satisfies RalphPrepareLoopTaskResult;
 				}
 
-				const taskFile = path.join(RALPH_DIR, `${input.loopName}.md`);
+				const taskFile = path.join(RALPH_TASKS_DIR, `${input.loopName}.md`);
 				yield* repo.writeTaskFile(cwd, taskFile, input.taskContent);
 				return {
 					status: "prepared",

@@ -13,7 +13,7 @@ import {
 
 const encodedLoopState: EncodedLoopState = {
 	name: "schema-loop",
-	taskFile: ".pi/ralph/schema-loop.md",
+	taskFile: ".pi/ralph/tasks/schema-loop.md",
 	iteration: 3,
 	maxIterations: 50,
 	itemsPerIteration: 0,

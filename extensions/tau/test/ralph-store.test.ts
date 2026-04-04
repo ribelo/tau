@@ -47,11 +47,15 @@ function makeTempDir(): string {
 }
 
 function statePath(cwd: string, name: string, archived = false): string {
-	return path.join(cwd, ".pi", "ralph", archived ? "archive" : "", `${name}.state.json`);
+	return archived
+		? path.join(cwd, ".pi", "ralph", "archive", "state", `${name}.state.json`)
+		: path.join(cwd, ".pi", "ralph", "state", `${name}.state.json`);
 }
 
 function taskPath(cwd: string, name: string, archived = false): string {
-	return path.join(cwd, ".pi", "ralph", archived ? "archive" : "", `${name}.md`);
+	return archived
+		? path.join(cwd, ".pi", "ralph", "archive", "tasks", `${name}.md`)
+		: path.join(cwd, ".pi", "ralph", "tasks", `${name}.md`);
 }
 
 function readState(cwd: string, name: string, archived = false) {
@@ -211,7 +215,7 @@ describe("ralph store behavior freeze", () => {
 		expect(fs.existsSync(statePath(cwd, "alpha-loop"))).toBe(true);
 
 		const state = readState(cwd, "alpha-loop");
-		expect(state.taskFile).toBe(path.join(".pi", "ralph", "alpha-loop.md"));
+		expect(state.taskFile).toBe(path.join(".pi", "ralph", "tasks", "alpha-loop.md"));
 		expect(state.iteration).toBe(0);
 		expect(state.status).toBe("paused");
 		expect(Option.getOrUndefined(state.controllerSessionFile)).toContain("controller.session.json");
@@ -239,7 +243,7 @@ describe("ralph store behavior freeze", () => {
 			JSON.stringify(
 				{
 					name: "broken-loop",
-					taskFile: ".pi/ralph/broken-loop.md",
+					taskFile: ".pi/ralph/tasks/broken-loop.md",
 					iteration: 1,
 					maxIterations: 10,
 					itemsPerIteration: 0,
