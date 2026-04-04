@@ -17,6 +17,17 @@ import type { AgentId } from "./types.js";
 import { Sandbox } from "../services/sandbox.js";
 import { isAgentDisabled } from "../agents-menu/index.js";
 
+export const DEFAULT_WAIT_TIMEOUT_MS = 20 * 60 * 1000;
+export const MAX_WAIT_TIMEOUT_MS = 4 * 60 * 60 * 1000;
+
+export function normalizeWaitTimeoutMs(timeoutMs: number | undefined): number {
+	if (timeoutMs === undefined || !Number.isFinite(timeoutMs)) {
+		return DEFAULT_WAIT_TIMEOUT_MS;
+	}
+
+	return Math.min(Math.max(timeoutMs, DEFAULT_WAIT_TIMEOUT_MS), MAX_WAIT_TIMEOUT_MS);
+}
+
 export const AgentControlLive = Layer.effect(
 	AgentControl,
 	Effect.gen(function* () {
@@ -97,10 +108,11 @@ export const AgentControlLive = Layer.effect(
 					yield* manager.touch(id);
 					return submissionId;
 				}),
-			wait: (ids: AgentId[], timeoutMs = 900000) =>
+			wait: (ids: AgentId[], timeoutMs = DEFAULT_WAIT_TIMEOUT_MS) =>
 				Effect.gen(function* () {
-					// Default: 15 min, Max: 4 hours
-					const timeout = `${Math.min(Math.max(timeoutMs, 0), 14400000)} millis` as const;
+					const startedAt = Date.now();
+					const boundedTimeoutMs = normalizeWaitTimeoutMs(timeoutMs);
+					const timeout = `${boundedTimeoutMs} millis` as const;
 
 					const getStatusMap = Effect.gen(function* () {
 						const statusMap: Record<string, Status> = {};
@@ -120,7 +132,12 @@ export const AgentControlLive = Layer.effect(
 
 					const initialStatusMap = yield* getStatusMap;
 					if (allFinal(initialStatusMap) || ids.length === 0) {
-						return { status: initialStatusMap, timedOut: false };
+						return {
+							status: initialStatusMap,
+							timedOut: false,
+							timeoutMs: boundedTimeoutMs,
+							waitElapsedMs: Date.now() - startedAt,
+						};
 					}
 
 					const waitAll = Effect.gen(function* () {
@@ -154,9 +171,21 @@ export const AgentControlLive = Layer.effect(
 
 					return yield* waitAll.pipe(
 						Effect.timeout(timeout),
-						Effect.map((status) => ({ status, timedOut: false })),
+						Effect.map((status) => ({
+							status,
+							timedOut: false,
+							timeoutMs: boundedTimeoutMs,
+							waitElapsedMs: Date.now() - startedAt,
+						})),
 						Effect.catch(() =>
-							getStatusMap.pipe(Effect.map((status) => ({ status, timedOut: true }))),
+							getStatusMap.pipe(
+								Effect.map((status) => ({
+									status,
+									timedOut: true,
+									timeoutMs: boundedTimeoutMs,
+									waitElapsedMs: Date.now() - startedAt,
+								})),
+							),
 						),
 					);
 				}).pipe(
@@ -166,8 +195,8 @@ export const AgentControlLive = Layer.effect(
 						}),
 					),
 				),
-			waitStream: (ids: AgentId[], timeoutMs = 900000, pollIntervalMs = 1000) => {
-				const boundedTimeoutMs = Math.min(Math.max(timeoutMs, 0), 14400000);
+			waitStream: (ids: AgentId[], timeoutMs = DEFAULT_WAIT_TIMEOUT_MS, pollIntervalMs = 1000) => {
+				const boundedTimeoutMs = normalizeWaitTimeoutMs(timeoutMs);
 				const pollInterval = Math.max(pollIntervalMs, 250); // Min 250ms
 				const startedAt = Date.now();
 
@@ -192,8 +221,15 @@ export const AgentControlLive = Layer.effect(
 
 				const pollEffect = Effect.gen(function* () {
 					const { statusMap, agentTypes } = yield* getStatusAndTypes;
-					const timedOut = Date.now() - startedAt >= boundedTimeoutMs;
-					return { status: statusMap, timedOut, agentTypes } satisfies WaitResult;
+					const waitElapsedMs = Date.now() - startedAt;
+					const timedOut = waitElapsedMs >= boundedTimeoutMs;
+					return {
+						status: statusMap,
+						timedOut,
+						agentTypes,
+						timeoutMs: boundedTimeoutMs,
+						waitElapsedMs,
+					} satisfies WaitResult;
 				});
 
 				return Stream.fromEffectSchedule(pollEffect, Schedule.spaced(pollInterval)).pipe(

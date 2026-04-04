@@ -122,6 +122,10 @@ export interface WaitResult {
 	readonly timedOut: boolean;
 	/** Map of agent id to agent type/name */
 	readonly agentTypes?: Record<AgentId, string>;
+	/** Effective timeout applied to this wait call in milliseconds */
+	readonly timeoutMs?: number;
+	/** Wall-clock time spent waiting in milliseconds */
+	readonly waitElapsedMs?: number;
 	/** True if wait was interrupted by user */
 	readonly interrupted?: boolean;
 }

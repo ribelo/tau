@@ -149,7 +149,7 @@ export function renderAgentResult(
 				: (workedMs ?? 0);
 		const workedStr =
 			shownWorkedMs > 0
-				? `  ${theme.fg("accent", "·")} ${theme.fg("dim", formatDuration(shownWorkedMs))}`
+				? `  ${theme.fg("accent", "·")} ${theme.fg("dim", `work:${formatDuration(shownWorkedMs)}`)}`
 				: "";
 		const countsStr = `  ${theme.fg("dim", `t:${turns ?? 0} • c:${toolCalls ?? 0}`)}`;
 
@@ -244,6 +244,12 @@ export function renderAgentResult(
 		const ids = Object.keys(statusMap);
 		const timedOut = data["timedOut"] as boolean | undefined;
 		const interrupted = data["interrupted"] as boolean | undefined;
+		const timeoutMs =
+			typeof data["timeoutMs"] === "number" ? (data["timeoutMs"] as number) : undefined;
+		const waitElapsedMs =
+			typeof data["waitElapsedMs"] === "number"
+				? (data["waitElapsedMs"] as number)
+				: undefined;
 		const lines: string[] = [];
 
 		// Show message for no agents
@@ -260,12 +266,26 @@ export function renderAgentResult(
 
 		// Show interruption warning if applicable
 		if (interrupted) {
-			lines.push(theme.fg("warning", "⚠ Interrupted (agents still running in background)"));
+			const waitedSuffix =
+				waitElapsedMs !== undefined ? ` after ${formatDuration(waitElapsedMs)}` : "";
+			lines.push(
+				theme.fg(
+					"warning",
+					`⚠ Interrupted${waitedSuffix} (agents still running in background)`,
+				),
+			);
 		}
 
 		// Show timeout warning if applicable
 		if (timedOut) {
-			lines.push(theme.fg("warning", "⚠ Timed out waiting for agents"));
+			const timeoutSuffix = timeoutMs !== undefined ? ` after ${formatDuration(timeoutMs)}` : "";
+			const waitedSuffix =
+				waitElapsedMs !== undefined && (timeoutMs === undefined || waitElapsedMs !== timeoutMs)
+					? ` (waited ${formatDuration(waitElapsedMs)})`
+					: "";
+			lines.push(
+				theme.fg("warning", `⚠ Timed out waiting for agents${timeoutSuffix}${waitedSuffix}`),
+			);
 		}
 
 		// Sort: running agents at the bottom, then by id for stability

@@ -47,4 +47,30 @@ describe("agent renderer", () => {
 		expect(rendered).toContain("submission: sub-6699");
 		expect(rendered).not.toContain("message:");
 	});
+
+	it("shows wait timeout using wait elapsed data and labels work time separately", () => {
+		const result = {
+			content: [{ type: "text", text: "" }],
+			details: {
+				status: {
+					cD_HVp45dahK: {
+						state: "running",
+						turns: 21,
+						toolCalls: 36,
+						workedMs: 123000,
+					},
+				},
+				timedOut: true,
+				timeoutMs: 1_200_000,
+				waitElapsedMs: 1_201_000,
+				agentTypes: {
+					cD_HVp45dahK: "oracle",
+				},
+			},
+		} as unknown as AgentToolResult<unknown>;
+
+		const rendered = renderToText(result, { expanded: false, isPartial: false });
+		expect(rendered).toContain("Timed out waiting for agents after 20m 0s");
+		expect(rendered).toContain("work:2m 3s");
+	});
 });

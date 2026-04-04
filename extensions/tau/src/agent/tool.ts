@@ -18,6 +18,7 @@ import {
 import type { AgentId } from "./types.js";
 import { renderAgentCall, renderAgentResult } from "./render.js";
 import type { ApprovalBroker } from "./approval-broker.js";
+import { DEFAULT_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS } from "./control.js";
 
 /**
  * Convert an AbortSignal to an Effect that completes when the signal aborts.
@@ -73,7 +74,7 @@ export const AgentParams = Type.Object({
 	timeout_ms: Type.Optional(
 		Type.Number({
 			description:
-				"Max wait time in ms. Default 900000 (15 min), max 14400000 (4 hours). Returns timedOut:true if exceeded",
+				"Max wait time in ms. Default/minimum 1200000 (20 min), max 14400000 (4 hours). Omit unless you need longer. Returns timedOut:true if exceeded",
 		}),
 	),
 });
@@ -104,6 +105,9 @@ export function buildToolDescription(
 	lines.push("3. Result is in: status.{agent_id}.message");
 	lines.push("");
 	lines.push("You can spawn multiple agents and wait for all at once.");
+	lines.push(
+		`Wait defaults to ${DEFAULT_WAIT_TIMEOUT_MS} ms (${Math.floor(DEFAULT_WAIT_TIMEOUT_MS / 60000)} min) and uses that as the minimum timeout. Pass timeout_ms only when you need longer, up to ${MAX_WAIT_TIMEOUT_MS} ms.`,
+	);
 	lines.push("");
 	lines.push("## Available agents");
 	for (const a of enabledAgents) {
