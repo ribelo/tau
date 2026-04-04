@@ -55,7 +55,7 @@ describe("wrapCommandWithSandbox mount order", () => {
 		expect(tasksBindIndex).toBeGreaterThan(settingsRoBindIndex);
 	});
 
-	it("does not add a bind for .pi/ralph/tasks when it does not exist", async () => {
+	it("ro-binds .pi as a whole when the writable exception does not exist yet", async () => {
 		const workspaceRoot = makeTempDir("tau-sandbox-bwrap-");
 		fs.mkdirSync(path.join(workspaceRoot, ".pi"), { recursive: true });
 		fs.writeFileSync(path.join(workspaceRoot, ".pi", "settings.json"), "{}", "utf-8");
@@ -72,8 +72,19 @@ describe("wrapCommandWithSandbox mount order", () => {
 
 		const parts = result.wrappedCommand.split(" ");
 		const tasksPath = path.join(workspaceRoot, ".pi", "ralph", "tasks");
+		const piPath = path.join(workspaceRoot, ".pi");
 		const tasksBindIndex = parts.indexOf(tasksPath);
 
+		function findRoBindIndex(targetPath: string): number {
+			for (let i = 0; i < parts.length - 1; i++) {
+				if (parts[i] === "--ro-bind" && parts[i + 1] === targetPath) {
+					return i;
+				}
+			}
+			return -1;
+		}
+
 		expect(tasksBindIndex).toBe(-1);
+		expect(findRoBindIndex(piPath)).toBeGreaterThan(-1);
 	});
 });

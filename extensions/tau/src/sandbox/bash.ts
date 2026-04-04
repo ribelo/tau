@@ -200,7 +200,19 @@ export async function wrapCommandWithSandbox(opts: {
 		}
 
 		for (const rule of WORKSPACE_PROTECTED_RULES) {
-			roBindProtectedChildren(path.join(resolvedWorkspace, rule.rootSegment));
+			const rootPath = path.join(resolvedWorkspace, rule.rootSegment);
+			const hasExistingException = rule.writableExceptionSegments.some((exc) =>
+				exists(path.join(resolvedWorkspace, exc)),
+			);
+			if (hasExistingException) {
+				// At least one writable exception exists on disk under this root.
+				// Use granular child mounting so the exception stays writable and
+				// missing exception paths can be created inside the sandbox.
+				roBindProtectedChildren(rootPath);
+			} else if (exists(rootPath)) {
+				// No exceptions exist yet; mount the whole root read-only for safety.
+				args.push("--ro-bind", rootPath, rootPath);
+			}
 		}
 
 		// Writable exceptions must come AFTER any parent readonly binds.
