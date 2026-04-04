@@ -10,9 +10,10 @@ function makeTempDir(prefix: string): string {
 }
 
 describe("wrapCommandWithSandbox mount order", () => {
-	it("binds .pi as read-only and .pi/ralph/tasks as writable in workspace-write mode", async () => {
+	it("binds siblings of .pi/ralph/tasks as read-only and tasks as writable", async () => {
 		const workspaceRoot = makeTempDir("tau-sandbox-bwrap-");
 		fs.mkdirSync(path.join(workspaceRoot, ".pi", "ralph", "tasks"), { recursive: true });
+		fs.writeFileSync(path.join(workspaceRoot, ".pi", "settings.json"), "{}", "utf-8");
 
 		const result = await wrapCommandWithSandbox({
 			command: "echo hello",
@@ -25,7 +26,7 @@ describe("wrapCommandWithSandbox mount order", () => {
 		if (!result.success) return;
 
 		const parts = result.wrappedCommand.split(" ");
-		const piPath = path.join(workspaceRoot, ".pi");
+		const settingsPath = path.join(workspaceRoot, ".pi", "settings.json");
 		const tasksPath = path.join(workspaceRoot, ".pi", "ralph", "tasks");
 
 		function findRoBindIndex(targetPath: string): number {
@@ -46,11 +47,33 @@ describe("wrapCommandWithSandbox mount order", () => {
 			return -1;
 		}
 
-		const piRoBindIndex = findRoBindIndex(piPath);
+		const settingsRoBindIndex = findRoBindIndex(settingsPath);
 		const tasksBindIndex = findBindIndex(tasksPath);
 
-		expect(piRoBindIndex).toBeGreaterThan(-1);
+		expect(settingsRoBindIndex).toBeGreaterThan(-1);
 		expect(tasksBindIndex).toBeGreaterThan(-1);
-		expect(tasksBindIndex).toBeGreaterThan(piRoBindIndex);
+		expect(tasksBindIndex).toBeGreaterThan(settingsRoBindIndex);
+	});
+
+	it("does not add a bind for .pi/ralph/tasks when it does not exist", async () => {
+		const workspaceRoot = makeTempDir("tau-sandbox-bwrap-");
+		fs.mkdirSync(path.join(workspaceRoot, ".pi"), { recursive: true });
+		fs.writeFileSync(path.join(workspaceRoot, ".pi", "settings.json"), "{}", "utf-8");
+
+		const result = await wrapCommandWithSandbox({
+			command: "echo hello",
+			workspaceRoot,
+			filesystemMode: "workspace-write",
+			networkMode: "deny",
+		});
+
+		expect(result.success).toBe(true);
+		if (!result.success) return;
+
+		const parts = result.wrappedCommand.split(" ");
+		const tasksPath = path.join(workspaceRoot, ".pi", "ralph", "tasks");
+		const tasksBindIndex = parts.indexOf(tasksPath);
+
+		expect(tasksBindIndex).toBe(-1);
 	});
 });

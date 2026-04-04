@@ -160,26 +160,53 @@ export async function wrapCommandWithSandbox(opts: {
 		args.push("--ro-bind", resolvedHome, resolvedHome);
 		// Workspace binding comes after home so it takes precedence (writable overlay)
 		args.push("--bind", resolvedWorkspace, resolvedWorkspace);
-		// Protect sensitive subpaths as read-only within the writable workspace
-		for (const rule of WORKSPACE_PROTECTED_RULES) {
-			const subpath = path.join(resolvedWorkspace, rule.rootSegment);
-			if (exists(subpath)) {
-				args.push("--ro-bind", subpath, subpath);
+		// Protect sensitive subpaths as read-only within the writable workspace.
+		// Instead of mounting each protected root as a whole and punching holes,
+		// we mount every child recursively, skipping writable exceptions and paths
+		// that contain them. This lets exceptions be created inside the sandbox
+		// (via mkdir -p) even when they do not yet exist on the host.
+		const allExceptions = WORKSPACE_PROTECTED_RULES.flatMap((rule) =>
+			rule.writableExceptionSegments.map((exc) => path.join(resolvedWorkspace, exc)),
+		);
+
+		function roBindProtectedChildren(dirPath: string): void {
+			if (!exists(dirPath)) return;
+			let entries: string[];
+			try {
+				entries = fs.readdirSync(dirPath);
+			} catch {
+				return;
+			}
+			for (const entry of entries) {
+				const childPath = path.join(dirPath, entry);
+				const isException = allExceptions.some(
+					(exc) => childPath === exc || childPath.startsWith(exc + path.sep),
+				);
+				const containsException = allExceptions.some(
+					(exc) => exc.startsWith(childPath + path.sep),
+				);
+				if (isException) {
+					// Skip — handled later (writable bind if it exists, otherwise
+					// left unbound so it can be created inside the sandbox).
+					continue;
+				}
+				if (containsException) {
+					// Descend to bind this directory's other children.
+					roBindProtectedChildren(childPath);
+				} else {
+					args.push("--ro-bind", childPath, childPath);
+				}
 			}
 		}
-		// Writable exceptions must come AFTER the parent readonly bind to override it.
-		// Ensure the exception path exists so the bind is always applied.
+
 		for (const rule of WORKSPACE_PROTECTED_RULES) {
-			for (const exc of rule.writableExceptionSegments) {
-				const excPath = path.join(resolvedWorkspace, exc);
-				try {
-					fs.mkdirSync(excPath, { recursive: true });
-				} catch {
-					// Ignore permission errors; fall back to exists check
-				}
-				if (exists(excPath)) {
-					args.push("--bind", excPath, excPath);
-				}
+			roBindProtectedChildren(path.join(resolvedWorkspace, rule.rootSegment));
+		}
+
+		// Writable exceptions must come AFTER any parent readonly binds.
+		for (const excPath of allExceptions) {
+			if (exists(excPath)) {
+				args.push("--bind", excPath, excPath);
 			}
 		}
 	} else if (filesystemMode === "danger-full-access") {
