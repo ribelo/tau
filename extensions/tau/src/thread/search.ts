@@ -8,7 +8,6 @@ import { ThreadAmbiguousError, ThreadCatalogError } from "./errors.js";
 // In-memory cache for session catalog entries
 const catalogCache = new Map<string, { mtimeMs: number; entry: SessionCatalogEntry }>();
 
-const MAX_RESULTS = 10;
 const PREVIEW_LENGTH = 200;
 
 /**
@@ -203,7 +202,6 @@ export function searchLocalSessions(
       }))
       .filter((item) => item.score > 0)
       .sort((a, b) => b.score - a.score)
-      .slice(0, MAX_RESULTS)
       .map((item) => toThreadInfo(item.entry, item.score));
 
     return scored;
@@ -248,7 +246,6 @@ export function searchGlobalSessions(
       }))
       .filter((item) => item.score > 0)
       .sort((a, b) => b.score - a.score)
-      .slice(0, MAX_RESULTS)
       .map((item) => toThreadInfo(item.entry, item.score));
 
     return scored;
