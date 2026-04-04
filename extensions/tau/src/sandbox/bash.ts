@@ -167,10 +167,16 @@ export async function wrapCommandWithSandbox(opts: {
 				args.push("--ro-bind", subpath, subpath);
 			}
 		}
-		// Writable exceptions must come AFTER the parent readonly bind to override it
+		// Writable exceptions must come AFTER the parent readonly bind to override it.
+		// Ensure the exception path exists so the bind is always applied.
 		for (const rule of WORKSPACE_PROTECTED_RULES) {
 			for (const exc of rule.writableExceptionSegments) {
 				const excPath = path.join(resolvedWorkspace, exc);
+				try {
+					fs.mkdirSync(excPath, { recursive: true });
+				} catch {
+					// Ignore permission errors; fall back to exists check
+				}
 				if (exists(excPath)) {
 					args.push("--bind", excPath, excPath);
 				}

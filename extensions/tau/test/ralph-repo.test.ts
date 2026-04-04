@@ -129,7 +129,7 @@ describe("ralph repo", () => {
 		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "archive", "tasks", "archive-loop.md"))).toBe(true);
 	});
 
-	it("fails fast when legacy flat layout is detected", async () => {
+	it("fails fast when legacy flat layout is detected in root", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 
@@ -141,6 +141,31 @@ describe("ralph repo", () => {
 				Effect.gen(function* () {
 					const repo = yield* RalphRepo;
 					return yield* repo.listLoops(cwd);
+				}).pipe(Effect.provide(ralphRepoLayer)),
+			),
+		).rejects.toSatisfy((err: unknown) => {
+			return (
+				typeof err === "object" &&
+				err !== null &&
+				"reason" in err &&
+				typeof err.reason === "string" &&
+				err.reason.includes("Legacy Ralph layout detected")
+			);
+		});
+	});
+
+	it("fails fast when legacy flat layout is detected in archive", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		fs.mkdirSync(path.join(cwd, ".pi", "ralph", "archive"), { recursive: true });
+		fs.writeFileSync(path.join(cwd, ".pi", "ralph", "archive", "legacy-loop.state.json"), "{}", "utf-8");
+
+		await expect(
+			Effect.runPromise(
+				Effect.gen(function* () {
+					const repo = yield* RalphRepo;
+					return yield* repo.listLoops(cwd, true);
 				}).pipe(Effect.provide(ralphRepoLayer)),
 			),
 		).rejects.toSatisfy((err: unknown) => {

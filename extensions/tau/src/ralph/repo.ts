@@ -112,19 +112,24 @@ function makeLegacyLayoutError(): RalphContractValidationError {
 	});
 }
 
-async function detectLegacyLayout(cwd: string): Promise<boolean> {
-	const root = ralphDir(cwd);
+async function hasFlatFilesInDir(dir: string): Promise<boolean> {
 	try {
-		const entries = await fs.promises.readdir(root);
+		const entries = await fs.promises.readdir(dir);
 		for (const entry of entries) {
 			if (entry.endsWith(LOOP_STATE_EXT) || entry.endsWith(LOOP_TASK_EXT)) {
 				return true;
 			}
 		}
 	} catch {
-		// Directory does not exist or is unreadable — not legacy
+		// Directory does not exist or is unreadable
 	}
 	return false;
+}
+
+async function detectLegacyLayout(cwd: string): Promise<boolean> {
+	const root = ralphDir(cwd);
+	const archiveRoot = path.join(root, "archive");
+	return (await hasFlatFilesInDir(root)) || (await hasFlatFilesInDir(archiveRoot));
 }
 
 export interface RalphRepoService {
@@ -180,7 +185,7 @@ export const RalphRepoLive = Layer.effect(
 
 		const loadState: RalphRepoService["loadState"] = Effect.fn("RalphRepo.loadState")(
 			function* (cwd, name, archived = false) {
-				if (!archived && (yield* Effect.promise(() => detectLegacyLayout(cwd)))) {
+				if (yield* Effect.promise(() => detectLegacyLayout(cwd))) {
 					return yield* Effect.fail(makeLegacyLayoutError());
 				}
 				const filePath = getStatePath(cwd, name, archived);
@@ -203,7 +208,7 @@ export const RalphRepoLive = Layer.effect(
 
 		const listLoops: RalphRepoService["listLoops"] = Effect.fn("RalphRepo.listLoops")(
 			function* (cwd, archived = false) {
-				if (!archived && (yield* Effect.promise(() => detectLegacyLayout(cwd)))) {
+				if (yield* Effect.promise(() => detectLegacyLayout(cwd))) {
 					return yield* Effect.fail(makeLegacyLayoutError());
 				}
 
