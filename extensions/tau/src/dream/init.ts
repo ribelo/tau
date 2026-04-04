@@ -1,19 +1,39 @@
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import type { Dirent } from "node:fs";
+
 import { Effect, Option } from "effect";
+import { nanoid } from "nanoid";
+import { Type, type Static } from "@sinclair/typebox";
 
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
+	ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
 
 import { loadDreamConfig } from "./config-loader.js";
-import type { DreamRunRequest, DreamTaskState } from "./domain.js";
-import type { DreamLock } from "./lock.js";
+import type {
+	DreamFinishParams,
+	DreamRunRequest,
+	DreamRunResult,
+	DreamTaskState,
+	DreamTranscriptCandidate,
+} from "./domain.js";
+import { DreamLock, type ManualDreamLease } from "./lock.js";
 import { DreamRunner, DreamRunnerLive, type DreamRunnerApi } from "./runner.js";
-import type { DreamScheduler } from "./scheduler.js";
-import type { CuratedMemory } from "../services/curated-memory.js";
+import { DreamScheduler, type DreamSchedulerApi } from "./scheduler.js";
+import {
+	dreamTranscriptRoot,
+	isDreamTranscriptFile,
+	parseDreamTranscriptSessionId,
+} from "./transcripts.js";
+import { CuratedMemory } from "../services/curated-memory.js";
+import type { MemoryEntriesSnapshot } from "../memory/format.js";
 import { DreamTaskRegistry, type DreamTaskRegistryApi } from "./task-registry.js";
 import type { DreamSubagent } from "./subagent.js";
+import { buildDreamPrompt } from "./prompt.js";
 
 type DreamRuntimeServices =
 	| CuratedMemory
@@ -35,6 +55,36 @@ type DreamInitOptions = {
 const DEFAULT_POLL_MS = 2_000;
 const DEFAULT_MAX_POLLS = 300;
 
+// ---------------------------------------------------------------------------
+// dream_finish tool params (foreground mode)
+// ---------------------------------------------------------------------------
+
+const DreamFinishToolParams = Type.Object({
+	runId: Type.String({ description: "Foreground dream run id" }),
+	summary: Type.String({ description: "Brief summary of what was found and changed" }),
+	reviewedSessions: Type.Array(Type.String(), { description: "Session IDs reviewed" }),
+	noChanges: Type.Boolean({ description: "True if no memory changes were made" }),
+});
+
+type DreamFinishToolParams = Static<typeof DreamFinishToolParams>;
+
+// ---------------------------------------------------------------------------
+// Foreground run state
+// ---------------------------------------------------------------------------
+
+interface ForegroundDreamRun {
+	readonly runId: string;
+	readonly sessionId: string;
+	readonly cwd: string;
+	readonly startedAt: number;
+	readonly lease: ManualDreamLease;
+	readonly transcriptCandidates: ReadonlyArray<DreamTranscriptCandidate>;
+}
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+
 export default function initDream(
 	pi: ExtensionAPI,
 	runEffect: RunDream,
@@ -43,6 +93,7 @@ export default function initDream(
 	const pollMs = options?.pollMs ?? DEFAULT_POLL_MS;
 	const maxPolls = options?.maxPolls ?? DEFAULT_MAX_POLLS;
 	const sleep = options?.sleep ?? defaultSleep;
+	const activeForegroundRuns = new Map<string, ForegroundDreamRun>();
 
 	const withRunner = <A, E>(
 		ctx: ExtensionContext | ExtensionCommandContext,
@@ -88,20 +139,166 @@ export default function initDream(
 		return runEffect(effect);
 	};
 
+	const withDreamData = <A, E>(
+		f: (
+			memory: CuratedMemory["Service"],
+			scheduler: DreamSchedulerApi,
+		) => Effect.Effect<A, E, never>,
+	): Promise<A> =>
+		runEffect(
+			Effect.gen(function* () {
+				const memory = yield* CuratedMemory;
+				const scheduler = yield* DreamScheduler;
+				return yield* f(memory, scheduler);
+			}),
+		);
+
+	// ── dream_finish tool (foreground mode) ────────────────────────
+	const dreamFinishTool = createDreamFinishTool({
+		runEffect,
+		activeForegroundRuns,
+	});
+	pi.registerTool(dreamFinishTool);
+
+	// ── /dream command ─────────────────────────────────────────────
 	pi.registerCommand("dream", {
 		description: "Run memory consolidation (dream)",
-		handler: async (_args, ctx) => {
-			try {
-				const handle = await withRunner(ctx, (runner) => runner.spawnManual(makeRunRequest(ctx, "manual", "user")));
-
-				if (ctx.hasUI) {
-					ctx.ui.notify(
-						`Dream started (task ${handle.taskId}). Memory consolidation running in background.`,
-						"info",
-					);
+		handler: async (rawArgs, ctx) => {
+			const args = rawArgs.trim();
+			if (args === "cancel") {
+				const sessionId = currentSessionIdOf(ctx);
+				if (sessionId === undefined) {
+					if (ctx.hasUI) {
+						ctx.ui.notify("Cannot cancel dream run: session id unavailable.", "warning");
+					}
+					return;
 				}
 
-				void pollTaskCompletion(ctx, handle.taskId);
+				const active = activeForegroundRuns.get(sessionId);
+				if (active === undefined) {
+					if (ctx.hasUI) {
+						ctx.ui.notify("No active foreground dream run.", "info");
+					}
+					return;
+				}
+
+				// Release lock and clean up
+				await releaseForegroundRun(runEffect, activeForegroundRuns, sessionId);
+				clearTaskStatus(ctx);
+				if (ctx.hasUI) {
+					ctx.ui.notify(`Dream cancelled (run ${active.runId}).`, "info");
+				}
+				return;
+			}
+
+			if (args.length > 0) {
+				if (ctx.hasUI) {
+					ctx.ui.notify("Usage: /dream or /dream cancel", "warning");
+				}
+				return;
+			}
+
+			if (options?.runner === undefined && !ctx.isIdle()) {
+				if (ctx.hasUI) {
+					ctx.ui.notify("Dream starts when the agent is idle. Wait for the current response to finish.", "warning");
+				}
+				return;
+			}
+
+			try {
+				if (options?.runner !== undefined) {
+					const handle = await withRunner(ctx, (runner) => runner.spawnManual(makeRunRequest(ctx, "manual", "user")));
+
+					if (ctx.hasUI) {
+						ctx.ui.notify(
+							`Dream started (task ${handle.taskId}). Running in foreground with live progress updates.`,
+							"info",
+						);
+					}
+
+					await pollTaskCompletion(ctx, handle.taskId, {
+						verboseProgress: true,
+					});
+					return;
+				}
+
+				const sessionId = currentSessionIdOf(ctx);
+				if (sessionId === undefined) {
+					if (ctx.hasUI) {
+						ctx.ui.notify("Dream cannot start: session id unavailable.", "warning");
+					}
+					return;
+				}
+
+				const existingRun = activeForegroundRuns.get(sessionId);
+				if (existingRun !== undefined) {
+					if (ctx.hasUI) {
+						ctx.ui.notify(`Dream already running (run ${existingRun.runId}). Use /dream cancel first.`, "warning");
+					}
+					return;
+				}
+
+				const config = await Effect.runPromise(loadDreamConfig(ctx.cwd));
+				if (!config.enabled || !config.manual.enabled) {
+					if (ctx.hasUI) {
+						ctx.ui.notify("Dream is disabled for manual mode in settings.", "warning");
+					}
+					return;
+				}
+
+				// Acquire lock
+				let lease: ManualDreamLease;
+				try {
+					lease = await runEffect(
+						Effect.gen(function* () {
+							const dreamLock = yield* DreamLock;
+							return yield* dreamLock.acquireManual(ctx.cwd);
+						}),
+					);
+				} catch (lockError) {
+					if (ctx.hasUI) {
+						ctx.ui.notify(describeError(lockError), "warning");
+					}
+					return;
+				}
+
+				const [lastCompletedAt, memorySnapshot] = await Promise.all([
+					withDreamData((_memory, scheduler) => scheduler.readLastCompletedAt(ctx.cwd)),
+					withDreamData((memory) => memory.getEntriesSnapshot(ctx.cwd)),
+				]);
+
+				const transcriptCandidates = await scanForegroundTranscriptCandidates(
+					ctx.cwd,
+					lastCompletedAt ?? 0,
+					sessionId,
+				);
+
+				const run: ForegroundDreamRun = {
+					runId: nanoid(12),
+					sessionId,
+					cwd: ctx.cwd,
+					startedAt: Date.now(),
+					lease,
+					transcriptCandidates,
+				};
+
+				activeForegroundRuns.set(sessionId, run);
+				if (ctx.hasUI) {
+					ctx.ui.setStatus("dream", `dream: foreground run ${run.runId}`);
+					ctx.ui.notify(`Dream started (run ${run.runId}).`, "info");
+				}
+
+				pi.sendUserMessage(
+					buildDreamPrompt({
+						runId: run.runId,
+						mode: "manual",
+						nowIso: new Date().toISOString(),
+						memorySnapshot,
+						transcriptCandidates: run.transcriptCandidates,
+					}),
+					{ deliverAs: "followUp" },
+				);
+				return;
 			} catch (error) {
 				if (ctx.hasUI) {
 					ctx.ui.notify(describeError(error), "warning");
@@ -110,6 +307,7 @@ export default function initDream(
 		},
 	});
 
+	// ── Auto-dream event handlers ──────────────────────────────────
 	const autoSpawnHandler = async (_event: unknown, ctx: ExtensionContext): Promise<void> => {
 		await tryAutoSpawn(ctx, { awaitCompletion: false });
 	};
@@ -122,7 +320,23 @@ export default function initDream(
 	};
 
 	pi.on("session_start", autoSpawnHandler);
-	pi.on("agent_end", autoSpawnHandler);
+	pi.on("agent_end", async (_event, ctx) => {
+		const sessionId = currentSessionIdOf(ctx);
+		if (sessionId !== undefined) {
+			const run = activeForegroundRuns.get(sessionId);
+			if (run !== undefined) {
+				await releaseForegroundRun(runEffect, activeForegroundRuns, sessionId);
+				clearTaskStatus(ctx);
+				if (ctx.hasUI) {
+					ctx.ui.notify(
+						`Dream failed: run ${run.runId} ended without dream_finish.`,
+						"warning",
+					);
+				}
+			}
+		}
+		await autoSpawnHandler(_event, ctx);
+	});
 	pi.on("session_switch", autoSpawnHandler);
 	pi.on("session_shutdown", shutdownAutoSpawnHandler);
 
@@ -139,9 +353,13 @@ export default function initDream(
 				}
 
 				if (options.awaitCompletion) {
-					await pollTaskCompletion(ctx, result.value.taskId);
+					await pollTaskCompletion(ctx, result.value.taskId, {
+						verboseProgress: false,
+					});
 				} else {
-					void pollTaskCompletion(ctx, result.value.taskId);
+					void pollTaskCompletion(ctx, result.value.taskId, {
+						verboseProgress: false,
+					});
 				}
 			}
 		} catch (error) {
@@ -149,13 +367,34 @@ export default function initDream(
 		}
 	}
 
-	async function pollTaskCompletion(ctx: ExtensionContext, taskId: string): Promise<void> {
+	async function pollTaskCompletion(
+		ctx: ExtensionContext,
+		taskId: string,
+		options: {
+			readonly verboseProgress: boolean;
+		},
+	): Promise<void> {
+		let lastNotifiedPhase: DreamTaskState["phase"] | undefined;
+		let lastNotifiedMessage: string | undefined;
+
 		for (let pollIndex = 0; pollIndex < maxPolls; pollIndex += 1) {
 			await sleep(pollMs);
 
 			try {
 				const state = await withRegistry((registry) => registry.get(taskId));
 				updateTaskStatus(ctx, state);
+
+				if (options.verboseProgress && ctx.hasUI) {
+					if (state.phase !== lastNotifiedPhase) {
+						lastNotifiedPhase = state.phase;
+						ctx.ui.notify(`Dream phase: ${state.phase}`, "info");
+					}
+
+					if (state.latestMessage !== undefined && state.latestMessage !== lastNotifiedMessage) {
+						lastNotifiedMessage = state.latestMessage;
+						ctx.ui.notify(`Dream: ${state.latestMessage}`, "info");
+					}
+				}
 
 				if (state.status === "completed") {
 					clearTaskStatus(ctx);
@@ -185,6 +424,131 @@ export default function initDream(
 	}
 }
 
+// ---------------------------------------------------------------------------
+// dream_finish tool implementation (foreground)
+// ---------------------------------------------------------------------------
+
+type DreamFinishToolDeps = {
+	readonly runEffect: RunDream;
+	readonly activeForegroundRuns: Map<string, ForegroundDreamRun>;
+};
+
+function createDreamFinishTool(
+	deps: DreamFinishToolDeps,
+): ToolDefinition<typeof DreamFinishToolParams> {
+	return {
+		name: "dream_finish",
+		label: "dream_finish",
+		description: "Signal that the foreground dream memory consolidation run is complete. Call this after all memory mutations are done.",
+		parameters: DreamFinishToolParams,
+		async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {
+			const params = rawParams as DreamFinishToolParams;
+			const sessionId = currentSessionIdOf(ctx);
+			if (sessionId === undefined) {
+				return {
+					isError: true,
+					content: [{ type: "text", text: "No active session id found for dream_finish." }],
+					details: {},
+				};
+			}
+
+			const run = deps.activeForegroundRuns.get(sessionId);
+			if (run === undefined) {
+				return {
+					isError: true,
+					content: [{ type: "text", text: "No active foreground dream run for this session." }],
+					details: {},
+				};
+			}
+
+			if (params.runId !== run.runId) {
+				return {
+					isError: true,
+					content: [{ type: "text", text: `Run id mismatch. Expected ${run.runId}, received ${params.runId}.` }],
+					details: {},
+				};
+			}
+
+			try {
+				// Mark scheduler complete and reload frozen snapshot
+				await deps.runEffect(
+					Effect.gen(function* () {
+						const memory = yield* CuratedMemory;
+						const scheduler = yield* DreamScheduler;
+
+						yield* memory.reloadFrozenSnapshot(run.cwd);
+
+						const finishedAt = Date.now();
+						const runResult: DreamRunResult = {
+							mode: "manual",
+							startedAt: run.startedAt,
+							finishedAt,
+							summary: params.summary,
+							reviewedSessions: params.reviewedSessions,
+							memoryMutations: 0, // not tracked in foreground; mutations already happened visibly
+							noChanges: params.noChanges,
+						};
+
+						yield* scheduler.markCompleted(run.cwd, runResult);
+					}),
+				);
+
+				// Release lock and clean up
+				await releaseForegroundRun(deps.runEffect, deps.activeForegroundRuns, sessionId);
+				clearTaskStatus(ctx);
+
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Dream complete: reviewed ${params.reviewedSessions.length} session(s). ${params.summary}`,
+						},
+					],
+					details: {},
+				};
+			} catch (error) {
+				return {
+					isError: true,
+					content: [{ type: "text", text: `dream_finish failed: ${describeError(error)}` }],
+					details: {},
+				};
+			}
+		},
+	};
+}
+
+// ---------------------------------------------------------------------------
+// Foreground lock release helper
+// ---------------------------------------------------------------------------
+
+async function releaseForegroundRun(
+	runEffect: RunDream,
+	activeForegroundRuns: Map<string, ForegroundDreamRun>,
+	sessionId: string,
+): Promise<void> {
+	const run = activeForegroundRuns.get(sessionId);
+	if (run === undefined) {
+		return;
+	}
+
+	activeForegroundRuns.delete(sessionId);
+
+	try {
+		await runEffect(
+			Effect.gen(function* () {
+				const dreamLock = yield* DreamLock;
+				yield* dreamLock.releaseManual(run.lease);
+			}),
+		);
+	} catch {
+		// Best-effort lock release
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 function makeRunRequest(
 	ctx: ExtensionContext | ExtensionCommandContext,
 	mode: DreamRunRequest["mode"],
@@ -210,10 +574,10 @@ function updateTaskStatus(ctx: ExtensionContext, state: DreamTaskState): void {
 		return;
 	}
 
-	const ops = state.operationsPlanned > 0
-		? ` (${state.operationsApplied}/${state.operationsPlanned} ops)`
+	const mutations = state.memoryMutations > 0
+		? ` (${state.memoryMutations} mutations)`
 		: "";
-	ctx.ui.setStatus("dream", `dream: ${state.phase}${ops}`);
+	ctx.ui.setStatus("dream", `dream: ${state.phase}${mutations}`);
 	if (typeof ctx.ui.setWidget === "function") {
 		ctx.ui.setWidget("dream", dreamWidgetLines(state));
 	}
@@ -231,9 +595,9 @@ function clearTaskStatus(ctx: ExtensionContext): void {
 }
 
 function formatCompletion(state: DreamTaskState): string {
-	const base = `Dream complete: reviewed ${state.sessionsReviewed} session(s), applied ${state.operationsApplied}/${state.operationsPlanned} operation(s).`;
+	const base = `Dream complete: reviewed ${state.sessionsReviewed} session(s), ${state.memoryMutations} memory mutation(s).`;
 	if (state.latestMessage) {
-		return `${base} ${state.latestMessage.slice(0, 120)}${state.latestMessage.length > 120 ? "..." : ""}`;
+		return `${base} ${state.latestMessage}`;
 	}
 	return base;
 }
@@ -244,11 +608,101 @@ function dreamWidgetLines(state: DreamTaskState): string[] {
 		`Mode: ${state.mode}`,
 		`Phase: ${state.phase}`,
 		`Sessions: ${state.sessionsReviewed}/${state.sessionsDiscovered}`,
-		`Operations: ${state.operationsApplied}/${state.operationsPlanned}`,
+		`Mutations: ${state.memoryMutations}`,
 		`Status: ${state.status}`,
 		...(state.latestMessage === undefined ? [] : [`Note: ${state.latestMessage}`]),
 	];
 }
+
+// ---------------------------------------------------------------------------
+// Transcript scanning (foreground)
+// ---------------------------------------------------------------------------
+
+function isNodeError(error: unknown, code: string): boolean {
+	return (
+		typeof error === "object" &&
+		error !== null &&
+		"code" in error &&
+		(error as { readonly code?: unknown }).code === code
+	);
+}
+
+async function readDirEntriesSafe(dirPath: string): Promise<ReadonlyArray<Dirent>> {
+	try {
+		return await fs.readdir(dirPath, { withFileTypes: true });
+	} catch (error) {
+		if (isNodeError(error, "ENOENT")) {
+			return [];
+		}
+		throw error;
+	}
+}
+
+async function collectTranscriptFiles(dirPath: string): Promise<ReadonlyArray<string>> {
+	const entries = await readDirEntriesSafe(dirPath);
+	const files: string[] = [];
+
+	for (const entry of entries) {
+		const absolutePath = path.join(dirPath, entry.name);
+		if (entry.isDirectory()) {
+			const nested = await collectTranscriptFiles(absolutePath);
+			files.push(...nested);
+			continue;
+		}
+
+		if (entry.isFile() && isDreamTranscriptFile(entry.name)) {
+			files.push(absolutePath);
+		}
+	}
+
+	return files;
+}
+
+async function readTouchedAtMs(filePath: string): Promise<number | null> {
+	try {
+		const stats = await fs.stat(filePath);
+		if (!stats.isFile()) {
+			return null;
+		}
+		return Math.trunc(stats.mtimeMs);
+	} catch (error) {
+		if (isNodeError(error, "ENOENT")) {
+			return null;
+		}
+		throw error;
+	}
+}
+
+async function scanForegroundTranscriptCandidates(
+	cwd: string,
+	sinceMs: number,
+	currentSessionId: string,
+): Promise<ReadonlyArray<DreamTranscriptCandidate>> {
+	const root = dreamTranscriptRoot(cwd);
+	const files = await collectTranscriptFiles(root);
+	const candidates: DreamTranscriptCandidate[] = [];
+
+	for (const filePath of files) {
+		const touchedAt = await readTouchedAtMs(filePath);
+		if (touchedAt === null || touchedAt <= sinceMs) {
+			continue;
+		}
+
+		const sessionId = parseDreamTranscriptSessionId(filePath);
+		if (sessionId === null || sessionId === currentSessionId) {
+			continue;
+		}
+
+		candidates.push({ sessionId, path: filePath, touchedAt });
+	}
+
+	candidates.sort((left, right) => right.touchedAt - left.touchedAt);
+	return candidates;
+}
+
+// ---------------------------------------------------------------------------
+// Error formatting
+// ---------------------------------------------------------------------------
 
 function describeError(error: unknown): string {
 	if (typeof error !== "object" || error === null || !("_tag" in error)) {
@@ -264,9 +718,7 @@ function describeError(error: unknown): string {
 		return "Another dream run is already in progress.";
 	}
 
-	if (
-		tagged._tag === "DreamConfigDecodeError"
-	) {
+	if (tagged._tag === "DreamConfigDecodeError") {
 		const reason = "reason" in error ? String((error as { reason: unknown }).reason) : String(error);
 		return `Dream configuration error: ${reason}`;
 	}
@@ -281,7 +733,7 @@ function describeError(error: unknown): string {
 		return `Dream configuration error: invalid value for ${field} (${value})`;
 	}
 
-	if (tagged._tag === "DreamSubagentSpawnFailed" || tagged._tag === "DreamSubagentInvalidPlan") {
+	if (tagged._tag === "DreamSubagentSpawnFailed" || tagged._tag === "DreamSubagentNoFinish") {
 		const reason = "reason" in error ? (error as { reason: string }).reason : tagged._tag;
 		return `Dream failed: ${reason}`;
 	}

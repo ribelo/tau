@@ -77,8 +77,8 @@ export class DreamSubagentAborted extends Schema.TaggedErrorClass<DreamSubagentA
 	{},
 ) {}
 
-export class DreamSubagentInvalidPlan extends Schema.TaggedErrorClass<DreamSubagentInvalidPlan>()(
-	"DreamSubagentInvalidPlan",
+export class DreamSubagentNoFinish extends Schema.TaggedErrorClass<DreamSubagentNoFinish>()(
+	"DreamSubagentNoFinish",
 	{
 		reason: Schema.String,
 	},
@@ -87,7 +87,7 @@ export class DreamSubagentInvalidPlan extends Schema.TaggedErrorClass<DreamSubag
 export type DreamSubagentError =
 	| DreamSubagentSpawnFailed
 	| DreamSubagentAborted
-	| DreamSubagentInvalidPlan;
+	| DreamSubagentNoFinish;
 
 export class DreamConfigDecodeError extends Schema.TaggedErrorClass<DreamConfigDecodeError>()(
 	"DreamConfigDecodeError",

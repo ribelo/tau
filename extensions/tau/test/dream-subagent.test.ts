@@ -3,12 +3,11 @@ import { describe, expect, it } from "vitest";
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 
 import {
-	_formatMemorySnapshotForPrompt as formatMemorySnapshotForPrompt,
 	_createTurnLimitGuard as createTurnLimitGuard,
-	_stripCodeFences as stripCodeFences,
 	_isAssistantMessage as isAssistantMessage,
 } from "../src/dream/subagent.js";
-import { DreamConsolidationPlan } from "../src/dream/domain.js";
+import { _formatMemorySnapshotForPrompt as formatMemorySnapshotForPrompt } from "../src/dream/prompt.js";
+import { DreamFinishParams } from "../src/dream/domain.js";
 import { createMemoryEntry, type MemoryEntriesSnapshot, type MemoryBucketEntriesSnapshot } from "../src/memory/format.js";
 
 // ---------------------------------------------------------------------------
@@ -26,7 +25,7 @@ function makeEntry(id: string, scope: "project" | "global" | "user", content: st
 function makeBucket(
 	bucket: "project" | "global" | "user",
 	entries: ReturnType<typeof makeEntry>[] = [],
-	limitChars = 2048,
+	limitChars = 25_000,
 ): MemoryBucketEntriesSnapshot {
 	const chars = entries.reduce((sum, e) => sum + e.content.length, 0);
 	return {
@@ -45,34 +44,9 @@ function makeSnapshot(
 	return {
 		project: makeBucket("project", overrides.project ?? []),
 		global: makeBucket("global", overrides.global ?? []),
-		user: makeBucket("user", overrides.user ?? [], 1024),
+		user: makeBucket("user", overrides.user ?? [], 25_000),
 	};
 }
-
-// ---------------------------------------------------------------------------
-// stripCodeFences
-// ---------------------------------------------------------------------------
-
-describe("stripCodeFences", () => {
-	it("passes through plain JSON", () => {
-		const json = '{"summary":"test","reviewedSessions":[],"pruneNotes":[],"operations":[]}';
-		expect(stripCodeFences(json)).toBe(json);
-	});
-
-	it("strips ```json fences", () => {
-		const wrapped = '```json\n{"a":1}\n```';
-		expect(stripCodeFences(wrapped)).toBe('{"a":1}');
-	});
-
-	it("strips plain ``` fences", () => {
-		const wrapped = '```\n{"a":1}\n```';
-		expect(stripCodeFences(wrapped)).toBe('{"a":1}');
-	});
-
-	it("trims leading/trailing whitespace", () => {
-		expect(stripCodeFences("  \n  {}\n  ")).toBe("{}");
-	});
-});
 
 // ---------------------------------------------------------------------------
 // isAssistantMessage
@@ -163,106 +137,58 @@ describe("formatMemorySnapshotForPrompt", () => {
 
 	it("includes usage stats", () => {
 		const text = formatMemorySnapshotForPrompt(makeSnapshot());
-		expect(text).toContain("0/2048 chars");
-		expect(text).toContain("0/1024 chars");
+		expect(text).toContain("0/25000 chars");
 	});
 });
 
 // ---------------------------------------------------------------------------
-// DreamConsolidationPlan schema decoding
+// DreamFinishParams schema decoding
 // ---------------------------------------------------------------------------
 
-describe("DreamConsolidationPlan schema", () => {
-	const decode = Schema.decodeUnknownSync(DreamConsolidationPlan);
+describe("DreamFinishParams schema", () => {
+	const decode = Schema.decodeUnknownSync(DreamFinishParams);
 
-	it("decodes a valid plan with all operation types", () => {
-		const plan = decode({
+	it("decodes a valid finish params", () => {
+		const params = decode({
+			runId: "abc123",
 			summary: "Consolidated 3 sessions",
 			reviewedSessions: ["sess-1", "sess-2"],
-			pruneNotes: ["Removed stale entry"],
-			operations: [
-				{
-					_tag: "add",
-					scope: "project",
-					content: "New fact",
-					rationale: "Learned from session",
-				},
-				{
-					_tag: "update",
-					scope: "global",
-					id: "abc123456789",
-					content: "Updated fact",
-					rationale: "Corrected detail",
-				},
-				{
-					_tag: "remove",
-					scope: "user",
-					id: "def456789012",
-					rationale: "No longer relevant",
-				},
-			],
+			noChanges: false,
 		});
 
-		expect(plan.summary).toBe("Consolidated 3 sessions");
-		expect(plan.reviewedSessions).toEqual(["sess-1", "sess-2"]);
-		expect(plan.operations).toHaveLength(3);
-		expect(plan.operations[0]!._tag).toBe("add");
-		expect(plan.operations[1]!._tag).toBe("update");
-		expect(plan.operations[2]!._tag).toBe("remove");
+		expect(params.runId).toBe("abc123");
+		expect(params.summary).toBe("Consolidated 3 sessions");
+		expect(params.reviewedSessions).toEqual(["sess-1", "sess-2"]);
+		expect(params.noChanges).toBe(false);
 	});
 
-	it("decodes an empty plan", () => {
-		const plan = decode({
+	it("decodes params with no changes", () => {
+		const params = decode({
+			runId: "xyz789",
 			summary: "No changes needed",
 			reviewedSessions: [],
-			pruneNotes: [],
-			operations: [],
+			noChanges: true,
 		});
-		expect(plan.operations).toEqual([]);
+		expect(params.noChanges).toBe(true);
+		expect(params.reviewedSessions).toEqual([]);
 	});
 
-	it("rejects an invalid scope", () => {
+	it("rejects missing runId", () => {
 		expect(() =>
 			decode({
 				summary: "Bad",
 				reviewedSessions: [],
-				pruneNotes: [],
-				operations: [
-					{
-						_tag: "add",
-						scope: "invalid",
-						content: "x",
-						rationale: "y",
-					},
-				],
+				noChanges: false,
 			}),
 		).toThrow();
 	});
 
-	it("rejects a missing summary", () => {
+	it("rejects missing summary", () => {
 		expect(() =>
 			decode({
+				runId: "abc",
 				reviewedSessions: [],
-				pruneNotes: [],
-				operations: [],
-			}),
-		).toThrow();
-	});
-
-	it("rejects an invalid operation tag", () => {
-		expect(() =>
-			decode({
-				summary: "Bad",
-				reviewedSessions: [],
-				pruneNotes: [],
-				operations: [
-					{
-						_tag: "merge",
-						scope: "project",
-						content: "x",
-						rationale: "y",
-					},
-				],
+				noChanges: false,
 			}),
 		).toThrow();
 	});

@@ -1,36 +1,28 @@
-import { Clock, Effect, Fiber, Layer, ManagedRuntime, Option, Ref, Scope } from "effect";
+import { Effect, Layer, ManagedRuntime, Option } from "effect";
 import { describe, expect, it } from "vitest";
 
 import type {
-	DreamConsolidationPlan,
-	DreamMutation,
 	DreamProgressEvent,
 	DreamRunRequest,
 	DreamRunResult,
-	DreamSubagentRequest,
-	DreamTaskHandle,
 	DreamTranscriptCandidate,
 } from "../src/dream/domain.js";
 import type { DreamConfig } from "../src/dream/config.js";
 import type {
 	DreamConfigError,
 	DreamLockError,
-	DreamSubagentError,
 } from "../src/dream/errors.js";
 import {
 	DreamDisabled,
-	DreamLockHeld,
-	DreamLockIoError,
 } from "../src/dream/errors.js";
-import { DreamLock, type DreamLease, type DreamLockInfo } from "../src/dream/lock.js";
-import { DreamScheduler, type DreamSchedulerApi } from "../src/dream/scheduler.js";
-import { DreamTaskRegistry, DreamTaskRegistryLive, type DreamRunError } from "../src/dream/task-registry.js";
-import { DreamSubagent, type DreamSubagentContext } from "../src/dream/subagent.js";
-import { DreamRunner, DreamRunnerLive, type DreamRunnerLiveConfig, _deriveTranscriptReviewLimit, _selectDreamTranscriptCandidates } from "../src/dream/runner.js";
+import { DreamLock, type DreamLease, type DreamLockInfo, type ManualDreamLease } from "../src/dream/lock.js";
+import { DreamScheduler } from "../src/dream/scheduler.js";
+import { DreamTaskRegistry, DreamTaskRegistryLive } from "../src/dream/task-registry.js";
+import { DreamSubagent, type DreamSubagentContext, type DreamSubagentResult } from "../src/dream/subagent.js";
+import { DreamRunner, DreamRunnerLive, type DreamRunnerLiveConfig } from "../src/dream/runner.js";
 import { CuratedMemory, type MutationResult } from "../src/services/curated-memory.js";
 import type { MemoryEntriesSnapshot, MemoryEntry, MemoryBucketEntriesSnapshot } from "../src/memory/format.js";
-import type { MemoryFileError, MemoryMutationError } from "../src/memory/errors.js";
-import { MemoryDuplicateEntry, MemoryNoMatch } from "../src/memory/errors.js";
+import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { createMemoryEntry } from "../src/memory/format.js";
 import { DateTime } from "effect";
 
@@ -41,7 +33,7 @@ import { DateTime } from "effect";
 function makeBucket(
 	bucket: "project" | "global" | "user",
 	entries: MemoryEntry[] = [],
-	limitChars = 2048,
+	limitChars = 25_000,
 ): MemoryBucketEntriesSnapshot {
 	const chars = entries.reduce((sum, e) => sum + e.content.length, 0);
 	return {
@@ -58,7 +50,7 @@ function makeEmptySnapshot(): MemoryEntriesSnapshot {
 	return {
 		project: makeBucket("project"),
 		global: makeBucket("global"),
-		user: makeBucket("user", [], 1024),
+		user: makeBucket("user", [], 25_000),
 	};
 }
 
@@ -92,15 +84,6 @@ const defaultRequest: DreamRunRequest = {
 	requestedBy: "user",
 };
 
-function makePlan(ops: DreamMutation[] = []): DreamConsolidationPlan {
-	return {
-		summary: "Test plan",
-		reviewedSessions: ["sess-1"],
-		pruneNotes: [],
-		operations: ops,
-	};
-}
-
 // ---------------------------------------------------------------------------
 // Mock layers
 // ---------------------------------------------------------------------------
@@ -122,6 +105,18 @@ function makeMockLock(opts: {
 					() => Effect.void,
 				);
 			},
+			acquireManual: (_cwd) => {
+				if (opts.acquireFail) {
+					return Effect.fail(opts.acquireFail);
+				}
+				const lease: ManualDreamLease = {
+					path: "/tmp/test-dream/.pi/tau/dream.lock",
+					token: "test-token",
+					acquiredAtMs: Date.now(),
+				};
+				return Effect.succeed(lease);
+			},
+			releaseManual: () => Effect.void,
 			inspect: (_cwd) => Effect.succeed(opts.inspectResult ?? Option.none()),
 		}),
 	);
@@ -149,21 +144,57 @@ function makeMockScheduler(opts: {
 	);
 }
 
-function makeMockSubagent(plan: DreamConsolidationPlan): Layer.Layer<DreamSubagent> {
+/**
+ * Create a mock subagent that simulates calling dream_finish via the
+ * custom tools it receives. The `run` method finds the dream_finish tool
+ * in customTools and calls its execute to capture the finish params.
+ */
+function makeMockSubagent(opts: {
+	memoryMutations?: number;
+	callFinish?: boolean;
+	finishSummary?: string;
+	finishReviewedSessions?: string[];
+	finishNoChanges?: boolean;
+} = {}): Layer.Layer<DreamSubagent> {
+	const callFinish = opts.callFinish ?? true;
 	return Layer.succeed(
 		DreamSubagent,
 		DreamSubagent.of({
-			plan: (_req, _ctx, _onEvent) => Effect.succeed(plan),
+			run: (request, _context, customTools, _onEvent) => {
+				const callFinishAndReturn = Effect.gen(function* () {
+					if (callFinish) {
+						// Find the dream_finish tool and call it
+						const finishTool = customTools.find((t) => t.name === "dream_finish");
+						if (finishTool) {
+							yield* Effect.promise(() =>
+								finishTool.execute(
+									"test-call-id",
+									{
+										runId: request.runId,
+										summary: opts.finishSummary ?? "Test plan",
+										reviewedSessions: opts.finishReviewedSessions ?? ["sess-1"],
+										noChanges: opts.finishNoChanges ?? false,
+									},
+									new AbortController().signal,
+									() => undefined,
+									{} as Parameters<typeof finishTool.execute>[4],
+								),
+							);
+						}
+					}
+
+					return {
+						memoryMutations: opts.memoryMutations ?? 0,
+					} satisfies DreamSubagentResult;
+				});
+				return callFinishAndReturn as Effect.Effect<DreamSubagentResult, import("../src/dream/errors.js").DreamSubagentError>;
+			},
 		}),
 	);
 }
 
 function makeMockMemory(opts: {
 	snapshot?: MemoryEntriesSnapshot;
-	addResult?: MutationResult;
-	updateResult?: MutationResult;
-	removeResult?: MutationResult;
-	addFail?: MemoryMutationError;
 } = {}): Layer.Layer<CuratedMemory> {
 	const snapshot = opts.snapshot ?? makeEmptySnapshot();
 	const defaultResult: MutationResult = {
@@ -178,14 +209,9 @@ function makeMockMemory(opts: {
 			getEntriesSnapshot: () => Effect.succeed(snapshot),
 			reloadFrozenSnapshot: () => Effect.void,
 			getFrozenPromptBlock: () => "",
-			add: (_scope, _text, _cwd) => {
-				if (opts.addFail) return Effect.fail(opts.addFail);
-				return Effect.succeed(opts.addResult ?? defaultResult);
-			},
-			update: (_scope, _id, _text, _cwd) =>
-				Effect.succeed(opts.updateResult ?? defaultResult),
-			remove: (_scope, _id, _cwd) =>
-				Effect.succeed(opts.removeResult ?? defaultResult),
+			add: () => Effect.succeed(defaultResult),
+			update: () => Effect.succeed(defaultResult),
+			remove: () => Effect.succeed(defaultResult),
 			read: () => Effect.die("not implemented in mock"),
 			setup: Effect.void,
 		}),
@@ -216,7 +242,7 @@ function runnerLayer(
 		Layer.provide(overrides.lock ?? makeMockLock()),
 		Layer.provide(overrides.scheduler ?? makeMockScheduler()),
 		Layer.provide(DreamTaskRegistryLive),
-		Layer.provide(overrides.subagent ?? makeMockSubagent(makePlan())),
+		Layer.provide(overrides.subagent ?? makeMockSubagent()),
 		Layer.provide(overrides.memory ?? makeMockMemory()),
 	);
 }
@@ -229,7 +255,7 @@ function persistentRunnerLayer(
 		Layer.provide(overrides.lock ?? makeMockLock()),
 		Layer.provide(overrides.scheduler ?? makeMockScheduler()),
 		Layer.provide(registryLayer),
-		Layer.provide(overrides.subagent ?? makeMockSubagent(makePlan())),
+		Layer.provide(overrides.subagent ?? makeMockSubagent()),
 		Layer.provide(overrides.memory ?? makeMockMemory()),
 	);
 
@@ -251,39 +277,42 @@ function runWithRunner<A, E>(
 
 describe("DreamRunner", () => {
 	describe("runOnce", () => {
-		it("succeeds with an empty plan", async () => {
+		it("succeeds with no changes", async () => {
 			const result = await runWithRunner(
 				Effect.gen(function* () {
 					const runner = yield* DreamRunner;
 					return yield* runner.runOnce(defaultRequest);
 				}),
+				{
+					subagent: makeMockSubagent({
+						finishNoChanges: true,
+						finishSummary: "Nothing to do",
+					}),
+				},
 			);
 
 			expect(result.mode).toBe("manual");
-			expect(result.plan.operations).toHaveLength(0);
-			expect(result.applied).toHaveLength(0);
+			expect(result.noChanges).toBe(true);
+			expect(result.summary).toBe("Nothing to do");
 		});
 
-		it("applies add operations from the plan", async () => {
-			const plan = makePlan([
-				{
-					_tag: "add",
-					scope: "project",
-					content: "new fact",
-					rationale: "test",
-				},
-			]);
-
+		it("reports memory mutations from the subagent", async () => {
 			const result = await runWithRunner(
 				Effect.gen(function* () {
 					const runner = yield* DreamRunner;
 					return yield* runner.runOnce(defaultRequest);
 				}),
-				{ subagent: makeMockSubagent(plan) },
+				{
+					subagent: makeMockSubagent({
+						memoryMutations: 3,
+						finishSummary: "Added 3 facts",
+					}),
+				},
 			);
 
-			expect(result.plan.operations).toHaveLength(1);
-			expect(result.applied).toHaveLength(1);
+			expect(result.memoryMutations).toBe(3);
+			expect(result.summary).toBe("Added 3 facts");
+			expect(result.reviewedSessions).toEqual(["sess-1"]);
 		});
 
 		it("fails when dream is disabled", async () => {
@@ -322,36 +351,6 @@ describe("DreamRunner", () => {
 				runWithRunner(result, { config }),
 			).rejects.toThrow();
 		});
-
-		it("soft-fails duplicate entries in auto mode", async () => {
-			const plan = makePlan([
-				{ _tag: "add", scope: "project", content: "dup", rationale: "test" },
-			]);
-
-			const entry = makeEntry("abc123456789", "project", "dup");
-			const dupError = new MemoryDuplicateEntry({ scope: "project", entry });
-
-			const autoRequest: DreamRunRequest = {
-				...defaultRequest,
-				mode: "auto",
-				requestedBy: "scheduler",
-			};
-
-			const result = await runWithRunner(
-				Effect.gen(function* () {
-					const runner = yield* DreamRunner;
-					return yield* runner.runOnce(autoRequest);
-				}),
-				{
-					subagent: makeMockSubagent(plan),
-					memory: makeMockMemory({ addFail: dupError }),
-				},
-			);
-
-			// Duplicate was soft-failed: operation not in applied
-			expect(result.plan.operations).toHaveLength(1);
-			expect(result.applied).toHaveLength(0);
-		});
 	});
 
 	describe("spawnManual", () => {
@@ -367,15 +366,9 @@ describe("DreamRunner", () => {
 		});
 
 		it("continues running after spawnManual returns", async () => {
-			const subagent = Layer.succeed(
-				DreamSubagent,
-				DreamSubagent.of({
-					plan: () =>
-						Effect.sleep("10 millis").pipe(
-							Effect.as(makePlan()),
-						),
-				}),
-			);
+			const subagent = makeMockSubagent({
+				finishSummary: "Done after delay",
+			});
 
 			const runtime = ManagedRuntime.make(
 				persistentRunnerLayer({ subagent }),
@@ -463,37 +456,6 @@ describe("DreamRunner", () => {
 			);
 
 			expect(Option.isNone(result)).toBe(true);
-		});
-	});
-
-	describe("transcript candidate selection", () => {
-		it("derives limit as maxTurns - 2, minimum 1", () => {
-			expect(_deriveTranscriptReviewLimit(8)).toBe(6);
-			expect(_deriveTranscriptReviewLimit(4)).toBe(2);
-			expect(_deriveTranscriptReviewLimit(2)).toBe(1);
-			expect(_deriveTranscriptReviewLimit(1)).toBe(1);
-		});
-
-		it("caps candidates to maxTurns - 2", () => {
-			const candidates: DreamTranscriptCandidate[] = Array.from({ length: 20 }, (_, i) => ({
-				sessionId: `sess-${i}`,
-				path: `/fake/sess-${i}.jsonl`,
-				touchedAt: 1000 + i,
-			}));
-
-			const selected = _selectDreamTranscriptCandidates(candidates, 8);
-			expect(selected).toHaveLength(6);
-			expect(selected[0]!.sessionId).toBe("sess-0");
-		});
-
-		it("passes all through when count is within limit", () => {
-			const candidates: DreamTranscriptCandidate[] = [
-				{ sessionId: "s1", path: "/a.jsonl", touchedAt: 100 },
-				{ sessionId: "s2", path: "/b.jsonl", touchedAt: 200 },
-			];
-
-			const selected = _selectDreamTranscriptCandidates(candidates, 8);
-			expect(selected).toHaveLength(2);
 		});
 	});
 });

@@ -1,8 +1,5 @@
 import { Schema } from "effect";
 
-import { MemoryEntryId, type MemoryEntriesSnapshot } from "../memory/format.js";
-import type { MutationResult } from "../services/curated-memory.js";
-
 export const DreamRunMode = Schema.Literals(["manual", "auto"]);
 export type DreamRunMode = typeof DreamRunMode.Type;
 
@@ -12,7 +9,6 @@ export const DreamPhase = Schema.Literals([
 	"gather",
 	"consolidate",
 	"prune",
-	"apply",
 	"done",
 ]);
 export type DreamPhase = typeof DreamPhase.Type;
@@ -24,9 +20,6 @@ export const DreamTaskStatus = Schema.Literals([
 	"cancelled",
 ]);
 export type DreamTaskStatus = typeof DreamTaskStatus.Type;
-
-export const DreamMemoryScope = Schema.Literals(["project", "global", "user"]);
-export type DreamMemoryScope = typeof DreamMemoryScope.Type;
 
 export const DreamTaskId = Schema.String;
 export type DreamTaskId = typeof DreamTaskId.Type;
@@ -64,18 +57,9 @@ export type DreamProgressEvent =
 			readonly total: number;
 	  }
 	| {
-			readonly _tag: "SessionsReviewed";
-			readonly reviewed: number;
-			readonly total: number;
-	  }
-	| {
-			readonly _tag: "OperationsPlanned";
-			readonly total: number;
-	  }
-	| {
-			readonly _tag: "OperationApplied";
-			readonly applied: number;
-			readonly total: number;
+			readonly _tag: "MemoryMutation";
+			readonly action: string;
+			readonly scope: string;
 			readonly summary: string;
 	  }
 	| {
@@ -93,67 +77,27 @@ export interface DreamTaskState {
 	readonly finishedAt?: number;
 	readonly sessionsDiscovered: number;
 	readonly sessionsReviewed: number;
-	readonly operationsPlanned: number;
-	readonly operationsApplied: number;
+	readonly memoryMutations: number;
 	readonly latestMessage?: string;
 	readonly cancellable: boolean;
 }
 
-export const DreamAddOperation = Schema.Struct({
-	_tag: Schema.Literal("add"),
-	scope: DreamMemoryScope,
-	content: Schema.String,
-	rationale: Schema.String,
-});
-
-export const DreamUpdateOperation = Schema.Struct({
-	_tag: Schema.Literal("update"),
-	scope: DreamMemoryScope,
-	id: MemoryEntryId,
-	content: Schema.String,
-	rationale: Schema.String,
-});
-
-export const DreamRemoveOperation = Schema.Struct({
-	_tag: Schema.Literal("remove"),
-	scope: DreamMemoryScope,
-	id: MemoryEntryId,
-	rationale: Schema.String,
-});
-
-export const DreamMutation = Schema.Union([
-	DreamAddOperation,
-	DreamUpdateOperation,
-	DreamRemoveOperation,
-]);
-export type DreamMutation = typeof DreamMutation.Type;
-
-export const DreamConsolidationPlan = Schema.Struct({
+/** Bookkeeping data the model sends via dream_finish. */
+export const DreamFinishParams = Schema.Struct({
+	runId: Schema.String,
 	summary: Schema.String,
 	reviewedSessions: Schema.Array(Schema.String),
-	pruneNotes: Schema.Array(Schema.String),
-	operations: Schema.Array(DreamMutation),
+	noChanges: Schema.Boolean,
 });
-export type DreamConsolidationPlan = typeof DreamConsolidationPlan.Type;
+export type DreamFinishParams = typeof DreamFinishParams.Type;
 
-export interface DreamSubagentRequest {
-	readonly cwd: string;
-	readonly mode: DreamRunMode;
-	readonly model: {
-		readonly model: string;
-		readonly thinking: "low" | "medium" | "high" | "xhigh";
-		readonly maxTurns: number;
-	};
-	readonly memorySnapshot: MemoryEntriesSnapshot;
-	readonly transcriptCandidates: ReadonlyArray<DreamTranscriptCandidate>;
-	readonly nowIso: string;
-}
-
+/** Result of a completed dream run, used by scheduler and task registry. */
 export interface DreamRunResult {
 	readonly mode: DreamRunMode;
 	readonly startedAt: number;
 	readonly finishedAt: number;
-	readonly reviewedSessions: ReadonlyArray<DreamTranscriptCandidate>;
-	readonly plan: DreamConsolidationPlan;
-	readonly applied: ReadonlyArray<MutationResult>;
+	readonly summary: string;
+	readonly reviewedSessions: ReadonlyArray<string>;
+	readonly memoryMutations: number;
+	readonly noChanges: boolean;
 }

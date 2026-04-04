@@ -55,8 +55,17 @@ export interface DreamLockInfo {
 	readonly acquiredAtMs?: number;
 }
 
+/** A lease that includes the token, for manual (non-scoped) lock management. */
+export interface ManualDreamLease {
+	readonly path: string;
+	readonly token: string;
+	readonly acquiredAtMs: number;
+}
+
 export interface DreamLockApi {
 	readonly acquire: (cwd: string) => Effect.Effect<DreamLease, DreamLockError, Scope.Scope>;
+	readonly acquireManual: (cwd: string) => Effect.Effect<ManualDreamLease, DreamLockError>;
+	readonly releaseManual: (lease: ManualDreamLease) => Effect.Effect<void>;
 	readonly inspect: (cwd: string) => Effect.Effect<Option.Option<DreamLockInfo>, DreamLockError>;
 }
 
@@ -374,6 +383,28 @@ export const DreamLockLive = Layer.succeed(
 						catch: () => undefined,
 					}).pipe(Effect.orElseSucceed(() => undefined)),
 			).pipe(Effect.map((ownedLease) => ownedLease.lease)),
+
+		acquireManual: (cwd) =>
+			Effect.tryPromise({
+				try: () => acquireOwnedLease(cwd),
+				catch: (error) => toDreamLockError(error, lockPathForCwd(cwd), "acquireManual"),
+			}).pipe(
+				Effect.map((ownedLease) => ({
+					path: ownedLease.lease.path,
+					token: ownedLease.token,
+					acquiredAtMs: ownedLease.lease.acquiredAtMs,
+				})),
+			),
+
+		releaseManual: (lease) =>
+			Effect.tryPromise({
+				try: () =>
+					releaseOwnedLease({
+						lease: { path: lease.path, acquiredAtMs: lease.acquiredAtMs },
+						token: lease.token,
+					}),
+				catch: () => undefined,
+			}).pipe(Effect.orElseSucceed(() => undefined)),
 
 		inspect: (cwd) =>
 			Effect.tryPromise({

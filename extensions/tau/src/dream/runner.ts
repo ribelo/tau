@@ -1,17 +1,19 @@
 // DreamRunner -- orchestration service that coordinates lock, scheduler,
 // subagent, and task registry to execute memory consolidation runs.
-// The subagent proposes; DreamRunner applies.
+// The model does the work directly through tools (memory + dream_finish).
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { Dirent, Stats } from "node:fs";
 
 import { Clock, Effect, Layer, Option, Scope, ServiceMap } from "effect";
+import { nanoid } from "nanoid";
+import { Type, type Static } from "@sinclair/typebox";
 
-import type { ModelRegistry } from "@mariozechner/pi-coding-agent";
+import type { ModelRegistry, ToolDefinition } from "@mariozechner/pi-coding-agent";
 
 import type {
-	DreamMutation,
+	DreamFinishParams,
 	DreamProgressEvent,
 	DreamRunRequest,
 	DreamRunResult,
@@ -25,20 +27,20 @@ import type {
 	DreamLockError,
 	DreamSubagentError,
 } from "./errors.js";
-import { DreamDisabled, DreamLockHeld, DreamLockIoError } from "./errors.js";
+import { DreamDisabled, DreamLockHeld, DreamLockIoError, DreamSubagentNoFinish } from "./errors.js";
 import type { DreamRunError } from "./task-registry.js";
 
 import { DreamLock } from "./lock.js";
 import { DreamScheduler } from "./scheduler.js";
 import { DreamTaskRegistry } from "./task-registry.js";
-import { DreamSubagent, type DreamSubagentContext } from "./subagent.js";
+import { DreamSubagent } from "./subagent.js";
 import {
 	dreamTranscriptRoot,
 	isDreamTranscriptFile,
 	parseDreamTranscriptSessionId,
 } from "./transcripts.js";
-import { CuratedMemory, type MutationResult } from "../services/curated-memory.js";
-import type { MemoryFileError, MemoryMutationError } from "../memory/errors.js";
+import { CuratedMemory } from "../services/curated-memory.js";
+import { createMemoryToolDefinition } from "../memory/index.js";
 
 // ---------------------------------------------------------------------------
 // Service interface
@@ -72,20 +74,56 @@ export interface DreamRunnerLiveConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Transcript candidate selection
+// dream_finish tool for auto-mode subagent sessions
 // ---------------------------------------------------------------------------
 
-/** Reserve 2 turns for orient+response; rest are available for file reads. */
-function deriveTranscriptReviewLimit(maxTurns: number): number {
-	return Math.max(1, maxTurns - 2);
+const DreamFinishToolParams = Type.Object({
+	runId: Type.String({ description: "Dream run id" }),
+	summary: Type.String({ description: "Brief summary of what was found and changed" }),
+	reviewedSessions: Type.Array(Type.String(), { description: "Session IDs reviewed" }),
+	noChanges: Type.Boolean({ description: "True if no memory changes were made" }),
+});
+
+type DreamFinishToolParams = Static<typeof DreamFinishToolParams>;
+
+/** Mutable holder for dream_finish params captured from the subagent. */
+interface DreamFinishCapture {
+	value: DreamFinishParams | undefined;
 }
 
-function selectTranscriptCandidates(
-	candidates: ReadonlyArray<DreamTranscriptCandidate>,
-	maxTurns: number,
-): ReadonlyArray<DreamTranscriptCandidate> {
-	const limit = deriveTranscriptReviewLimit(maxTurns);
-	return candidates.slice(0, limit);
+function createDreamFinishToolForSubagent(
+	expectedRunId: string,
+	capture: DreamFinishCapture,
+): ToolDefinition<typeof DreamFinishToolParams> {
+	return {
+		name: "dream_finish",
+		label: "dream_finish",
+		description: "Signal that the dream memory consolidation run is complete. Call this after all memory mutations are done.",
+		parameters: DreamFinishToolParams,
+		async execute(_toolCallId, rawParams) {
+			const params = rawParams as DreamFinishToolParams;
+
+			if (params.runId !== expectedRunId) {
+				return {
+					isError: true,
+					content: [{ type: "text", text: `Run id mismatch. Expected ${expectedRunId}, received ${params.runId}.` }],
+					details: {},
+				};
+			}
+
+			capture.value = {
+				runId: params.runId,
+				summary: params.summary,
+				reviewedSessions: params.reviewedSessions,
+				noChanges: params.noChanges,
+			};
+
+			return {
+				content: [{ type: "text", text: `Dream run ${params.runId} marked complete. ${params.summary}` }],
+				details: {},
+			};
+		},
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -208,24 +246,19 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 			const subagent = yield* DreamSubagent;
 			const mem = yield* CuratedMemory;
 
-			const subagentContext: DreamSubagentContext = {
+			const subagentContext = {
 				modelRegistry: runtimeConfig.modelRegistry,
 			};
 
-			// ── helpers (capture resolved services) ────────────────────
+			// ── helpers ────────────────────────────────────────────────
 
-			function applyOp(
-				op: DreamMutation,
-				cwd: string,
-			): Effect.Effect<MutationResult, MemoryMutationError> {
-				switch (op._tag) {
-					case "add":
-						return mem.add(op.scope, op.content, cwd);
-					case "update":
-						return mem.update(op.scope, op.id, op.content, cwd);
-					case "remove":
-						return mem.remove(op.scope, op.id, cwd);
-				}
+			/** Create a memory tool that the subagent can use to mutate memory. */
+			function createSubagentMemoryTool(): ToolDefinition {
+				return createMemoryToolDefinition((effect) =>
+					Effect.runPromise(
+						effect.pipe(Effect.provideService(CuratedMemory, CuratedMemory.of(mem))),
+					),
+				) as unknown as ToolDefinition;
 			}
 
 			function progress(taskId: string, event: DreamProgressEvent): Effect.Effect<void> {
@@ -256,56 +289,45 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 
 					const lastCompletedAt = yield* scheduler.readLastCompletedAt(request.cwd);
 					const sinceMs = lastCompletedAt ?? 0;
-					const allCandidates = yield* scanTranscripts(
+					const transcriptCandidates = yield* scanTranscripts(
 						request.cwd,
 						sinceMs,
 						request.currentSessionId,
 					);
-					const transcriptCandidates = selectTranscriptCandidates(
-						allCandidates,
-						dreamConfig.subagent.maxTurns,
-					);
 
-					const nowIso = new Date().toISOString();
-					const plan = yield* subagent.plan(
+					const runId = nanoid(12);
+					const finishCapture: DreamFinishCapture = { value: undefined };
+					const dreamFinishTool = createDreamFinishToolForSubagent(runId, finishCapture);
+					const memoryTool = createSubagentMemoryTool();
+
+					const subagentResult = yield* subagent.run(
 						{
 							cwd: request.cwd,
+							runId,
 							mode: request.mode,
 							model: dreamConfig.subagent,
 							memorySnapshot,
 							transcriptCandidates,
-							nowIso,
+							nowIso: new Date().toISOString(),
 						},
 						subagentContext,
+						[memoryTool as unknown as ToolDefinition, dreamFinishTool as unknown as ToolDefinition],
 						() => Effect.void,
 					);
-
-					const applied: MutationResult[] = [];
-					for (const op of plan.operations) {
-						const result = yield* applyOp(op, request.cwd).pipe(
-							Effect.map(Option.some),
-							Effect.catchIf(
-								(err: MemoryMutationError) =>
-									request.mode === "auto" &&
-									(err._tag === "MemoryDuplicateEntry" || err._tag === "MemoryNoMatch"),
-								() => Effect.succeed(Option.none<MutationResult>()),
-							),
-						);
-						if (Option.isSome(result)) {
-							applied.push(result.value);
-						}
-					}
 
 					yield* mem.reloadFrozenSnapshot(request.cwd);
 
 					const finishedAt = yield* Clock.currentTimeMillis;
+
+					const finishParams = finishCapture.value;
 					const runResult: DreamRunResult = {
 						mode: request.mode,
 						startedAt,
 						finishedAt,
-						reviewedSessions: transcriptCandidates,
-						plan,
-						applied,
+						summary: finishParams?.summary ?? "Dream run completed",
+						reviewedSessions: finishParams?.reviewedSessions ?? [],
+						memoryMutations: subagentResult.memoryMutations,
+						noChanges: finishParams?.noChanges ?? subagentResult.memoryMutations === 0,
 					};
 
 					yield* scheduler.markCompleted(request.cwd, runResult);
@@ -319,7 +341,7 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 				taskId: string,
 			): Effect.Effect<void, never, Scope.Scope> {
 				return Effect.gen(function* () {
-					const _startedAt = yield* Clock.currentTimeMillis;
+					const startedAt = yield* Clock.currentTimeMillis;
 
 					const dreamConfig = yield* runtimeConfig.loadConfig(request.cwd).pipe(
 						Effect.catch((err: DreamConfigError) => failTask(taskId, err)),
@@ -349,7 +371,7 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 					});
 
 					const memorySnapshot = yield* mem.getEntriesSnapshot(request.cwd).pipe(
-						Effect.catch((err: MemoryFileError) => failTask(taskId, err)),
+						Effect.catch((err) => failTask(taskId, err)),
 					);
 
 					// Gather
@@ -364,41 +386,36 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 					);
 					const sinceMs = lastCompletedAt ?? 0;
 
-					const allCandidates = yield* scanTranscripts(
+					const transcriptCandidates = yield* scanTranscripts(
 						request.cwd,
 						sinceMs,
 						request.currentSessionId,
 					).pipe(
 						Effect.catch((err: DreamLockIoError) => failTask(taskId, err)),
 					);
-					const transcriptCandidates = selectTranscriptCandidates(
-						allCandidates,
-						dreamConfig.subagent.maxTurns,
-					);
 
 					yield* progress(taskId, {
 						_tag: "SessionsDiscovered",
-						total: allCandidates.length,
+						total: transcriptCandidates.length,
 					});
 
-					if (transcriptCandidates.length < allCandidates.length) {
-						yield* progress(taskId, {
-							_tag: "Note",
-							text: `Reviewing ${transcriptCandidates.length} of ${allCandidates.length} most recent sessions (maxTurns=${dreamConfig.subagent.maxTurns})`,
-						});
-					}
-
-					// Consolidate
+					// Run subagent with memory tool and dream_finish
 					yield* progress(taskId, {
 						_tag: "PhaseChanged",
 						phase: "consolidate",
 						message: "Running subagent",
 					});
 
-					const plan = yield* subagent
-						.plan(
+					const runId = nanoid(12);
+					const finishCapture: DreamFinishCapture = { value: undefined };
+					const dreamFinishTool = createDreamFinishToolForSubagent(runId, finishCapture);
+					const memoryTool = createSubagentMemoryTool();
+
+					const subagentResult = yield* subagent
+						.run(
 							{
 								cwd: request.cwd,
+								runId,
 								mode: request.mode,
 								model: dreamConfig.subagent,
 								memorySnapshot,
@@ -406,70 +423,39 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 								nowIso: new Date().toISOString(),
 							},
 							subagentContext,
+							[memoryTool as unknown as ToolDefinition, dreamFinishTool as unknown as ToolDefinition],
 							(event: DreamProgressEvent) => progress(taskId, event),
 						)
 						.pipe(
 							Effect.catch((err: DreamSubagentError) => failTask(taskId, err)),
 						);
 
-					yield* progress(taskId, {
-						_tag: "OperationsPlanned",
-						total: plan.operations.length,
-					});
-
-					if (plan.summary) {
-						yield* progress(taskId, {
-							_tag: "Note",
-							text: plan.summary.slice(0, 200),
-						});
-					}
-
-					// Apply
-					yield* progress(taskId, {
-						_tag: "PhaseChanged",
-						phase: "apply",
-						message: "Applying memory mutations",
-					});
-
-					const applied: MutationResult[] = [];
-					for (let i = 0; i < plan.operations.length; i++) {
-						const op = plan.operations[i]!;
-						const result = yield* applyOp(op, request.cwd).pipe(
-							Effect.map(Option.some),
-							Effect.catchIf(
-								(err: MemoryMutationError) =>
-									request.mode === "auto" &&
-									(err._tag === "MemoryDuplicateEntry" || err._tag === "MemoryNoMatch"),
-								() => Effect.succeed(Option.none<MutationResult>()),
-							),
-							Effect.catch((err: MemoryMutationError) => failTask(taskId, err)),
+					// Check if dream_finish was called
+					if (finishCapture.value === undefined) {
+						yield* failTask(
+							taskId,
+							new DreamSubagentNoFinish({
+								reason: "Dream subagent ended without calling dream_finish",
+							}),
 						);
-
-						if (Option.isSome(result)) {
-							applied.push(result.value);
-						}
-
-						yield* progress(taskId, {
-							_tag: "OperationApplied",
-							applied: applied.length,
-							total: plan.operations.length,
-							summary: `${op._tag} ${op.scope}${op._tag !== "add" ? ` [${op.id}]` : ""}`,
-						});
+						return;
 					}
 
 					// Reload frozen snapshot
 					yield* mem.reloadFrozenSnapshot(request.cwd).pipe(
-						Effect.catch((err: MemoryFileError) => failTask(taskId, err)),
+						Effect.catch((err) => failTask(taskId, err)),
 					);
 
 					const finishedAt = yield* Clock.currentTimeMillis;
+					const finishParams = finishCapture.value;
 					const runResult: DreamRunResult = {
 						mode: request.mode,
-						startedAt: _startedAt,
+						startedAt,
 						finishedAt,
-						reviewedSessions: transcriptCandidates,
-						plan,
-						applied,
+						summary: finishParams.summary,
+						reviewedSessions: finishParams.reviewedSessions,
+						memoryMutations: subagentResult.memoryMutations,
+						noChanges: finishParams.noChanges,
 					};
 
 					// Best-effort scheduler update
@@ -480,10 +466,17 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 					yield* reg.complete(taskId, runResult);
 				}).pipe(
 					// Catch-all for interruption/defects: mark task failed
-					Effect.catchCause(() =>
-						reg.fail(taskId, new DreamDisabled({ mode: request.mode })).pipe(
-							Effect.ignore,
-						),
+					Effect.catchCause((cause) =>
+						reg
+							.fail(
+								taskId,
+								new DreamLockIoError({
+									path: request.cwd,
+									operation: "runOnceWithProgress",
+									reason: `Unhandled dream failure: ${String(cause)}`,
+								}),
+							)
+							.pipe(Effect.ignore),
 					),
 				);
 			}
@@ -509,7 +502,6 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 					const fiber = yield* Effect.forkDetach(
 						Effect.scoped(runOnceWithProgress(request, handle.taskId)),
 					);
-					// Fiber is only used for interruption; type-cast is safe
 					yield* reg.attach(
 						handle.taskId,
 						fiber as unknown as import("effect").Fiber.Fiber<DreamRunResult, DreamRunError>,
@@ -559,6 +551,3 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 			});
 		}),
 	);
-
-export { deriveTranscriptReviewLimit as _deriveTranscriptReviewLimit };
-export { selectTranscriptCandidates as _selectDreamTranscriptCandidates };

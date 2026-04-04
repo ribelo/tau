@@ -51,6 +51,24 @@ const taskNotFound = (taskId: DreamTaskId): Error =>
 
 const isTerminal = (state: DreamTaskState): boolean => state.status !== "running";
 
+function formatRunErrorMessage(cause: DreamRunError): string {
+	if ("reason" in cause && typeof cause.reason === "string" && cause.reason.length > 0) {
+		return cause.reason;
+	}
+
+	if ("field" in cause && "value" in cause) {
+		const field = String(cause.field);
+		const value = String(cause.value);
+		return `${cause._tag}: ${field}=${value}`;
+	}
+
+	if ("id" in cause && typeof cause.id === "string") {
+		return `${cause._tag}: ${cause.id}`;
+	}
+
+	return cause._tag;
+}
+
 const applyProgressEvent = (
 	state: DreamTaskState,
 	event: DreamProgressEvent,
@@ -62,20 +80,11 @@ const applyProgressEvent = (
 				: { ...state, phase: event.phase, latestMessage: event.message };
 		case "SessionsDiscovered":
 			return { ...state, sessionsDiscovered: event.total };
-		case "SessionsReviewed":
+		case "MemoryMutation":
 			return {
 				...state,
-				sessionsReviewed: event.reviewed,
-				sessionsDiscovered: Math.max(state.sessionsDiscovered, event.total),
-			};
-		case "OperationsPlanned":
-			return { ...state, operationsPlanned: event.total };
-		case "OperationApplied":
-			return {
-				...state,
-				operationsApplied: event.applied,
-				operationsPlanned: Math.max(state.operationsPlanned, event.total),
-				latestMessage: event.summary,
+				memoryMutations: state.memoryMutations + 1,
+				latestMessage: `${event.action} ${event.scope}: ${event.summary}`,
 			};
 		case "Note":
 			return { ...state, latestMessage: event.text };
@@ -121,8 +130,7 @@ export const DreamTaskRegistryLive = Layer.effect(
 					startedAt,
 					sessionsDiscovered: 0,
 					sessionsReviewed: 0,
-					operationsPlanned: 0,
-					operationsApplied: 0,
+					memoryMutations: 0,
 					cancellable: true,
 				};
 
@@ -181,14 +189,9 @@ export const DreamTaskRegistryLive = Layer.effect(
 					status: "completed",
 					phase: "done",
 					finishedAt: result.finishedAt,
-					sessionsDiscovered: Math.max(
-						record.state.sessionsDiscovered,
-						result.reviewedSessions.length,
-					),
 					sessionsReviewed: result.reviewedSessions.length,
-					operationsPlanned: result.plan.operations.length,
-					operationsApplied: result.applied.length,
-					latestMessage: result.plan.summary,
+					memoryMutations: result.memoryMutations,
+					latestMessage: result.summary,
 					cancellable: false,
 				};
 
@@ -213,7 +216,7 @@ export const DreamTaskRegistryLive = Layer.effect(
 					...record.state,
 					status: "failed",
 					finishedAt,
-					latestMessage: cause._tag,
+					latestMessage: formatRunErrorMessage(cause),
 					cancellable: false,
 				};
 

@@ -1,8 +1,8 @@
-// DreamSubagent -- forked agent that reads transcripts and returns a
-// structured DreamConsolidationPlan.  Uses an independent pi AgentSession
-// with read-only tools and the configured dream model/thinking pair.
+// DreamSubagent -- forked agent session that reads transcripts, mutates
+// memory through the existing memory tool, and signals completion via
+// dream_finish.  No more plan/apply; the model does the work directly.
 
-import { Effect, Layer, Schema, ServiceMap } from "effect";
+import { Effect, Layer, ServiceMap } from "effect";
 
 import {
 	createAgentSession,
@@ -12,45 +12,58 @@ import {
 	DefaultResourceLoader,
 	type ModelRegistry,
 	type AgentSession,
+	type AgentSessionEvent,
+	type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
 import type {
 	AssistantMessage,
 	ThinkingLevel,
 } from "@mariozechner/pi-ai";
 
-import type {
-	DreamConsolidationPlan,
-	DreamProgressEvent,
-	DreamSubagentRequest,
-} from "./domain.js";
-import { DreamConsolidationPlan as DreamConsolidationPlanSchema } from "./domain.js";
+import type { DreamProgressEvent, DreamTranscriptCandidate } from "./domain.js";
 import {
-	DreamSubagentInvalidPlan,
 	DreamSubagentSpawnFailed,
 	type DreamSubagentError,
 } from "./errors.js";
-import { buildConsolidationPrompt } from "./prompt.js";
+import { buildDreamPrompt } from "./prompt.js";
 import { resolveModelPattern } from "../agent/worker.js";
-import type { MemoryBucketEntriesSnapshot, MemoryEntry, MemoryEntriesSnapshot } from "../memory/format.js";
+import type { MemoryEntriesSnapshot } from "../memory/format.js";
 
 // ---------------------------------------------------------------------------
 // Service interface
 // ---------------------------------------------------------------------------
 
-/**
- * Runtime context the caller must supply.  The DreamRunner provides these
- * when calling `plan()`.
- */
 export interface DreamSubagentContext {
 	readonly modelRegistry: ModelRegistry;
 }
 
+export interface DreamSubagentRunRequest {
+	readonly cwd: string;
+	readonly runId: string;
+	readonly mode: "manual" | "auto";
+	readonly model: {
+		readonly model: string;
+		readonly thinking: "low" | "medium" | "high" | "xhigh";
+		readonly maxTurns: number;
+	};
+	readonly memorySnapshot: MemoryEntriesSnapshot;
+	readonly transcriptCandidates: ReadonlyArray<DreamTranscriptCandidate>;
+	readonly nowIso: string;
+}
+
+/** Session execution result. Finish params are captured externally by the
+ *  dream_finish tool closure that the runner passes as a custom tool. */
+export interface DreamSubagentResult {
+	readonly memoryMutations: number;
+}
+
 export interface DreamSubagentApi {
-	readonly plan: (
-		request: DreamSubagentRequest,
+	readonly run: (
+		request: DreamSubagentRunRequest,
 		context: DreamSubagentContext,
+		customTools: ReadonlyArray<ToolDefinition>,
 		onEvent: (event: DreamProgressEvent) => Effect.Effect<void>,
-	) => Effect.Effect<DreamConsolidationPlan, DreamSubagentError>;
+	) => Effect.Effect<DreamSubagentResult, DreamSubagentError>;
 }
 
 export class DreamSubagent extends ServiceMap.Service<DreamSubagent, DreamSubagentApi>()(
@@ -61,32 +74,10 @@ export class DreamSubagent extends ServiceMap.Service<DreamSubagent, DreamSubage
 // Helpers
 // ---------------------------------------------------------------------------
 
-function formatBucketForPrompt(bucket: MemoryBucketEntriesSnapshot): string {
-	const header = `### ${bucket.bucket} (${bucket.chars}/${bucket.limitChars} chars, ${bucket.usagePercent}% used)`;
-	if (bucket.entries.length === 0) {
-		return `${header}\n  (empty)`;
-	}
-	const lines = bucket.entries.map(
-		(e: MemoryEntry) => `  [${e.id}] (scope=${e.scope}, type=${e.type}) ${e.content}`,
-	);
-	return `${header}\n${lines.join("\n")}`;
-}
-
-function formatMemorySnapshotForPrompt(snapshot: MemoryEntriesSnapshot): string {
-	return [
-		formatBucketForPrompt(snapshot.project),
-		formatBucketForPrompt(snapshot.global),
-		formatBucketForPrompt(snapshot.user),
-	].join("\n\n");
-}
-
-/** Map DreamThinking to pi-ai ThinkingLevel.  "off" is invalid for dream,
- *  so we only map the four supported levels. */
 function mapThinking(level: "low" | "medium" | "high" | "xhigh"): ThinkingLevel {
 	return level;
 }
 
-/** Extract text from an AssistantMessage's content parts. */
 function extractAssistantText(message: AssistantMessage): string {
 	return message.content
 		.filter((part): part is { type: "text"; text: string } => part.type === "text")
@@ -95,26 +86,6 @@ function extractAssistantText(message: AssistantMessage): string {
 		.trim();
 }
 
-/**
- * Strip markdown code fences that the LLM may have wrapped around JSON
- * despite being told not to.
- */
-function stripCodeFences(text: string): string {
-	let cleaned = text.trim();
-	if (cleaned.startsWith("```")) {
-		const firstNewline = cleaned.indexOf("\n");
-		if (firstNewline !== -1) {
-			cleaned = cleaned.slice(firstNewline + 1);
-		}
-		if (cleaned.endsWith("```")) {
-			cleaned = cleaned.slice(0, -3);
-		}
-		cleaned = cleaned.trim();
-	}
-	return cleaned;
-}
-
-/** Type guard for assistant messages from the pi message array. */
 function isAssistantMessage(msg: unknown): msg is AssistantMessage {
 	return (
 		typeof msg === "object" &&
@@ -126,13 +97,91 @@ function isAssistantMessage(msg: unknown): msg is AssistantMessage {
 	);
 }
 
+function truncate(text: string, maxChars: number): string {
+	if (text.length <= maxChars) {
+		return text;
+	}
+	return `${text.slice(0, Math.max(0, maxChars - 1)).trimEnd()}...`;
+}
+
+function summarizeUnknown(value: unknown, maxChars: number): string {
+	try {
+		const rendered = typeof value === "string" ? value : JSON.stringify(value);
+		if (rendered === undefined) {
+			return "(unserializable)";
+		}
+		return truncate(rendered, maxChars);
+	} catch {
+		return "(unserializable)";
+	}
+}
+
+function summarizeToolResult(result: unknown): string | undefined {
+	if (typeof result !== "object" || result === null || !("content" in result)) {
+		return undefined;
+	}
+
+	const content = (result as { readonly content?: unknown }).content;
+	if (!Array.isArray(content)) {
+		return undefined;
+	}
+
+	const textParts = content
+		.filter(
+			(part): part is { readonly type: "text"; readonly text: string } =>
+				typeof part === "object" &&
+				part !== null &&
+				"type" in part &&
+				(part as { readonly type?: unknown }).type === "text" &&
+				"text" in part &&
+				typeof (part as { readonly text?: unknown }).text === "string",
+		)
+		.map((part) => part.text)
+		.join("\n")
+		.trim();
+
+	if (textParts.length === 0) {
+		return undefined;
+	}
+
+	return truncate(textParts, 200);
+}
+
+function summarizeSubagentEvent(event: AgentSessionEvent): string | undefined {
+	if (event.type === "turn_start") {
+		return "Subagent started a new turn";
+	}
+
+	if (event.type === "tool_execution_start") {
+		const args = summarizeUnknown(event.args, 180);
+		return `Subagent tool start: ${event.toolName} ${args}`;
+	}
+
+	if (event.type === "tool_execution_end") {
+		const resultText = summarizeToolResult(event.result);
+		if (resultText !== undefined) {
+			return `Subagent tool done: ${event.toolName}${event.isError ? " (error)" : ""} -> ${resultText}`;
+		}
+		return `Subagent tool done: ${event.toolName}${event.isError ? " (error)" : ""}`;
+	}
+
+	if (event.type === "message_end" && isAssistantMessage(event.message)) {
+		const text = extractAssistantText(event.message);
+		if (text.length === 0) {
+			return undefined;
+		}
+		return `Subagent response: ${truncate(text, 200)}`;
+	}
+
+	return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Session lifecycle
 // ---------------------------------------------------------------------------
 
-interface SessionResult {
+interface SessionSuccess {
 	readonly ok: true;
-	readonly text: string;
 }
 
 interface SessionFailure {
@@ -150,17 +199,7 @@ interface PromptFailed {
 	readonly error: unknown;
 }
 
-function isTurnLimitExceeded(
-	value: SessionResult | SessionFailure | TurnLimitExceeded | PromptFailed,
-): value is TurnLimitExceeded {
-	return "_tag" in value && value._tag === "turn_limit_exceeded";
-}
-
-function isPromptFailed(
-	value: SessionResult | SessionFailure | TurnLimitExceeded | PromptFailed,
-): value is PromptFailed {
-	return "_tag" in value && value._tag === "prompt_failed";
-}
+type SessionOutcome = SessionSuccess | SessionFailure | TurnLimitExceeded | PromptFailed;
 
 type TurnLimitSession = Pick<AgentSession, "abort"> & {
 	readonly agent: {
@@ -168,12 +207,8 @@ type TurnLimitSession = Pick<AgentSession, "abort"> & {
 	};
 };
 
-/**
- * Subscribe to the session and wait for the agent_end event.
- * Returns the last assistant text or a failure reason.
- */
-function waitForSessionEnd(session: AgentSession): Promise<SessionResult | SessionFailure> {
-	return new Promise<SessionResult | SessionFailure>((resolve) => {
+function waitForSessionEnd(session: AgentSession): Promise<SessionSuccess | SessionFailure> {
+	return new Promise<SessionSuccess | SessionFailure>((resolve) => {
 		const unsubscribe = session.subscribe((event) => {
 			if (event.type !== "agent_end") {
 				return;
@@ -200,13 +235,7 @@ function waitForSessionEnd(session: AgentSession): Promise<SessionResult | Sessi
 				return;
 			}
 
-			const text = extractAssistantText(lastAssistant);
-			if (text.length === 0) {
-				resolve({ ok: false, reason: "Dream subagent returned empty response" });
-				return;
-			}
-
-			resolve({ ok: true, text });
+			resolve({ ok: true });
 		});
 	});
 }
@@ -226,7 +255,6 @@ function createTurnLimitGuard(
 		if (disposed) {
 			return;
 		}
-
 		disposed = true;
 		unsubscribe?.();
 		unsubscribe = undefined;
@@ -244,10 +272,7 @@ function createTurnLimitGuard(
 			}
 
 			dispose();
-			resolve({
-				_tag: "turn_limit_exceeded",
-				maxTurns,
-			});
+			resolve({ _tag: "turn_limit_exceeded", maxTurns });
 			void session.abort();
 		});
 	});
@@ -259,13 +284,12 @@ function createTurnLimitGuard(
 // Core implementation
 // ---------------------------------------------------------------------------
 
-const decodePlan = Schema.decodeUnknownSync(DreamConsolidationPlanSchema);
-
-function planImpl(
-	request: DreamSubagentRequest,
+function runImpl(
+	request: DreamSubagentRunRequest,
 	context: DreamSubagentContext,
+	customTools: ReadonlyArray<ToolDefinition>,
 	onEvent: (event: DreamProgressEvent) => Effect.Effect<void>,
-): Effect.Effect<DreamConsolidationPlan, DreamSubagentError> {
+): Effect.Effect<DreamSubagentResult, DreamSubagentError> {
 	return Effect.gen(function* () {
 		// ── Resolve model ────────────────────────────────────────────
 		const allModels = context.modelRegistry.getAll();
@@ -278,16 +302,14 @@ function planImpl(
 		}
 
 		// ── Build prompt ─────────────────────────────────────────────
-		yield* onEvent({ _tag: "PhaseChanged", phase: "orient", message: "Building consolidation prompt" });
+		yield* onEvent({ _tag: "PhaseChanged", phase: "orient", message: "Building dream prompt" });
 
-		const memoryText = formatMemorySnapshotForPrompt(request.memorySnapshot);
-		const transcriptPaths = request.transcriptCandidates.map((tc) => tc.path);
-
-		const systemPrompt = buildConsolidationPrompt({
-			memorySnapshot: memoryText,
-			transcriptPaths,
-			nowIso: request.nowIso,
+		const systemPrompt = buildDreamPrompt({
+			runId: request.runId,
 			mode: request.mode,
+			nowIso: request.nowIso,
+			memorySnapshot: request.memorySnapshot,
+			transcriptCandidates: request.transcriptCandidates,
 		});
 
 		// ── Create agent session ─────────────────────────────────────
@@ -315,7 +337,7 @@ function planImpl(
 					model: resolvedModel,
 					thinkingLevel: mapThinking(request.model.thinking),
 					tools: readOnlyTools,
-					customTools: [],
+					customTools: customTools as ToolDefinition[],
 					modelRegistry: context.modelRegistry,
 					sessionManager: SessionManager.inMemory(request.cwd),
 					settingsManager,
@@ -330,43 +352,86 @@ function planImpl(
 		const session = sessionResult.session;
 		const turnLimitGuard = createTurnLimitGuard(session, request.model.maxTurns);
 
+		// Track memory mutations by watching tool_execution_start args
+		// (tool_execution_end doesn't carry args)
+		const pendingMemoryActions = new Map<string, string>();
+		let observedMemoryMutations = 0;
+
+		const unsubscribeActivity = session.subscribe((event) => {
+			// Capture memory tool action from start event
+			if (
+				event.type === "tool_execution_start" &&
+				event.toolName === "memory"
+			) {
+				const args = event.args as Record<string, unknown> | undefined;
+				const action = args?.["action"];
+				if (typeof action === "string") {
+					pendingMemoryActions.set(event.toolCallId, action);
+				}
+			}
+
+			// Count successful memory mutations
+			if (
+				event.type === "tool_execution_end" &&
+				event.toolName === "memory" &&
+				!event.isError
+			) {
+				const action = pendingMemoryActions.get(event.toolCallId);
+				pendingMemoryActions.delete(event.toolCallId);
+				if (action === "add" || action === "update" || action === "remove") {
+					observedMemoryMutations += 1;
+				}
+			}
+
+			const summary = summarizeSubagentEvent(event);
+			if (summary === undefined) {
+				return;
+			}
+
+			void Effect.runPromise(
+				onEvent({ _tag: "Note", text: summary }).pipe(
+					Effect.catch(() => Effect.void),
+				),
+			);
+		});
+
 		// ── Prompt and wait ──────────────────────────────────────────
 		yield* onEvent({
 			_tag: "PhaseChanged",
 			phase: "consolidate",
-			message: `Running consolidation with ${resolvedModel.provider}/${resolvedModel.id}`,
+			message: `Running dream with ${resolvedModel.provider}/${resolvedModel.id}`,
 		});
 
 		const endPromise = waitForSessionEnd(session);
 		const promptPromise = session.prompt(
-			"Begin the 4-phase memory consolidation. Read the transcript files listed above, then return your consolidation plan as a single JSON object.",
+			"Begin the 4-phase memory consolidation. Read the transcript files listed above, then use the memory tool to make changes, and finish with dream_finish.",
 			{ source: "extension" },
 		);
-		const promptFailurePromise: Promise<PromptFailed> = new Promise((resolve) => {
+		const promptFailurePromise = new Promise<PromptFailed>((resolve) => {
 			void promptPromise.catch((error) => {
 				resolve({ _tag: "prompt_failed", error });
 			});
 		});
 
-		const result = yield* Effect.tryPromise({
-			try: async (): Promise<SessionResult | SessionFailure | TurnLimitExceeded> => {
-				const outcome = await Promise.race([
+		const outcome: SessionOutcome = yield* Effect.tryPromise({
+			try: async (): Promise<SessionOutcome> => {
+				const raceResult = await Promise.race([
 					endPromise,
 					turnLimitGuard.promise,
 					promptFailurePromise,
 				]);
 
-				if (isPromptFailed(outcome)) {
-					throw outcome.error;
+				if ("_tag" in raceResult && raceResult._tag === "prompt_failed") {
+					throw raceResult.error;
 				}
 
-				if (isTurnLimitExceeded(outcome)) {
+				if ("_tag" in raceResult && raceResult._tag === "turn_limit_exceeded") {
 					await promptPromise.catch(() => undefined);
-					return outcome;
+					return raceResult;
 				}
 
 				await promptPromise;
-				return outcome;
+				return raceResult;
 			},
 			catch: (_error) =>
 				new DreamSubagentSpawnFailed({
@@ -376,59 +441,24 @@ function planImpl(
 			Effect.ensuring(
 				Effect.sync(() => {
 					turnLimitGuard.dispose();
+					unsubscribeActivity();
 				}),
 			),
 		);
 
-		if (isTurnLimitExceeded(result)) {
+		if ("_tag" in outcome && outcome._tag === "turn_limit_exceeded") {
 			return yield* new DreamSubagentSpawnFailed({
-				reason: `Dream subagent exceeded maxTurns=${result.maxTurns}`,
+				reason: `Dream subagent exceeded maxTurns=${outcome.maxTurns}`,
 			});
 		}
 
-		if (!result.ok) {
-			return yield* new DreamSubagentSpawnFailed({ reason: result.reason });
+		if ("ok" in outcome && !outcome.ok) {
+			return yield* new DreamSubagentSpawnFailed({ reason: outcome.reason });
 		}
 
-		// ── Parse output ─────────────────────────────────────────────
-		yield* onEvent({ _tag: "PhaseChanged", phase: "prune", message: "Parsing consolidation plan" });
-
-		const jsonText = stripCodeFences(result.text);
-
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(jsonText);
-		} catch (jsonError: unknown) {
-			return yield* new DreamSubagentInvalidPlan({
-				reason: `Subagent output is not valid JSON: ${String(jsonError)}. First 500 chars: ${jsonText.slice(0, 500)}`,
-			});
-		}
-
-		const plan = yield* Effect.try({
-			try: () => decodePlan(parsed),
-			catch: (decodeError) =>
-				new DreamSubagentInvalidPlan({
-					reason: `Subagent output does not match DreamConsolidationPlan schema: ${String(decodeError)}`,
-				}),
-		});
-
-		yield* onEvent({
-			_tag: "OperationsPlanned",
-			total: plan.operations.length,
-		});
-
-		return plan;
+		return { memoryMutations: observedMemoryMutations };
 	});
 }
-
-// ---------------------------------------------------------------------------
-// Exported for testing
-// ---------------------------------------------------------------------------
-
-export { formatMemorySnapshotForPrompt as _formatMemorySnapshotForPrompt };
-export { createTurnLimitGuard as _createTurnLimitGuard };
-export { stripCodeFences as _stripCodeFences };
-export { isAssistantMessage as _isAssistantMessage };
 
 // ---------------------------------------------------------------------------
 // Live layer
@@ -437,6 +467,13 @@ export { isAssistantMessage as _isAssistantMessage };
 export const DreamSubagentLive = Layer.succeed(
 	DreamSubagent,
 	DreamSubagent.of({
-		plan: planImpl,
+		run: runImpl,
 	}),
 );
+
+// ---------------------------------------------------------------------------
+// Exported for testing
+// ---------------------------------------------------------------------------
+
+export { createTurnLimitGuard as _createTurnLimitGuard };
+export { isAssistantMessage as _isAssistantMessage };

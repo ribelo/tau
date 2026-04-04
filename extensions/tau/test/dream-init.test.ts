@@ -37,9 +37,11 @@ function makePiHarness(): {
 	readonly pi: ExtensionAPI;
 	readonly commands: Map<string, RegisteredCommand>;
 	readonly handlers: Map<string, EventHandler[]>;
+	readonly userMessages: string[];
 } {
 	const commands = new Map<string, RegisteredCommand>();
 	const handlers = new Map<string, EventHandler[]>();
+	const userMessages: string[] = [];
 
 	const pi = {
 		on: (event: string, handler: EventHandler) => {
@@ -50,9 +52,13 @@ function makePiHarness(): {
 		registerCommand: (name: string, options: RegisteredCommand) => {
 			commands.set(name, options);
 		},
+		registerTool: () => undefined,
+		sendUserMessage: (message: string) => {
+			userMessages.push(message);
+		},
 	} as unknown as ExtensionAPI;
 
-	return { pi, commands, handlers };
+	return { pi, commands, handlers, userMessages };
 }
 
 function makeCommandContext(): {
@@ -121,8 +127,7 @@ function makeState(overrides: Partial<DreamTaskState> = {}): DreamTaskState {
 		startedAt: 1,
 		sessionsDiscovered: 0,
 		sessionsReviewed: 0,
-		operationsPlanned: 0,
-		operationsApplied: 0,
+		memoryMutations: 0,
 		cancellable: true,
 		...overrides,
 	};
@@ -199,12 +204,11 @@ describe("initDream", () => {
 					getCount += 1;
 					return Effect.succeed(
 						getCount === 1
-							? makeState({ phase: "gather", operationsPlanned: 2, operationsApplied: 1 })
+							? makeState({ phase: "gather", memoryMutations: 1 })
 							: makeState({
 									status: "completed",
 									phase: "done",
-									operationsPlanned: 2,
-									operationsApplied: 2,
+									memoryMutations: 2,
 									sessionsReviewed: 3,
 									finishedAt: 2,
 									cancellable: false,
@@ -218,8 +222,9 @@ describe("initDream", () => {
 		const command = commands.get("dream");
 		expect(command).toBeDefined();
 
-		await command?.handler("", ctx);
+		const running = command?.handler("", ctx);
 		await vi.advanceTimersByTimeAsync(20);
+		await running;
 
 		expect(spawnedRequests).toEqual([
 			{
@@ -233,10 +238,14 @@ describe("initDream", () => {
 			level: "info",
 			message: expect.stringContaining("Dream started (task dream-task-1)"),
 		});
-		expect(statusCalls).toContainEqual({ key: "dream", value: "dream: gather (1/2 ops)" });
-		expect(notifyCalls[1]).toMatchObject({
+		expect(notifyCalls).toContainEqual({
 			level: "info",
-			message: "Dream complete: reviewed 3 session(s), applied 2/2 operation(s).",
+			message: "Dream phase: gather",
+		});
+		expect(statusCalls).toContainEqual({ key: "dream", value: "dream: gather (1 mutations)" });
+		expect(notifyCalls.at(-1)).toMatchObject({
+			level: "info",
+			message: "Dream complete: reviewed 3 session(s), 2 memory mutation(s).",
 		});
 		expect(statusCalls.at(-1)).toEqual({ key: "dream", value: undefined });
 	});
@@ -271,8 +280,7 @@ describe("initDream", () => {
 							mode: "auto",
 							status: "completed",
 							phase: "done",
-							operationsPlanned: 1,
-							operationsApplied: 1,
+							memoryMutations: 1,
 							sessionsReviewed: 2,
 							finishedAt: 3,
 							cancellable: false,
@@ -291,7 +299,7 @@ describe("initDream", () => {
 		expect(getCount).toBeGreaterThan(0);
 		expect(notifyCalls).toContainEqual({
 			level: "info",
-			message: "Dream complete: reviewed 2 session(s), applied 1/1 operation(s).",
+			message: "Dream complete: reviewed 2 session(s), 1 memory mutation(s).",
 		});
 	});
 
