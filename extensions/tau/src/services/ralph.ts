@@ -284,6 +284,7 @@ export interface RalphService {
 		cwd: string,
 		sessionFile: string | undefined,
 	) => Effect.Effect<void, RalphContractValidationError, never>;
+	readonly existsRalphDirectory: (cwd: string) => Effect.Effect<boolean, never, never>;
 	readonly persistOwnedLoopOnShutdown: (
 		cwd: string,
 		sessionFile: string | undefined,
@@ -1026,6 +1027,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 				archiveLoopByName,
 				cleanCompletedLoops,
 				nukeLoops,
+				existsRalphDirectory: repo.existsRalphDirectory,
 				syncCurrentLoopFromSession,
 				persistOwnedLoopOnShutdown,
 				runLoop,

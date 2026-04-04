@@ -211,6 +211,13 @@ export default function initRalph(
 			return;
 		}
 
+		const hasDir = await withRalph((ralph) => ralph.existsRalphDirectory(cwd));
+		if (!hasDir) {
+			ctx.ui.setStatus("ralph", undefined);
+			ctx.ui.setWidget("ralph", undefined);
+			return;
+		}
+
 		const state = await withRalph((ralph) =>
 			ralph
 				.resolveLoopForUi(cwd, sessionFileFromContext(ctx))

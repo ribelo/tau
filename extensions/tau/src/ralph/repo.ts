@@ -189,9 +189,6 @@ export const RalphRepoLive = Layer.effect(
 				if (yield* Effect.promise(() => detectLegacyLayout(cwd))) {
 					return yield* Effect.fail(makeLegacyLayoutError());
 				}
-				if (!archived) {
-					yield* ensureRalphProtectedDirs(cwd);
-				}
 				const filePath = getStatePath(cwd, name, archived);
 				const contentOption = yield* readOptionalFile(fs, filePath);
 				if (Option.isNone(contentOption)) {
@@ -214,9 +211,6 @@ export const RalphRepoLive = Layer.effect(
 			function* (cwd, archived = false) {
 				if (yield* Effect.promise(() => detectLegacyLayout(cwd))) {
 					return yield* Effect.fail(makeLegacyLayoutError());
-				}
-				if (!archived) {
-					yield* ensureRalphProtectedDirs(cwd);
 				}
 
 				const dir = archived
@@ -265,10 +259,6 @@ export const RalphRepoLive = Layer.effect(
 
 		const ensureRalphProtectedDirs = (cwd: string): Effect.Effect<void, never, never> =>
 			Effect.gen(function* () {
-				const rootExists = yield* fs.exists(ralphDir(cwd)).pipe(Effect.orDie);
-				if (!rootExists) {
-					return;
-				}
 				yield* fs
 					.makeDirectory(path.resolve(cwd, RALPH_STATE_DIR), { recursive: true })
 					.pipe(Effect.orDie);
@@ -279,8 +269,8 @@ export const RalphRepoLive = Layer.effect(
 
 		const writeTaskFile: RalphRepoService["writeTaskFile"] = Effect.fn("RalphRepo.writeTaskFile")(
 			function* (cwd, taskFile, content) {
-				yield* ensureRalphProtectedDirs(cwd);
 				yield* atomicWriteFileString(fs, path.resolve(cwd, taskFile), content);
+				yield* ensureRalphProtectedDirs(cwd);
 			},
 		);
 
@@ -291,8 +281,8 @@ export const RalphRepoLive = Layer.effect(
 				if (exists) {
 					return false;
 				}
-				yield* ensureRalphProtectedDirs(cwd);
 				yield* atomicWriteFileString(fs, target, content);
+				yield* ensureRalphProtectedDirs(cwd);
 				return true;
 			},
 		);
