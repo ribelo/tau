@@ -300,38 +300,14 @@ export function readThreadContent(
       selectedEntries = result.selected;
       truncated = result.truncated;
     } else {
-      // Include all entries up to size limit
+      // Include all entries; if formatted transcript exceeds limit, keep first + recent
       selectedEntries = filteredEntries;
-      let contentSize = 0;
-      for (const entry of selectedEntries) {
-        contentSize += extractEntryText(entry).length;
-      }
-      truncated = contentSize > MAX_CONTENT_SIZE;
+      const fullText = formatTranscript(selectedEntries);
+      truncated = fullText.length > MAX_CONTENT_SIZE;
       if (truncated) {
-        // Keep header and recent messages
         const firstEntry = selectedEntries[0];
         const recent = selectedEntries.slice(-20);
         selectedEntries = firstEntry ? [firstEntry, ...recent] : recent;
-        // Re-check size after reduction
-        const reducedText = formatTranscript(selectedEntries);
-        if (reducedText.length > MAX_CONTENT_SIZE) {
-          const capped = capTranscript(reducedText, MAX_CONTENT_SIZE, true);
-          const result: ReadThreadResult = {
-            ok: true,
-            threadID: header.id,
-            resolvedPath: sessionPath,
-            title,
-            cwd,
-            createdAt,
-            updatedAt,
-            parentThreadId,
-            totalMessages,
-            includedMessages: selectedEntries.length,
-            truncated: capped.truncated,
-            content: capped.text,
-          };
-          return result;
-        }
       }
     }
 

@@ -30,20 +30,21 @@ export function findThreads(
 
     // Deduplicate by ID, keeping local entries first
     const seen = new Set<string>(localThreads.map((t) => t.id));
+    const dedupedGlobal = globalThreads.filter((t) => !seen.has(t.id));
     const merged = [
       ...localThreads,
-      ...globalThreads.filter((t) => !seen.has(t.id)),
+      ...dedupedGlobal,
     ]
       .sort((a, b) => b.score - a.score)
       .slice(0, MAX_RESULTS);
+
+    const totalUnique = localThreads.length + dedupedGlobal.length;
 
     return {
       ok: true as const,
       query,
       threads: merged,
-      hasMore:
-        localThreads.length >= MAX_RESULTS ||
-        globalThreads.length >= MAX_RESULTS,
+      hasMore: totalUnique > MAX_RESULTS,
     };
   });
 }

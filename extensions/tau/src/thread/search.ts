@@ -266,19 +266,28 @@ export function findSessionById(
   ThreadCatalogError | ThreadAmbiguousError
 > {
   return Effect.gen(function* () {
-    // First try local sessions
-    const localSessions = yield* Effect.tryPromise({
-      try: () => SessionManager.list(cwd),
-      catch: (cause) =>
-        new ThreadCatalogError({
-          message: `Failed to list local sessions: ${cause}`,
-          cause,
-        }),
-    });
+    const [localSessions, allSessions] = yield* Effect.all([
+      Effect.tryPromise({
+        try: () => SessionManager.list(cwd),
+        catch: (cause) =>
+          new ThreadCatalogError({
+            message: `Failed to list local sessions: ${cause}`,
+            cause,
+          }),
+      }),
+      Effect.tryPromise({
+        try: () => SessionManager.listAll(),
+        catch: (cause) =>
+          new ThreadCatalogError({
+            message: `Failed to list all sessions: ${cause}`,
+            cause,
+          }),
+      }),
+    ]);
 
     const lowerId = threadID.toLowerCase();
 
-    // Check for exact match in local sessions
+    // Exact match takes precedence (local first, then global)
     for (const s of localSessions) {
       if (s.id.toLowerCase() === lowerId) {
         const entry = yield* Effect.tryPromise({
@@ -292,42 +301,6 @@ export function findSessionById(
         return Option.some(entry);
       }
     }
-
-    // Check for prefix match in local sessions
-    const prefixMatches = localSessions.filter((s) =>
-      s.id.toLowerCase().startsWith(lowerId)
-    );
-    if (prefixMatches.length === 1) {
-      const entry = yield* Effect.tryPromise({
-        try: () => getCachedOrUpdatedEntry(prefixMatches[0]!),
-        catch: (cause) =>
-          new ThreadCatalogError({
-            message: `Failed to process session: ${prefixMatches[0]!.path}`,
-            cause,
-          }),
-      });
-      return Option.some(entry);
-    }
-    if (prefixMatches.length > 1) {
-      return yield* Effect.fail(
-        new ThreadAmbiguousError({
-          threadID,
-          matches: prefixMatches.map((s) => ({ id: s.id, path: s.path })),
-        })
-      );
-    }
-
-    // If no unique local match, try global
-    const allSessions = yield* Effect.tryPromise({
-      try: () => SessionManager.listAll(),
-      catch: (cause) =>
-        new ThreadCatalogError({
-          message: `Failed to list all sessions: ${cause}`,
-          cause,
-        }),
-    });
-
-    // Check for exact match globally
     for (const s of allSessions) {
       if (s.id.toLowerCase() === lowerId) {
         const entry = yield* Effect.tryPromise({
@@ -342,26 +315,36 @@ export function findSessionById(
       }
     }
 
-    // Check for prefix match globally
-    const globalPrefixMatches = allSessions.filter((s) =>
+    // Collect all prefix matches across local and global
+    const localPrefix = localSessions.filter((s) =>
       s.id.toLowerCase().startsWith(lowerId)
     );
-    if (globalPrefixMatches.length === 1) {
+    const globalPrefix = allSessions.filter((s) =>
+      s.id.toLowerCase().startsWith(lowerId)
+    );
+    const seenLocal = new Set<string>(localPrefix.map((s) => s.id));
+    const allPrefixMatches = [
+      ...localPrefix,
+      ...globalPrefix.filter((s) => !seenLocal.has(s.id)),
+    ];
+
+    if (allPrefixMatches.length === 1) {
       const entry = yield* Effect.tryPromise({
-        try: () => getCachedOrUpdatedEntry(globalPrefixMatches[0]!),
+        try: () => getCachedOrUpdatedEntry(allPrefixMatches[0]!),
         catch: (cause) =>
           new ThreadCatalogError({
-            message: `Failed to process session: ${globalPrefixMatches[0]!.path}`,
+            message: `Failed to process session: ${allPrefixMatches[0]!.path}`,
             cause,
           }),
       });
       return Option.some(entry);
     }
-    if (globalPrefixMatches.length > 1) {
+
+    if (allPrefixMatches.length > 1) {
       return yield* Effect.fail(
         new ThreadAmbiguousError({
           threadID,
-          matches: globalPrefixMatches.map((s) => ({ id: s.id, path: s.path })),
+          matches: allPrefixMatches.map((s) => ({ id: s.id, path: s.path })),
         })
       );
     }
