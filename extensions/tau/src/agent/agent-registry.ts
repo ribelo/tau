@@ -57,6 +57,8 @@ const MODE_AGENT_TOOLS = [
 	"web_search_exa",
 	"crawling_exa",
 	"get_code_context_exa",
+	"find_thread",
+	"read_thread",
 ] as const;
 
 const MODE_AGENT_SPAWNS = ["smart", "deep", "rush", "finder", "librarian", "oracle", "painter"] as const;

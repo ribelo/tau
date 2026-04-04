@@ -704,7 +704,7 @@ describe("memory tool runtime", () => {
 				return yield* CuratedMemory;
 			}));
 			await runtime.runPromise(Effect.scoped(memory.setup));
-			await runEffect(memory.add("user", "u".repeat(900), cwd));
+			await runEffect(memory.add("user", "u".repeat(24_000), cwd));
 
 			initMemory(pi, runEffect);
 
@@ -716,7 +716,7 @@ describe("memory tool runtime", () => {
 				{
 					action: "add",
 					target: "user",
-					content: "v".repeat(200),
+					content: "v".repeat(2_000),
 				},
 				undefined,
 				undefined,
@@ -727,8 +727,8 @@ describe("memory tool runtime", () => {
 				type: "text",
 				text: [
 					"user memory limit exceeded.",
-					"Current total: 900/1024 chars.",
-					"Projected total after this change: 1103/1024 chars.",
+					"Current total: 24000/25000 chars.",
+					"Projected total after this change: 26003/25000 chars.",
 					"Next step: shorten this content, remove or shorten existing user memories, or use project/global memory.",
 				].join("\n"),
 			});

@@ -95,10 +95,6 @@ export function buildToolDescription(
 		? scopedAgents.filter((a) => !isDisabled(a.name))
 		: scopedAgents;
 
-	const disabledAgents = isDisabled
-		? scopedAgents.filter((a) => isDisabled(a.name))
-		: [];
-
 	const lines: string[] = [];
 	lines.push("Manage non-blocking agent tasks. Actions: spawn, send, wait, close, list.");
 	lines.push("");
@@ -115,10 +111,7 @@ export function buildToolDescription(
 		const shortDesc = a.description.split("\n")[0]?.trim() || "";
 		lines.push(`- ${a.name}: ${shortDesc}`);
 	}
-	if (disabledAgents.length > 0) {
-		lines.push("");
-		lines.push(`Disabled agents: ${disabledAgents.map((a) => a.name).join(", ")}`);
-	}
+
 	return lines.join("\n").trim();
 }
 

@@ -28,6 +28,7 @@ import initRequestUserInput from "./request-user-input/index.js";
 import initRalph from "./ralph/index.js";
 import initForge from "./forge/index.js";
 import initAgentsMenu from "./agents-menu/index.js";
+import initThreadTools from "./thread/index.js";
 import { isAgentDisabled } from "./agents-menu/index.js";
 import { AgentConfig, AgentControl } from "./agent/services.js";
 import { AgentControlLive } from "./agent/control.js";
@@ -225,6 +226,7 @@ export const startTau = (pi: ExtensionAPI) => {
 				initRequestUserInput(pi);
 				initRalph(pi, runRalph);
 				initForge(pi);
+				initThreadTools(pi);
 			});
 
 			const agentRegistry = yield* AgentRegistry.load(process.cwd());

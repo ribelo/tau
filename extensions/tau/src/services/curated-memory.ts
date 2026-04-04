@@ -5,6 +5,7 @@ import * as path from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { DateTime, Effect, Layer, Ref, Semaphore, ServiceMap } from "effect";
 import type { Scope } from "effect";
+import { nanoid } from "nanoid";
 
 import { PiAPI } from "../effect/pi.js";
 import {
@@ -36,10 +37,14 @@ import {
 } from "../memory/errors.js";
 import { getProjectTauMemoryDir, getTauMemoryDir } from "../shared/discovery.js";
 
-const PROJECT_SCOPE_CHAR_LIMIT = 2048;
-const GLOBAL_SCOPE_CHAR_LIMIT = 2048;
-const USER_SCOPE_CHAR_LIMIT = 1024;
+// Claude Code's MEMORY.md entrypoint is capped at ~25k bytes. Keep tau scope
+// limits in the same order of magnitude so memory is durable without frequent
+// pruning churn.
+const PROJECT_SCOPE_CHAR_LIMIT = 25_000;
+const GLOBAL_SCOPE_CHAR_LIMIT = 25_000;
+const USER_SCOPE_CHAR_LIMIT = 25_000;
 const LOCK_STALE_MS = 5_000;
+const MEMORY_ID_SHORT_LENGTH = 12;
 
 interface FrozenSnapshot {
 	readonly renderedIndex: string;
@@ -173,9 +178,50 @@ interface ReadJsonlScopeResult {
 	readonly migrated: boolean;
 }
 
+function migrateLegacyLongIds(entries: readonly MemoryEntry[]): ReadJsonlScopeResult {
+	const usedIds = new Set<string>();
+	let migrated = false;
+
+	const migratedEntries = entries.map((entry) => {
+		const currentId = entry.id;
+		const shouldMigrate = currentId.length > MEMORY_ID_SHORT_LENGTH || usedIds.has(currentId);
+
+		if (!shouldMigrate) {
+			usedIds.add(currentId);
+			return entry;
+		}
+
+		migrated = true;
+		let nextId = nanoid(MEMORY_ID_SHORT_LENGTH);
+		while (usedIds.has(nextId)) {
+			nextId = nanoid(MEMORY_ID_SHORT_LENGTH);
+		}
+		usedIds.add(nextId);
+
+		return createMemoryEntry(entry.content, {
+			scope: entry.scope,
+			type: entry.type,
+			summary: entry.summary,
+			id: nextId,
+			createdAt: entry.createdAt,
+			updatedAt: entry.updatedAt,
+		});
+	});
+
+	return {
+		entries: migratedEntries,
+		migrated,
+	};
+}
+
 async function readJsonlScope(scope: MemoryScope, cwd: string): Promise<ReadJsonlScopeResult> {
 	const raw = await fs.readFile(scopePath(scope, cwd), "utf-8");
-	return parseMemoryEntriesWithMigration(raw, { scope });
+	const parsed = parseMemoryEntriesWithMigration(raw, { scope });
+	const ids = migrateLegacyLongIds(parsed.entries);
+	return {
+		entries: ids.entries,
+		migrated: parsed.migrated || ids.migrated,
+	};
 }
 
 async function migrateLegacyScope(scope: MemoryScope, cwd: string): Promise<MemoryEntry[]> {

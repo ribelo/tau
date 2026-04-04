@@ -222,13 +222,14 @@ describe("CuratedMemory service", () => {
 		}
 	});
 
-	it("accepts existing default-length nanoid entries when appending new memory", async () => {
+	it("migrates legacy long ids to short ids before appending new memory", async () => {
 		await fs.mkdir(globalMemoryDir(tempHome), { recursive: true });
+		const legacyId = "itoVz1h0QCl_78gmCgjPG";
 		await fs.writeFile(
 			globalMemoryPath(tempHome),
 			[
 				JSON.stringify({
-					id: "itoVz1h0QCl_78gmCgjPG",
+					id: legacyId,
 					content: "existing-entry",
 					createdAt: "2026-03-29T11:14:07.584Z",
 					updatedAt: "2026-03-29T11:14:07.584Z",
@@ -249,9 +250,50 @@ describe("CuratedMemory service", () => {
 			});
 
 			expect(entries.map((entry) => entry.content)).toEqual(["existing-entry", "new-entry"]);
+			expect(entries.map((entry) => entry.id)).toHaveLength(2);
+			expect(entries[0]?.id).not.toBe(legacyId);
+			expect(entries[0]?.id.length).toBe(12);
+			expect(entries[1]?.id.length).toBe(12);
+			expect(new Set(entries.map((entry) => entry.id)).size).toBe(2);
 			expect(entries.map((entry) => entry.scope)).toEqual(["global", "global"]);
 			expect(entries[0]?.type).toBe("fact");
 			expect(entries[0]?.summary).toBe("existing-entry");
+		} finally {
+			await runtime.dispose();
+		}
+	});
+
+	it("migrates legacy long ids during setup startup reload", async () => {
+		await fs.mkdir(globalMemoryDir(tempHome), { recursive: true });
+		const legacyId = "HN855CdkM_Jf2ceFiuvjC";
+		await fs.writeFile(
+			globalMemoryPath(tempHome),
+			[
+				JSON.stringify({
+					id: legacyId,
+					content: "startup-migration",
+					createdAt: "2026-03-29T11:14:07.584Z",
+					updatedAt: "2026-03-29T11:14:07.584Z",
+				}),
+			].join("\n"),
+			"utf8",
+		);
+
+		const { pi } = makePiStub();
+		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
+
+		try {
+			const memory = await runtime.runPromise(getCuratedMemory);
+			await runtime.runPromise(Effect.scoped(memory.setup));
+
+			const entries = parseMemoryEntries(await fs.readFile(globalMemoryPath(tempHome), "utf8"), {
+				scope: "global",
+			});
+
+			expect(entries).toHaveLength(1);
+			expect(entries[0]?.id).not.toBe(legacyId);
+			expect(entries[0]?.id.length).toBe(12);
+			expect(entries[0]?.content).toBe("startup-migration");
 		} finally {
 			await runtime.dispose();
 		}
@@ -321,21 +363,21 @@ describe("CuratedMemory service", () => {
 
 		try {
 			const memory = await runtime.runPromise(getCuratedMemory);
-			await runtime.runPromise(memory.add("project", "p".repeat(1500), workspaceRoot));
-			await runtime.runPromise(memory.add("project", "q".repeat(400), workspaceRoot));
-			await runtime.runPromise(memory.add("global", "g".repeat(1900), workspaceRoot));
-			const userEntry = await runtime.runPromise(memory.add("user", "u".repeat(700), workspaceRoot));
-			await runtime.runPromise(memory.add("user", "v".repeat(200), workspaceRoot));
+			await runtime.runPromise(memory.add("project", "p".repeat(15_000), workspaceRoot));
+			await runtime.runPromise(memory.add("project", "q".repeat(9_000), workspaceRoot));
+			await runtime.runPromise(memory.add("global", "g".repeat(24_000), workspaceRoot));
+			const userEntry = await runtime.runPromise(memory.add("user", "u".repeat(15_000), workspaceRoot));
+			await runtime.runPromise(memory.add("user", "v".repeat(8_000), workspaceRoot));
 
-			await expect(runtime.runPromise(memory.add("project", "z".repeat(148), workspaceRoot))).rejects.toBeInstanceOf(
+			await expect(runtime.runPromise(memory.add("project", "z".repeat(1_000), workspaceRoot))).rejects.toBeInstanceOf(
 				MemoryEntryTooLarge,
 			);
 
-			await expect(runtime.runPromise(memory.add("global", "h".repeat(148), workspaceRoot))).rejects.toBeInstanceOf(
+			await expect(runtime.runPromise(memory.add("global", "h".repeat(1_000), workspaceRoot))).rejects.toBeInstanceOf(
 				MemoryEntryTooLarge,
 			);
 
-			await expect(runtime.runPromise(memory.update("user", userEntry.entry.id, "u".repeat(824), workspaceRoot))).rejects.toBeInstanceOf(
+			await expect(runtime.runPromise(memory.update("user", userEntry.entry.id, "u".repeat(17_000), workspaceRoot))).rejects.toBeInstanceOf(
 				MemoryEntryTooLarge,
 			);
 		} finally {
@@ -355,8 +397,8 @@ describe("CuratedMemory service", () => {
 			const snapshot = await runtime.runPromise(memory.getSnapshot(workspaceRoot));
 
 			expect(snapshot.project.chars).toBe(1303);
-			expect(snapshot.project.limitChars).toBe(2048);
-			expect(snapshot.project.usagePercent).toBe(Math.floor((1303 / 2048) * 100));
+			expect(snapshot.project.limitChars).toBe(25_000);
+			expect(snapshot.project.usagePercent).toBe(Math.floor((1303 / 25_000) * 100));
 		} finally {
 			await runtime.dispose();
 		}

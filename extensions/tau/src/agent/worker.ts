@@ -26,6 +26,7 @@ import { createApplyPatchToolDefinition } from "../sandbox/apply-patch.js";
 import { createBacklogToolDefinition } from "../backlog/tool.js";
 import { createExaToolDefinitions } from "../exa/index.js";
 import { createMemoryToolDefinition } from "../memory/index.js";
+import { createThreadToolDefinitions } from "../thread/index.js";
 import { isRecord } from "../shared/json.js";
 
 import type { ApprovalBroker } from "./approval-broker.js";
@@ -319,6 +320,7 @@ export function createWorkerCustomTools(
 		createBacklogToolDefinition() as unknown as ToolDefinition,
 		createMemoryToolDefinition(runEffect) as unknown as ToolDefinition,
 		...createExaToolDefinitions().map((tool) => tool as unknown as ToolDefinition),
+		...createThreadToolDefinitions().map((tool) => tool as unknown as ToolDefinition),
 	];
 }
 

@@ -12,6 +12,8 @@ tools:
   - web_search_exa
   - crawling_exa
   - get_code_context_exa
+  - find_thread
+  - read_thread
 sandbox: read-only
 approval_timeout: 60
 ---

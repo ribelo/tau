@@ -15,11 +15,13 @@ const WORKER_AVAILABLE_TOOL_NAMES = [
 	"crawling_exa",
 	"edit",
 	"find",
+	"find_thread",
 	"get_code_context_exa",
 	"grep",
 	"ls",
 	"memory",
 	"read",
+	"read_thread",
 	"web_search_exa",
 	"write",
 ] as const;

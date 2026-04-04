@@ -38,6 +38,8 @@ describe("agent-registry: mode agents", () => {
 				"web_search_exa",
 				"crawling_exa",
 				"get_code_context_exa",
+				"find_thread",
+				"read_thread",
 			];
 
 			expect(smart?.systemPrompt).toBe(presets.smart.systemPrompt);

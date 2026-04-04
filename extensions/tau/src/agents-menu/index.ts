@@ -2,7 +2,6 @@ import type { ExtensionAPI, Theme } from "@mariozechner/pi-coding-agent";
 import {
 	Container,
 	type Focusable,
-	getKeybindings,
 	Input,
 	Key,
 	matchesKey,
@@ -53,6 +52,36 @@ interface AgentItem {
 	enabled: boolean;
 }
 
+const AGENT_DESCRIPTION_MAX_CHARS = 72;
+
+function truncateWithEllipsis(text: string, maxChars: number): string {
+	const normalized = text.trim();
+	if (normalized.length <= maxChars) return normalized;
+	if (maxChars <= 1) return "…";
+	return `${normalized.slice(0, maxChars - 1).trimEnd()}…`;
+}
+
+function syncAgentToolAvailability(
+	pi: ExtensionAPI,
+	agentTool: AgentToolHandle,
+	registry: AgentRegistry,
+): void {
+	refreshToolDescription(agentTool, registry);
+
+	const enabledCount = registry.names().filter((name) => !isAgentDisabled(name)).length;
+	const activeTools = pi.getActiveTools();
+	const hasAgentTool = activeTools.includes("agent");
+
+	if (enabledCount === 0 && hasAgentTool) {
+		pi.setActiveTools(activeTools.filter((name) => name !== "agent"));
+		return;
+	}
+
+	if (enabledCount > 0 && !hasAgentTool) {
+		pi.setActiveTools([...activeTools, "agent"]);
+	}
+}
+
 /**
  * TUI component for toggling agents on/off. Stays open until Escape.
  */
@@ -65,6 +94,7 @@ class AgentsSelectorComponent extends Container implements Focusable {
 	private footerText: Text;
 	private doneFn: () => void;
 	private onToggle: (name: string, enabled: boolean) => void;
+	private onStateChange: () => void;
 	private theme: Theme;
 
 	private _focused = false;
@@ -82,11 +112,13 @@ class AgentsSelectorComponent extends Container implements Focusable {
 		theme: Theme,
 		done: () => void,
 		onToggle: (name: string, enabled: boolean) => void,
+		onStateChange: () => void,
 	) {
 		super();
 		this.theme = theme;
 		this.doneFn = done;
 		this.onToggle = onToggle;
+		this.onStateChange = onStateChange;
 
 		this.items = allNames.map((name) => {
 			const def = registry.get(name);
@@ -115,7 +147,18 @@ class AgentsSelectorComponent extends Container implements Focusable {
 	private getFooterText(): string {
 		const enabled = this.items.filter((i) => i.enabled).length;
 		const total = this.items.length;
-		return this.theme.fg("dim", `  Enter toggle · Esc close · ${enabled}/${total} enabled`);
+		return this.theme.fg("dim", `  Enter toggle · Ctrl+T toggle all · Esc close · ${enabled}/${total} enabled`);
+	}
+
+	private toggleAll(): void {
+		const nextEnabled = this.items.some((item) => !item.enabled);
+		for (const item of this.items) {
+			if (item.enabled === nextEnabled) continue;
+			item.enabled = nextEnabled;
+			this.onToggle(item.name, nextEnabled);
+		}
+		this.refresh();
+		this.onStateChange();
 	}
 
 	private refresh(): void {
@@ -142,21 +185,20 @@ class AgentsSelectorComponent extends Container implements Focusable {
 			const prefix = isSelected ? this.theme.fg("accent", "> ") : "  ";
 			const marker = item.enabled ? this.theme.fg("success", "✔") : this.theme.fg("dim", "✗");
 			const nameText = isSelected ? this.theme.fg("accent", item.name) : item.name;
-			const desc = this.theme.fg("dim", ` ${item.description}`);
+			const shortDescription = truncateWithEllipsis(item.description, AGENT_DESCRIPTION_MAX_CHARS);
+			const desc = shortDescription.length > 0 ? this.theme.fg("dim", ` ${shortDescription}`) : "";
 			this.listContainer.addChild(new Text(`${prefix}${marker} ${nameText}${desc}`, 0, 0));
 		}
 	}
 
 	handleInput(data: string): void {
-		const kb = getKeybindings();
-
-		if (kb.matches(data, "tui.select.up")) {
+		if (matchesKey(data, Key.up)) {
 			if (this.filteredItems.length === 0) return;
 			this.selectedIndex = this.selectedIndex === 0 ? this.filteredItems.length - 1 : this.selectedIndex - 1;
 			this.updateList();
 			return;
 		}
-		if (kb.matches(data, "tui.select.down")) {
+		if (matchesKey(data, Key.down)) {
 			if (this.filteredItems.length === 0) return;
 			this.selectedIndex = this.selectedIndex === this.filteredItems.length - 1 ? 0 : this.selectedIndex + 1;
 			this.updateList();
@@ -170,7 +212,13 @@ class AgentsSelectorComponent extends Container implements Focusable {
 				item.enabled = !item.enabled;
 				this.onToggle(item.name, item.enabled);
 				this.refresh();
+				this.onStateChange();
 			}
+			return;
+		}
+
+		if (matchesKey(data, Key.ctrl("t"))) {
+			this.toggleAll();
 			return;
 		}
 
@@ -206,12 +254,12 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 	pi.on("session_start", async () => {
 		resetAgentStates();
 		const registry = await Effect.runPromise(loadRegistry(process.cwd()));
-		refreshToolDescription(agentTool, registry);
+		syncAgentToolAvailability(pi, agentTool, registry);
 	});
 	pi.on("session_switch", async () => {
 		resetAgentStates();
 		const registry = await Effect.runPromise(loadRegistry(process.cwd()));
-		refreshToolDescription(agentTool, registry);
+		syncAgentToolAvailability(pi, agentTool, registry);
 	});
 
 	pi.registerCommand("agents", {
@@ -243,7 +291,10 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 					const lines = allNames.map((name: string) => {
 						const enabled = !isAgentDisabled(name);
 						const def = registry.get(name);
-						const desc = def?.description.split("\n")[0]?.trim() ?? "";
+						const desc = truncateWithEllipsis(
+							def?.description.split("\n")[0]?.trim() ?? "",
+							AGENT_DESCRIPTION_MAX_CHARS,
+						);
 						const marker = enabled ? "✔" : "✗";
 						return `${marker} ${name}: ${desc}`;
 					});
@@ -260,7 +311,7 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 						return;
 					}
 					setAgentEnabled(agentName, action === "enable");
-					refreshToolDescription(agentTool, registry);
+					syncAgentToolAvailability(pi, agentTool, registry);
 					const state = action === "enable" ? "enabled" : "disabled";
 					ctx.ui.notify(`Agent "${agentName}" ${state}`, "info");
 					return;
@@ -282,8 +333,8 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 					() => done(undefined as unknown as void),
 					(name, enabled) => {
 						setAgentEnabled(name, enabled);
-						refreshToolDescription(agentTool, registry);
 					},
+					() => syncAgentToolAvailability(pi, agentTool, registry),
 				);
 				return selector;
 			});
