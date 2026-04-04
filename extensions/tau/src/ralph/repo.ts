@@ -13,6 +13,7 @@ import {
 	RALPH_DIR,
 	RALPH_TASKS_DIR,
 	RALPH_STATE_DIR,
+	RALPH_ARCHIVE_DIR,
 	RALPH_ARCHIVE_TASKS_DIR,
 	RALPH_ARCHIVE_STATE_DIR,
 } from "./paths.js";
@@ -256,8 +257,19 @@ export const RalphRepoLive = Layer.effect(
 			},
 		);
 
+		const ensureRalphProtectedDirs = (cwd: string): Effect.Effect<void, never, never> =>
+			Effect.gen(function* () {
+				yield* fs
+					.makeDirectory(path.resolve(cwd, RALPH_STATE_DIR), { recursive: true })
+					.pipe(Effect.orDie);
+				yield* fs
+					.makeDirectory(path.resolve(cwd, RALPH_ARCHIVE_DIR), { recursive: true })
+					.pipe(Effect.orDie);
+			});
+
 		const writeTaskFile: RalphRepoService["writeTaskFile"] = Effect.fn("RalphRepo.writeTaskFile")(
 			function* (cwd, taskFile, content) {
+				yield* ensureRalphProtectedDirs(cwd);
 				yield* atomicWriteFileString(fs, path.resolve(cwd, taskFile), content);
 			},
 		);
@@ -269,6 +281,7 @@ export const RalphRepoLive = Layer.effect(
 				if (exists) {
 					return false;
 				}
+				yield* ensureRalphProtectedDirs(cwd);
 				yield* atomicWriteFileString(fs, target, content);
 				return true;
 			},
