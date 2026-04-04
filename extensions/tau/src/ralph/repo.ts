@@ -189,6 +189,12 @@ export const RalphRepoLive = Layer.effect(
 				if (yield* Effect.promise(() => detectLegacyLayout(cwd))) {
 					return yield* Effect.fail(makeLegacyLayoutError());
 				}
+				if (!archived) {
+					const rootExists = yield* fs.exists(ralphDir(cwd)).pipe(Effect.orDie);
+					if (rootExists) {
+						yield* ensureRalphProtectedDirs(cwd);
+					}
+				}
 				const filePath = getStatePath(cwd, name, archived);
 				const contentOption = yield* readOptionalFile(fs, filePath);
 				if (Option.isNone(contentOption)) {
@@ -211,6 +217,12 @@ export const RalphRepoLive = Layer.effect(
 			function* (cwd, archived = false) {
 				if (yield* Effect.promise(() => detectLegacyLayout(cwd))) {
 					return yield* Effect.fail(makeLegacyLayoutError());
+				}
+				if (!archived) {
+					const rootExists = yield* fs.exists(ralphDir(cwd)).pipe(Effect.orDie);
+					if (rootExists) {
+						yield* ensureRalphProtectedDirs(cwd);
+					}
 				}
 
 				const dir = archived
