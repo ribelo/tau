@@ -71,10 +71,18 @@ function handlePersistedStateFailure(
 	if (!(error instanceof RalphContractValidationError)) {
 		return Option.none();
 	}
-	if (error.entity !== "ralph.loop_state" && error.entity !== "ralph.loop_state.json") {
+	const knownEntities = [
+		"ralph.loop_state",
+		"ralph.loop_state.json",
+		"ralph.legacy_layout",
+	];
+	if (!knownEntities.includes(error.entity)) {
 		return Option.none();
 	}
-	const message = persistedStateFailureMessage(error);
+	const message =
+		error.entity === "ralph.legacy_layout"
+			? error.reason
+			: persistedStateFailureMessage(error);
 	if (ctx.hasUI) {
 		ctx.ui.notify(message, "error");
 	}
