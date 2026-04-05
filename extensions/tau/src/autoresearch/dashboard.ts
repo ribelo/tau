@@ -1,4 +1,4 @@
-import { Container, Text, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import type { Theme } from "@mariozechner/pi-coding-agent";
 import type { ExperimentResult } from "./schema.js";
 import type { AutoresearchViewData } from "../services/autoresearch.js";

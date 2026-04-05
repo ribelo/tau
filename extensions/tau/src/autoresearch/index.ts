@@ -10,7 +10,7 @@ import type {
 } from "@mariozechner/pi-coding-agent";
 import { truncateTail, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { Container, matchesKey, Text } from "@mariozechner/pi-tui";
+import { matchesKey, Text } from "@mariozechner/pi-tui";
 import { Effect, Option } from "effect";
 
 import { Sandbox } from "../services/sandbox.js";

@@ -933,7 +933,6 @@ export const AutoresearchLive = Layer.effect(
 
 				if (input.contextUsage) {
 					runtime.experimentsThisSession += 1;
-					runtime.iterationStartTokens = input.contextUsage.tokens;
 					if (runtime.iterationTokenHistory.length > 0) {
 						const values = runtime.iterationTokenHistory;
 						const mean = values.reduce((a, b) => a + b, 0) / values.length;
@@ -952,6 +951,7 @@ export const AutoresearchLive = Layer.effect(
 							);
 						}
 					}
+					runtime.iterationStartTokens = input.contextUsage.tokens;
 				}
 
 				const runNumber = yield* getNextRunNumber(workDir, runtime.lastRunNumber, repo);
@@ -1295,7 +1295,7 @@ export const AutoresearchLive = Layer.effect(
 		);
 
 		const onAgentEnd: AutoresearchService["onAgentEnd"] = Effect.fn("Autoresearch.onAgentEnd")(
-			function* (sessionId, workDir, boundary) {
+			function* (sessionId, workDir, _boundary) {
 				const runtime = yield* ensureSession(sessionId);
 				runtime.runningExperiment = null;
 				if (!runtime.autoresearchMode) {
@@ -1323,8 +1323,13 @@ export const AutoresearchLive = Layer.effect(
 					return { didResume: false };
 				}
 
+				const isExperimentLoopResume = runtime.autoResumeArmed;
 				const now = Date.now();
-				if (runtime.lastAutoResumeAt !== null && now - runtime.lastAutoResumeAt < 5 * 60 * 1000) {
+				if (
+					!isExperimentLoopResume &&
+					runtime.lastAutoResumeAt !== null &&
+					now - runtime.lastAutoResumeAt < 5 * 60 * 1000
+				) {
 					return { didResume: false };
 				}
 				if (runtime.autoResumeCountThisSegment >= 20) {
@@ -1370,6 +1375,7 @@ export const AutoresearchLive = Layer.effect(
 				if (delta > 0) {
 					runtime.iterationTokenHistory.push(delta);
 				}
+				runtime.iterationStartTokens = null;
 			}
 		});
 
