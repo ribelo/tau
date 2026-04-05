@@ -148,6 +148,11 @@ export interface SessionRuntime {
 	autoresearchMode: boolean;
 	autoResumeArmed: boolean;
 	lastAutoResumePendingRunNumber: number | null;
+	lastAutoResumeAt: number | null;
+	autoResumeCountThisSegment: number;
+	experimentsThisSession: number;
+	iterationStartTokens: number | null;
+	iterationTokenHistory: number[];
 	lastRunChecks: { pass: boolean; output: string; duration: number } | null;
 	lastRunDuration: number | null;
 	lastRunAsi: ASIData | null;
@@ -164,6 +169,11 @@ function createSessionRuntime(): SessionRuntime {
 		autoresearchMode: false,
 		autoResumeArmed: false,
 		lastAutoResumePendingRunNumber: null,
+		lastAutoResumeAt: null,
+		autoResumeCountThisSegment: 0,
+		experimentsThisSession: 0,
+		iterationStartTokens: null,
+		iterationTokenHistory: [],
 		lastRunChecks: null,
 		lastRunDuration: null,
 		lastRunAsi: null,
@@ -207,6 +217,7 @@ export interface RunExperimentInput {
 	readonly command: string;
 	readonly timeoutSeconds: number;
 	readonly checksTimeoutSeconds: number;
+	readonly contextUsage?: { readonly tokens: number; readonly contextWindow: number } | undefined;
 }
 
 export interface LogExperimentInput {
@@ -246,6 +257,8 @@ export interface AutoresearchViewData {
 	readonly confidence: number | null;
 	readonly secondaryMetrics: { name: string; unit: string }[];
 	readonly runningExperiment: SessionRuntime["runningExperiment"];
+	readonly results: readonly ExperimentResult[];
+	readonly maxExperiments: number | null;
 }
 
 // ------------------------------------------------------------------------------
@@ -283,6 +296,8 @@ export interface AutoresearchService {
 		goal: string | null,
 	) => Effect.Effect<void, never, never>;
 	readonly clearSession: (sessionId: string) => Effect.Effect<void, never, never>;
+	readonly recordAgentEndTokens: (sessionId: string, tokens: number | null) => Effect.Effect<void, never, never>;
+	readonly resetSessionCounters: (sessionId: string) => Effect.Effect<void, never, never>;
 }
 
 export class Autoresearch extends ServiceMap.Service<Autoresearch, AutoresearchService>()("Autoresearch") {}
@@ -843,6 +858,11 @@ export const AutoresearchLive = Layer.effect(
 				runtime.autoresearchMode = true;
 				runtime.autoResumeArmed = true;
 				runtime.lastAutoResumePendingRunNumber = null;
+				runtime.lastAutoResumeAt = null;
+				runtime.autoResumeCountThisSegment = 0;
+				runtime.experimentsThisSession = 0;
+				runtime.iterationStartTokens = null;
+				runtime.iterationTokenHistory = [];
 				runtime.lastRunChecks = null;
 				runtime.lastRunDuration = null;
 				runtime.lastRunAsi = null;
@@ -909,6 +929,29 @@ export const AutoresearchLive = Layer.effect(
 							reason: `run #${pendingRun.runNumber} has not been logged yet. Call log_experiment before starting another benchmark run.`,
 						}),
 					);
+				}
+
+				if (input.contextUsage) {
+					runtime.experimentsThisSession += 1;
+					runtime.iterationStartTokens = input.contextUsage.tokens;
+					if (runtime.iterationTokenHistory.length > 0) {
+						const values = runtime.iterationTokenHistory;
+						const mean = values.reduce((a, b) => a + b, 0) / values.length;
+						const sorted = [...values].sort((a, b) => a - b);
+						const median =
+							sorted.length % 2 === 0
+								? (sorted[sorted.length / 2 - 1]! + sorted[sorted.length / 2]!) / 2
+								: sorted[Math.floor(sorted.length / 2)]!;
+						const estimate = Math.max(mean, median) * 1.2;
+						if (input.contextUsage.tokens + estimate > input.contextUsage.contextWindow) {
+							return yield* Effect.fail(
+								new AutoresearchValidationError({
+									reason:
+										`Context exhaustion projected: estimated next iteration needs ${Math.round(estimate)} tokens, but only ${input.contextUsage.contextWindow - input.contextUsage.tokens} remain. Reduce benchmark output or start a new segment.`,
+								}),
+							);
+						}
+					}
 				}
 
 				const runNumber = yield* getNextRunNumber(workDir, runtime.lastRunNumber, repo);
@@ -1245,6 +1288,8 @@ export const AutoresearchLive = Layer.effect(
 					confidence: state.confidence,
 					secondaryMetrics: state.secondaryMetrics.map((m) => ({ ...m })),
 					runningExperiment: runtime.runningExperiment,
+					results: state.results.slice(),
+					maxExperiments: state.maxExperiments,
 				};
 			},
 		);
@@ -1278,6 +1323,16 @@ export const AutoresearchLive = Layer.effect(
 					return { didResume: false };
 				}
 
+				const now = Date.now();
+				if (runtime.lastAutoResumeAt !== null && now - runtime.lastAutoResumeAt < 5 * 60 * 1000) {
+					return { didResume: false };
+				}
+				if (runtime.autoResumeCountThisSegment >= 20) {
+					return { didResume: false };
+				}
+
+				runtime.lastAutoResumeAt = now;
+				runtime.autoResumeCountThisSegment += 1;
 				runtime.autoResumeArmed = false;
 				runtime.lastAutoResumePendingRunNumber = pendingRun?.runNumber ?? null;
 
@@ -1306,6 +1361,25 @@ export const AutoresearchLive = Layer.effect(
 			},
 		);
 
+		const recordAgentEndTokens: AutoresearchService["recordAgentEndTokens"] = Effect.fn(
+			"Autoresearch.recordAgentEndTokens",
+		)(function* (sessionId, tokens) {
+			const runtime = yield* ensureSession(sessionId);
+			if (tokens !== null && runtime.iterationStartTokens !== null) {
+				const delta = tokens - runtime.iterationStartTokens;
+				if (delta > 0) {
+					runtime.iterationTokenHistory.push(delta);
+				}
+			}
+		});
+
+		const resetSessionCounters: AutoresearchService["resetSessionCounters"] = Effect.fn(
+			"Autoresearch.resetSessionCounters",
+		)(function* (sessionId) {
+			const runtime = yield* ensureSession(sessionId);
+			runtime.experimentsThisSession = 0;
+		});
+
 		return Autoresearch.of({
 			rehydrate,
 			initExperiment,
@@ -1315,6 +1389,8 @@ export const AutoresearchLive = Layer.effect(
 			onAgentEnd,
 			setMode,
 			clearSession,
+			recordAgentEndTokens,
+			resetSessionCounters,
 		});
 	}),
 );

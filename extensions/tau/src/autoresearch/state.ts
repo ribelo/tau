@@ -43,21 +43,43 @@ export function cloneExperimentState(state: ExperimentState): ExperimentState {
 	};
 }
 
-export function currentResults(results: ExperimentResult[], segment: number): ExperimentResult[] {
+export function currentResults(results: readonly ExperimentResult[], segment: number): ExperimentResult[] {
 	return results.filter((result) => result.segment === segment);
 }
 
-export function findBaselineResult(results: ExperimentResult[], segment: number): ExperimentResult | null {
+export function findBaselineResult(results: readonly ExperimentResult[], segment: number): ExperimentResult | null {
 	return currentResults(results, segment).find((result) => result.status === "keep") ?? null;
 }
 
-export function findBaselineMetric(results: ExperimentResult[], segment: number): number | null {
+export function findBaselineMetric(results: readonly ExperimentResult[], segment: number): number | null {
 	const baseline = findBaselineResult(results, segment);
 	return baseline ? baseline.metric : null;
 }
 
+export function findBaselineRunNumber(results: readonly ExperimentResult[], segment: number): number | null {
+	const baseline = findBaselineResult(results, segment);
+	return baseline?.runNumber ?? null;
+}
+
+export function findBaselineSecondary(
+	results: readonly ExperimentResult[],
+	segment: number,
+	secondaryMetrics: readonly MetricDef[],
+): Record<string, number> {
+	const baseline = findBaselineResult(results, segment);
+	const out: Record<string, number> = {};
+	if (!baseline) return out;
+	for (const metric of secondaryMetrics) {
+		const value = baseline.metrics[metric.name];
+		if (typeof value === "number") {
+			out[metric.name] = value;
+		}
+	}
+	return out;
+}
+
 export function findBestKeptMetric(
-	results: ExperimentResult[],
+	results: readonly ExperimentResult[],
 	segment: number,
 	direction: MetricDirection,
 ): number | null {
@@ -71,7 +93,23 @@ export function findBestKeptMetric(
 	return best;
 }
 
-export function sortedMedian(values: number[]): number {
+export function findBestResult(
+	results: readonly ExperimentResult[],
+	segment: number,
+	direction: MetricDirection,
+): { index: number; result: ExperimentResult } | null {
+	let best: { index: number; result: ExperimentResult } | null = null;
+	for (let i = 0; i < results.length; i++) {
+		const result = results[i];
+		if (!result || result.segment !== segment || result.status !== "keep" || result.metric <= 0) continue;
+		if (!best || isBetter(result.metric, best.result.metric, direction)) {
+			best = { index: i, result };
+		}
+	}
+	return best;
+}
+
+export function sortedMedian(values: readonly number[]): number {
 	if (values.length === 0) return 0;
 	const sorted = [...values].sort((left, right) => left - right);
 	const midpoint = Math.floor(sorted.length / 2);
@@ -82,7 +120,7 @@ export function sortedMedian(values: number[]): number {
 }
 
 export function computeConfidence(
-	results: ExperimentResult[],
+	results: readonly ExperimentResult[],
 	segment: number,
 	direction: MetricDirection,
 ): number | null {

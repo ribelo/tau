@@ -95,6 +95,14 @@ export function formatNum(value: number | null, unit: string): string {
 	return `${fmtNum(value, 2)}${unit}`;
 }
 
+export function formatElapsed(ms: number): string {
+	const totalSec = Math.floor(ms / 1000);
+	const m = Math.floor(totalSec / 60);
+	const s = totalSec % 60;
+	if (m > 0) return `${m}m ${String(s).padStart(2, "0")}s`;
+	return `${s}s`;
+}
+
 export function getAutoresearchRunDirectory(workDir: string, runNumber: number): string {
 	return path.join(workDir, AUTORESEARCH_DIR, "runs", String(runNumber).padStart(4, "0"));
 }

@@ -10,7 +10,7 @@ import type {
 } from "@mariozechner/pi-coding-agent";
 import { truncateTail, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { Text } from "@mariozechner/pi-tui";
+import { Container, matchesKey, Text } from "@mariozechner/pi-tui";
 import { Effect, Option } from "effect";
 
 import { Sandbox } from "../services/sandbox.js";
@@ -46,12 +46,19 @@ import {
 import { resolveWorkDir, resolveMaxExperiments, loadAutoresearchConfig } from "./config.js";
 import {
 	formatNum,
+	formatElapsed,
 	parseMetricLines,
 	parseAsiLines,
 	EXPERIMENT_MAX_BYTES,
 	EXPERIMENT_MAX_LINES,
 	isBetter,
 } from "./helpers.js";
+import {
+	renderExpandedHeader,
+	renderDashboardLines,
+	renderOverlayRunningLine,
+	renderOverlayFooter,
+} from "./dashboard.js";
 
 // ------------------------------------------------------------------------------
 // Helpers
@@ -93,14 +100,6 @@ function getMaxExperiments(ctxCwd: string): number | null {
 		throw new Error(result.error);
 	}
 	return resolveMaxExperiments(result.config);
-}
-
-function formatElapsed(ms: number): string {
-	const totalSec = Math.floor(ms / 1000);
-	const m = Math.floor(totalSec / 60);
-	const s = totalSec % 60;
-	if (m > 0) return `${m}m ${String(s).padStart(2, "0")}s`;
-	return `${s}s`;
 }
 
 // ------------------------------------------------------------------------------
@@ -609,19 +608,49 @@ export default function initAutoresearch(
 			"clear deletes autoresearch.jsonl and turns autoresearch mode off.",
 		].join("\n");
 
+	const expandedState = new Map<string, boolean>();
+	const latestViewData = new Map<string, import("../services/autoresearch.js").AutoresearchViewData>();
+	type OverlayState = {
+		tui: import("@mariozechner/pi-tui").TUI;
+		done: () => void;
+		spinnerTimer?: ReturnType<typeof setInterval>;
+		spinnerFrame: number;
+	};
+	const overlayStates = new Map<string, OverlayState>();
+
+	const requestOverlayRender = (sessionId: string): void => {
+		const state = overlayStates.get(sessionId);
+		if (state) {
+			state.tui.invalidate();
+		}
+	};
+
+	const closeFullscreenOverlay = (sessionId: string): void => {
+		const state = overlayStates.get(sessionId);
+		if (state) {
+			state.done();
+			if (state.spinnerTimer) clearInterval(state.spinnerTimer);
+			overlayStates.delete(sessionId);
+		}
+	};
+
 	const updateUI = async (ctx: ExtensionContext): Promise<void> => {
 		if (!ctx.hasUI || typeof ctx.ui.setWidget !== "function") return;
 
 		const sessionId = getSessionKey(ctx);
 		const viewData = await withAutoresearch((service) => service.getViewData(sessionId));
+		latestViewData.set(sessionId, viewData);
+		requestOverlayRender(sessionId);
 
 		if (viewData.totalRunCount === 0 && !viewData.runningExperiment) {
 			ctx.ui.setWidget("autoresearch", undefined);
 			return;
 		}
 
+		const expanded = expandedState.get(sessionId) ?? false;
+
 		ctx.ui.setWidget("autoresearch", (_tui, theme) => {
-			if (viewData.runningExperiment) {
+			if (viewData.runningExperiment && !expanded) {
 				const parts = [
 					theme.fg("accent", "autoresearch"),
 					theme.fg("warning", " running..."),
@@ -630,6 +659,15 @@ export default function initAutoresearch(
 					parts.push(theme.fg("dim", ` | ${viewData.name}`));
 				}
 				return new Text(parts.join(""), 0, 0);
+			}
+
+			if (expanded) {
+				const width = process.stdout.columns ?? 120;
+				const lines = [
+					renderExpandedHeader(viewData, width, theme),
+					...renderDashboardLines(viewData, width, theme, 8),
+				];
+				return new Text(lines.join("\n"), 0, 0);
 			}
 
 			const parts: string[] = [
@@ -683,6 +721,93 @@ export default function initAutoresearch(
 
 			return new Text(parts.join(""), 0, 0);
 		});
+	};
+
+	const openFullscreenOverlay = async (ctx: ExtensionContext): Promise<void> => {
+		if (!ctx.hasUI) return;
+		const sessionId = getSessionKey(ctx);
+		const viewData = latestViewData.get(sessionId);
+		if (!viewData) return;
+		if (viewData.totalRunCount === 0 && !viewData.runningExperiment) {
+			ctx.ui.notify("No autoresearch results yet", "info");
+			return;
+		}
+		await ctx.ui.custom<void>(
+			(tui, theme, _kb, done) => {
+				const state: OverlayState = { tui, done, spinnerFrame: 0 };
+				state.spinnerTimer = setInterval(() => {
+					state.spinnerFrame += 1;
+					tui.invalidate();
+				}, 80);
+				overlayStates.set(sessionId, state);
+
+				let scrollOffset = 0;
+				return {
+					render(width: number): string[] {
+						const currentView = latestViewData.get(sessionId);
+						if (!currentView) {
+							done();
+							return [];
+						}
+						const terminalRows = process.stdout.rows ?? 40;
+						const header = renderExpandedHeader(currentView, width, theme);
+						const body = renderDashboardLines(currentView, width, theme, 0);
+						if (currentView.runningExperiment) {
+							body.push(renderOverlayRunningLine(currentView, theme, width, state.spinnerFrame));
+						}
+						const viewportRows = Math.max(4, terminalRows - 4);
+						const maxScroll = Math.max(0, body.length - viewportRows);
+						if (scrollOffset > maxScroll) scrollOffset = maxScroll;
+						const visible = body.slice(scrollOffset, scrollOffset + viewportRows);
+						const footer = renderOverlayFooter(width, scrollOffset, viewportRows, body.length, theme);
+						return [
+							header,
+							...visible,
+							...Array.from({ length: Math.max(0, viewportRows - visible.length) }, () => ""),
+							footer,
+						];
+					},
+					handleInput(data: string): void {
+						const currentView = latestViewData.get(sessionId);
+						const totalRows =
+							(currentView
+								? renderDashboardLines(currentView, process.stdout.columns ?? 120, theme, 0).length +
+								  (currentView.runningExperiment ? 1 : 0)
+								: 0);
+						const terminalRows = process.stdout.rows ?? 40;
+						const viewportRows = Math.max(4, terminalRows - 4);
+						const maxScroll = Math.max(0, totalRows - viewportRows);
+						if (matchesKey(data, "escape") || matchesKey(data, "esc") || data === "q") {
+							done();
+							return;
+						}
+						if (matchesKey(data, "up") || data === "k") {
+							scrollOffset = Math.max(0, scrollOffset - 1);
+						} else if (matchesKey(data, "down") || data === "j") {
+							scrollOffset = Math.min(maxScroll, scrollOffset + 1);
+						} else if (matchesKey(data, "pageUp") || data === "u") {
+							scrollOffset = Math.max(0, scrollOffset - viewportRows);
+						} else if (matchesKey(data, "pageDown") || data === "d") {
+							scrollOffset = Math.min(maxScroll, scrollOffset + viewportRows);
+						} else if (data === "g") {
+							scrollOffset = 0;
+						} else if (data === "G") {
+							scrollOffset = maxScroll;
+						}
+						tui.invalidate();
+					},
+					invalidate(): void {},
+					dispose(): void {
+						if (state.spinnerTimer) clearInterval(state.spinnerTimer);
+						overlayStates.delete(sessionId);
+					},
+				};
+			},
+			{
+				overlay: true,
+				overlayOptions: { width: "95%", maxHeight: "90%", anchor: "center" },
+			},
+		);
 	};
 
 	const rehydrate = async (ctx: ExtensionContext) => {
@@ -876,6 +1001,11 @@ export default function initAutoresearch(
 			const sessionId = getSessionKey(ctx);
 			const subagent = await getSubagent();
 			const boundary = createExecutionBoundary(pi, ctx, subagent, onUpdate, signal);
+			const usage = ctx.getContextUsage();
+			const contextUsage =
+				usage && usage.tokens !== null
+					? { tokens: usage.tokens, contextWindow: usage.contextWindow }
+					: undefined;
 
 			try {
 				const details = await withAutoresearch((service) =>
@@ -886,6 +1016,7 @@ export default function initAutoresearch(
 							command: params.command,
 							timeoutSeconds: params.timeout ?? 600,
 							checksTimeoutSeconds: 300,
+							contextUsage,
 						},
 						boundary,
 					),
@@ -1163,6 +1294,31 @@ export default function initAutoresearch(
 	});
 
 	// --------------------------------------------------------------------------
+	// Shortcuts
+	// --------------------------------------------------------------------------
+
+	pi.registerShortcut("ctrl+x", {
+		description: "Toggle autoresearch dashboard",
+		handler(ctx): void {
+			const sessionId = getSessionKey(ctx);
+			const viewData = latestViewData.get(sessionId);
+			if (!viewData || (viewData.totalRunCount === 0 && !viewData.runningExperiment)) {
+				ctx.ui.notify("No autoresearch results yet", "info");
+				return;
+			}
+			expandedState.set(sessionId, !expandedState.get(sessionId));
+			void updateUI(ctx);
+		},
+	});
+
+	pi.registerShortcut("ctrl+shift+x", {
+		description: "Show autoresearch dashboard overlay",
+		handler(ctx): Promise<void> {
+			return openFullscreenOverlay(ctx);
+		},
+	});
+
+	// --------------------------------------------------------------------------
 	// Lifecycle hooks
 	// --------------------------------------------------------------------------
 
@@ -1172,6 +1328,24 @@ export default function initAutoresearch(
 
 	pi.on("session_switch", async (_event, ctx) => {
 		await rehydrate(ctx);
+	});
+
+	pi.on("session_fork", async (_event, ctx) => {
+		await rehydrate(ctx);
+	});
+
+	pi.on("session_tree", async (_event, ctx) => {
+		await rehydrate(ctx);
+	});
+
+	pi.on("session_before_switch", async (_event, ctx) => {
+		const sessionId = getSessionKey(ctx);
+		closeFullscreenOverlay(sessionId);
+	});
+
+	pi.on("agent_start", async (_event, ctx) => {
+		const sessionId = getSessionKey(ctx);
+		await withAutoresearch((service) => service.resetSessionCounters(sessionId));
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
@@ -1226,9 +1400,13 @@ export default function initAutoresearch(
 		}
 		const subagent = await getSubagent();
 		const boundary = createExecutionBoundary(pi, ctx, subagent);
+		const usage = ctx.getContextUsage();
+		const tokens = usage?.tokens ?? null;
 
 		try {
-			const result = await withAutoresearch((service) => service.onAgentEnd(sessionId, workDir, boundary));
+			const result = await withAutoresearch((service) =>
+				service.onAgentEnd(sessionId, workDir, boundary),
+			);
 			if (result.didResume) {
 				const ideasPath = path.join(workDir, AUTORESEARCH_IDEAS_MD);
 				const hasIdeas = fs.existsSync(ideasPath);
@@ -1237,10 +1415,12 @@ export default function initAutoresearch(
 					msg += " Check autoresearch.ideas.md for promising paths.";
 				}
 				pi.sendUserMessage(msg);
-				await updateUI(ctx);
 			}
 		} catch {
 			// ignore
+		} finally {
+			await withAutoresearch((service) => service.recordAgentEndTokens(sessionId, tokens));
+			await updateUI(ctx);
 		}
 	});
 }
