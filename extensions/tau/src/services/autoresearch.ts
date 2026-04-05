@@ -1370,10 +1370,12 @@ export const AutoresearchLive = Layer.effect(
 			"Autoresearch.recordAgentEndTokens",
 		)(function* (sessionId, tokens) {
 			const runtime = yield* ensureSession(sessionId);
-			if (tokens !== null && runtime.iterationStartTokens !== null) {
-				const delta = tokens - runtime.iterationStartTokens;
-				if (delta > 0) {
-					runtime.iterationTokenHistory.push(delta);
+			if (runtime.iterationStartTokens !== null) {
+				if (tokens !== null) {
+					const delta = tokens - runtime.iterationStartTokens;
+					if (delta > 0) {
+						runtime.iterationTokenHistory.push(delta);
+					}
 				}
 				runtime.iterationStartTokens = null;
 			}
