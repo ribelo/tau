@@ -216,6 +216,13 @@ interface SandboxPersistedAccess {
 	readonly update: (patch: Partial<TauPersistedState>) => void;
 }
 
+export function getSandboxedBashOperations(
+	ctx: ExtensionContext,
+	escalate: boolean,
+): BashOperations | undefined {
+	return getSandboxRuntimeState().createSandboxedBashOperations?.(ctx, escalate);
+}
+
 export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersistedAccess) {
 	// Register CLI flags
 	pi.registerFlag("sandbox-mode", {
@@ -667,12 +674,12 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 
 						const hint =
 							classification.kind === "network"
-								? "Network sandboxing can surface as DNS/connectivity failures. If network is required, use /approval to switch to full-access preset, or re-run with escalate=true."
+								? "Network access is blocked by the sandbox. If this command needs network access, retry with escalate=true."
 								: classification.kind === "filesystem" &&
 									  classification.subtype === "read"
-									? "In read-only preset, /tmp is an ephemeral tmpfs mount. Files written in one tool call do not persist to the next. Switch to workspace-write preset (/approval) to get a persistent /tmp, or re-run with escalate=true."
+									? "This path may be inside an ephemeral /tmp mount (read-only preset) or outside the allowed workspace. If the file should be readable across calls, retry with escalate=true."
 									: classification.kind === "filesystem"
-										? "Filesystem sandboxing can surface as permission errors. If a write is required, use /approval to switch to workspace-write or full-access preset, or re-run with escalate=true."
+										? "Filesystem write is blocked by the sandbox. If this command needs to write outside the workspace, retry with escalate=true."
 										: "";
 
 						onData(
@@ -689,7 +696,11 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 							classification,
 						};
 
-						onData(Buffer.from(`SANDBOX_DIAGNOSTIC=${JSON.stringify(diagnostic)}\n`));
+						onData(
+							Buffer.from(
+								`SANDBOX_DIAGNOSTIC=${JSON.stringify(diagnostic)}\n[sandbox] If this failure is caused by sandbox restrictions, retry the same command with escalate=true.\n`,
+							),
+						);
 					}
 				}
 
@@ -1102,7 +1113,11 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 			"  - Git commands are BLOCKED in subagent mode - the orchestrator handles all git operations\n" +
 			"  - Do not attempt to run git commit, git push, git checkout, git reset, or similar\n" +
 			"\n" +
-			"On sandbox failures, output may include: SANDBOX_DIAGNOSTIC=<json> (machine-readable).\n" +
+			"Sandbox failure handling:\n" +
+			"  - When a sandboxed bash command fails, the output may contain a SANDBOX_DIAGNOSTIC=<json> line and a [sandbox] ... explanation.\n" +
+			"  - If you see clear evidence that the failure was caused by sandbox restrictions (e.g., \"Operation not permitted\", \"Permission denied\" outside the workspace, DNS/network unreachable), you MUST immediately retry the SAME command with `escalate: true`. Do not ask the user first.\n" +
+			"  - If the command failed for a reason unrelated to the sandbox (wrong arguments, a bug in the command, a test failure, missing file inside the allowed workspace), do NOT use escalate. Fix the underlying issue instead.\n" +
+			"  - Using escalate=true for the same command will prompt the user for approval to run unsandboxed.\n" +
 			"</permissions instructions>";
 
 		return {

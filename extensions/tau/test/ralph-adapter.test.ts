@@ -568,4 +568,24 @@ describe("ralph adapter boundary freeze", () => {
 		await command?.handler("resume command-loop", context.ctx);
 		expect(context.switchSessionCalls).toContain(controllerSession);
 	});
+
+	it("does not double-escape backslashes in create command hints for Windows paths", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const context = makeContext(cwd);
+		const piHarness = makePiHarness();
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(piHarness.pi, ralphRuntime.run);
+
+		const command = piHarness.commands.get("ralph");
+		expect(command).toBeDefined();
+		await command?.handler("create C:\\Users\\name\\My Documents\\task.md", context.ctx);
+
+		const sent = piHarness.sentUserMessages[0]?.content;
+		const text = typeof sent === "string" ? sent : "";
+		expect(text).toContain('/ralph start "C:\\Users\\name\\My Documents\\task.md"');
+		expect(text).not.toContain("\\\\");
+	});
 });

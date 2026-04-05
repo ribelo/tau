@@ -14,6 +14,7 @@ import {
 	COMPLETE_MARKER,
 	Ralph,
 	type RalphCommandBoundary,
+	type RalphStopLoopResult,
 	type RalphService,
 } from "../services/ralph.js";
 import { RalphContractValidationError } from "./errors.js";
@@ -38,6 +39,9 @@ Describe your task here.
 ## Checklist
 - [ ] Item 1
 - [ ] Item 2
+
+## Verification
+- Add commands, outputs, or file paths that prove the work is done
 
 ## Notes
 (Update this as you work)
@@ -133,18 +137,81 @@ function parseArgs(argsStr: string): {
 			result.reflectInstructions = next.replace(/^"|"$/g, "");
 			i++;
 		} else if (!token.startsWith("--")) {
-			result.name = token;
+			result.name = token.replace(/^"|"$/g, "");
 		}
 	}
 
 	return result;
 }
 
+function stripSurroundingQuotes(value: string): string {
+	return value.replace(/^"|"$/g, "");
+}
+
+function formatCommandArgument(value: string): string {
+	return /\s/.test(value) ? `"${value.replace(/"/g, '\\"')}"` : value;
+}
+
+function resolveLoopTarget(target: string): {
+	readonly loopName: string;
+	readonly taskStem: string;
+	readonly taskFile: string;
+	readonly recommendedStartTarget: string;
+	readonly isPath: boolean;
+} {
+	const trimmed = stripSurroundingQuotes(target.trim());
+	const isPath = trimmed.includes("/") || trimmed.includes("\\") || trimmed.endsWith(".md");
+	const sourceLoopName = isPath
+		? path.basename(trimmed, path.extname(trimmed))
+		: trimmed;
+	const loopName = sanitizeLoopName(sourceLoopName);
+	const taskStem = sourceLoopName.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/_+/g, "_");
+	const taskFile = isPath ? trimmed : path.join(RALPH_TASKS_DIR, `${taskStem}.md`);
+	return {
+		loopName,
+		taskStem,
+		taskFile,
+		recommendedStartTarget: formatCommandArgument(isPath ? taskFile : trimmed),
+		isPath,
+	};
+}
+
+function buildCreatePrompt(target: string): string {
+	const normalizedTarget = stripSurroundingQuotes(target.trim());
+	const resolved = resolveLoopTarget(normalizedTarget);
+	const lines = [
+		`Create a Ralph task file for \`${normalizedTarget}\`.`,
+		"",
+		`Write the task file at \`${resolved.taskFile}\` using apply_patch.`,
+		"Do not start the loop. Only create or update the task markdown file.",
+		"",
+		"Use this structure:",
+		"- Title and brief summary",
+		"- Goals",
+		"- Checklist with discrete, verifiable items",
+		"- Verification with commands, files, or outputs to capture",
+		"- Notes for assumptions, decisions, and progress",
+		"",
+		"If the target corresponds to a backlog item, inspect it first with `backlog show <id>` and synthesize the task from that issue.",
+		"Do not update backlog state.",
+		"Example backlog flow: `/ralph create foo-31z` should inspect `backlog show foo-31z` and write `.pi/ralph/tasks/foo-31z.md`.",
+	];
+
+	lines.push(
+		"",
+		`After writing the file, tell me the path and recommend starting with \`/ralph start ${resolved.recommendedStartTarget}\`.`,
+	);
+
+	return lines.join("\n");
+}
+
 const HELP = `Ralph Wiggum - Long-running development loops
 
 Commands:
+  /ralph create <name|path|backlog-id>  Ask the current model to draft a task file
   /ralph start <name|path> [options]  Start a new loop
-  /ralph stop                         Pause current loop
+  /ralph pause                        Pause current loop
+  /ralph stop                         End active loop (idle only)
   /ralph resume <name>                Resume a paused loop
   /ralph status                       Show all loops
   /ralph cancel <name>                Delete loop state
@@ -152,16 +219,18 @@ Commands:
   /ralph clean [--all]                Clean completed loops
   /ralph list --archived              Show archived loops
   /ralph nuke [--yes]                 Delete all .pi/ralph data
-  /ralph-stop                         Stop active loop (idle only)
 
 Options:
   --items-per-iteration N  Suggest N items per turn (prompt hint)
   --reflect-every N        Reflect every N iterations
   --max-iterations N       Stop after N iterations (default 50)
 
-To stop: press ESC to interrupt, then run /ralph-stop when idle
+To pause: press ESC or run /ralph pause
+To stop: press ESC to interrupt, then run /ralph stop when idle
 
 Examples:
+  /ralph create my-feature
+  /ralph create foo-31z
   /ralph start my-feature
   /ralph start review --items-per-iteration 5 --reflect-every 10`;
 
@@ -250,7 +319,8 @@ export default function initRalph(
 
 		lines.push("");
 		lines.push(theme.fg("warning", "ESC pauses the assistant"));
-		lines.push(theme.fg("warning", "Run /ralph-stop to end the loop"));
+		lines.push(theme.fg("warning", "Run /ralph pause to keep the loop resumable"));
+		lines.push(theme.fg("warning", "Run /ralph stop to end the loop"));
 		ctx.ui.setWidget("ralph", lines);
 	};
 
@@ -275,6 +345,19 @@ export default function initRalph(
 				const rest = cmd ? args.slice(args.indexOf(cmd) + cmd.length).trim() : "";
 
 				switch (cmd) {
+					case "create": {
+						const target = stripSurroundingQuotes(rest.trim());
+						if (!target) {
+							ctx.ui.notify("Usage: /ralph create <name|path|backlog-id>", "warning");
+							return;
+						}
+
+						const resolved = resolveLoopTarget(target);
+						pi.sendUserMessage(buildCreatePrompt(target));
+						ctx.ui.notify(`Asked the current model to draft ${resolved.taskFile}`, "info");
+						return;
+					}
+
 					case "start": {
 						const parsed = parseArgs(rest);
 						if (!parsed.name) {
@@ -285,12 +368,9 @@ export default function initRalph(
 							return;
 						}
 
-						const isPath = parsed.name.includes("/") || parsed.name.includes("\\");
-						const sourceLoopName = isPath
-							? path.basename(parsed.name, path.extname(parsed.name))
-							: parsed.name;
-						const loopName = sanitizeLoopName(sourceLoopName);
-						const taskFile = isPath ? parsed.name : path.join(RALPH_TASKS_DIR, `${loopName}.md`);
+						const resolved = resolveLoopTarget(parsed.name);
+						const loopName = resolved.loopName;
+						const taskFile = resolved.taskFile;
 
 						const controllerSessionFile = sessionFileFromContext(ctx);
 						const start = await withRalph((ralph) =>
@@ -331,7 +411,7 @@ export default function initRalph(
 						return;
 					}
 
-					case "stop": {
+					case "pause": {
 						const paused = await withRalph((ralph) => ralph.pauseCurrentLoop(ctx.cwd));
 						if (paused.status === "no_active_loop") {
 							ctx.ui.notify("No active Ralph loop", "warning");
@@ -344,6 +424,60 @@ export default function initRalph(
 								"info",
 							);
 						}
+						return;
+					}
+
+					case "stop": {
+						if (!ctx.isIdle()) {
+							ctx.ui.notify("Agent is busy. Press ESC to interrupt, then run /ralph stop.", "warning");
+							return;
+						}
+
+						const sessionFile = sessionFileFromContext(ctx);
+						let scopedLoop = await withRalph((ralph) =>
+							ralph
+								.findLoopBySessionFile(ctx.cwd, sessionFile)
+								.pipe(Effect.map(Option.getOrUndefined)),
+						);
+						if (!scopedLoop) {
+							const loops = await listLoops(ctx.cwd);
+							const pausedLoops = loops.filter((loop) => loop.status === "paused");
+							const activeLoops = loops.filter((loop) => loop.status === "active");
+							if (activeLoops.length === 0) {
+								scopedLoop = pausedLoops.length === 1 ? pausedLoops[0] : undefined;
+							}
+						}
+
+						let stopped: RalphStopLoopResult;
+						if (scopedLoop?.status === "paused") {
+							await withRalph((ralph) => ralph.syncCurrentLoopFromSession(ctx.cwd, sessionFile));
+							const resumed = await withRalph((ralph) =>
+								ralph.resumeLoopState(ctx.cwd, scopedLoop.name),
+							);
+							stopped = resumed.status === "resumed"
+								? await withRalph((ralph) => ralph.stopActiveLoop(ctx.cwd))
+								: { status: "no_active_loop" as const };
+						} else if (scopedLoop?.status === "active") {
+							await withRalph((ralph) => ralph.syncCurrentLoopFromSession(ctx.cwd, sessionFile));
+							stopped = await withRalph((ralph) => ralph.stopActiveLoop(ctx.cwd));
+						} else {
+							stopped = await withRalph((ralph) => ralph.stopActiveLoop(ctx.cwd));
+						}
+						if (stopped.status === "no_active_loop") {
+							ctx.ui.notify("No active Ralph loop", "warning");
+							return;
+						}
+
+						if (stopped.status === "not_active") {
+							ctx.ui.notify(`Loop "${stopped.loopName}" is not active`, "warning");
+							return;
+						}
+
+						await updateUI(ctx.cwd, ctx);
+						ctx.ui.notify(
+							`Stopped Ralph loop: ${stopped.loopName} (iteration ${stopped.iteration})`,
+							"info",
+						);
 						return;
 					}
 
@@ -414,7 +548,7 @@ export default function initRalph(
 							return;
 						}
 						if (archived.status === "active_loop") {
-							ctx.ui.notify("Cannot archive active loop. Stop it first.", "warning");
+							ctx.ui.notify("Cannot archive active loop. Pause or stop it first.", "warning");
 							return;
 						}
 
@@ -501,48 +635,6 @@ export default function initRalph(
 						ctx.ui.notify(HELP, "info");
 						return;
 					}
-				}
-			} catch (error) {
-				if (Option.isSome(handlePersistedStateFailure(error, ctx))) {
-					return;
-				}
-				throw error;
-			}
-		},
-	});
-
-	pi.registerCommand("ralph-stop", {
-		description: "Stop active Ralph loop (idle only)",
-		handler: async (_args, ctx) => {
-			try {
-				if (!ctx.isIdle()) {
-					if (ctx.hasUI) {
-						ctx.ui.notify("Agent is busy. Press ESC to interrupt, then run /ralph-stop.", "warning");
-					}
-					return;
-				}
-
-				const stopped = await withRalph((ralph) => ralph.stopActiveLoop(ctx.cwd));
-				if (stopped.status === "no_active_loop") {
-					if (ctx.hasUI) {
-						ctx.ui.notify("No active Ralph loop", "warning");
-					}
-					return;
-				}
-
-				if (stopped.status === "not_active") {
-					if (ctx.hasUI) {
-						ctx.ui.notify(`Loop "${stopped.loopName}" is not active`, "warning");
-					}
-					return;
-				}
-
-				await updateUI(ctx.cwd, ctx);
-				if (ctx.hasUI) {
-					ctx.ui.notify(
-						`Stopped Ralph loop: ${stopped.loopName} (iteration ${stopped.iteration})`,
-						"info",
-					);
 				}
 			} catch (error) {
 				if (Option.isSome(handlePersistedStateFailure(error, ctx))) {

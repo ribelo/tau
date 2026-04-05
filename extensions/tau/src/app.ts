@@ -10,6 +10,8 @@ import { PromptModes, PromptModesLive } from "./services/prompt-modes.js";
 import { Persistence, PersistenceLive } from "./services/persistence.js";
 import { CuratedMemory, CuratedMemoryLive } from "./services/curated-memory.js";
 import { Ralph, RalphLive } from "./services/ralph.js";
+import { Autoresearch, AutoresearchLive } from "./services/autoresearch.js";
+import { AutoresearchRepoLive } from "./autoresearch/repo.js";
 import { SkillManager, SkillManagerLive } from "./services/skill-manager.js";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import initExa from "./exa/index.js";
@@ -26,6 +28,7 @@ import { reloadSkills } from "./skill-marker/index.js";
 import initAgent from "./agent/index.js";
 import initRequestUserInput from "./request-user-input/index.js";
 import initRalph from "./ralph/index.js";
+import initAutoresearch from "./autoresearch/index.js";
 import initForge from "./forge/index.js";
 import initAgentsMenu from "./agents-menu/index.js";
 import initThreadTools from "./thread/index.js";
@@ -107,6 +110,11 @@ const createMainLayer = (agentRuntimeBridge: AgentRuntimeBridgeService) => {
 		hasActiveSubagents,
 	}).pipe(Layer.provideMerge(RalphRepoLive), Layer.provide(NodeFileSystem.layer));
 
+	const AutoresearchLayer = AutoresearchLive.pipe(
+		Layer.provide(AutoresearchRepoLive),
+		Layer.provide(NodeFileSystem.layer),
+	);
+
 	return Layer.mergeAll(
 		PersistenceLayer,
 		SandboxLayer,
@@ -120,6 +128,7 @@ const createMainLayer = (agentRuntimeBridge: AgentRuntimeBridgeService) => {
 		SkillManagerLayer,
 		AgentLayer,
 		RalphLayer,
+		AutoresearchLayer,
 	).pipe(Layer.provide(PiLoggerLive));
 };
 
@@ -132,6 +141,7 @@ type TauRuntime = ManagedRuntime.ManagedRuntime<
 	| AgentControl
 	| SkillManager
 	| Ralph
+	| Autoresearch
 	| DreamLock
 	| DreamScheduler
 	| DreamTaskRegistry
@@ -185,6 +195,8 @@ export const startTau = (pi: ExtensionAPI) => {
 	const runSkillManager = <A, E>(effect: Effect.Effect<A, E, SkillManager>) =>
 		currentRuntime.runPromise(effect);
 	const runRalph = <A, E>(effect: Effect.Effect<A, E, Ralph>) => currentRuntime.runPromise(effect);
+	const runAutoresearch = <A, E>(effect: Effect.Effect<A, E, Autoresearch | Sandbox>) =>
+		currentRuntime.runPromise(effect);
 
 	const startup = Effect.gen(function* () {
 			const { default: initBacklog } = yield* Effect.promise(() => import("./backlog/tool.js"));
@@ -225,6 +237,7 @@ export const startTau = (pi: ExtensionAPI) => {
 				initNudge(pi);
 				initRequestUserInput(pi);
 				initRalph(pi, runRalph);
+				initAutoresearch(pi, runAutoresearch);
 				initForge(pi);
 				initThreadTools(pi);
 			});

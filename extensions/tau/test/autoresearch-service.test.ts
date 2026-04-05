@@ -89,7 +89,7 @@ function fakeBoundary(runDetails: {
 				fullOutputPath: { _tag: "None" } as never,
 			}),
 		commitKeep: () => Effect.succeed({ commit: "abc1234", note: "committed" }),
-		revertNonKeep: () => Effect.succeed({ note: "reverted" }),
+		revertNonKeep: (_workDir, _scopePaths) => Effect.succeed({ note: "reverted" }),
 		sendFollowUp: () => Effect.void,
 	};
 }

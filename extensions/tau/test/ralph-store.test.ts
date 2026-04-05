@@ -25,6 +25,10 @@ type RegisteredCommand = {
 };
 
 type Notifications = Array<{ readonly message: string; readonly level: string }>;
+type SentUserMessage = {
+	readonly prompt: string;
+	readonly options: { readonly deliverAs?: string } | undefined;
+};
 
 type RalphRuntimeHarness = {
 	readonly run: <A, E>(effect: Effect.Effect<A, E, Ralph>) => Promise<A>;
@@ -67,9 +71,11 @@ function makeContext(
 	cwd: string,
 	notifications: Notifications,
 	newSessionCancelled: readonly boolean[] = [true],
+	options?: { readonly idle?: boolean; readonly sessionFile?: string },
 ): ExtensionCommandContext {
-	let sessionFile = path.join(cwd, ".pi", "sessions", "controller.session.json");
+	let sessionFile = options?.sessionFile ?? path.join(cwd, ".pi", "sessions", "controller.session.json");
 	let newSessionCount = 0;
+	const idle = options?.idle ?? true;
 
 	const context = {
 		cwd,
@@ -100,7 +106,7 @@ function makeContext(
 				bold: (text: string) => text,
 			},
 		},
-		isIdle: () => true,
+		isIdle: () => idle,
 		abort: () => undefined,
 		hasPendingMessages: () => false,
 		shutdown: () => undefined,
@@ -132,10 +138,12 @@ function makePiStub(): {
 	readonly pi: ExtensionAPI;
 	readonly commands: Map<string, RegisteredCommand>;
 	readonly tools: ToolDefinition[];
+	readonly sentUserMessages: SentUserMessage[];
 } {
 	const eventHandlers = new Map<string, EventHandler[]>();
 	const commands = new Map<string, RegisteredCommand>();
 	const tools: ToolDefinition[] = [];
+	const sentUserMessages: SentUserMessage[] = [];
 
 	const base = {
 		on: (event: string, handler: EventHandler) => {
@@ -152,7 +160,9 @@ function makePiStub(): {
 		registerShortcut: () => undefined,
 		registerFlag: () => undefined,
 		registerMessageRenderer: () => undefined,
-		sendUserMessage: () => undefined,
+		sendUserMessage: (prompt: string, options?: { readonly deliverAs?: string }) => {
+			sentUserMessages.push({ prompt, options });
+		},
 		sendMessage: () => undefined,
 		appendEntry: () => undefined,
 		getActiveTools: () => [],
@@ -179,6 +189,7 @@ function makePiStub(): {
 		}) as unknown as ExtensionAPI,
 		commands,
 		tools,
+		sentUserMessages,
 	};
 }
 
@@ -221,6 +232,331 @@ describe("ralph store behavior freeze", () => {
 		expect(Option.getOrUndefined(state.controllerSessionFile)).toContain("controller.session.json");
 		expect(fs.readFileSync(taskPath(cwd, "alpha-loop"), "utf-8")).toContain("# Task");
 		expect(notifications.some((entry) => entry.message.includes("Started loop \"alpha-loop\""))).toBe(true);
+	});
+
+	it("/ralph create asks the current model to draft a backlog-based task file", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const notifications: Notifications = [];
+		const { pi, commands, sentUserMessages } = makePiStub();
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(pi, ralphRuntime.run);
+
+		const command = commands.get("ralph");
+		expect(command).toBeDefined();
+
+		const context = makeContext(cwd, notifications);
+		await command?.handler("create foo-31z", context);
+
+		expect(sentUserMessages).toHaveLength(1);
+		expect(sentUserMessages[0]?.prompt).toContain("Create a Ralph task file for `foo-31z`.");
+		expect(sentUserMessages[0]?.prompt).toContain("backlog show foo-31z");
+		expect(sentUserMessages[0]?.prompt).toContain(".pi/ralph/tasks/foo-31z.md");
+		expect(sentUserMessages[0]?.prompt).toContain("/ralph start foo-31z");
+		expect(notifications.some((entry) => entry.message.includes("foo-31z.md"))).toBe(true);
+	});
+
+	it("/ralph create preserves dotted backlog ids in the task path and start hint", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const notifications: Notifications = [];
+		const { pi, commands, sentUserMessages } = makePiStub();
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(pi, ralphRuntime.run);
+
+		const command = commands.get("ralph");
+		expect(command).toBeDefined();
+
+		const context = makeContext(cwd, notifications);
+		await command?.handler("create tau-6vi.1", context);
+
+		expect(sentUserMessages).toHaveLength(1);
+		expect(sentUserMessages[0]?.prompt).toContain("If the target corresponds to a backlog item, inspect it first with `backlog show <id>`");
+		expect(sentUserMessages[0]?.prompt).toContain(".pi/ralph/tasks/tau-6vi.1.md");
+		expect(sentUserMessages[0]?.prompt).toContain("/ralph start tau-6vi.1");
+	});
+
+	it("/ralph create recommends starting with the custom task path", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const notifications: Notifications = [];
+		const { pi, commands, sentUserMessages } = makePiStub();
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(pi, ralphRuntime.run);
+
+		const command = commands.get("ralph");
+		expect(command).toBeDefined();
+
+		const context = makeContext(cwd, notifications);
+		await command?.handler("create docs/tasks/refactor.md", context);
+
+		expect(sentUserMessages).toHaveLength(1);
+		expect(sentUserMessages[0]?.prompt).toContain("Write the task file at `docs/tasks/refactor.md`");
+		expect(sentUserMessages[0]?.prompt).toContain("/ralph start docs/tasks/refactor.md");
+	});
+
+	it("/ralph create does not treat .md file paths as backlog ids", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const notifications: Notifications = [];
+		const { pi, commands, sentUserMessages } = makePiStub();
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(pi, ralphRuntime.run);
+
+		const command = commands.get("ralph");
+		expect(command).toBeDefined();
+
+		const context = makeContext(cwd, notifications);
+		await command?.handler("create foo-31z.md", context);
+
+		expect(sentUserMessages).toHaveLength(1);
+		expect(sentUserMessages[0]?.prompt).toContain("Write the task file at `foo-31z.md`");
+		expect(sentUserMessages[0]?.prompt).not.toContain("backlog show foo-31z.md");
+		expect(sentUserMessages[0]?.prompt).toContain("/ralph start foo-31z.md");
+	});
+
+	it("/ralph create quotes custom start hints for paths with spaces", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const notifications: Notifications = [];
+		const { pi, commands, sentUserMessages } = makePiStub();
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(pi, ralphRuntime.run);
+
+		const command = commands.get("ralph");
+		expect(command).toBeDefined();
+
+		const context = makeContext(cwd, notifications);
+		await command?.handler("create docs/tasks/my task.md", context);
+
+		expect(sentUserMessages).toHaveLength(1);
+		expect(sentUserMessages[0]?.prompt).toContain('/ralph start "docs/tasks/my task.md"');
+	});
+
+	it("/ralph create strips surrounding quotes from backlog ids and paths", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const notifications: Notifications = [];
+		const { pi, commands, sentUserMessages } = makePiStub();
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(pi, ralphRuntime.run);
+
+		const command = commands.get("ralph");
+		expect(command).toBeDefined();
+
+		const context = makeContext(cwd, notifications);
+		await command?.handler('create "tau-6vi.1"', context);
+		await command?.handler('create "docs/tasks/my task.md"', context);
+
+		expect(sentUserMessages).toHaveLength(2);
+		expect(sentUserMessages[0]?.prompt).toContain("Create a Ralph task file for `tau-6vi.1`.");
+		expect(sentUserMessages[0]?.prompt).toContain("Example backlog flow: `/ralph create foo-31z` should inspect `backlog show foo-31z`");
+		expect(sentUserMessages[1]?.prompt).toContain("Write the task file at `docs/tasks/my task.md`");
+		expect(sentUserMessages[1]?.prompt).toContain('/ralph start "docs/tasks/my task.md"');
+	});
+
+	it("/ralph create does not direct normal loop names to a matching backlog id", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const notifications: Notifications = [];
+		const { pi, commands, sentUserMessages } = makePiStub();
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(pi, ralphRuntime.run);
+
+		const command = commands.get("ralph");
+		expect(command).toBeDefined();
+
+		const context = makeContext(cwd, notifications);
+		await command?.handler("create my-feature", context);
+
+		expect(sentUserMessages).toHaveLength(1);
+		expect(sentUserMessages[0]?.prompt).toContain("Create a Ralph task file for `my-feature`.");
+		expect(sentUserMessages[0]?.prompt).not.toContain("backlog show my-feature");
+	});
+
+	it("/ralph stop ends the active loop and /ralph pause keeps it resumable", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+		const controllerSessionFile = path.join(cwd, ".pi", "sessions", "controller.session.json");
+
+		const notifications: Notifications = [];
+		const { pi, commands } = makePiStub();
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(pi, ralphRuntime.run);
+
+		const command = commands.get("ralph");
+		expect(command).toBeDefined();
+
+		await ralphRuntime.run(
+			Effect.gen(function* () {
+				const ralph = yield* Ralph;
+				yield* ralph.startLoopState(cwd, {
+					loopName: "pausable-loop",
+					taskFile: path.join(".pi", "ralph", "tasks", "pausable-loop.md"),
+					maxIterations: 50,
+					itemsPerIteration: 0,
+					reflectEvery: 0,
+					reflectInstructions: "reflect",
+					controllerSessionFile: Option.some(controllerSessionFile),
+					defaultTaskTemplate: "# Task\n",
+				});
+			})
+		);
+
+		const context = makeContext(cwd, notifications);
+		await command?.handler("pause", context);
+
+		const pausedState = readState(cwd, "pausable-loop");
+		expect(pausedState.status).toBe("paused");
+		expect(notifications.some((entry) => entry.message.includes("Paused Ralph loop: pausable-loop"))).toBe(true);
+
+		await ralphRuntime.run(
+			Effect.gen(function* () {
+				const ralph = yield* Ralph;
+				yield* ralph.resumeLoopState(cwd, "pausable-loop");
+			})
+		);
+		await command?.handler("stop", context);
+
+		const stoppedState = readState(cwd, "pausable-loop");
+		expect(stoppedState.status).toBe("completed");
+		expect(notifications.some((entry) => entry.message.includes("Stopped Ralph loop: pausable-loop"))).toBe(true);
+	});
+
+	it("/ralph stop ends a paused loop after the documented ESC-style flow", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+		const iterationSessionFile = path.join(cwd, ".pi", "sessions", "child-1.session.json");
+
+		const notifications: Notifications = [];
+		const { pi, commands } = makePiStub();
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(pi, ralphRuntime.run);
+
+		const command = commands.get("ralph");
+		expect(command).toBeDefined();
+
+		await ralphRuntime.run(
+			Effect.gen(function* () {
+				const ralph = yield* Ralph;
+				yield* ralph.startLoopState(cwd, {
+					loopName: "esc-stop-loop",
+					taskFile: path.join(".pi", "ralph", "tasks", "esc-stop-loop.md"),
+					maxIterations: 50,
+					itemsPerIteration: 0,
+					reflectEvery: 0,
+					reflectInstructions: "reflect",
+					controllerSessionFile: Option.some(path.join(cwd, ".pi", "sessions", "controller.session.json")),
+					defaultTaskTemplate: "# Task\n",
+				});
+				const paused = yield* ralph.pauseCurrentLoop(cwd);
+				expect(paused.status).toBe("paused");
+			})
+		);
+
+		const context = makeContext(cwd, notifications, [true], { sessionFile: iterationSessionFile });
+		await command?.handler("stop", context);
+
+		const stoppedState = readState(cwd, "esc-stop-loop");
+		expect(stoppedState.status).toBe("completed");
+		expect(notifications.some((entry) => entry.message.includes("Stopped Ralph loop: esc-stop-loop"))).toBe(true);
+	});
+
+	it("/ralph stop prefers the paused loop owned by the current session over unrelated active loops", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+		const pausedSessionFile = path.join(cwd, ".pi", "sessions", "paused-child.session.json");
+		const otherSessionFile = path.join(cwd, ".pi", "sessions", "other-controller.session.json");
+
+		const notifications: Notifications = [];
+		const { pi, commands } = makePiStub();
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(pi, ralphRuntime.run);
+
+		const command = commands.get("ralph");
+		expect(command).toBeDefined();
+
+		fs.mkdirSync(path.join(cwd, ".pi", "ralph", "state"), { recursive: true });
+		fs.writeFileSync(
+			statePath(cwd, "owned-paused"),
+			encodeLoopStateJsonSync(
+				decodeLoopStateSync({
+					name: "owned-paused",
+					taskFile: path.join(".pi", "ralph", "tasks", "owned-paused.md"),
+					iteration: 2,
+					maxIterations: 50,
+					itemsPerIteration: 0,
+					reflectEvery: 0,
+					reflectInstructions: "reflect",
+					status: "paused",
+					startedAt: "2026-01-01T00:00:00.000Z",
+					completedAt: null,
+					lastReflectionAt: 0,
+					controllerSessionFile: path.join(cwd, ".pi", "sessions", "controller.session.json"),
+					activeIterationSessionFile: pausedSessionFile,
+					advanceRequestedAt: null,
+					awaitingFinalize: false,
+				}),
+			),
+			"utf-8",
+		);
+		fs.writeFileSync(
+			statePath(cwd, "other-active"),
+			encodeLoopStateJsonSync(
+				decodeLoopStateSync({
+					name: "other-active",
+					taskFile: path.join(".pi", "ralph", "tasks", "other-active.md"),
+					iteration: 1,
+					maxIterations: 50,
+					itemsPerIteration: 0,
+					reflectEvery: 0,
+					reflectInstructions: "reflect",
+					status: "active",
+					startedAt: "2026-01-01T00:00:00.000Z",
+					completedAt: null,
+					lastReflectionAt: 0,
+					controllerSessionFile: otherSessionFile,
+					activeIterationSessionFile: null,
+					advanceRequestedAt: null,
+					awaitingFinalize: false,
+				}),
+			),
+			"utf-8",
+		);
+
+		const context = makeContext(cwd, notifications, [true], { sessionFile: pausedSessionFile });
+		await command?.handler("stop", context);
+
+		expect(readState(cwd, "owned-paused").status).toBe("completed");
+		expect(readState(cwd, "other-active").status).toBe("active");
+		expect(notifications.some((entry) => entry.message.includes("Stopped Ralph loop: owned-paused"))).toBe(true);
+	});
+
+	it("does not register the legacy ralph-stop command", async () => {
+		const { pi, commands } = makePiStub();
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(pi, ralphRuntime.run);
+
+		expect(commands.has("ralph-stop")).toBe(false);
+		expect(commands.has("ralph")).toBe(true);
 	});
 
 	it("reports persisted-state decode failures at command boundary", async () => {

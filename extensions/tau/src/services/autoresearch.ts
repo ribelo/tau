@@ -96,12 +96,22 @@ export interface RevertResult {
 	readonly note: string;
 }
 
+export interface ExecuteBenchmarkInput {
+	readonly workDir: string;
+	readonly runDirectory: string;
+	readonly benchmarkLogPath: string;
+	readonly checksLogPath: Option.Option<string>;
+	readonly command: string;
+	readonly timeoutSeconds: number;
+	readonly checksTimeoutSeconds: number;
+	readonly metricName: string;
+	readonly metricUnit: string;
+	readonly signal?: AbortSignal | undefined;
+}
+
 export interface AutoresearchExecutionBoundary {
 	readonly executeBenchmark: (
-		workDir: string,
-		command: string,
-		timeoutSeconds: number,
-		checksTimeoutSeconds: number,
+		input: ExecuteBenchmarkInput,
 		onUpdate?: (progress: BenchmarkProgress) => void,
 	) => Effect.Effect<RunDetails, AutoresearchValidationError, never>;
 	readonly commitKeep: (
@@ -109,7 +119,10 @@ export interface AutoresearchExecutionBoundary {
 		experiment: ExperimentResult,
 		committablePaths: readonly string[],
 	) => Effect.Effect<KeepCommitResult, AutoresearchGitError, never>;
-	readonly revertNonKeep: (workDir: string) => Effect.Effect<RevertResult, AutoresearchGitError, never>;
+	readonly revertNonKeep: (
+		workDir: string,
+		scopePaths: readonly string[],
+	) => Effect.Effect<RevertResult, AutoresearchGitError, never>;
 	readonly sendFollowUp: (prompt: string) => Effect.Effect<void, never, never>;
 }
 
@@ -176,6 +189,7 @@ export interface InitExperimentInput {
 	readonly scopePaths: readonly string[];
 	readonly offLimits: readonly string[];
 	readonly constraints: readonly string[];
+	readonly maxExperiments?: number | null;
 }
 
 export interface InitExperimentResult {
@@ -210,6 +224,8 @@ export interface LogExperimentResult {
 	readonly runNumber: number;
 	readonly gitNote: string | null;
 	readonly wallClockSeconds: number | null;
+	readonly experiment: ExperimentResult;
+	readonly state: ExperimentState;
 }
 
 export interface AutoresearchViewData {
@@ -218,8 +234,17 @@ export interface AutoresearchViewData {
 	readonly metricName: string;
 	readonly metricUnit: string;
 	readonly bestMetric: number | null;
+	readonly bestDirection: MetricDirection;
 	readonly currentSegment: number;
 	readonly currentSegmentRunCount: number;
+	readonly totalRunCount: number;
+	readonly currentSegmentKeptCount: number;
+	readonly currentSegmentCrashedCount: number;
+	readonly currentSegmentChecksFailedCount: number;
+	readonly bestPrimaryMetric: number | null;
+	readonly bestRunNumber: number | null;
+	readonly confidence: number | null;
+	readonly secondaryMetrics: { name: string; unit: string }[];
 	readonly runningExperiment: SessionRuntime["runningExperiment"];
 }
 
@@ -257,6 +282,7 @@ export interface AutoresearchService {
 		enabled: boolean,
 		goal: string | null,
 	) => Effect.Effect<void, never, never>;
+	readonly clearSession: (sessionId: string) => Effect.Effect<void, never, never>;
 }
 
 export class Autoresearch extends ServiceMap.Service<Autoresearch, AutoresearchService>()("Autoresearch") {}
@@ -779,6 +805,7 @@ export const AutoresearchLive = Layer.effect(
 				state.metricUnit = input.metricUnit;
 				state.bestDirection = input.direction;
 				state.benchmarkCommand = input.benchmarkCommand.trim();
+				state.maxExperiments = input.maxExperiments ?? null;
 				state.bestMetric = null;
 				state.confidence = null;
 				state.secondaryMetrics = benchmarkContract.secondaryMetrics.map((name) => ({
@@ -922,10 +949,18 @@ export const AutoresearchLive = Layer.effect(
 				};
 
 				const details = yield* boundary.executeBenchmark(
-					workDir,
-					input.command,
-					input.timeoutSeconds,
-					input.checksTimeoutSeconds,
+					{
+						workDir,
+						runDirectory,
+						benchmarkLogPath,
+						checksLogPath: Option.some(checksLogPath),
+						command: input.command,
+						timeoutSeconds: input.timeoutSeconds,
+						checksTimeoutSeconds: input.checksTimeoutSeconds,
+						metricName: state.metricName,
+						metricUnit: state.metricUnit,
+					},
+					// onUpdate is not passed through service; adapter handles it directly
 				);
 
 				runtime.runningExperiment = null;
@@ -1091,15 +1126,11 @@ export const AutoresearchLive = Layer.effect(
 					if (typeof scopeValidation === "string") {
 						return yield* Effect.fail(new AutoresearchValidationError({ reason: scopeValidation }));
 					}
-					if (scopeValidation.committablePaths.length > 0) {
-						const commitResult = yield* boundary.commitKeep(workDir, experiment, scopeValidation.committablePaths);
-						experiment.commit = commitResult.commit;
-						gitNote = commitResult.note;
-					} else {
-						gitNote = "nothing to commit";
-					}
+					const commitResult = yield* boundary.commitKeep(workDir, experiment, scopeValidation.committablePaths);
+					experiment.commit = commitResult.commit;
+					gitNote = commitResult.note;
 				} else {
-					const revertResult = yield* boundary.revertNonKeep(workDir);
+					const revertResult = yield* boundary.revertNonKeep(workDir, state.scopePaths);
 					gitNote = revertResult.note;
 				}
 
@@ -1168,7 +1199,9 @@ export const AutoresearchLive = Layer.effect(
 					runNumber: experiment.runNumber ?? state.results.length,
 					gitNote,
 					wallClockSeconds,
-				} as LogExperimentResult;
+					experiment,
+					state: cloneExperimentState(state),
+				};
 			},
 		);
 
@@ -1176,14 +1209,41 @@ export const AutoresearchLive = Layer.effect(
 			function* (sessionId) {
 				const runtime = yield* ensureSession(sessionId);
 				const state = runtime.state;
+				const cur = currentResults(state.results, state.currentSegment);
+				const kept = cur.filter((r) => r.status === "keep").length;
+				const crashed = cur.filter((r) => r.status === "crash").length;
+				const checksFailed = cur.filter((r) => r.status === "checks_failed").length;
+
+				let bestPrimary: number | null = null;
+				let bestRunNum: number | null = null;
+				for (let i = state.results.length - 1; i >= 0; i--) {
+					const r = state.results[i];
+					if (!r || r.segment !== state.currentSegment) continue;
+					if (r.status === "keep" && r.metric > 0) {
+						if (bestPrimary === null || isBetter(r.metric, bestPrimary, state.bestDirection)) {
+							bestPrimary = r.metric;
+							bestRunNum = i + 1;
+						}
+					}
+				}
+
 				return {
 					autoresearchMode: runtime.autoresearchMode,
 					name: state.name,
 					metricName: state.metricName,
 					metricUnit: state.metricUnit,
 					bestMetric: state.bestMetric,
+					bestDirection: state.bestDirection,
 					currentSegment: state.currentSegment,
-					currentSegmentRunCount: currentResults(state.results, state.currentSegment).length,
+					currentSegmentRunCount: cur.length,
+					totalRunCount: state.results.length,
+					currentSegmentKeptCount: kept,
+					currentSegmentCrashedCount: crashed,
+					currentSegmentChecksFailedCount: checksFailed,
+					bestPrimaryMetric: bestPrimary,
+					bestRunNumber: bestRunNum,
+					confidence: state.confidence,
+					secondaryMetrics: state.secondaryMetrics.map((m) => ({ ...m })),
 					runningExperiment: runtime.runningExperiment,
 				};
 			},
@@ -1237,6 +1297,15 @@ export const AutoresearchLive = Layer.effect(
 			},
 		);
 
+		const clearSession: AutoresearchService["clearSession"] = Effect.fn("Autoresearch.clearSession")(
+			function* (sessionId) {
+				yield* Ref.update(sessionsRef, (sessions) => {
+					sessions.delete(sessionId);
+					return sessions;
+				});
+			},
+		);
+
 		return Autoresearch.of({
 			rehydrate,
 			initExperiment,
@@ -1245,6 +1314,7 @@ export const AutoresearchLive = Layer.effect(
 			getViewData,
 			onAgentEnd,
 			setMode,
+			clearSession,
 		});
 	}),
 );
@@ -1278,9 +1348,5 @@ function validateKeepPaths(
 	if (state.scopePaths.length === 0) {
 		return Effect.succeed("Files in Scope is empty for the current segment. Re-run init_experiment after fixing autoresearch.md.");
 	}
-	// Note: git status is a boundary concern. The service should not call git directly.
-	// For v1, we return a minimal committablePaths set based on scopePaths.
-	// The adapter-side boundary will perform actual git status validation before commitKeep.
-	// To keep the service testable without git, we accept all scope paths as committable.
 	return Effect.succeed({ committablePaths: [...state.scopePaths, AUTORESEARCH_MD, AUTORESEARCH_SH, AUTORESEARCH_CHECKS_SH] });
 }

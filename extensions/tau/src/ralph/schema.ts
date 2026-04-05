@@ -6,7 +6,7 @@ const NonNegativeIntSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 const OptionalStringSchema = Schema.OptionFromNullOr(Schema.String);
 
 export function sanitizeLoopName(name: string): string {
-	return name.replace(/[^a-zA-Z0-9_-]/g, "_").replace(/_+/g, "_");
+	return name.replace(/[^a-zA-Z0-9_.-]/g, "_").replace(/_+/g, "_");
 }
 
 function toContractValidationError(entity: string, error: unknown): RalphContractValidationError {

@@ -178,4 +178,118 @@ describe("ralph repo", () => {
 			);
 		});
 	});
+
+	it("findLoopBySessionFile skips completed loops but finds paused loops", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const completedLoop = { ...makeLoopState("completed-loop"), status: "completed" as const };
+		const pausedLoop = { ...makeLoopState("paused-loop"), status: "paused" as const };
+
+		const result = await Effect.runPromise(
+			Effect.gen(function* () {
+				const repo = yield* RalphRepo;
+				yield* repo.saveState(cwd, completedLoop);
+				yield* repo.saveState(cwd, pausedLoop);
+				const completed = yield* repo.findLoopBySessionFile(
+					cwd,
+					Option.getOrUndefined(completedLoop.controllerSessionFile),
+				);
+				const paused = yield* repo.findLoopBySessionFile(
+					cwd,
+					Option.getOrUndefined(pausedLoop.controllerSessionFile),
+				);
+				return { completed, paused };
+			}).pipe(Effect.provide(ralphRepoLayer)),
+		);
+
+		expect(Option.isNone(result.completed)).toBe(true);
+		expect(Option.isSome(result.paused) && Option.getOrUndefined(result.paused)?.name).toBe("paused-loop");
+	});
+
+	it("findLoopBySessionFile prefers active over paused when loops share a controller session", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const sharedSession = "/tmp/shared-controller.session.json";
+		const activeLoop = {
+			...makeLoopState("active-loop"),
+			status: "active" as const,
+			controllerSessionFile: Option.some(sharedSession),
+		};
+		const pausedLoop = {
+			...makeLoopState("paused-loop"),
+			status: "paused" as const,
+			controllerSessionFile: Option.some(sharedSession),
+		};
+
+		const result = await Effect.runPromise(
+			Effect.gen(function* () {
+				const repo = yield* RalphRepo;
+				yield* repo.saveState(cwd, pausedLoop);
+				yield* repo.saveState(cwd, activeLoop);
+				return yield* repo.findLoopBySessionFile(cwd, sharedSession);
+			}).pipe(Effect.provide(ralphRepoLayer)),
+		);
+
+		expect(Option.isSome(result)).toBe(true);
+		if (Option.isSome(result)) {
+			expect(result.value.name).toBe("active-loop");
+			expect(result.value.status).toBe("active");
+		}
+	});
+
+	it("findLoopBySessionFile still discovers paused loops when no active loop shares the session", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const sharedSession = "/tmp/only-paused.session.json";
+		const pausedLoop = {
+			...makeLoopState("paused-loop"),
+			status: "paused" as const,
+			controllerSessionFile: Option.some(sharedSession),
+		};
+
+		const result = await Effect.runPromise(
+			Effect.gen(function* () {
+				const repo = yield* RalphRepo;
+				yield* repo.saveState(cwd, pausedLoop);
+				return yield* repo.findLoopBySessionFile(cwd, sharedSession);
+			}).pipe(Effect.provide(ralphRepoLayer)),
+		);
+
+		expect(Option.isSome(result)).toBe(true);
+		if (Option.isSome(result)) {
+			expect(result.value.name).toBe("paused-loop");
+			expect(result.value.status).toBe("paused");
+		}
+	});
+
+	it("findLoopBySessionFile returns none when multiple paused loops share the same controller session", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const sharedSession = "/tmp/ambiguous-paused.session.json";
+		const pausedLoopA = {
+			...makeLoopState("paused-loop-a"),
+			status: "paused" as const,
+			controllerSessionFile: Option.some(sharedSession),
+		};
+		const pausedLoopB = {
+			...makeLoopState("paused-loop-b"),
+			status: "paused" as const,
+			controllerSessionFile: Option.some(sharedSession),
+		};
+
+		const result = await Effect.runPromise(
+			Effect.gen(function* () {
+				const repo = yield* RalphRepo;
+				yield* repo.saveState(cwd, pausedLoopA);
+				yield* repo.saveState(cwd, pausedLoopB);
+				return yield* repo.findLoopBySessionFile(cwd, sharedSession);
+			}).pipe(Effect.provide(ralphRepoLayer)),
+		);
+
+		expect(Option.isNone(result)).toBe(true);
+	});
 });

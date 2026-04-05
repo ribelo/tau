@@ -111,8 +111,7 @@ export function buildToolDescription(
 	lines.push("");
 	lines.push("## Available agents");
 	for (const a of enabledAgents) {
-		// Take first line of description for brevity
-		const shortDesc = a.description.split("\n")[0]?.trim() || "";
+		const shortDesc = a.description.replace(/\s+/g, " ").trim();
 		lines.push(`- ${a.name}: ${shortDesc}`);
 	}
 

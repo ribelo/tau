@@ -257,10 +257,26 @@ export const RalphRepoLive = Layer.effect(
 				return Option.none();
 			}
 			const loops = yield* listLoops(cwd, false);
-			const found = loops.find(
-				(loop) => loop.status === "active" && loopOwnsSessionFile(loop, sessionFile),
+			const candidates = loops.filter(
+				(loop) => loop.status !== "completed" && loopOwnsSessionFile(loop, sessionFile),
 			);
-			return found === undefined ? Option.none() : Option.some(found);
+			if (candidates.length === 0) {
+				return Option.none();
+			}
+
+			const active = candidates.filter((loop) => loop.status === "active");
+			if (active.length === 1) {
+				const onlyActive = active[0];
+				return onlyActive === undefined ? Option.none() : Option.some(onlyActive);
+			}
+
+			const paused = candidates.filter((loop) => loop.status === "paused");
+			if (active.length === 0 && paused.length === 1) {
+				const onlyPaused = paused[0];
+				return onlyPaused === undefined ? Option.none() : Option.some(onlyPaused);
+			}
+
+			return Option.none();
 		});
 
 		const readTaskFile: RalphRepoService["readTaskFile"] = Effect.fn("RalphRepo.readTaskFile")(

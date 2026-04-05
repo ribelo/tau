@@ -211,9 +211,7 @@ function buildPrompt(state: LoopState, taskContent: string, isReflection: boolea
 
 	parts.push(`## Current Task (from ${state.taskFile})\n\n${taskContent}\n\n---`);
 	parts.push(`\n## Instructions\n`);
-	parts.push(
-		"User controls: ESC pauses the assistant. Run /ralph-stop when idle to stop the loop.\n",
-	);
+	parts.push("User controls: ESC pauses the assistant. Run /ralph pause to keep the loop resumable. Run /ralph stop when idle to end the loop.\n");
 	parts.push(
 		`You are in a Ralph loop (iteration ${state.iteration}${state.maxIterations > 0 ? ` of ${state.maxIterations}` : ""}).\n`,
 	);

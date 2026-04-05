@@ -120,6 +120,26 @@ Review stuff.`;
 		expect(def.spawns).toEqual(["finder", "oracle"]);
 	});
 
+	it("should parse folded multiline yaml descriptions", async () => {
+		const content = `---
+name: review
+description: >-
+  Code review agent (read-only). Reviews diffs for bugs, security issues,
+  improvements. Returns prioritized findings (P0-P3).
+models:
+  - model: inherit
+    thinking: inherit
+sandbox: read-only
+approval_timeout: 60
+---
+Review stuff.`;
+
+		const def = await Effect.runPromise(parseAgentDefinition(content));
+		expect(def.description).toBe(
+			"Code review agent (read-only). Reviews diffs for bugs, security issues, improvements. Returns prioritized findings (P0-P3).",
+		);
+	});
+
 	it("should throw on unknown frontmatter keys", async () => {
 		const content = `---
 name: finder

@@ -47,8 +47,23 @@ describe("buildToolDescription", () => {
 
 	it("uses only first line of multi-line description", () => {
 		const desc = buildToolDescription(makeRegistry(agents));
-		expect(desc).toContain("- smart: Smart agent.");
-		expect(desc).not.toContain("General purpose");
+		expect(desc).toContain("- smart: Smart agent. General purpose.");
+	});
+
+	it("normalizes folded yaml-style whitespace without truncating the description", () => {
+		const desc = buildToolDescription(
+			makeRegistry([
+				{
+					name: "review",
+					description:
+						"Code review agent (read-only).\nReviews diffs for bugs, security issues,\nimprovements. Returns prioritized findings (P0-P3).",
+				},
+			]),
+		);
+
+		expect(desc).toContain(
+			"- review: Code review agent (read-only). Reviews diffs for bugs, security issues, improvements. Returns prioritized findings (P0-P3).",
+		);
 	});
 
 	it("respects spawns filter combined with isDisabled", () => {

@@ -28,10 +28,11 @@ ralph_start({
 
 ## User Commands
 
+- `/ralph create <name|path|backlog-id>` - Ask the current model to draft a task file.
 - `/ralph start <name>` - Start a new loop.
+- `/ralph pause` - Pause loop and keep it resumable.
+- `/ralph stop` - End the active loop (when agent idle).
 - `/ralph resume <name>` - Resume loop.
-- `/ralph stop` - Pause loop (when agent idle).
-- `/ralph-stop` - Stop active loop (idle only).
 - `/ralph status` - Show loops.
 - `/ralph list --archived` - Show archived loops.
 - `/ralph archive <name>` - Move loop to archive.
@@ -39,7 +40,9 @@ ralph_start({
 - `/ralph cancel <name>` - Delete loop.
 - `/ralph nuke [--yes]` - Delete all .ralph data.
 
-Press ESC to interrupt streaming, send a normal message to resume, and run `/ralph-stop` when idle to end the loop.
+Press ESC to interrupt streaming. Run `/ralph pause` to keep the loop resumable, or `/ralph stop` when idle to end it.
+
+For backlog-backed work, use `/ralph create <backlog-id>` first. The model should inspect the issue with `backlog show <id>` and write `.pi/ralph/tasks/<id>.md`.
 
 ## Task File Format
 
