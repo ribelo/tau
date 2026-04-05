@@ -12,27 +12,20 @@ import { AgentRegistry } from "../agent/agent-registry.js";
 import { buildToolDescription } from "../agent/tool.js";
 import type { AgentToolHandle } from "../agent/index.js";
 import { Effect } from "effect";
+import { AgentSelectionStore } from "./state.js";
 
 /**
- * Session-scoped agent enable/disable state.
- * All agents are enabled by default. State resets on session switch.
+	 * Session-scoped agent enable/disable state with optional project persistence.
+	 * Unsaved changes stay in memory for the current runtime. Ctrl+S saves them to project settings.
  */
-const disabledAgents = new Set<string>();
+const agentSelections = new AgentSelectionStore();
 
-export function isAgentDisabled(name: string): boolean {
-	return disabledAgents.has(name);
+export function isAgentDisabledForCwd(cwd: string, name: string): boolean {
+	return agentSelections.isDisabledForCwd(cwd, name);
 }
 
-export function setAgentEnabled(name: string, enabled: boolean): void {
-	if (enabled) {
-		disabledAgents.delete(name);
-	} else {
-		disabledAgents.add(name);
-	}
-}
-
-function resetAgentStates(): void {
-	disabledAgents.clear();
+export function setAgentEnabledForCwd(cwd: string, name: string, enabled: boolean): void {
+	agentSelections.setEnabledForCwd(cwd, name, enabled);
 }
 
 function loadRegistry(cwd: string): Effect.Effect<AgentRegistry, never> {
@@ -41,8 +34,8 @@ function loadRegistry(cwd: string): Effect.Effect<AgentRegistry, never> {
 	);
 }
 
-function refreshToolDescription(agentTool: AgentToolHandle, registry: AgentRegistry): void {
-	const description = buildToolDescription(registry, undefined, isAgentDisabled);
+function refreshToolDescription(agentTool: AgentToolHandle, registry: AgentRegistry, cwd: string): void {
+	const description = buildToolDescription(registry, undefined, (name) => isAgentDisabledForCwd(cwd, name));
 	agentTool.refresh(description);
 }
 
@@ -65,10 +58,11 @@ function syncAgentToolAvailability(
 	pi: ExtensionAPI,
 	agentTool: AgentToolHandle,
 	registry: AgentRegistry,
+	cwd: string,
 ): void {
-	refreshToolDescription(agentTool, registry);
+	refreshToolDescription(agentTool, registry, cwd);
 
-	const enabledCount = registry.names().filter((name) => !isAgentDisabled(name)).length;
+	const enabledCount = registry.names().filter((name) => !isAgentDisabledForCwd(cwd, name)).length;
 	const activeTools = pi.getActiveTools();
 	const hasAgentTool = activeTools.includes("agent");
 
@@ -94,8 +88,10 @@ class AgentsSelectorComponent extends Container implements Focusable {
 	private footerText: Text;
 	private doneFn: () => void;
 	private onToggle: (name: string, enabled: boolean) => void;
+	private onPersist: () => void;
 	private onStateChange: () => void;
 	private theme: Theme;
+	private isDirty: boolean;
 
 	private _focused = false;
 	get focused(): boolean {
@@ -109,21 +105,26 @@ class AgentsSelectorComponent extends Container implements Focusable {
 	constructor(
 		allNames: string[],
 		registry: AgentRegistry,
+		cwd: string,
 		theme: Theme,
+		isDirty: boolean,
 		done: () => void,
 		onToggle: (name: string, enabled: boolean) => void,
+		onPersist: () => void,
 		onStateChange: () => void,
 	) {
 		super();
 		this.theme = theme;
+		this.isDirty = isDirty;
 		this.doneFn = done;
 		this.onToggle = onToggle;
+		this.onPersist = onPersist;
 		this.onStateChange = onStateChange;
 
 		this.items = allNames.map((name) => {
 			const def = registry.get(name);
 			const desc = def?.description.split("\n")[0]?.trim() ?? "";
-			return { name, description: desc, enabled: !isAgentDisabled(name) };
+			return { name, description: desc, enabled: !agentSelections.isDisabledForCwd(cwd, name) };
 		});
 		this.filteredItems = [...this.items];
 
@@ -147,7 +148,10 @@ class AgentsSelectorComponent extends Container implements Focusable {
 	private getFooterText(): string {
 		const enabled = this.items.filter((i) => i.enabled).length;
 		const total = this.items.length;
-		return this.theme.fg("dim", `  Enter toggle · Ctrl+T toggle all · Esc close · ${enabled}/${total} enabled`);
+		const base = `  Enter toggle · Ctrl+T toggle all · Ctrl+S save · Esc close · ${enabled}/${total} enabled`;
+		return this.isDirty
+			? this.theme.fg("dim", `${base} `) + this.theme.fg("warning", "(unsaved)")
+			: this.theme.fg("dim", base);
 	}
 
 	private toggleAll(): void {
@@ -157,6 +161,7 @@ class AgentsSelectorComponent extends Container implements Focusable {
 			item.enabled = nextEnabled;
 			this.onToggle(item.name, nextEnabled);
 		}
+		this.isDirty = true;
 		this.refresh();
 		this.onStateChange();
 	}
@@ -211,6 +216,7 @@ class AgentsSelectorComponent extends Container implements Focusable {
 			if (item) {
 				item.enabled = !item.enabled;
 				this.onToggle(item.name, item.enabled);
+				this.isDirty = true;
 				this.refresh();
 				this.onStateChange();
 			}
@@ -219,6 +225,13 @@ class AgentsSelectorComponent extends Container implements Focusable {
 
 		if (matchesKey(data, Key.ctrl("t"))) {
 			this.toggleAll();
+			return;
+		}
+
+		if (matchesKey(data, Key.ctrl("s"))) {
+			this.onPersist();
+			this.isDirty = false;
+			this.footerText.setText(this.getFooterText());
 			return;
 		}
 
@@ -250,16 +263,26 @@ class AgentsSelectorComponent extends Container implements Focusable {
 }
 
 export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHandle): void {
-	// Reset on session boundaries
-	pi.on("session_start", async () => {
-		resetAgentStates();
-		const registry = await Effect.runPromise(loadRegistry(process.cwd()));
-		syncAgentToolAvailability(pi, agentTool, registry);
+	const syncForCwd = async (cwd: string) => {
+		const registry = await Effect.runPromise(loadRegistry(cwd));
+		agentSelections.activate(cwd, registry.names());
+		syncAgentToolAvailability(pi, agentTool, registry, cwd);
+	};
+
+	pi.on("session_start", async (_event, ctx) => {
+		const registry = await Effect.runPromise(loadRegistry(ctx.cwd));
+		agentSelections.activate(ctx.cwd, registry.names());
+		if (ctx.hasUI) {
+			syncAgentToolAvailability(pi, agentTool, registry, ctx.cwd);
+		}
 	});
-	pi.on("session_switch", async () => {
-		resetAgentStates();
-		const registry = await Effect.runPromise(loadRegistry(process.cwd()));
-		syncAgentToolAvailability(pi, agentTool, registry);
+	pi.on("session_switch", async (_event, ctx) => {
+		if (!ctx.hasUI) {
+			const registry = await Effect.runPromise(loadRegistry(ctx.cwd));
+			agentSelections.activate(ctx.cwd, registry.names());
+			return;
+		}
+		await syncForCwd(ctx.cwd);
 	});
 
 	pi.registerCommand("agents", {
@@ -274,11 +297,12 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 			}
 			return null;
 		},
-		handler: async (args, ctx) => {
-			if (!ctx.hasUI) return;
+			handler: async (args, ctx) => {
+				if (!ctx.hasUI) return;
 
-			const registry = await Effect.runPromise(loadRegistry(ctx.cwd));
-			const allNames = registry.names();
+				const registry = await Effect.runPromise(loadRegistry(ctx.cwd));
+				agentSelections.activate(ctx.cwd, registry.names());
+				const allNames = registry.names();
 
 			const trimmed = (args || "").trim();
 
@@ -289,7 +313,7 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 
 				if (action === "list") {
 					const lines = allNames.map((name: string) => {
-						const enabled = !isAgentDisabled(name);
+						const enabled = !isAgentDisabledForCwd(ctx.cwd, name);
 						const def = registry.get(name);
 						const desc = truncateWithEllipsis(
 							def?.description.split("\n")[0]?.trim() ?? "",
@@ -310,10 +334,10 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 						);
 						return;
 					}
-					setAgentEnabled(agentName, action === "enable");
-					syncAgentToolAvailability(pi, agentTool, registry);
+					setAgentEnabledForCwd(ctx.cwd, agentName, action === "enable");
+					syncAgentToolAvailability(pi, agentTool, registry, ctx.cwd);
 					const state = action === "enable" ? "enabled" : "disabled";
-					ctx.ui.notify(`Agent "${agentName}" ${state}`, "info");
+					ctx.ui.notify(`Agent "${agentName}" ${state} for this session. Open /agents and press Ctrl+S to save to project settings.`, "info");
 					return;
 				}
 
@@ -325,19 +349,25 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 			}
 
 			// Interactive toggle selector using ctx.ui.custom
-			await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
-				const selector = new AgentsSelectorComponent(
-					allNames,
-					registry,
-					theme,
-					() => done(undefined as unknown as void),
-					(name, enabled) => {
-						setAgentEnabled(name, enabled);
-					},
-					() => syncAgentToolAvailability(pi, agentTool, registry),
-				);
-				return selector;
-			});
+				await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
+					const selector = new AgentsSelectorComponent(
+						allNames,
+						registry,
+						ctx.cwd,
+						theme,
+						agentSelections.isDirtyForCwd(ctx.cwd),
+						() => done(undefined as unknown as void),
+						(name, enabled) => {
+							setAgentEnabledForCwd(ctx.cwd, name, enabled);
+						},
+						() => {
+							const settingsPath = agentSelections.persistForCwd(ctx.cwd, allNames);
+							ctx.ui.notify(`Saved agent selection to ${settingsPath}`, "info");
+						},
+						() => syncAgentToolAvailability(pi, agentTool, registry, ctx.cwd),
+					);
+					return selector;
+				});
 		},
 	});
 }

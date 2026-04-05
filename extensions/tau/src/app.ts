@@ -29,7 +29,7 @@ import initRalph from "./ralph/index.js";
 import initForge from "./forge/index.js";
 import initAgentsMenu from "./agents-menu/index.js";
 import initThreadTools from "./thread/index.js";
-import { isAgentDisabled } from "./agents-menu/index.js";
+import { isAgentDisabledForCwd } from "./agents-menu/index.js";
 import { AgentConfig, AgentControl } from "./agent/services.js";
 import { AgentControlLive } from "./agent/control.js";
 import { AgentManagerLive } from "./agent/manager.js";
@@ -230,7 +230,11 @@ export const startTau = (pi: ExtensionAPI) => {
 			});
 
 			const agentRegistry = yield* AgentRegistry.load(process.cwd());
-			const agentToolDescription = buildToolDescription(agentRegistry, undefined, isAgentDisabled);
+			const agentToolDescription = buildToolDescription(
+				agentRegistry,
+				undefined,
+				(name) => isAgentDisabledForCwd(process.cwd(), name),
+			);
 			yield* Effect.sync(() => {
 				const agentToolHandle = initAgent(pi, agentRuntimeBridge, agentToolDescription);
 				initAgentsMenu(pi, agentToolHandle);
