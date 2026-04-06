@@ -449,9 +449,12 @@ describe("ralph adapter boundary freeze", () => {
 		await expect(
 			piHarness.fire("session_start", { type: "session_start" }, context.ctx),
 		).resolves.toBeDefined();
-		expect(
-			context.notifications.some((entry) => entry.message.includes("Ralph state is invalid")),
-		).toBe(true);
+		const message =
+			context.notifications.find((entry) => entry.message.includes("Ralph state is invalid"))
+				?.message ?? "";
+		expect(message).toContain("Ralph state is invalid");
+		expect(message).toContain(".pi/ralph/state/broken-loop.state.json");
+		expect(message).toContain("invalid-status");
 	});
 
 	it("keeps the Ralph widget visible on session_start while a current loop is active", async () => {

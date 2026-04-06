@@ -36,6 +36,19 @@ const isPlatformReasonTag = (error: unknown, tag: string): boolean => {
 
 const isNotFound = (error: unknown): boolean => isPlatformReasonTag(error, "NotFound");
 
+function withStateFileContext(
+	cwd: string,
+	filePath: string,
+	error: RalphContractValidationError,
+): RalphContractValidationError {
+	const relativePath = path.relative(cwd, filePath);
+	const displayPath = relativePath.length > 0 ? relativePath : filePath;
+	return new RalphContractValidationError({
+		entity: error.entity,
+		reason: `${displayPath}: ${error.reason}`,
+	});
+}
+
 const optionContains = (option: Option.Option<string>, value: string | undefined): boolean => {
 	if (value === undefined) {
 		return false;
@@ -200,7 +213,9 @@ export const RalphRepoLive = Layer.effect(
 				if (Option.isNone(contentOption)) {
 					return Option.none();
 				}
-				const state = yield* decodeLoopStateJson(contentOption.value);
+				const state = yield* decodeLoopStateJson(contentOption.value).pipe(
+					Effect.mapError((error) => withStateFileContext(cwd, filePath, error)),
+				);
 				return Option.some(state);
 			},
 		);
@@ -239,11 +254,16 @@ export const RalphRepoLive = Layer.effect(
 					if (!entry.endsWith(LOOP_STATE_EXT)) {
 						continue;
 					}
-					const contentOption = yield* readOptionalFile(fs, path.join(dir, entry));
+					const filePath = path.join(dir, entry);
+					const contentOption = yield* readOptionalFile(fs, filePath);
 					if (Option.isNone(contentOption)) {
 						continue;
 					}
-					loops.push(yield* decodeLoopStateJson(contentOption.value));
+					loops.push(
+						yield* decodeLoopStateJson(contentOption.value).pipe(
+							Effect.mapError((error) => withStateFileContext(cwd, filePath, error)),
+						),
+					);
 				}
 
 				return loops;

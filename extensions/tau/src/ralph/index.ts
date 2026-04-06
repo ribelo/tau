@@ -67,7 +67,7 @@ const STATUS_ICONS: Record<LoopStatus, string> = {
 };
 
 function persistedStateFailureMessage(error: RalphContractValidationError): string {
-	return `${INVALID_STATE_HINT} (${error.entity})`;
+	return `${INVALID_STATE_HINT} (${error.entity})\nProblem: ${error.reason}`;
 }
 
 function handlePersistedStateFailure(

@@ -613,9 +613,12 @@ describe("ralph store behavior freeze", () => {
 
 		const context = makeContext(cwd, notifications);
 		await expect(command?.handler("status", context)).resolves.toBeUndefined();
-		expect(
-			notifications.some((entry) => entry.message.includes("Ralph state is invalid")),
-		).toBe(true);
+		const message =
+			notifications.find((entry) => entry.message.includes("Ralph state is invalid"))
+				?.message ?? "";
+		expect(message).toContain("Ralph state is invalid");
+		expect(message).toContain(".pi/ralph/state/broken-loop.state.json");
+		expect(message).toContain("invalid-status");
 	});
 
 	it("archives paused loops, cleans completed loops, and nukes .pi/ralph", async () => {
