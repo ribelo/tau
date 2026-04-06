@@ -10,7 +10,7 @@ import {
 	encodeLoopStateJson,
 	LoopNameSchema,
 } from "../src/ralph/schema.js";
-import { makePromptProfile } from "./ralph-test-helpers.js";
+import { makeExecutionProfile } from "./ralph-test-helpers.js";
 
 const encodedLoopState: EncodedLoopState = {
 	name: "schema-loop",
@@ -28,7 +28,7 @@ const encodedLoopState: EncodedLoopState = {
 	activeIterationSessionFile: null,
 	advanceRequestedAt: null,
 	awaitingFinalize: false,
-	promptProfile: makePromptProfile(),
+	executionProfile: makeExecutionProfile(),
 };
 
 describe("ralph schema", () => {
@@ -80,6 +80,35 @@ describe("ralph schema", () => {
 				expect(failure.value).toBeInstanceOf(RalphContractValidationError);
 			}
 		}
+	});
+
+	it("accepts legacy promptProfile payloads as read-compat and normalizes to executionProfile", async () => {
+		const legacyState = {
+			name: encodedLoopState.name,
+			taskFile: encodedLoopState.taskFile,
+			iteration: encodedLoopState.iteration,
+			maxIterations: encodedLoopState.maxIterations,
+			itemsPerIteration: encodedLoopState.itemsPerIteration,
+			reflectEvery: encodedLoopState.reflectEvery,
+			reflectInstructions: encodedLoopState.reflectInstructions,
+			status: encodedLoopState.status,
+			startedAt: encodedLoopState.startedAt,
+			completedAt: encodedLoopState.completedAt,
+			lastReflectionAt: encodedLoopState.lastReflectionAt,
+			controllerSessionFile: encodedLoopState.controllerSessionFile,
+			activeIterationSessionFile: encodedLoopState.activeIterationSessionFile,
+			advanceRequestedAt: encodedLoopState.advanceRequestedAt,
+			awaitingFinalize: encodedLoopState.awaitingFinalize,
+			promptProfile: {
+				mode: "smart",
+				model: "anthropic/claude-opus-4-5",
+				thinking: "medium",
+			},
+		};
+
+		const decoded = await Effect.runPromise(decodeLoopState(legacyState));
+		expect(decoded.executionProfile.promptProfile.mode).toBe("smart");
+		expect(decoded.executionProfile.policy.tools.kind).toBe("inherit");
 	});
 
 	it("maps invalid JSON payloads to RalphContractValidationError", async () => {

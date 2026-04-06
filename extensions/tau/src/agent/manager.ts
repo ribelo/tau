@@ -205,6 +205,8 @@ export const AgentManagerLive = Layer.effect(
 							depth: depth,
 							cwd: opts.cwd,
 							parentSessionId: opts.parentSessionId,
+							executionState: opts.executionState,
+							executionProfile: opts.executionProfile,
 							parentSandboxConfig: opts.parentSandboxConfig,
 							parentModel: opts.parentModel,
 							approvalBroker: opts.approvalBroker,

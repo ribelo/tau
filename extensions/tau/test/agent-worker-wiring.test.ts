@@ -4,6 +4,7 @@ import { Effect } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentDefinition } from "../src/agent/types.js";
 import type { ResolvedSandboxConfig } from "../src/sandbox/config.js";
+import { TAU_PERSISTED_STATE_TYPE } from "../src/shared/state.js";
 
 const { createAgentSessionMock, applyAgentToolAllowlistMock, createdSessions } = vi.hoisted(() => ({
 	createAgentSessionMock: vi.fn(),
@@ -52,19 +53,27 @@ class FakeAgentSession {
 	readonly messages: readonly unknown[] = [];
 	readonly isStreaming = false;
 	readonly isCompacting = false;
+	readonly customEntries: Array<{ customType: string; data: unknown }> = [];
+	readonly model: Model<Api>;
+	thinkingLevel: AgentSession["thinkingLevel"] = "medium";
 
-	constructor(id: string, streamFn: AgentSession["agent"]["streamFn"]) {
+	constructor(id: string, streamFn: AgentSession["agent"]["streamFn"], model: Model<Api>) {
 		this.sessionId = id;
+		this.model = model;
 		this.sessionManager = {
 			getEntries: () => [],
-			appendCustomEntry: () => undefined,
+			appendCustomEntry: (customType, data) => {
+				this.customEntries.push({ customType, data });
+			},
 		};
 		this.agent = {
 			streamFn,
 		} as AgentSession["agent"];
 	}
 
-	setThinkingLevel(): void {}
+	setThinkingLevel(level: AgentSession["thinkingLevel"]): void {
+		this.thinkingLevel = level;
+	}
 	subscribe(): () => void {
 		return () => undefined;
 	}
@@ -79,6 +88,19 @@ const TEST_MODEL: Model<Api> = {
 	api: "openai-codex-responses",
 	provider: "openai-codex",
 	baseUrl: "https://chatgpt.com/backend-api",
+	reasoning: true,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 200_000,
+	maxTokens: 32_000,
+};
+
+const TEST_FALLBACK_MODEL: Model<Api> = {
+	id: "claude-opus-4-5",
+	name: "claude-opus-4-5",
+	api: "anthropic",
+	provider: "anthropic",
+	baseUrl: "https://api.anthropic.com",
 	reasoning: true,
 	input: ["text"],
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -103,15 +125,43 @@ const PARENT_SANDBOX_CONFIG: ResolvedSandboxConfig = {
 	subagent: false,
 };
 
+const TEST_EXECUTION_STATE = {
+	selector: {
+		mode: "default",
+	},
+	policy: {
+		tools: {
+			kind: "inherit",
+		},
+	},
+} as const;
+
+const TEST_EXECUTION_PROFILE = {
+	selector: {
+		mode: "default",
+	},
+	promptProfile: {
+		mode: "default",
+		model: "openai-codex/gpt-5.4",
+		thinking: "medium",
+	},
+	policy: {
+		tools: {
+			kind: "inherit",
+		},
+	},
+} as const;
+
 const makeModelRegistry = () => ({
 	authStorage: {},
-	getAll: () => [TEST_MODEL],
+	getAll: () => [TEST_MODEL, TEST_FALLBACK_MODEL],
 });
 
-const makeSession = (index: number): FakeAgentSession => {
+const makeSession = (index: number, model: Model<Api>): FakeAgentSession => {
 	const session = new FakeAgentSession(
 		`session-${index}`,
 		vi.fn() as AgentSession["agent"]["streamFn"],
+		model,
 	);
 	createdSessions.push(session);
 	return session;
@@ -123,7 +173,7 @@ describe("AgentWorker structured-output wiring", () => {
 		applyAgentToolAllowlistMock.mockClear();
 		createdSessions.length = 0;
 		createAgentSessionMock.mockImplementation(async () => ({
-			session: makeSession(createdSessions.length + 1) as unknown as AgentSession,
+			session: makeSession(createdSessions.length + 1, TEST_MODEL) as unknown as AgentSession,
 		}));
 	});
 
@@ -134,6 +184,8 @@ describe("AgentWorker structured-output wiring", () => {
 				depth: 0,
 				cwd: process.cwd(),
 				parentSessionId: "parent-session",
+				executionState: TEST_EXECUTION_STATE,
+				executionProfile: TEST_EXECUTION_PROFILE,
 				parentSandboxConfig: PARENT_SANDBOX_CONFIG,
 				parentModel: TEST_MODEL,
 				approvalBroker: undefined,
@@ -157,6 +209,8 @@ describe("AgentWorker structured-output wiring", () => {
 				depth: 0,
 				cwd: process.cwd(),
 				parentSessionId: "parent-session",
+				executionState: TEST_EXECUTION_STATE,
+				executionProfile: TEST_EXECUTION_PROFILE,
 				parentSandboxConfig: PARENT_SANDBOX_CONFIG,
 				parentModel: TEST_MODEL,
 				approvalBroker: undefined,
@@ -176,5 +230,94 @@ describe("AgentWorker structured-output wiring", () => {
 
 		expect(createdSessions).toHaveLength(2);
 		expect(createdSessions[1]?.agent.streamFn).toBe(toolOnlyStreamFn);
+	});
+
+	it("updates inherited execution profile after worker model fallback", async () => {
+		const sessionModels = [TEST_MODEL, TEST_FALLBACK_MODEL];
+		createAgentSessionMock.mockImplementation(async () => {
+			const model = sessionModels[createdSessions.length] ?? TEST_MODEL;
+			return {
+				session: makeSession(createdSessions.length + 1, model) as unknown as AgentSession,
+			};
+		});
+
+		const worker = await Effect.runPromise(
+			AgentWorker.make({
+				definition: TEST_DEFINITION,
+				depth: 0,
+				cwd: process.cwd(),
+				parentSessionId: "parent-session",
+				executionState: TEST_EXECUTION_STATE,
+				executionProfile: TEST_EXECUTION_PROFILE,
+				parentSandboxConfig: PARENT_SANDBOX_CONFIG,
+				parentModel: TEST_MODEL,
+				approvalBroker: undefined,
+				modelRegistry: makeModelRegistry() as never,
+				resultSchema: undefined,
+				runPromise: async () => {
+					throw new Error("unused");
+				},
+			}),
+		);
+
+		await Effect.runPromise(
+			(worker as unknown as {
+				switchToModel: (spec: { model: string; thinking?: "high" }) => Effect.Effect<void, string>;
+			}).switchToModel({ model: "anthropic/claude-opus-4-5", thinking: "high" }),
+		);
+
+		const parentExecutionProfile = (worker as unknown as {
+			agentContext: {
+				parentExecutionProfile: {
+					promptProfile: {
+						model: string;
+						thinking: string;
+					};
+				};
+			};
+		}).agentContext.parentExecutionProfile;
+
+		expect(parentExecutionProfile.promptProfile.model).toBe("anthropic/claude-opus-4-5");
+		expect(parentExecutionProfile.promptProfile.thinking).toBe("high");
+	});
+
+	it("persists resolved execution state into child session state", async () => {
+		await Effect.runPromise(
+			AgentWorker.make({
+				definition: TEST_DEFINITION,
+				depth: 0,
+				cwd: process.cwd(),
+				parentSessionId: "parent-session",
+				executionState: TEST_EXECUTION_STATE,
+				executionProfile: TEST_EXECUTION_PROFILE,
+				parentSandboxConfig: PARENT_SANDBOX_CONFIG,
+				parentModel: TEST_MODEL,
+				approvalBroker: undefined,
+				modelRegistry: makeModelRegistry() as never,
+				resultSchema: undefined,
+				runPromise: async () => {
+					throw new Error("unused");
+				},
+			}),
+		);
+
+		expect(createdSessions).toHaveLength(1);
+		const session = createdSessions[0];
+		expect(session?.customEntries).toHaveLength(1);
+		expect(session?.customEntries[0]).toMatchObject({
+			customType: TAU_PERSISTED_STATE_TYPE,
+			data: {
+				execution: {
+					selector: {
+						mode: "default",
+					},
+					policy: {
+						tools: {
+							kind: "inherit",
+						},
+					},
+				},
+			},
+		});
 	});
 });

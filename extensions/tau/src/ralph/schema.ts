@@ -1,5 +1,10 @@
 import { Effect, Schema } from "effect";
 
+import {
+	DEFAULT_EXECUTION_POLICY,
+	ExecutionProfileSchema,
+	makeExecutionProfile,
+} from "../execution/schema.js";
 import { PromptModeProfileSchema } from "../prompt/profile.js";
 import { RalphContractValidationError } from "./errors.js";
 
@@ -28,7 +33,7 @@ export const LoopNameSchema = Schema.NonEmptyString.check(Schema.isMaxLength(120
 );
 export type LoopName = Schema.Schema.Type<typeof LoopNameSchema>;
 
-export const LoopStateSchema = Schema.Struct({
+const LoopStateSharedFields = {
 	name: LoopNameSchema,
 	taskFile: Schema.NonEmptyString,
 	iteration: Schema.mutableKey(NonNegativeIntSchema),
@@ -44,10 +49,20 @@ export const LoopStateSchema = Schema.Struct({
 	activeIterationSessionFile: Schema.mutableKey(OptionalStringSchema),
 	advanceRequestedAt: Schema.mutableKey(OptionalStringSchema),
 	awaitingFinalize: Schema.mutableKey(Schema.Boolean),
-	promptProfile: Schema.mutableKey(PromptModeProfileSchema),
+} as const;
+
+export const LoopStateSchema = Schema.Struct({
+	...LoopStateSharedFields,
+	executionProfile: Schema.mutableKey(ExecutionProfileSchema),
 });
 export type LoopState = Schema.Schema.Type<typeof LoopStateSchema>;
 export type EncodedLoopState = Schema.Codec.Encoded<typeof LoopStateSchema>;
+
+const LegacyLoopStateSchema = Schema.Struct({
+	...LoopStateSharedFields,
+	promptProfile: Schema.mutableKey(PromptModeProfileSchema),
+});
+type LegacyLoopState = Schema.Schema.Type<typeof LegacyLoopStateSchema>;
 
 export const StartLoopInputSchema = Schema.Struct({
 	name: LoopNameSchema,
@@ -77,9 +92,9 @@ export const LoopSummarySchema = Schema.Struct({
 });
 export type LoopSummary = Schema.Schema.Type<typeof LoopSummarySchema>;
 
-const decodeLoopStateSchema = Schema.decodeUnknownEffect(LoopStateSchema);
 const encodeLoopStateSchema = Schema.encodeUnknownEffect(LoopStateSchema);
 const decodeLoopStateSchemaSync = Schema.decodeUnknownSync(LoopStateSchema);
+const decodeLegacyLoopStateSchemaSync = Schema.decodeUnknownSync(LegacyLoopStateSchema);
 const encodeLoopStateSchemaSync = Schema.encodeUnknownSync(LoopStateSchema);
 
 const parseJsonUnknown = (input: string): Effect.Effect<unknown, RalphContractValidationError, never> =>
@@ -96,14 +111,42 @@ function parseJsonUnknownSync(input: string): unknown {
 	}
 }
 
+function legacyLoopStateToCanonical(state: LegacyLoopState): LoopState {
+	return {
+		...state,
+		executionProfile: makeExecutionProfile({
+			selector: {
+				mode: state.promptProfile.mode,
+			},
+			promptProfile: state.promptProfile,
+			policy: DEFAULT_EXECUTION_POLICY,
+		}),
+	};
+}
+
+function decodeLoopStateCompatSync(value: unknown): LoopState {
+	try {
+		return decodeLoopStateSchemaSync(value);
+	} catch (canonicalError) {
+		try {
+			const legacy = decodeLegacyLoopStateSchemaSync(value);
+			return legacyLoopStateToCanonical(legacy);
+		} catch {
+			throw toContractValidationError("ralph.loop_state", canonicalError);
+		}
+	}
+}
+
 export const decodeLoopState = (
 	value: unknown,
 ): Effect.Effect<LoopState, RalphContractValidationError, never> =>
-	decodeLoopStateSchema(value).pipe(
-		Effect.mapError((error) =>
-			toContractValidationError("ralph.loop_state", error),
-		),
-	);
+	Effect.try({
+		try: () => decodeLoopStateCompatSync(value),
+		catch: (error) =>
+			error instanceof RalphContractValidationError
+				? error
+				: toContractValidationError("ralph.loop_state", error),
+	});
 
 export const encodeLoopState = (
 	state: LoopState,
@@ -127,11 +170,7 @@ export const encodeLoopStateJson = (
 	);
 
 export function decodeLoopStateSync(value: unknown): LoopState {
-	try {
-		return decodeLoopStateSchemaSync(value);
-	} catch (error) {
-		throw toContractValidationError("ralph.loop_state", error);
-	}
+	return decodeLoopStateCompatSync(value);
 }
 
 export function encodeLoopStateSync(state: LoopState): EncodedLoopState {

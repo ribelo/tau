@@ -8,6 +8,11 @@ import { SandboxStateLive } from "./services/state.js";
 import { Footer, FooterLive } from "./services/footer.js";
 import { PromptModes, PromptModesLive } from "./services/prompt-modes.js";
 import { Persistence, PersistenceLive } from "./services/persistence.js";
+import { ExecutionState, ExecutionStateLive } from "./services/execution-state.js";
+import {
+	ExecutionRuntime,
+	ExecutionRuntimeLive,
+} from "./services/execution-runtime.js";
 import { CuratedMemory, CuratedMemoryLive } from "./services/curated-memory.js";
 import { Ralph, RalphLive } from "./services/ralph.js";
 import { Autoresearch, AutoresearchLive } from "./services/autoresearch.js";
@@ -66,7 +71,13 @@ const FooterLayer = FooterLive.pipe(
 	Layer.provide(PersistenceLayer),
 	Layer.provide(SandboxLayer),
 );
-const PromptModesLayer = PromptModesLive.pipe(Layer.provide(PersistenceLayer));
+const ExecutionStateLayer = ExecutionStateLive.pipe(Layer.provide(PersistenceLayer));
+const ExecutionRuntimeLayer = ExecutionRuntimeLive.pipe(
+	Layer.provide(ExecutionStateLayer),
+);
+const PromptModesLayer = PromptModesLive.pipe(
+	Layer.provide(ExecutionRuntimeLayer),
+);
 const CuratedMemoryLayer = CuratedMemoryLive;
 const DreamSchedulerLayer = DreamSchedulerLive({ loadConfig: loadDreamConfig });
 const skillMutationCallback: { current: () => void } = { current: () => {} };
@@ -117,6 +128,8 @@ const createMainLayer = (agentRuntimeBridge: AgentRuntimeBridgeService) => {
 
 	return Layer.mergeAll(
 		PersistenceLayer,
+		ExecutionStateLayer,
+		ExecutionRuntimeLayer,
 		SandboxLayer,
 		FooterLayer,
 		PromptModesLayer,
@@ -134,6 +147,8 @@ const createMainLayer = (agentRuntimeBridge: AgentRuntimeBridgeService) => {
 
 type TauRuntime = ManagedRuntime.ManagedRuntime<
 	| Persistence
+	| ExecutionState
+	| ExecutionRuntime
 	| Sandbox
 	| Footer
 	| PromptModes
@@ -196,16 +211,19 @@ export const startTau = (pi: ExtensionAPI) => {
 		currentRuntime.runPromise(effect);
 	const runRalph = <A, E>(effect: Effect.Effect<A, E, Ralph | PromptModes>) =>
 		currentRuntime.runPromise(effect);
-	const runAutoresearch = <A, E>(effect: Effect.Effect<A, E, Autoresearch | Sandbox>) =>
+	const runAutoresearch = <A, E>(
+		effect: Effect.Effect<A, E, Autoresearch | Sandbox | PromptModes>,
+	) =>
 		currentRuntime.runPromise(effect);
 
 	const startup = Effect.gen(function* () {
-			const { default: initBacklog } = yield* Effect.promise(() => import("./backlog/tool.js"));
-			const persistence = yield* Persistence;
-			const sandbox = yield* Sandbox;
-			const footer = yield* Footer;
-			const promptModes = yield* PromptModes;
-			const curatedMemory = yield* CuratedMemory;
+		const { default: initBacklog } = yield* Effect.promise(() => import("./backlog/tool.js"));
+		const persistence = yield* Persistence;
+		const executionState = yield* ExecutionState;
+		const executionRuntime = yield* ExecutionRuntime;
+		const sandbox = yield* Sandbox;
+		const footer = yield* Footer;
+		const curatedMemory = yield* CuratedMemory;
 			const skillMarker = createSkillMarkerRuntime();
 			skillMutationCallback.current = () => {
 				void reloadSkills(skillMarker, process.cwd());
@@ -215,11 +233,12 @@ export const startTau = (pi: ExtensionAPI) => {
 				update: persistence.update,
 			};
 
-			yield* persistence.setup;
-			yield* sandbox.setup;
-			yield* footer.setup;
-			yield* promptModes.setup;
-			yield* curatedMemory.setup;
+		yield* persistence.setup;
+		yield* executionState.setup;
+		yield* executionRuntime.setup;
+		yield* sandbox.setup;
+		yield* footer.setup;
+		yield* curatedMemory.setup;
 			yield* Effect.sync(() => {
 				initBacklog(pi);
 				initExa(pi);

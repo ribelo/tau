@@ -19,6 +19,7 @@ import {
 import { applyAgentToolAllowlist } from "../src/agent/tool-allowlist.js";
 import { AgentError } from "../src/agent/services.js";
 import type { AgentDefinition } from "../src/agent/types.js";
+import type { ExecutionPolicy } from "../src/execution/schema.js";
 
 async function withTempDir<A>(fn: (dir: string) => Promise<A>): Promise<A> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tau-tool-allowlist-"));
@@ -76,6 +77,34 @@ function buildDefinition(tools: readonly string[] | undefined): AgentDefinition 
 		...(tools !== undefined ? { tools } : {}),
 		sandbox: { preset: "read-only" },
 		systemPrompt: "Test prompt",
+	};
+}
+
+function requireToolsPolicy(tools: readonly string[]): ExecutionPolicy {
+	const [firstTool, ...restTools] = tools;
+	if (firstTool === undefined) {
+		throw new Error("requireToolsPolicy requires at least one tool");
+	}
+
+	return {
+		tools: {
+			kind: "require",
+			tools: [firstTool, ...restTools],
+		},
+	};
+}
+
+function allowlistPolicy(tools: readonly string[]): ExecutionPolicy {
+	const [firstTool, ...restTools] = tools;
+	if (firstTool === undefined) {
+		throw new Error("allowlistPolicy requires at least one tool");
+	}
+
+	return {
+		tools: {
+			kind: "allowlist",
+			tools: [firstTool, ...restTools],
+		},
 	};
 }
 
@@ -264,6 +293,119 @@ describe("agent tool allowlist", () => {
 			expect(session.getActiveToolNames()).toContain("apply_patch");
 			expect(session.getActiveToolNames()).not.toContain("edit");
 			expect(session.getActiveToolNames()).not.toContain("write");
+		});
+	});
+
+	it("uses require policy as additive constraints when definition omits tools", async () => {
+		await withTempDir(async (cwd) => {
+			const settingsManager = SettingsManager.inMemory();
+			const resourceLoader = new DefaultResourceLoader({
+				cwd,
+				agentDir: path.join(cwd, ".agent"),
+				settingsManager,
+				noExtensions: true,
+				noSkills: true,
+				noPromptTemplates: true,
+				noThemes: true,
+			});
+			await resourceLoader.reload();
+
+			const { session } = await createAgentSession({
+				cwd,
+				authStorage: AuthStorage.create(),
+				modelRegistry: new ModelRegistry(AuthStorage.create()),
+				resourceLoader,
+				settingsManager,
+				sessionManager: SessionManager.inMemory(cwd),
+				customTools: [agentToolDefinition, applyPatchToolDefinition],
+			});
+
+			session.setActiveToolsByName(["read"]);
+
+			await Effect.runPromise(
+				applyAgentToolAllowlist(
+					session,
+					buildDefinition(undefined),
+					undefined,
+					requireToolsPolicy(["bash"]),
+				),
+			);
+
+			expect(session.getActiveToolNames()).toEqual(["read", "bash"]);
+		});
+	});
+
+	it("uses require policy as additive constraints for definition tools", async () => {
+		await withTempDir(async (cwd) => {
+			const settingsManager = SettingsManager.inMemory();
+			const resourceLoader = new DefaultResourceLoader({
+				cwd,
+				agentDir: path.join(cwd, ".agent"),
+				settingsManager,
+				noExtensions: true,
+				noSkills: true,
+				noPromptTemplates: true,
+				noThemes: true,
+			});
+			await resourceLoader.reload();
+
+			const { session } = await createAgentSession({
+				cwd,
+				authStorage: AuthStorage.create(),
+				modelRegistry: new ModelRegistry(AuthStorage.create()),
+				resourceLoader,
+				settingsManager,
+				sessionManager: SessionManager.inMemory(cwd),
+				customTools: [agentToolDefinition, applyPatchToolDefinition],
+			});
+
+			await Effect.runPromise(
+				applyAgentToolAllowlist(
+					session,
+					buildDefinition(["read"]),
+					undefined,
+					requireToolsPolicy(["bash"]),
+				),
+			);
+
+			expect(session.getActiveToolNames()).toEqual(["read", "bash"]);
+		});
+	});
+
+	it("uses allowlist policy to pin the active tools", async () => {
+		await withTempDir(async (cwd) => {
+			const settingsManager = SettingsManager.inMemory();
+			const resourceLoader = new DefaultResourceLoader({
+				cwd,
+				agentDir: path.join(cwd, ".agent"),
+				settingsManager,
+				noExtensions: true,
+				noSkills: true,
+				noPromptTemplates: true,
+				noThemes: true,
+			});
+			await resourceLoader.reload();
+
+			const { session } = await createAgentSession({
+				cwd,
+				authStorage: AuthStorage.create(),
+				modelRegistry: new ModelRegistry(AuthStorage.create()),
+				resourceLoader,
+				settingsManager,
+				sessionManager: SessionManager.inMemory(cwd),
+				customTools: [agentToolDefinition, applyPatchToolDefinition],
+			});
+
+			await Effect.runPromise(
+				applyAgentToolAllowlist(
+					session,
+					buildDefinition(["read", "bash"]),
+					undefined,
+					allowlistPolicy(["read"]),
+				),
+			);
+
+			expect(session.getActiveToolNames()).toEqual(["read"]);
 		});
 	});
 

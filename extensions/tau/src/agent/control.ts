@@ -16,6 +16,7 @@ import { isFinal } from "./status.js";
 import type { AgentId } from "./types.js";
 import { Sandbox } from "../services/sandbox.js";
 import { isAgentDisabledForCwd } from "../agents-menu/index.js";
+import { resolveAgentExecutionAtSpawn } from "./execution-profile.js";
 
 export const DEFAULT_WAIT_TIMEOUT_MS = 20 * 60 * 1000;
 export const MAX_WAIT_TIMEOUT_MS = 4 * 60 * 60 * 1000;
@@ -39,6 +40,7 @@ export const AgentControlLive = Layer.effect(
 		return AgentControl.of({
 			spawn: (opts: ControlSpawnOptions) =>
 				Effect.gen(function* () {
+					const parentExecution = opts.parentExecution;
 					const registry = yield* AgentRegistry.load(opts.cwd);
 
 					if (isAgentDisabledForCwd(opts.cwd, opts.agent)) {
@@ -61,13 +63,21 @@ export const AgentControlLive = Layer.effect(
 					}
 
 					const parentSandboxConfig = yield* sandbox.getConfig;
+					const resolvedExecution = yield* resolveAgentExecutionAtSpawn({
+						definition,
+						cwd: opts.cwd,
+						parentExecutionState: parentExecution.state,
+						parentExecutionProfile: parentExecution.profile,
+					});
 
 					return yield* manager.spawn({
-						definition,
+						definition: resolvedExecution.definition,
 						message: opts.message,
 						depth: 0, // Depth is handled by manager now
 						cwd: opts.cwd,
 						parentSessionId: opts.parentSessionId,
+						executionState: resolvedExecution.executionState,
+						executionProfile: resolvedExecution.executionProfile,
 						parentAgentId: opts.parentAgentId,
 						parentSandboxConfig,
 						parentModel: opts.parentModel,

@@ -1,5 +1,7 @@
 import { Effect, Schema } from "effect";
 
+import type { ExecutionProfile } from "../execution/schema.js";
+
 import { AutoresearchContractValidationError } from "./errors.js";
 
 const NonNegativeIntSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
@@ -63,6 +65,7 @@ export type ExperimentState = {
 	offLimits: string[];
 	constraints: string[];
 	segmentFingerprint: string | null;
+	executionProfile: ExecutionProfile | null;
 };
 
 export const AutoresearchConfigSchema = Schema.Struct({
@@ -86,6 +89,7 @@ export type AutoresearchJsonConfigEntry = {
 	offLimits?: string[] | undefined;
 	constraints?: string[] | undefined;
 	segmentFingerprint?: string | undefined;
+	executionProfile?: ExecutionProfile | undefined;
 };
 
 export type AutoresearchJsonRunEntry = {

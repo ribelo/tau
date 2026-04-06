@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { Clock, Deferred, Effect, Layer, Option, Ref, ServiceMap } from "effect";
 import type { AgentEndEvent } from "@mariozechner/pi-coding-agent";
 
-import type { PromptModeProfile } from "../prompt/profile.js";
+import type { ExecutionProfile } from "../execution/schema.js";
 import { RalphRepo } from "../ralph/repo.js";
 import { RALPH_TASKS_DIR } from "../ralph/paths.js";
 import type { RalphContractValidationError } from "../ralph/errors.js";
@@ -45,7 +45,7 @@ export type RalphAgentEndResult = {
 export type RalphStartLoopInput = {
 	readonly loopName: string;
 	readonly taskFile: string;
-	readonly promptProfile: PromptModeProfile;
+	readonly executionProfile: ExecutionProfile;
 	readonly maxIterations: number;
 	readonly itemsPerIteration: number;
 	readonly reflectEvery: number;
@@ -160,8 +160,8 @@ export type RalphCommandBoundary = {
 			readonly parentSession: string;
 		},
 	) => Effect.Effect<{ readonly cancelled: boolean }, never, never>;
-	readonly applyPromptProfile: (
-		profile: PromptModeProfile,
+	readonly applyExecutionProfile: (
+		profile: ExecutionProfile,
 	) => Effect.Effect<{ readonly applied: boolean; readonly reason?: string }, never, never>;
 	readonly sendFollowUp: (prompt: string) => Effect.Effect<void, never, never>;
 };
@@ -304,7 +304,6 @@ export interface RalphService {
 		cwd: string,
 		sessionFile: string | undefined,
 		event: AgentEndEvent,
-		promptProfile: PromptModeProfile | null,
 	) => Effect.Effect<RalphAgentEndResult, RalphContractValidationError, never>;
 }
 
@@ -418,7 +417,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					reflectEvery: input.reflectEvery,
 					reflectInstructions: input.reflectInstructions,
 					status: "active",
-					promptProfile: input.promptProfile,
+					executionProfile: input.executionProfile,
 					startedAt: Option.isSome(existing) ? existing.value.startedAt : (yield* nowIso),
 					lastReflectionAt: 0,
 					completedAt: Option.none(),
@@ -830,13 +829,13 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					afterSession.activeIterationSessionFile = Option.some(iterationSessionFile);
 					afterSession.awaitingFinalize = false;
 					afterSession.advanceRequestedAt = Option.none();
-					const promptProfileApplied = yield* boundary.applyPromptProfile(afterSession.promptProfile);
-					if (!promptProfileApplied.applied) {
+					const executionProfileApplied = yield* boundary.applyExecutionProfile(afterSession.executionProfile);
+					if (!executionProfileApplied.applied) {
 						afterSession.activeIterationSessionFile = Option.none();
 						return yield* pauseLoop(
 							boundary.cwd,
 							afterSession,
-							`Could not apply Ralph prompt profile: ${promptProfileApplied.reason ?? "unknown error"}`,
+							`Could not apply Ralph execution profile: ${executionProfileApplied.reason ?? "unknown error"}`,
 							"stopped",
 						);
 					}
@@ -977,7 +976,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 
 			const handleAgentEnd: RalphService["handleAgentEnd"] = Effect.fn(
 				"Ralph.handleAgentEnd",
-			)(function* (cwd, sessionFile, event, promptProfile) {
+			)(function* (cwd, sessionFile, event) {
 				const stateOption = yield* repo.findLoopBySessionFile(cwd, sessionFile);
 				const ownedActiveState =
 					Option.isSome(stateOption) &&
@@ -985,11 +984,6 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					optionContains(stateOption.value.activeIterationSessionFile, sessionFile)
 						? Option.some(stateOption.value)
 						: Option.none<LoopState>();
-
-				if (Option.isSome(ownedActiveState) && promptProfile !== null) {
-					ownedActiveState.value.promptProfile = promptProfile;
-					yield* repo.saveState(cwd, ownedActiveState.value);
-				}
 
 				const pending = yield* Ref.get(waitingAgentEndRef);
 				if (

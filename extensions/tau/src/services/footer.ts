@@ -16,6 +16,7 @@ import { BacklogRepository } from "../backlog/services.js";
 import type { Issue } from "../backlog/schema.js";
 import { isRecord } from "../shared/json.js";
 import { findNearestWorkspaceRoot } from "../shared/discovery.js";
+import { normalizeExecutionState } from "../execution/schema.js";
 import { Persistence } from "./persistence.js";
 import { Sandbox } from "./sandbox.js";
 import { DEFAULT_SANDBOX_CONFIG } from "../sandbox/config.js";
@@ -251,8 +252,7 @@ export const FooterLive = Layer.effect(
 										const hygiene = currentHygiene;
 										const totalCost = currentTotalCost;
 										const persisted = currentPersisted;
-										const modeLabel =
-											persisted.promptModes?.activeMode ?? "default";
+										const modeLabel = normalizeExecutionState(persisted.execution).selector.mode;
 
 										// Single sandbox mode dot (matches codex behavior)
 										const fsMode =

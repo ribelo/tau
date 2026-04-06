@@ -1,18 +1,18 @@
 import { Option, Schema } from "effect";
 import { deepMerge, isRecord } from "./json.js";
+import {
+	normalizeExecutionState,
+	ExecutionPersistedStateSchema,
+	type ExecutionPersistedState,
+} from "../execution/schema.js";
 
 export const TAU_PERSISTED_STATE_TYPE = "tau:state";
-
-type PromptModeName = "default" | "smart" | "deep" | "rush" | "plan";
 
 export type TauPersistedState = {
 	terminalPrompt?: { enabled?: boolean } | undefined;
 	workedFor?: { enabled?: boolean; toolsEnabled?: boolean } | undefined;
 	status?: { fetchedAt: number; values: Record<string, { percentLeft: number }> } | undefined;
-	promptModes?: {
-		activeMode?: PromptModeName | undefined;
-		modelsByMode?: Partial<Record<PromptModeName, string>> | undefined;
-	} | undefined;
+	execution?: ExecutionPersistedState | undefined;
 	sandbox?: Record<string, unknown> | undefined;
 	agentAwareness?: {
 		instructionsInjected?: boolean | undefined;
@@ -20,11 +20,23 @@ export type TauPersistedState = {
 	} | undefined;
 };
 
+function normalizePersistedState(state: TauPersistedState): TauPersistedState {
+	if (state.execution === undefined) {
+		return state;
+	}
+
+	const normalizedExecution = normalizeExecutionState(state.execution);
+	return {
+		...state,
+		execution: normalizedExecution,
+	};
+}
+
 export function mergePersistedState(
 	base: TauPersistedState,
 	patch: Partial<TauPersistedState>,
 ): TauPersistedState {
-	return deepMerge(base, patch);
+	return normalizePersistedState(deepMerge(base, patch));
 }
 
 const FiniteNumber = Schema.Number.check(Schema.isFinite());
@@ -49,19 +61,7 @@ const TauPersistedStateSchema = Schema.Struct({
 			})),
 		}),
 	),
-	promptModes: Schema.optional(
-		Schema.Struct({
-			activeMode: Schema.optional(Schema.Literals(["default", "smart", "deep", "rush", "plan"])),
-			modelsByMode: Schema.optional(
-				Schema.Struct({
-					smart: Schema.optional(Schema.String),
-					deep: Schema.optional(Schema.String),
-					rush: Schema.optional(Schema.String),
-					plan: Schema.optional(Schema.String),
-				}),
-			),
-		}),
-	),
+	execution: Schema.optional(ExecutionPersistedStateSchema),
 	sandbox: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
 	agentAwareness: Schema.optional(
 		Schema.Struct({
@@ -87,5 +87,6 @@ export function loadPersistedState(ctx: {
 		.pop();
 
 	const decoded = decodePersistedState(last?.data);
-	return Option.getOrElse(decoded, (): TauPersistedState => ({})) as TauPersistedState;
+	const state = Option.getOrElse(decoded, (): TauPersistedState => ({})) as TauPersistedState;
+	return normalizePersistedState(state);
 }

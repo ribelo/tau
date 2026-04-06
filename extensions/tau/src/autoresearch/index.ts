@@ -14,6 +14,7 @@ import { matchesKey, Text } from "@mariozechner/pi-tui";
 import { Effect, Option } from "effect";
 
 import { Sandbox } from "../services/sandbox.js";
+import { PromptModes } from "../services/prompt-modes.js";
 import {
 	Autoresearch,
 	type AutoresearchExecutionBoundary,
@@ -23,6 +24,7 @@ import {
 	type LogExperimentResult,
 	type RunDetails,
 } from "../services/autoresearch.js";
+import type { ExecutionProfile } from "../execution/schema.js";
 import { getSandboxedBashOperations } from "../sandbox/index.js";
 import type { BashOperations } from "@mariozechner/pi-coding-agent";
 import {
@@ -388,6 +390,10 @@ function createExecutionBoundary(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	subagent: boolean,
+	applyExecutionProfileInSession: (
+		profile: ExecutionProfile,
+		ctx: ExtensionContext,
+	) => Promise<{ readonly applied: true } | { readonly applied: false; readonly reason: string }>,
 	onUpdate?: (result: { content: Array<{ type: "text"; text: string }>; details: BenchmarkProgress }) => void,
 	signal?: AbortSignal,
 ): AutoresearchExecutionBoundary {
@@ -448,6 +454,16 @@ function createExecutionBoundary(
 			Effect.sync(() => {
 				pi.sendUserMessage(prompt, { deliverAs: "followUp" });
 			}),
+
+		applyExecutionProfile: (profile) =>
+			Effect.promise(() => applyExecutionProfileInSession(profile, ctx)).pipe(
+				Effect.catch((error: unknown) =>
+					Effect.succeed({
+						applied: false as const,
+						reason: String(error),
+					}),
+				),
+			),
 	};
 }
 
@@ -578,7 +594,7 @@ function buildLogExperimentText(result: LogExperimentResult): string {
 
 export default function initAutoresearch(
 	pi: ExtensionAPI,
-	runEffect: <A, E>(effect: Effect.Effect<A, E, Autoresearch | Sandbox>) => Promise<A>,
+	runEffect: <A, E>(effect: Effect.Effect<A, E, Autoresearch | Sandbox | PromptModes>) => Promise<A>,
 ): void {
 	const withAutoresearch = <A, E>(f: (service: AutoresearchService) => Effect.Effect<A, E, never>): Promise<A> =>
 		runEffect(
@@ -595,6 +611,39 @@ export default function initAutoresearch(
 				const config = yield* sandbox.getConfig;
 				return config.subagent;
 			}),
+		);
+
+	const withPromptModes = <A, E>(
+		f: (service: PromptModes) => Effect.Effect<A, E, never>,
+	): Promise<A> =>
+		runEffect(
+			Effect.gen(function* () {
+				const service = yield* PromptModes;
+				return yield* f(service);
+			}),
+		);
+
+	const captureCurrentExecutionProfile = (
+		ctx: Pick<ExtensionContext, "model">,
+	): Promise<ExecutionProfile | null> =>
+		withPromptModes((promptModes) => promptModes.captureCurrentExecutionProfile(ctx));
+
+	const applyExecutionProfileInSession = (
+		profile: ExecutionProfile,
+		ctx: ExtensionContext,
+	): Promise<{ readonly applied: true } | { readonly applied: false; readonly reason: string }> =>
+		withPromptModes((promptModes) =>
+			promptModes.applyExecutionProfile(profile, ctx, {
+				notifyOnSuccess: false,
+				persist: false,
+				ephemeral: true,
+			}).pipe(
+				Effect.map((result) =>
+					result.applied
+						? ({ applied: true } as const)
+						: ({ applied: false, reason: result.reason } as const),
+				),
+			),
 		);
 
 	const getSessionKey = (ctx: ExtensionContext) => ctx.sessionManager.getSessionId();
@@ -870,6 +919,19 @@ export default function initAutoresearch(
 			const workDir = getWorkDir(ctx.cwd);
 			const maxExperiments = getMaxExperiments(ctx.cwd);
 			const sessionId = getSessionKey(ctx);
+			const executionProfile = await captureCurrentExecutionProfile(ctx);
+			if (executionProfile === null) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: "Error: could not capture the current execution profile. Set /mode and retry init_experiment.",
+						},
+					],
+					details: {},
+					isError: true,
+				};
+			}
 
 			let contractContent: string;
 			try {
@@ -901,6 +963,7 @@ export default function initAutoresearch(
 						scopePaths: contractResult.contract.scopePaths,
 						offLimits: contractResult.contract.offLimits,
 						constraints: contractResult.contract.constraints,
+						executionProfile,
 						maxExperiments,
 					}),
 				);
@@ -1000,7 +1063,14 @@ export default function initAutoresearch(
 			const workDir = getWorkDir(ctx.cwd);
 			const sessionId = getSessionKey(ctx);
 			const subagent = await getSubagent();
-			const boundary = createExecutionBoundary(pi, ctx, subagent, onUpdate, signal);
+			const boundary = createExecutionBoundary(
+				pi,
+				ctx,
+				subagent,
+				applyExecutionProfileInSession,
+				onUpdate,
+				signal,
+			);
 			const usage = ctx.getContextUsage();
 			const contextUsage =
 				usage && usage.tokens !== null
@@ -1117,7 +1187,7 @@ export default function initAutoresearch(
 			const workDir = getWorkDir(ctx.cwd);
 			const sessionId = getSessionKey(ctx);
 			const subagent = await getSubagent();
-			const boundary = createExecutionBoundary(pi, ctx, subagent);
+			const boundary = createExecutionBoundary(pi, ctx, subagent, applyExecutionProfileInSession);
 
 			const status = params.status as "keep" | "discard" | "crash" | "checks_failed";
 			if (!["keep", "discard", "crash", "checks_failed"].includes(status)) {
@@ -1355,6 +1425,33 @@ export default function initAutoresearch(
 		);
 		if (!isActive) return;
 
+		const pinnedExecutionProfile = await withAutoresearch((service) =>
+			service.getExecutionProfile(sessionId),
+		);
+		if (pinnedExecutionProfile === null) {
+			if (ctx.hasUI) {
+				ctx.ui.notify(
+					"Autoresearch segment has no pinned execution profile. Re-run init_experiment before continuing.",
+					"error",
+				);
+			}
+			return;
+		}
+
+		const appliedExecutionProfile = await applyExecutionProfileInSession(
+			pinnedExecutionProfile,
+			ctx,
+		);
+		if (!appliedExecutionProfile.applied) {
+			if (ctx.hasUI) {
+				ctx.ui.notify(
+					`Autoresearch could not apply pinned execution profile: ${appliedExecutionProfile.reason}`,
+					"error",
+				);
+			}
+			return;
+		}
+
 		let workDir: string;
 		try {
 			workDir = getWorkDir(ctx.cwd);
@@ -1399,7 +1496,7 @@ export default function initAutoresearch(
 			return;
 		}
 		const subagent = await getSubagent();
-		const boundary = createExecutionBoundary(pi, ctx, subagent);
+		const boundary = createExecutionBoundary(pi, ctx, subagent, applyExecutionProfileInSession);
 		const usage = ctx.getContextUsage();
 		const tokens = usage?.tokens ?? null;
 
@@ -1415,6 +1512,8 @@ export default function initAutoresearch(
 					msg += " Check autoresearch.ideas.md for promising paths.";
 				}
 				pi.sendUserMessage(msg);
+			} else if (result.blockedReason !== null && ctx.hasUI) {
+				ctx.ui.notify(`Autoresearch auto-resume blocked: ${result.blockedReason}`, "error");
 			}
 		} catch {
 			// ignore

@@ -9,15 +9,26 @@ import {
 } from "../shared/state.js";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 
-function sanitizePersistedStateForSession(state: TauPersistedState): TauPersistedState {
-	if (!state.promptModes) {
-		return state;
+function sanitizePersistedStateForSession(
+	state: TauPersistedState,
+	options?: { readonly persistExecution?: boolean },
+): TauPersistedState {
+	const { execution, ...rest } = state;
+	if (options?.persistExecution === false) {
+		return rest;
 	}
 
-	const { activeMode: _activeMode, ...promptModes } = state.promptModes;
+	const sanitizedExecution =
+		execution === undefined
+			? undefined
+			: (() => {
+					const { selector: _selector, ...persistedWithoutSelector } = execution;
+					return persistedWithoutSelector;
+			  })();
+
 	return {
-		...state,
-		promptModes,
+		...rest,
+		...(sanitizedExecution === undefined ? {} : { execution: sanitizedExecution }),
 	};
 }
 
@@ -43,6 +54,7 @@ export const PersistenceLive = Layer.effect(
 		const ref = yield* SubscriptionRef.make<TauPersistedState>({});
 		const syncQueue = yield* Queue.unbounded<TauPersistedState>();
 		let snapshot: TauPersistedState = {};
+		let persistExecutionForCurrentSession = true;
 
 		const publishSnapshot = (next: TauPersistedState): TauPersistedState => {
 			snapshot = next;
@@ -60,7 +72,12 @@ export const PersistenceLive = Layer.effect(
 
 		const updateSnapshot = (patch: Partial<TauPersistedState>): TauPersistedState => {
 			const next = hydrateSnapshot(patch);
-			pi.appendEntry(TAU_PERSISTED_STATE_TYPE, sanitizePersistedStateForSession(next));
+			pi.appendEntry(
+				TAU_PERSISTED_STATE_TYPE,
+				sanitizePersistedStateForSession(next, {
+					persistExecution: persistExecutionForCurrentSession,
+				}),
+			);
 			return next;
 		};
 
@@ -89,6 +106,7 @@ export const PersistenceLive = Layer.effect(
 				yield* Effect.forkScoped(drainSyncQueue);
 
 				const mergePersistedFromContext = (_event: unknown, ctx: ExtensionContext) => {
+					persistExecutionForCurrentSession = ctx.hasUI === true;
 					hydrateSnapshot(loadPersistedState(ctx));
 				};
 

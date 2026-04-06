@@ -2,6 +2,7 @@ import type { AgentSession } from "@mariozechner/pi-coding-agent";
 import { Effect } from "effect";
 import { AgentError } from "./services.js";
 import type { AgentDefinition } from "./types.js";
+import type { ExecutionPolicy } from "../execution/schema.js";
 import {
 	getLegacyMutationToolSelection,
 	rewriteMutationToolNames,
@@ -50,6 +51,41 @@ function sameToolNames(left: readonly string[], right: readonly string[]): boole
 	return true;
 }
 
+function appendMissingTools(
+	base: readonly string[],
+	required: readonly string[],
+): readonly string[] {
+	const seen = new Set<string>(base);
+	const merged = [...base];
+	for (const tool of required) {
+		if (!seen.has(tool)) {
+			seen.add(tool);
+			merged.push(tool);
+		}
+	}
+	return merged;
+}
+
+function resolveConfiguredTools(options: {
+	readonly definitionTools: readonly string[] | undefined;
+	readonly sessionTools: readonly string[];
+	readonly executionPolicy: ExecutionPolicy | undefined;
+}): readonly string[] | undefined {
+	const policy = options.executionPolicy?.tools;
+	if (policy?.kind === "allowlist") {
+		return policy.tools;
+	}
+
+	if (policy?.kind === "require") {
+		if (options.definitionTools !== undefined) {
+			return appendMissingTools(options.definitionTools, policy.tools);
+		}
+		return appendMissingTools(options.sessionTools, policy.tools);
+	}
+
+	return options.definitionTools;
+}
+
 function getActiveToolNames(options: {
 	agentName: string;
 	configuredTools: readonly string[] | undefined;
@@ -86,17 +122,24 @@ export function applyAgentToolAllowlist(
 	session: AgentSession,
 	definition: AgentDefinition,
 	resultSchema: unknown | undefined,
+	executionPolicy?: ExecutionPolicy,
 ): Effect.Effect<void, AgentError> {
 	return Effect.try({
 		try: () => {
 			const availableToolNames = session.getAllTools().map((tool) => tool.name);
+			const sessionToolNames = session.getActiveToolNames();
+			const configuredTools = resolveConfiguredTools({
+				definitionTools: definition.tools,
+				sessionTools: sessionToolNames,
+				executionPolicy,
+			});
 			const configuredActiveToolNames = getActiveToolNames({
 				agentName: definition.name,
-				configuredTools: definition.tools,
+				configuredTools,
 				availableToolNames,
 				structuredOutputRequired: resultSchema !== undefined,
 			});
-			const baseToolNames = configuredActiveToolNames ?? session.getActiveToolNames();
+			const baseToolNames = configuredActiveToolNames ?? sessionToolNames;
 			const routedToolNames = rewriteMutationToolNames(baseToolNames, {
 				useApplyPatch: shouldUseApplyPatchForProvider(session.model?.provider),
 				legacySelection: getLegacyMutationToolSelection(baseToolNames),

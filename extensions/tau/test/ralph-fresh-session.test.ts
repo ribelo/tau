@@ -4,7 +4,7 @@ import { Option } from "effect";
 import { RalphContractValidationError } from "../src/ralph/errors.js";
 import { loopOwnsSessionFile } from "../src/ralph/repo.js";
 import { decodeLoopStateSync, sanitizeLoopName } from "../src/ralph/schema.js";
-import { makePromptProfile } from "./ralph-test-helpers.js";
+import { makeExecutionProfile, makePromptProfile } from "./ralph-test-helpers.js";
 
 describe("ralph fresh-session helpers", () => {
 	it("preserves uppercase letters when sanitizing loop names", () => {
@@ -30,7 +30,7 @@ describe("ralph fresh-session helpers", () => {
 			activeIterationSessionFile: null,
 			advanceRequestedAt: null,
 			awaitingFinalize: false,
-			promptProfile: makePromptProfile(),
+			executionProfile: makeExecutionProfile(),
 		});
 
 		expect(Option.isNone(state.completedAt)).toBe(true);
@@ -62,7 +62,7 @@ describe("ralph fresh-session helpers", () => {
 				activeIterationSessionFile: null,
 				advanceRequestedAt: null,
 				awaitingFinalize: true,
-				promptProfile: makePromptProfile(),
+				executionProfile: makeExecutionProfile(),
 			}),
 		).toThrow(RalphContractValidationError);
 	});
@@ -84,11 +84,31 @@ describe("ralph fresh-session helpers", () => {
 			activeIterationSessionFile: "/tmp/iteration.session",
 			advanceRequestedAt: null,
 			awaitingFinalize: false,
-			promptProfile: makePromptProfile(),
+			executionProfile: makeExecutionProfile(),
+		});
+
+		const legacyNormalized = decodeLoopStateSync({
+			name: "legacy-normalized",
+			taskFile: ".pi/ralph/tasks/legacy-normalized.md",
+			iteration: 2,
+			maxIterations: 10,
+			itemsPerIteration: 0,
+			reflectEvery: 0,
+			reflectInstructions: "reflect",
+			status: "active",
+			startedAt: "2026-01-01T00:00:00.000Z",
+			completedAt: null,
+			lastReflectionAt: 0,
+			controllerSessionFile: "/tmp/controller.session",
+			activeIterationSessionFile: "/tmp/iteration.session",
+			advanceRequestedAt: null,
+			awaitingFinalize: false,
+			promptProfile: makePromptProfile({ mode: "deep" }),
 		});
 
 		expect(loopOwnsSessionFile(normalized, "/tmp/controller.session")).toBe(true);
 		expect(loopOwnsSessionFile(normalized, "/tmp/iteration.session")).toBe(true);
 		expect(loopOwnsSessionFile(normalized, "/tmp/other.session")).toBe(false);
+		expect(legacyNormalized.executionProfile.promptProfile.mode).toBe("deep");
 	});
 });

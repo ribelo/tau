@@ -8,6 +8,7 @@ import { Effect, Layer, ManagedRuntime } from "effect";
 
 import { AutoresearchRepoLive } from "../src/autoresearch/repo.js";
 import { Autoresearch, AutoresearchLive, type AutoresearchExecutionBoundary } from "../src/services/autoresearch.js";
+import { makeExecutionProfile } from "../src/execution/schema.js";
 
 type AutoresearchRuntimeHarness = {
 	run: <A, E>(effect: Effect.Effect<A, E, Autoresearch>) => Promise<A>;
@@ -58,6 +59,22 @@ const BASELINE_MD = `# Autoresearch Plan
 
 const BASELINE_SH = "#!/bin/bash\necho 'METRIC runtime_ms=100'";
 
+const TEST_EXECUTION_PROFILE = makeExecutionProfile({
+	selector: {
+		mode: "smart",
+	},
+	promptProfile: {
+		mode: "smart",
+		model: "openai/gpt-5",
+		thinking: "high",
+	},
+	policy: {
+		tools: {
+			kind: "inherit",
+		},
+	},
+});
+
 function fakeBoundary(runDetails: {
 	passed: boolean;
 	parsedPrimary: number | null;
@@ -91,6 +108,7 @@ function fakeBoundary(runDetails: {
 		commitKeep: () => Effect.succeed({ commit: "abc1234", note: "committed" }),
 		revertNonKeep: (_workDir, _scopePaths) => Effect.succeed({ note: "reverted" }),
 		sendFollowUp: () => Effect.void,
+		applyExecutionProfile: () => Effect.succeed({ applied: true }),
 	};
 }
 
@@ -128,6 +146,7 @@ describe("autoresearch service freeze", () => {
 					scopePaths: ["src"],
 					offLimits: ["src/legacy"],
 					constraints: ["no regressions"],
+					executionProfile: TEST_EXECUTION_PROFILE,
 				});
 			}),
 		);
@@ -149,16 +168,17 @@ describe("autoresearch service freeze", () => {
 		await harness.run(
 			Effect.gen(function* () {
 				const service = yield* Autoresearch;
-				yield* service.initExperiment("s1", cwd, {
-					name: "speedup",
-					metricName: "runtime_ms",
-					metricUnit: "",
-					direction: "lower",
-					benchmarkCommand: "bash autoresearch.sh",
-					scopePaths: ["src"],
-					offLimits: ["src/legacy"],
-					constraints: ["no regressions"],
-				});
+					yield* service.initExperiment("s1", cwd, {
+						name: "speedup",
+						metricName: "runtime_ms",
+						metricUnit: "",
+						direction: "lower",
+						benchmarkCommand: "bash autoresearch.sh",
+						scopePaths: ["src"],
+						offLimits: ["src/legacy"],
+						constraints: ["no regressions"],
+						executionProfile: TEST_EXECUTION_PROFILE,
+					});
 			}),
 		);
 
@@ -190,16 +210,17 @@ describe("autoresearch service freeze", () => {
 		await harness.run(
 			Effect.gen(function* () {
 				const service = yield* Autoresearch;
-				yield* service.initExperiment("s1", cwd, {
-					name: "speedup",
-					metricName: "runtime_ms",
-					metricUnit: "",
-					direction: "lower",
-					benchmarkCommand: "bash autoresearch.sh",
-					scopePaths: ["src"],
-					offLimits: ["src/legacy"],
-					constraints: ["no regressions"],
-				});
+					yield* service.initExperiment("s1", cwd, {
+						name: "speedup",
+						metricName: "runtime_ms",
+						metricUnit: "",
+						direction: "lower",
+						benchmarkCommand: "bash autoresearch.sh",
+						scopePaths: ["src"],
+						offLimits: ["src/legacy"],
+						constraints: ["no regressions"],
+						executionProfile: TEST_EXECUTION_PROFILE,
+					});
 			}),
 		);
 
@@ -301,5 +322,104 @@ describe("autoresearch service freeze", () => {
 		expect(view.name).toBe("legacy");
 		expect(view.metricName).toBe("ms");
 		expect(view.currentSegmentRunCount).toBe(1);
+	});
+
+	it("requires re-init when current segment has no pinned execution profile", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+		writeAutoresearchMd(cwd, BASELINE_MD);
+		writeAutoresearchSh(cwd, BASELINE_SH);
+		fs.writeFileSync(
+			path.join(cwd, "autoresearch.jsonl"),
+			`${JSON.stringify({
+				type: "config",
+				name: "legacy",
+				metricName: "runtime_ms",
+				metricUnit: "",
+				bestDirection: "lower",
+				benchmarkCommand: "bash autoresearch.sh",
+				scopePaths: ["src"],
+				offLimits: ["src/legacy"],
+				constraints: ["no regressions"],
+			})}\n`,
+			"utf-8",
+		);
+
+		const harness = makeAutoresearchRuntime();
+		runtimes.push(harness);
+
+		await harness.run(
+			Effect.gen(function* () {
+				const service = yield* Autoresearch;
+				yield* service.rehydrate("s1", cwd);
+			}),
+		);
+
+		await expect(
+			harness.run(
+				Effect.gen(function* () {
+					const service = yield* Autoresearch;
+					return yield* service.runExperiment(
+						"s1",
+						cwd,
+						{ command: "bash autoresearch.sh", timeoutSeconds: 60, checksTimeoutSeconds: 60 },
+						fakeBoundary({ passed: true, parsedPrimary: 95, checksPass: null }),
+					);
+				}),
+			),
+		).rejects.toMatchObject({
+			reason: expect.stringContaining("no pinned execution profile"),
+		});
+	});
+
+	it("applies pinned execution profile before auto-resume", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+		writeAutoresearchMd(cwd, BASELINE_MD);
+		writeAutoresearchSh(cwd, BASELINE_SH);
+
+		const harness = makeAutoresearchRuntime();
+		runtimes.push(harness);
+
+		await harness.run(
+			Effect.gen(function* () {
+				const service = yield* Autoresearch;
+				yield* service.initExperiment("s1", cwd, {
+					name: "speedup",
+					metricName: "runtime_ms",
+					metricUnit: "",
+					direction: "lower",
+					benchmarkCommand: "bash autoresearch.sh",
+					scopePaths: ["src"],
+					offLimits: ["src/legacy"],
+					constraints: ["no regressions"],
+					executionProfile: TEST_EXECUTION_PROFILE,
+				});
+			}),
+		);
+
+		let applyCalls = 0;
+		const resumeResult = await harness.run(
+			Effect.gen(function* () {
+				const service = yield* Autoresearch;
+				return yield* service.onAgentEnd("s1", cwd, {
+					executeBenchmark: () =>
+						Effect.die(new Error("executeBenchmark should not be called in onAgentEnd test")),
+					commitKeep: () =>
+						Effect.die(new Error("commitKeep should not be called in onAgentEnd test")),
+					revertNonKeep: () =>
+						Effect.die(new Error("revertNonKeep should not be called in onAgentEnd test")),
+					sendFollowUp: () => Effect.void,
+					applyExecutionProfile: () => {
+						applyCalls += 1;
+						return Effect.succeed({ applied: true as const });
+					},
+				});
+			}),
+		);
+
+		expect(resumeResult.didResume).toBe(true);
+		expect(resumeResult.blockedReason).toBeNull();
+		expect(applyCalls).toBe(1);
 	});
 });

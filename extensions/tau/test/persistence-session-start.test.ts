@@ -32,8 +32,9 @@ function makePiMock(): PiMock {
 	return { pi, handlers, appendedEntries };
 }
 
-function makeSessionStartContext(entries: unknown[]): ExtensionContext {
+function makeSessionStartContext(entries: unknown[], hasUI = true): ExtensionContext {
 	return {
+		hasUI,
 		sessionManager: {
 			getEntries: () => entries,
 			getSessionId: () => "test-session",
@@ -55,13 +56,13 @@ async function setupPersistence(pi: ExtensionAPI): Promise<{
 }
 
 describe("persistence session_start", () => {
-	it("does not append promptModes.activeMode into session state", async () => {
+	it("does not append active prompt selector into session state", async () => {
 		const mock = makePiMock();
 		const persistence = await setupPersistence(mock.pi);
 
 		persistence.update({
-			promptModes: {
-				activeMode: "deep",
+			execution: {
+				selector: { mode: "deep" },
 				modelsByMode: {
 					deep: "openai-codex/gpt-5.3-codex",
 				},
@@ -72,19 +73,50 @@ describe("persistence session_start", () => {
 		expect(mock.appendedEntries[0]).toEqual({
 			type: TAU_PERSISTED_STATE_TYPE,
 			data: {
-				promptModes: {
+				execution: {
 					modelsByMode: {
 						deep: "openai-codex/gpt-5.3-codex",
+					},
+					policy: {
+						tools: {
+							kind: "inherit",
+						},
 					},
 				},
 			},
 		});
 	});
 
-	it("keeps existing prompt mode when session has no tau state", async () => {
+	it("does not append execution payload for non-interactive sessions", async () => {
 		const mock = makePiMock();
 		const persistence = await setupPersistence(mock.pi);
-		persistence.update({ promptModes: { activeMode: "deep" } });
+
+		const sessionStart = mock.handlers.get("session_start")?.[0];
+		expect(sessionStart).toBeTypeOf("function");
+
+		const nonInteractiveCtx = makeSessionStartContext([], false);
+		await Promise.resolve(sessionStart?.({ type: "session_start" }, nonInteractiveCtx));
+
+		persistence.update({
+			execution: {
+				selector: { mode: "deep" },
+				modelsByMode: {
+					deep: "openai-codex/gpt-5.3-codex",
+				},
+			},
+		});
+
+		expect(mock.appendedEntries).toHaveLength(1);
+		expect(mock.appendedEntries[0]).toEqual({
+			type: TAU_PERSISTED_STATE_TYPE,
+			data: {},
+		});
+	});
+
+	it("keeps existing execution selector when session has no tau state", async () => {
+		const mock = makePiMock();
+		const persistence = await setupPersistence(mock.pi);
+		persistence.update({ execution: { selector: { mode: "deep" } } });
 
 		const sessionStart = mock.handlers.get("session_start")?.[0];
 		expect(sessionStart).toBeTypeOf("function");
@@ -93,13 +125,13 @@ describe("persistence session_start", () => {
 		await Promise.resolve(sessionStart?.({ type: "session_start" }, ctx));
 
 		const state = persistence.getSnapshot();
-		expect(state.promptModes?.activeMode).toBe("deep");
+		expect(state.execution?.selector?.mode).toBe("deep");
 	});
 
-	it("prefers session prompt mode when tau state contains one", async () => {
+	it("prefers session execution selector when tau state contains one", async () => {
 		const mock = makePiMock();
 		const persistence = await setupPersistence(mock.pi);
-		persistence.update({ promptModes: { activeMode: "deep" } });
+		persistence.update({ execution: { selector: { mode: "deep" } } });
 
 		const sessionStart = mock.handlers.get("session_start")?.[0];
 		expect(sessionStart).toBeTypeOf("function");
@@ -108,19 +140,19 @@ describe("persistence session_start", () => {
 			{
 				type: "custom",
 				customType: TAU_PERSISTED_STATE_TYPE,
-				data: { promptModes: { activeMode: "smart" } },
+				data: { execution: { selector: { mode: "smart" } } },
 			},
 		]);
 		await Promise.resolve(sessionStart?.({ type: "session_start" }, ctx));
 
 		const state = persistence.getSnapshot();
-		expect(state.promptModes?.activeMode).toBe("smart");
+		expect(state.execution?.selector?.mode).toBe("smart");
 	});
 
-	it("keeps existing prompt mode when session tau state has empty promptModes", async () => {
+	it("uses deterministic default when session tau state contains empty execution", async () => {
 		const mock = makePiMock();
 		const persistence = await setupPersistence(mock.pi);
-		persistence.update({ promptModes: { activeMode: "deep" } });
+		persistence.update({ execution: { selector: { mode: "deep" } } });
 
 		const sessionStart = mock.handlers.get("session_start")?.[0];
 		expect(sessionStart).toBeTypeOf("function");
@@ -129,12 +161,12 @@ describe("persistence session_start", () => {
 			{
 				type: "custom",
 				customType: TAU_PERSISTED_STATE_TYPE,
-				data: { promptModes: {} },
+				data: { execution: {} },
 			},
 		]);
 		await Promise.resolve(sessionStart?.({ type: "session_start" }, ctx));
 
 		const state = persistence.getSnapshot();
-		expect(state.promptModes?.activeMode).toBe("deep");
+		expect(state.execution?.selector?.mode).toBe("default");
 	});
 });

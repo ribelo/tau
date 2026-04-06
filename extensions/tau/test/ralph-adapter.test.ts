@@ -18,7 +18,7 @@ import { RalphRepoLive } from "../src/ralph/repo.js";
 import { decodeLoopStateSync, encodeLoopStateJsonSync } from "../src/ralph/schema.js";
 import { PromptModes } from "../src/services/prompt-modes.js";
 import { Ralph, RalphLive } from "../src/services/ralph.js";
-import { makePromptModesStubLayer, makePromptProfile } from "./ralph-test-helpers.js";
+import { makeExecutionProfile, makePromptModesStubLayer } from "./ralph-test-helpers.js";
 
 type EventHandler = (event: unknown, ctx: ExtensionContext) => unknown;
 
@@ -121,7 +121,7 @@ function writeLoopState(
 					: Option.some(input.activeIterationSessionFile),
 			advanceRequestedAt: Option.none(),
 			awaitingFinalize: false,
-			promptProfile: makePromptProfile(),
+			executionProfile: makeExecutionProfile(),
 		}),
 		"utf-8",
 	);
@@ -433,7 +433,7 @@ describe("ralph adapter boundary freeze", () => {
 					activeIterationSessionFile: null,
 					advanceRequestedAt: null,
 					awaitingFinalize: false,
-					promptProfile: makePromptProfile(),
+					executionProfile: makeExecutionProfile(),
 				},
 				null,
 				2,
@@ -473,7 +473,7 @@ describe("ralph adapter boundary freeze", () => {
 				yield* ralph.startLoopState(cwd, {
 					loopName: "ui-loop",
 					taskFile: path.join(".pi", "ralph", "tasks", "ui-loop.md"),
-					promptProfile: makePromptProfile(),
+					executionProfile: makeExecutionProfile(),
 					maxIterations: 50,
 					itemsPerIteration: 0,
 					reflectEvery: 0,

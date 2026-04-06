@@ -8,7 +8,7 @@ import { NodeFileSystem } from "@effect/platform-node";
 
 import { RalphRepo, RalphRepoLive } from "../src/ralph/repo.js";
 import type { LoopState } from "../src/ralph/schema.js";
-import { makePromptProfile } from "./ralph-test-helpers.js";
+import { makeExecutionProfile } from "./ralph-test-helpers.js";
 
 const ralphRepoLayer = RalphRepoLive.pipe(Layer.provide(NodeFileSystem.layer));
 
@@ -33,7 +33,7 @@ function makeLoopState(loopName: string): LoopState {
 		activeIterationSessionFile: Option.some(`/tmp/${loopName}-iteration.session.json`),
 		advanceRequestedAt: Option.none(),
 		awaitingFinalize: false,
-		promptProfile: makePromptProfile(),
+		executionProfile: makeExecutionProfile(),
 	};
 }
 

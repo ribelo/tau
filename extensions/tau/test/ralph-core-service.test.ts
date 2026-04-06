@@ -7,7 +7,7 @@ import type { AgentEndEvent } from "@mariozechner/pi-coding-agent";
 import { Deferred, Effect, Fiber, Layer, Option } from "effect";
 import { NodeFileSystem } from "@effect/platform-node";
 
-import type { PromptModeProfile } from "../src/prompt/profile.js";
+import type { ExecutionProfile } from "../src/execution/schema.js";
 import { RalphRepo, RalphRepoLive } from "../src/ralph/repo.js";
 import {
 	Ralph,
@@ -15,20 +15,14 @@ import {
 	type RalphCommandBoundary,
 } from "../src/services/ralph.js";
 import type { LoopState } from "../src/ralph/schema.js";
+import {
+	makeExecutionProfile,
+	makeExecutionProfileForPrompt,
+	makePromptProfile,
+} from "./ralph-test-helpers.js";
 
 function makeTempDir(): string {
 	return fs.mkdtempSync(path.join(os.tmpdir(), "tau-ralph-core-"));
-}
-
-function makePromptProfile(
-	overrides?: Partial<PromptModeProfile>,
-): PromptModeProfile {
-	return {
-		mode: "deep",
-		model: "openai-codex/gpt-5.3-codex",
-		thinking: "high",
-		...overrides,
-	};
 }
 
 function makeState(loopName: string, sessionFile: string): LoopState {
@@ -48,7 +42,7 @@ function makeState(loopName: string, sessionFile: string): LoopState {
 		activeIterationSessionFile: Option.some(sessionFile),
 		advanceRequestedAt: Option.none(),
 		awaitingFinalize: false,
-		promptProfile: makePromptProfile(),
+		executionProfile: makeExecutionProfile(),
 	};
 }
 
@@ -137,11 +131,11 @@ describe("ralph core service", () => {
 		const result = await Effect.runPromise(
 			Effect.gen(function* () {
 				const ralph = yield* Ralph;
-					yield* ralph.startLoopState(cwd, {
-						loopName: "visible-loop",
-						taskFile: path.join(".pi", "ralph", "tasks", "visible-loop.md"),
-						promptProfile: makePromptProfile({ mode: "smart", model: "anthropic/claude-opus-4-5", thinking: "medium" }),
-						maxIterations: 50,
+				yield* ralph.startLoopState(cwd, {
+					loopName: "visible-loop",
+					taskFile: path.join(".pi", "ralph", "tasks", "visible-loop.md"),
+					executionProfile: makeExecutionProfile({ mode: "smart", model: "anthropic/claude-opus-4-5", thinking: "medium" }),
+					maxIterations: 50,
 					itemsPerIteration: 0,
 					reflectEvery: 0,
 					reflectInstructions: "reflect",
@@ -197,7 +191,7 @@ describe("ralph core service", () => {
 							sessionFile = iterationSessionFile;
 							return { cancelled: false } as const;
 						}),
-					applyPromptProfile: () => Effect.succeed({ applied: true as const }),
+					applyExecutionProfile: () => Effect.succeed({ applied: true as const }),
 					sendFollowUp: () =>
 						Effect.gen(function* () {
 							yield* Deferred.succeed(followUpStarted, undefined);
@@ -212,13 +206,11 @@ describe("ralph core service", () => {
 					cwd,
 					unrelatedSessionFile,
 					makeAgentEndEvent("unrelated"),
-					null,
 				);
 				const matching = yield* ralph.handleAgentEnd(
 					cwd,
 					iterationSessionFile,
 					makeAgentEndEvent("worked"),
-					makePromptProfile({ model: "anthropic/claude-opus-4-5", thinking: "medium", mode: "smart" }),
 				);
 
 				yield* Deferred.succeed(releaseFollowUp, undefined);
@@ -234,7 +226,7 @@ describe("ralph core service", () => {
 		expect(Option.isSome(result.runResult.message)).toBe(true);
 	});
 
-	it("reapplies the latest prompt profile on the next Ralph iteration", async () => {
+	it("reapplies the pinned execution profile on each Ralph iteration", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 		const loopName = "profile-loop";
@@ -247,11 +239,7 @@ describe("ralph core service", () => {
 			model: "openai-codex/gpt-5.3-codex",
 			thinking: "high",
 		});
-		const updatedProfile = makePromptProfile({
-			mode: "smart",
-			model: "anthropic/claude-opus-4-5",
-			thinking: "medium",
-		});
+		const pinnedExecutionProfile = makeExecutionProfileForPrompt(initialProfile);
 
 		const result = await Effect.runPromise(
 			Effect.gen(function* () {
@@ -262,11 +250,11 @@ describe("ralph core service", () => {
 					iteration: 0,
 					controllerSessionFile: Option.some(controllerSessionFile),
 					activeIterationSessionFile: Option.none(),
-					promptProfile: initialProfile,
+					executionProfile: pinnedExecutionProfile,
 				});
 				yield* repo.writeTaskFile(cwd, path.join(".pi", "ralph", "tasks", `${loopName}.md`), "# Task\n");
 
-				const appliedProfiles: PromptModeProfile[] = [];
+				const appliedProfiles: ExecutionProfile[] = [];
 				let sessionFile = controllerSessionFile;
 				let newSessionCount = 0;
 
@@ -287,7 +275,7 @@ describe("ralph core service", () => {
 							sessionFile = newSessionCount === 1 ? iterationSessionFileA : iterationSessionFileB;
 							return { cancelled: false } as const;
 						}),
-					applyPromptProfile: (profile) =>
+					applyExecutionProfile: (profile) =>
 						Effect.sync(() => {
 							appliedProfiles.push(profile);
 							return { applied: true } as const;
@@ -303,7 +291,7 @@ describe("ralph core service", () => {
 				const releaseA = yield* Deferred.make<void>();
 				const runFiberA = yield* Effect.forkDetach(ralph.runLoop(makeBoundary(startedA, releaseA), loopName));
 				yield* Deferred.await(startedA);
-				yield* ralph.handleAgentEnd(cwd, iterationSessionFileA, makeAgentEndEvent("worked"), updatedProfile);
+				yield* ralph.handleAgentEnd(cwd, iterationSessionFileA, makeAgentEndEvent("worked"));
 				yield* Deferred.succeed(releaseA, undefined);
 				yield* Fiber.join(runFiberA);
 
@@ -313,7 +301,7 @@ describe("ralph core service", () => {
 				const releaseB = yield* Deferred.make<void>();
 				const runFiberB = yield* Effect.forkDetach(ralph.runLoop(makeBoundary(startedB, releaseB), loopName));
 				yield* Deferred.await(startedB);
-				yield* ralph.handleAgentEnd(cwd, iterationSessionFileB, makeAgentEndEvent("worked again"), updatedProfile);
+				yield* ralph.handleAgentEnd(cwd, iterationSessionFileB, makeAgentEndEvent("worked again"));
 				yield* Deferred.succeed(releaseB, undefined);
 				yield* Fiber.join(runFiberB);
 
@@ -321,7 +309,7 @@ describe("ralph core service", () => {
 			}).pipe(Effect.provide(ralphLayer)),
 		);
 
-		expect(result).toEqual([initialProfile, updatedProfile]);
+		expect(result).toEqual([pinnedExecutionProfile, pinnedExecutionProfile]);
 	});
 
 	it("handles current-loop pause, resume, and stop through command-side Ralph methods", async () => {

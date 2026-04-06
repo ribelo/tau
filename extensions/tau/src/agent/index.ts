@@ -1,9 +1,15 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Effect } from "effect";
 import { renderAgentCall, renderAgentResult } from "./render.js";
 import { createUiApprovalBroker } from "./approval-broker.js";
 import type { AgentRuntimeBridgeService } from "./runtime.js";
 import { installAgentProcessGuards } from "./process-guards.js";
 import { AgentParams, createAgentToolDef } from "./tool.js";
+import { ExecutionState } from "../services/execution-state.js";
+import { resolveSessionMode } from "../services/execution-resolver.js";
+import { makeExecutionProfile } from "../execution/schema.js";
+import { readModelId } from "../prompt/profile.js";
+import { isPromptModeThinkingLevel } from "./model-spec.js";
 
 export interface AgentToolHandle {
 	/** Re-register the agent tool with an updated description. */
@@ -44,12 +50,46 @@ export default function initAgent(
 						? createUiApprovalBroker(ctx.ui)
 						: undefined;
 
+				const resolveParentExecution = () =>
+					runtime.runPromise(
+						Effect.gen(function* () {
+							const executionState = yield* ExecutionState;
+							const state = executionState.getSnapshot();
+							const mode = resolveSessionMode(state);
+							const model = readModelId(ctx.model);
+							if (model === undefined) {
+								throw new Error("Cannot spawn agent: current session has no active model");
+							}
+
+							const thinking = pi.getThinkingLevel();
+							if (!isPromptModeThinkingLevel(thinking)) {
+								throw new Error("Cannot spawn agent: current session has no supported thinking level");
+							}
+
+							return {
+								state,
+								profile: makeExecutionProfile({
+									selector: {
+										mode,
+									},
+									promptProfile: {
+										mode,
+										model,
+										thinking,
+									},
+									policy: state.policy,
+								}),
+							};
+						}),
+					);
+
 				const toolDef = createAgentToolDef(
 					(effect) => runtime.runPromise(effect),
 					() => ({
 						parentSessionId: ctx.sessionManager.getSessionId(),
 						parentAgentId: undefined,
 						parentModel: ctx.model,
+						resolveParentExecution,
 						modelRegistry: ctx.modelRegistry,
 						cwd: ctx.cwd,
 						approvalBroker,

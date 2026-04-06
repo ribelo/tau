@@ -1,3 +1,9 @@
+import { Schema } from "effect";
+
+import {
+	ExecutionProfileSchema,
+	type ExecutionProfile,
+} from "../execution/schema.js";
 import type {
 	ASIData,
 	ExperimentResult,
@@ -25,6 +31,7 @@ export function createExperimentState(): ExperimentState {
 		offLimits: [],
 		constraints: [],
 		segmentFingerprint: null,
+		executionProfile: null,
 	};
 }
 
@@ -40,6 +47,8 @@ export function cloneExperimentState(state: ExperimentState): ExperimentState {
 		scopePaths: [...state.scopePaths],
 		offLimits: [...state.offLimits],
 		constraints: [...state.constraints],
+		executionProfile:
+			state.executionProfile === null ? null : structuredClone(state.executionProfile),
 	};
 }
 
@@ -203,6 +212,16 @@ function normalizeStringList(value: unknown): string[] {
 	return value.filter((item): item is string => typeof item === "string");
 }
 
+const decodeExecutionProfileSync = Schema.decodeUnknownSync(ExecutionProfileSchema);
+
+function decodeExecutionProfile(value: unknown): ExecutionProfile | null {
+	try {
+		return decodeExecutionProfileSync(value);
+	} catch {
+		return null;
+	}
+}
+
 function registerSecondaryMetrics(metrics: MetricDef[], values: NumericMetricMap): void {
 	for (const name of Object.keys(values)) {
 		if (metrics.some((metric) => metric.name === name)) continue;
@@ -247,6 +266,7 @@ export function reconstructStateFromJsonl(content: string): ReconstructedExperim
 				offLimits?: unknown;
 				constraints?: unknown;
 				segmentFingerprint?: unknown;
+				executionProfile?: unknown;
 			};
 			if (typeof candidate.name === "string") state.name = candidate.name;
 			if (typeof candidate.metricName === "string") state.metricName = candidate.metricName;
@@ -262,6 +282,7 @@ export function reconstructStateFromJsonl(content: string): ReconstructedExperim
 			state.constraints = normalizeStringList(candidate.constraints);
 			state.segmentFingerprint =
 				typeof candidate.segmentFingerprint === "string" ? candidate.segmentFingerprint : null;
+			state.executionProfile = decodeExecutionProfile(candidate.executionProfile);
 			state.secondaryMetrics = hydrateMetricDefs(
 				normalizeStringList(candidate.secondaryMetrics),
 			);

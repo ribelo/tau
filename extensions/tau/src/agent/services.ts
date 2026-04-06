@@ -6,6 +6,15 @@ import type { Status } from "./status.js";
 export type { Status };
 import type { ResolvedSandboxConfig } from "../sandbox/config.js";
 import type { ApprovalBroker } from "./approval-broker.js";
+import type {
+	ExecutionProfile,
+	ExecutionSessionState,
+} from "../execution/schema.js";
+
+export interface ParentExecutionContext {
+	readonly state: ExecutionSessionState;
+	readonly profile: ExecutionProfile;
+}
 
 // Error Types
 export class AgentNotFound extends Data.TaggedError("AgentNotFound")<{
@@ -70,6 +79,8 @@ export interface SpawnOptions {
 	readonly depth: number;
 	readonly cwd: string;
 	readonly parentSessionId: string;
+	readonly executionState: ExecutionSessionState;
+	readonly executionProfile: ExecutionProfile;
 	readonly parentAgentId?: AgentId | undefined;
 	readonly parentSandboxConfig: ResolvedSandboxConfig;
 	readonly parentModel?: Model<Api> | undefined;
@@ -110,6 +121,7 @@ export interface ControlSpawnOptions {
 	readonly result_schema?: unknown;
 	readonly approvalBroker?: ApprovalBroker | undefined;
 	readonly parentSessionId: string;
+	readonly parentExecution: ParentExecutionContext;
 	readonly parentAgentId?: AgentId | undefined;
 	readonly parentModel?: Model<Api> | undefined;
 	readonly modelRegistry?: ModelRegistry | undefined;

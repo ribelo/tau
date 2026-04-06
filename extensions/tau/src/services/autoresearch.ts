@@ -52,6 +52,7 @@ import {
 	AUTORESEARCH_SH,
 	AUTORESEARCH_CHECKS_SH,
 } from "../autoresearch/paths.js";
+import type { ExecutionProfile } from "../execution/schema.js";
 
 // ------------------------------------------------------------------------------
 // Execution boundary
@@ -124,6 +125,9 @@ export interface AutoresearchExecutionBoundary {
 		scopePaths: readonly string[],
 	) => Effect.Effect<RevertResult, AutoresearchGitError, never>;
 	readonly sendFollowUp: (prompt: string) => Effect.Effect<void, never, never>;
+	readonly applyExecutionProfile: (
+		profile: ExecutionProfile,
+	) => Effect.Effect<{ readonly applied: true } | { readonly applied: false; readonly reason: string }, never, never>;
 }
 
 // ------------------------------------------------------------------------------
@@ -200,6 +204,7 @@ export interface InitExperimentInput {
 	readonly offLimits: readonly string[];
 	readonly constraints: readonly string[];
 	readonly maxExperiments?: number | null;
+	readonly executionProfile: ExecutionProfile;
 }
 
 export interface InitExperimentResult {
@@ -261,6 +266,11 @@ export interface AutoresearchViewData {
 	readonly maxExperiments: number | null;
 }
 
+export interface OnAgentEndResult {
+	readonly didResume: boolean;
+	readonly blockedReason: string | null;
+}
+
 // ------------------------------------------------------------------------------
 // Service interface
 // ------------------------------------------------------------------------------
@@ -285,11 +295,12 @@ export interface AutoresearchService {
 		boundary: AutoresearchExecutionBoundary,
 	) => Effect.Effect<LogExperimentResult, AutoresearchValidationError | AutoresearchFingerprintMismatchError | AutoresearchNoPendingRunError | AutoresearchGitError, never>;
 	readonly getViewData: (sessionId: string) => Effect.Effect<AutoresearchViewData, never, never>;
+	readonly getExecutionProfile: (sessionId: string) => Effect.Effect<ExecutionProfile | null, never, never>;
 	readonly onAgentEnd: (
 		sessionId: string,
 		workDir: string,
 		boundary: AutoresearchExecutionBoundary,
-	) => Effect.Effect<{ readonly didResume: boolean }, never, never>;
+	) => Effect.Effect<OnAgentEndResult, never, never>;
 	readonly setMode: (
 		sessionId: string,
 		enabled: boolean,
@@ -732,6 +743,18 @@ export const AutoresearchLive = Layer.effect(
 				yield* Effect.void;
 			});
 
+		const requirePinnedExecutionProfile = (
+			state: ExperimentState,
+		): Effect.Effect<ExecutionProfile, AutoresearchValidationError, never> =>
+			state.executionProfile === null
+				? Effect.fail(
+						new AutoresearchValidationError({
+							reason:
+								"The current segment has no pinned execution profile. Re-run init_experiment before continuing.",
+						}),
+					)
+				: Effect.succeed(state.executionProfile);
+
 		const initExperiment: AutoresearchService["initExperiment"] = Effect.fn("Autoresearch.initExperiment")(
 			function* (sessionId, workDir, input) {
 				const runtime = yield* ensureSession(sessionId);
@@ -831,6 +854,7 @@ export const AutoresearchLive = Layer.effect(
 				state.offLimits = [...contract.offLimits];
 				state.constraints = [...contract.constraints];
 				state.segmentFingerprint = segmentFingerprint;
+				state.executionProfile = structuredClone(input.executionProfile);
 				if (isReinitializing) {
 					state.currentSegment += 1;
 				}
@@ -847,6 +871,7 @@ export const AutoresearchLive = Layer.effect(
 					offLimits: state.offLimits,
 					constraints: state.constraints,
 					segmentFingerprint,
+					executionProfile: state.executionProfile ?? undefined,
 				};
 
 				if (isReinitializing) {
@@ -887,6 +912,7 @@ export const AutoresearchLive = Layer.effect(
 			function* (sessionId, workDir, input, boundary) {
 				const runtime = yield* ensureSession(sessionId);
 				const state = runtime.state;
+				yield* requirePinnedExecutionProfile(state);
 
 				yield* validateFingerprint(state.segmentFingerprint, workDir);
 
@@ -1063,6 +1089,7 @@ export const AutoresearchLive = Layer.effect(
 			function* (sessionId, workDir, input, boundary) {
 				const runtime = yield* ensureSession(sessionId);
 				const state = runtime.state;
+				yield* requirePinnedExecutionProfile(state);
 
 				yield* validateFingerprint(state.segmentFingerprint, workDir);
 
@@ -1294,12 +1321,21 @@ export const AutoresearchLive = Layer.effect(
 			},
 		);
 
+		const getExecutionProfile: AutoresearchService["getExecutionProfile"] = Effect.fn(
+			"Autoresearch.getExecutionProfile",
+		)(function* (sessionId) {
+			const runtime = yield* ensureSession(sessionId);
+			return runtime.state.executionProfile === null
+				? null
+				: structuredClone(runtime.state.executionProfile);
+		});
+
 		const onAgentEnd: AutoresearchService["onAgentEnd"] = Effect.fn("Autoresearch.onAgentEnd")(
-			function* (sessionId, workDir, _boundary) {
+			function* (sessionId, workDir, boundary) {
 				const runtime = yield* ensureSession(sessionId);
 				runtime.runningExperiment = null;
 				if (!runtime.autoresearchMode) {
-					return { didResume: false };
+					return { didResume: false, blockedReason: null };
 				}
 
 				const loggedRunNumbers = collectLoggedRunNumbers(runtime.state.results);
@@ -1320,7 +1356,7 @@ export const AutoresearchLive = Layer.effect(
 				const shouldResumePendingRun =
 					pendingRun !== null && runtime.lastAutoResumePendingRunNumber !== pendingRun.runNumber;
 				if (!shouldResumePendingRun && !runtime.autoResumeArmed) {
-					return { didResume: false };
+					return { didResume: false, blockedReason: null };
 				}
 
 				const isExperimentLoopResume = runtime.autoResumeArmed;
@@ -1330,10 +1366,28 @@ export const AutoresearchLive = Layer.effect(
 					runtime.lastAutoResumeAt !== null &&
 					now - runtime.lastAutoResumeAt < 5 * 60 * 1000
 				) {
-					return { didResume: false };
+					return { didResume: false, blockedReason: null };
 				}
 				if (runtime.autoResumeCountThisSegment >= 20) {
-					return { didResume: false };
+					return { didResume: false, blockedReason: null };
+				}
+
+				const executionProfile = runtime.state.executionProfile;
+				if (executionProfile === null) {
+					return {
+						didResume: false,
+						blockedReason:
+							"The current segment has no pinned execution profile. Re-run init_experiment before continuing.",
+					};
+				}
+
+				const applyExecution = yield* boundary.applyExecutionProfile(executionProfile);
+				if (!applyExecution.applied) {
+					return {
+						didResume: false,
+						blockedReason:
+							`Could not apply pinned autoresearch execution profile: ${applyExecution.reason}`,
+					};
 				}
 
 				runtime.lastAutoResumeAt = now;
@@ -1343,7 +1397,7 @@ export const AutoresearchLive = Layer.effect(
 
 				// Adapter is responsible for deciding whether to actually send the follow-up
 				// based on session idle status. Service only arms it.
-				return { didResume: true };
+				return { didResume: true, blockedReason: null };
 			},
 		);
 
@@ -1394,6 +1448,7 @@ export const AutoresearchLive = Layer.effect(
 			runExperiment,
 			logExperiment,
 			getViewData,
+			getExecutionProfile,
 			onAgentEnd,
 			setMode,
 			clearSession,

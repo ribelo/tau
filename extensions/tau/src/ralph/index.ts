@@ -10,7 +10,7 @@ import { Type } from "@sinclair/typebox";
 import { Text } from "@mariozechner/pi-tui";
 import { Effect, Option } from "effect";
 
-import type { PromptModeProfile } from "../prompt/profile.js";
+import type { ExecutionProfile } from "../execution/schema.js";
 import { PromptModes } from "../services/prompt-modes.js";
 import {
 	COMPLETE_MARKER,
@@ -265,10 +265,10 @@ export default function initRalph(
 	const listLoops = (cwd: string, archived = false): Promise<ReadonlyArray<LoopState>> =>
 		withRalph((ralph) => ralph.listLoops(cwd, archived));
 
-	const captureCurrentPromptProfile = (
+	const captureCurrentExecutionProfile = (
 		ctx: Pick<ExtensionContext, "model" | "sessionManager">,
-	): Promise<PromptModeProfile | null> =>
-		withPromptModes((promptModes) => promptModes.captureCurrentProfile(ctx));
+	): Promise<ExecutionProfile | null> =>
+		withPromptModes((promptModes) => promptModes.captureCurrentExecutionProfile(ctx));
 
 	const commandBoundaryFromContext = (ctx: ExtensionCommandContext): RalphCommandBoundary => ({
 		cwd: ctx.cwd,
@@ -281,11 +281,13 @@ export default function initRalph(
 			Effect.tryPromise(() => ctx.newSession({ parentSession: options.parentSession })).pipe(
 				Effect.catch(() => Effect.succeed({ cancelled: true })),
 			),
-		applyPromptProfile: (profile) =>
+		applyExecutionProfile: (profile) =>
 			Effect.promise(() =>
 				withPromptModes((promptModes) =>
-					promptModes.applyProfile(profile, ctx, {
+					promptModes.applyExecutionProfile(profile, ctx, {
 						notifyOnSuccess: false,
+						persist: false,
+						ephemeral: true,
 					}).pipe(
 						Effect.map((result) =>
 							result.applied
@@ -402,20 +404,20 @@ export default function initRalph(
 						const resolved = resolveLoopTarget(parsed.name);
 						const loopName = resolved.loopName;
 						const taskFile = resolved.taskFile;
-						const promptProfile = await captureCurrentPromptProfile(ctx);
-						if (promptProfile === null) {
-							ctx.ui.notify("Could not capture the current mode/model profile for this Ralph loop.", "error");
-							return;
-						}
+					const executionProfile = await captureCurrentExecutionProfile(ctx);
+					if (executionProfile === null) {
+						ctx.ui.notify("Could not capture the current execution profile for this Ralph loop.", "error");
+						return;
+					}
 
 						const controllerSessionFile = sessionFileFromContext(ctx);
 						const start = await withRalph((ralph) =>
 							ralph.startLoopState(ctx.cwd, {
-								loopName,
-								taskFile,
-								promptProfile,
-								maxIterations: parsed.maxIterations,
-								itemsPerIteration: parsed.itemsPerIteration,
+							loopName,
+							taskFile,
+							executionProfile,
+							maxIterations: parsed.maxIterations,
+							itemsPerIteration: parsed.itemsPerIteration,
 								reflectEvery: parsed.reflectEvery,
 								reflectInstructions: parsed.reflectInstructions,
 								controllerSessionFile:
@@ -849,9 +851,8 @@ export default function initRalph(
 
 	pi.on("agent_end", async (event: AgentEndEvent, ctx) => {
 		try {
-			const promptProfile = await captureCurrentPromptProfile(ctx);
 			const result = await withRalph((ralph) =>
-				ralph.handleAgentEnd(ctx.cwd, sessionFileFromContext(ctx), event, promptProfile),
+				ralph.handleAgentEnd(ctx.cwd, sessionFileFromContext(ctx), event),
 			);
 			if (Option.isSome(result.banner)) {
 				pi.sendUserMessage(result.banner.value);

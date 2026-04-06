@@ -17,8 +17,16 @@ import { nanoid } from "nanoid";
 import { type Status } from "./status.js";
 import type { AgentId, AgentDefinition, ModelSpec } from "./types.js";
 import { type Agent, AgentError } from "./services.js";
+import { isPromptModeThinkingLevel } from "./model-spec.js";
 import { computeClampedWorkerSandboxConfig } from "./sandbox-policy.js";
 import type { ResolvedSandboxConfig } from "../sandbox/config.js";
+import type {
+	ExecutionPolicy,
+	ExecutionProfile,
+	ExecutionSessionState,
+} from "../execution/schema.js";
+import { makeExecutionProfile } from "../execution/schema.js";
+import { readModelId } from "../prompt/profile.js";
 import { TAU_PERSISTED_STATE_TYPE, loadPersistedState } from "../shared/state.js";
 import { withWorkerSandboxOverride } from "./worker-sandbox.js";
 import { setWorkerApprovalBroker } from "./approval-broker.js";
@@ -85,6 +93,30 @@ function getLastAssistantMessage(messages: readonly unknown[]): AssistantLikeMes
 	return candidate.role === "assistant"
 		? (candidate as AssistantLikeMessage)
 		: undefined;
+}
+
+function syncExecutionProfileToSession(
+	profile: ExecutionProfile,
+	session: AgentSession,
+): ExecutionProfile {
+	const modelId = readModelId(session.model);
+	if (modelId === undefined) {
+		return profile;
+	}
+
+	const thinking = isPromptModeThinkingLevel(session.thinkingLevel)
+		? session.thinkingLevel
+		: profile.promptProfile.thinking;
+
+	return makeExecutionProfile({
+		selector: profile.selector,
+		promptProfile: {
+			mode: profile.promptProfile.mode,
+			model: modelId,
+			thinking,
+		},
+		policy: profile.policy,
+	});
 }
 
 function waitForSessionSettlement(
@@ -403,6 +435,7 @@ interface SessionInfra {
 	readonly approvalBroker: ApprovalBroker | undefined;
 	readonly definition: AgentDefinition;
 	readonly resultSchema: unknown | undefined;
+	readonly executionPolicy: ExecutionPolicy;
 }
 
 export class AgentWorker implements Agent {
@@ -426,10 +459,14 @@ export class AgentWorker implements Agent {
 		private readonly infra: SessionInfra,
 		private readonly models: readonly ModelSpec[],
 		private readonly parentModel: Model<Api> | undefined,
+		private readonly executionState: ExecutionSessionState,
+		private readonly executionProfile: ExecutionProfile,
 		private readonly agentContext: {
 			parentSessionId: string;
 			parentAgentId?: AgentId | undefined;
 			parentModel: Model<Api> | undefined;
+			parentExecutionState: ExecutionSessionState;
+			parentExecutionProfile: ExecutionProfile;
 			modelRegistry: ModelRegistry;
 			cwd: string;
 			approvalBroker: ApprovalBroker | undefined;
@@ -521,6 +558,8 @@ export class AgentWorker implements Agent {
 		depth: number;
 		cwd: string;
 		parentSessionId: string;
+		executionState: ExecutionSessionState;
+		executionProfile: ExecutionProfile;
 		parentSandboxConfig: ResolvedSandboxConfig;
 		parentModel: Model<Api> | undefined;
 		approvalBroker: ApprovalBroker | undefined;
@@ -552,6 +591,12 @@ export class AgentWorker implements Agent {
 				parentSessionId: opts.parentSessionId,
 				parentAgentId: agentId,
 				parentModel: opts.parentModel,
+				parentExecutionState: opts.executionState,
+				parentExecutionProfile: opts.executionProfile,
+				resolveParentExecution: async () => ({
+					state: agentContext.parentExecutionState,
+					profile: agentContext.parentExecutionProfile,
+				}),
 				modelRegistry,
 				cwd: opts.cwd,
 				approvalBroker: opts.approvalBroker,
@@ -625,6 +670,7 @@ export class AgentWorker implements Agent {
 				approvalBroker: opts.approvalBroker,
 				definition: opts.definition,
 				resultSchema: opts.resultSchema,
+				executionPolicy: opts.executionState.policy,
 			};
 
 			// Create initial session with first model
@@ -642,9 +688,18 @@ export class AgentWorker implements Agent {
 			);
 
 			agentContext.parentSessionId = session.sessionId;
+			agentContext.parentExecutionProfile = syncExecutionProfileToSession(
+				agentContext.parentExecutionProfile,
+				session,
+			);
 
 			// Wire sandbox and approval broker for the session
-			wireSession(session, sandboxConfig, opts.approvalBroker);
+			wireSession(
+				session,
+				sandboxConfig,
+				opts.approvalBroker,
+				opts.executionState,
+			);
 
 			if (opts.resultSchema) {
 				session.agent.streamFn = toolOnlyStreamFn;
@@ -659,6 +714,8 @@ export class AgentWorker implements Agent {
 				infra,
 				models,
 				opts.parentModel,
+				opts.executionState,
+				agentContext.parentExecutionProfile,
 				agentContext,
 			);
 
@@ -804,10 +861,15 @@ export class AgentWorker implements Agent {
 
 			worker.session = newSession;
 			worker.agentContext.parentSessionId = newSession.sessionId;
+			worker.agentContext.parentExecutionProfile = syncExecutionProfileToSession(
+				worker.agentContext.parentExecutionProfile,
+				newSession,
+			);
 			wireSession(
 				newSession,
 				worker.infra.sandboxConfig,
 				worker.infra.approvalBroker,
+				worker.executionState,
 			);
 			if (worker.infra.resultSchema) {
 				newSession.agent.streamFn = toolOnlyStreamFn;
@@ -994,7 +1056,12 @@ function createSessionForModel(
 		};
 		const { session } = yield* Effect.promise(() => createAgentSession(sessionOpts));
 
-		yield* applyAgentToolAllowlist(session, infra.definition, infra.resultSchema);
+		yield* applyAgentToolAllowlist(
+			session,
+			infra.definition,
+			infra.resultSchema,
+			infra.executionPolicy,
+		);
 
 		// Apply thinking level
 		const thinkingLevel = spec.thinking;
@@ -1011,11 +1078,12 @@ function wireSession(
 	session: AgentSession,
 	sandboxConfig: ResolvedSandboxConfig,
 	approvalBroker: ApprovalBroker | undefined,
+	executionState: ExecutionSessionState,
 ): void {
 	const persisted = loadPersistedState({
 		sessionManager: session.sessionManager,
 	});
-	const next = withWorkerSandboxOverride(persisted, sandboxConfig);
+	const next = withWorkerSandboxOverride(persisted, sandboxConfig, executionState);
 	session.sessionManager.appendCustomEntry(TAU_PERSISTED_STATE_TYPE, next);
 	setWorkerApprovalBroker(session.sessionId, approvalBroker);
 }

@@ -15,8 +15,11 @@ import type {
 import { PiAPILive } from "../src/effect/pi.js";
 import { resolvePromptModePresets, type PromptModeName } from "../src/prompt/modes.js";
 import { Persistence } from "../src/services/persistence.js";
+import { ExecutionState, ExecutionStateLive } from "../src/services/execution-state.js";
+import { ExecutionRuntimeLive } from "../src/services/execution-runtime.js";
 import { PromptModes, PromptModesLive } from "../src/services/prompt-modes.js";
 import {
+	loadPersistedState,
 	mergePersistedState,
 	TAU_PERSISTED_STATE_TYPE,
 	type TauPersistedState,
@@ -226,6 +229,10 @@ async function setupPromptModes(
 	stateRef: SubscriptionRef.SubscriptionRef<TauPersistedState>,
 	pi: ExtensionAPI,
 ): Promise<void> {
+	await Effect.runPromise(
+		SubscriptionRef.update(stateRef, (current) => mergePersistedState({}, current)),
+	);
+
 	const persistenceLayer = Layer.succeed(Persistence, {
 		getSnapshot: () => Effect.runSync(SubscriptionRef.get(stateRef)),
 		setSnapshot: (next: TauPersistedState) => {
@@ -246,72 +253,100 @@ async function setupPromptModes(
 		updateEffect: (patch: Partial<TauPersistedState>) =>
 			SubscriptionRef.updateAndGet(stateRef, (current) => mergePersistedState(current, patch)),
 		changes: SubscriptionRef.changes(stateRef),
-		setup: Effect.void,
+		setup: Effect.sync(() => {
+			const mergePersistedFromContext = (_event: unknown, ctx: ExtensionContext) => {
+				Effect.runSync(
+					SubscriptionRef.update(stateRef, (current) =>
+						mergePersistedState(current, loadPersistedState(ctx)),
+					),
+				);
+			};
+
+			pi.on("session_start", mergePersistedFromContext);
+			pi.on("session_switch", mergePersistedFromContext);
+		}),
 	});
 
 	const setup = Effect.gen(function* () {
+		const persistence = yield* Persistence;
+		yield* persistence.setup;
+		const executionState = yield* ExecutionState;
+		yield* executionState.setup;
 		const promptModes = yield* PromptModes;
 		yield* promptModes.setup;
 	});
-
-	const layer = PromptModesLive.pipe(
-		Layer.provide(PiAPILive(pi)),
-		Layer.provide(persistenceLayer),
+	const executionStateLayer = ExecutionStateLive.pipe(Layer.provide(persistenceLayer));
+	const executionRuntimeLayer = ExecutionRuntimeLive.pipe(
+		Layer.provide(executionStateLayer),
 	);
-	await Effect.runPromise(setup.pipe(Effect.provide(layer)));
+
+	const layer = Layer.mergeAll(
+		persistenceLayer,
+		executionStateLayer,
+		executionRuntimeLayer,
+		PromptModesLive.pipe(Layer.provide(executionRuntimeLayer)),
+	).pipe(Layer.provide(PiAPILive(pi)));
+	await Effect.runPromise(Effect.scoped(setup.pipe(Effect.provide(layer))));
+}
+
+async function dispatchLifecycleEvent(
+	mock: PiMock,
+	event: "session_start" | "session_switch",
+	payload: unknown,
+	ctx: ExtensionContext,
+): Promise<void> {
+	const handlers = mock.handlers.get(event) ?? [];
+	expect(handlers.length).toBeGreaterThan(0);
+	for (const handler of handlers) {
+		await Promise.resolve(handler(payload, ctx));
+	}
 }
 
 describe("prompt-modes session_start", () => {
 	it("starts in default mode when /new session has no persisted mode", async () => {
 		await withTempDir(async (cwd) => {
 			const stateRef = await Effect.runPromise(
-				SubscriptionRef.make<TauPersistedState>({ promptModes: { activeMode: "deep" } }),
+				SubscriptionRef.make<TauPersistedState>({ execution: { selector: { mode: "deep" } } }),
 			);
 			const mock = makePiMock();
 			await setupPromptModes(stateRef, mock.pi);
 
-			const sessionStart = mock.handlers.get("session_start")?.[0];
-			expect(sessionStart).toBeTypeOf("function");
-
 			const ctx = makeSessionStartContext(cwd, []);
-			await Promise.resolve(sessionStart?.({ type: "session_start" }, ctx));
+			await dispatchLifecycleEvent(mock, "session_start", { type: "session_start" }, ctx);
 
 			expect(mock.setModelCalls).toHaveLength(0);
 			expect(mock.thinkingCalls).toHaveLength(0);
 			expect(mock.modeChangedEvents.at(-1)).toBe("default");
 
 			const persisted = Effect.runSync(SubscriptionRef.get(stateRef));
-			expect(persisted.promptModes?.activeMode).toBe("default");
+			expect(persisted.execution?.selector?.mode).toBe("default");
 		});
 	});
 
 	it("ignores session persisted mode and starts in default mode", async () => {
 		await withTempDir(async (cwd) => {
 			const stateRef = await Effect.runPromise(
-				SubscriptionRef.make<TauPersistedState>({ promptModes: { activeMode: "deep" } }),
+				SubscriptionRef.make<TauPersistedState>({ execution: { selector: { mode: "deep" } } }),
 			);
 			const mock = makePiMock();
 			await setupPromptModes(stateRef, mock.pi);
-
-			const sessionStart = mock.handlers.get("session_start")?.[0];
-			expect(sessionStart).toBeTypeOf("function");
 
 			const entries = [
 				{
 					type: "custom",
 					customType: TAU_PERSISTED_STATE_TYPE,
-					data: { promptModes: { activeMode: "smart" } },
+					data: { execution: { selector: { mode: "smart" } } },
 				},
 			];
 			const ctx = makeSessionStartContext(cwd, entries);
-			await Promise.resolve(sessionStart?.({ type: "session_start" }, ctx));
+			await dispatchLifecycleEvent(mock, "session_start", { type: "session_start" }, ctx);
 
 			expect(mock.setModelCalls).toHaveLength(0);
 			expect(mock.thinkingCalls).toHaveLength(0);
 			expect(mock.modeChangedEvents.at(-1)).toBe("default");
 
 			const persisted = Effect.runSync(SubscriptionRef.get(stateRef));
-			expect(persisted.promptModes?.activeMode).toBe("default");
+			expect(persisted.execution?.selector?.mode).toBe("default");
 		});
 	});
 
@@ -321,16 +356,13 @@ describe("prompt-modes session_start", () => {
 			const mock = makePiMock();
 			await setupPromptModes(stateRef, mock.pi);
 
-			const sessionStart = mock.handlers.get("session_start")?.[0];
-			expect(sessionStart).toBeTypeOf("function");
-
 			const entries = [
 				{
 					type: "custom",
 					customType: TAU_PERSISTED_STATE_TYPE,
 					data: {
-						promptModes: {
-							activeMode: "deep",
+						execution: {
+							selector: { mode: "deep" },
 							modelsByMode: {
 								deep: "openai-codex/gpt-5.3-codex",
 							},
@@ -339,22 +371,22 @@ describe("prompt-modes session_start", () => {
 				},
 			];
 			const ctx = makeSessionStartContext(cwd, entries);
-			await Promise.resolve(sessionStart?.({ type: "session_start" }, ctx));
+			await dispatchLifecycleEvent(mock, "session_start", { type: "session_start" }, ctx);
 
 			expect(mock.setModelCalls).toHaveLength(0);
 			expect(mock.thinkingCalls).toHaveLength(0);
 			expect(mock.modeChangedEvents.at(-1)).toBe("default");
 
 			const persisted = Effect.runSync(SubscriptionRef.get(stateRef));
-			expect(persisted.promptModes?.activeMode).toBe("default");
-			expect(persisted.promptModes?.modelsByMode?.deep).toBe("openai-codex/gpt-5.3-codex");
+			expect(persisted.execution?.selector?.mode).toBe("default");
+			expect(persisted.execution?.modelsByMode?.deep).toBe("openai-codex/gpt-5.3-codex");
 		});
 	});
 
 	it("updates the active mode assignment on model_select", async () => {
 		await withTempDir(async (cwd) => {
 			const stateRef = await Effect.runPromise(
-				SubscriptionRef.make<TauPersistedState>({ promptModes: { activeMode: "rush" } }),
+				SubscriptionRef.make<TauPersistedState>({ execution: { selector: { mode: "rush" } } }),
 			);
 			const mock = makePiMock();
 			await setupPromptModes(stateRef, mock.pi);
@@ -376,29 +408,26 @@ describe("prompt-modes session_start", () => {
 			);
 
 			const persisted = Effect.runSync(SubscriptionRef.get(stateRef));
-			expect(persisted.promptModes?.activeMode).toBe("rush");
-			expect(persisted.promptModes?.modelsByMode?.rush).toBe("anthropic/claude-opus-4-5");
+			expect(persisted.execution?.selector?.mode).toBe("rush");
+			expect(persisted.execution?.modelsByMode?.rush).toBe("anthropic/claude-opus-4-5");
 		});
 	});
 
 	it("starts in default mode on session_switch while preserving per-mode assignments", async () => {
 		await withTempDir(async (cwd) => {
 			const stateRef = await Effect.runPromise(
-				SubscriptionRef.make<TauPersistedState>({ promptModes: { activeMode: "smart" } }),
+				SubscriptionRef.make<TauPersistedState>({ execution: { selector: { mode: "smart" } } }),
 			);
 			const mock = makePiMock();
 			await setupPromptModes(stateRef, mock.pi);
-
-			const sessionSwitch = mock.handlers.get("session_switch")?.[0];
-			expect(sessionSwitch).toBeTypeOf("function");
 
 			const entries = [
 				{
 					type: "custom",
 					customType: TAU_PERSISTED_STATE_TYPE,
 					data: {
-						promptModes: {
-							activeMode: "rush",
+						execution: {
+							selector: { mode: "rush" },
 							modelsByMode: {
 								rush: "kimi-coding/kimi-k2-thinking",
 							},
@@ -407,8 +436,11 @@ describe("prompt-modes session_start", () => {
 				},
 			];
 			const ctx = makeSessionStartContext(cwd, entries);
-			await Promise.resolve(
-				sessionSwitch?.({ type: "session_switch", reason: "resume" }, ctx),
+			await dispatchLifecycleEvent(
+				mock,
+				"session_switch",
+				{ type: "session_switch", reason: "resume" },
+				ctx,
 			);
 
 			expect(mock.setModelCalls).toHaveLength(0);
@@ -416,8 +448,8 @@ describe("prompt-modes session_start", () => {
 			expect(mock.modeChangedEvents.at(-1)).toBe("default");
 
 			const persisted = Effect.runSync(SubscriptionRef.get(stateRef));
-			expect(persisted.promptModes?.activeMode).toBe("default");
-			expect(persisted.promptModes?.modelsByMode?.rush).toBe("kimi-coding/kimi-k2-thinking");
+			expect(persisted.execution?.selector?.mode).toBe("default");
+			expect(persisted.execution?.modelsByMode?.rush).toBe("kimi-coding/kimi-k2-thinking");
 		});
 	});
 
@@ -425,8 +457,8 @@ describe("prompt-modes session_start", () => {
 		await withTempDir(async (cwd) => {
 			const stateRef = await Effect.runPromise(
 				SubscriptionRef.make<TauPersistedState>({
-					promptModes: {
-						activeMode: "smart",
+					execution: {
+						selector: { mode: "smart" },
 					},
 				}),
 			);
@@ -434,9 +466,9 @@ describe("prompt-modes session_start", () => {
 			await setupPromptModes(stateRef, mock.pi);
 
 			const modelSelect = mock.handlers.get("model_select")?.[0];
-			const sessionSwitch = mock.handlers.get("session_switch")?.[0];
+			const modeCommand = mock.commands.get("mode");
 			expect(modelSelect).toBeTypeOf("function");
-			expect(sessionSwitch).toBeTypeOf("function");
+			expect(modeCommand).toBeTypeOf("function");
 
 			// Assign a non-default model while smart mode is active.
 			await Promise.resolve(
@@ -452,12 +484,11 @@ describe("prompt-modes session_start", () => {
 			);
 
 			let persisted = Effect.runSync(SubscriptionRef.get(stateRef));
-			expect(persisted.promptModes?.modelsByMode?.smart).toBe("openai-codex/gpt-5.3-codex");
+			expect(persisted.execution?.modelsByMode?.smart).toBe("openai-codex/gpt-5.3-codex");
 
-			Effect.runSync(
-				SubscriptionRef.update(stateRef, (current) =>
-					mergePersistedState(current, { promptModes: { activeMode: "deep" } }),
-				),
+
+			await Promise.resolve(
+				modeCommand?.("deep", makeSessionStartContext(cwd, []) as ExtensionCommandContext),
 			);
 
 			await Promise.resolve(
@@ -473,8 +504,8 @@ describe("prompt-modes session_start", () => {
 							type: "custom",
 							customType: TAU_PERSISTED_STATE_TYPE,
 							data: {
-								promptModes: {
-									activeMode: "deep",
+								execution: {
+									selector: { mode: "deep" },
 									modelsByMode: {
 										smart: "openai-codex/gpt-5.3-codex",
 										deep: "anthropic/claude-opus-4-5",
@@ -487,36 +518,36 @@ describe("prompt-modes session_start", () => {
 			);
 
 			persisted = Effect.runSync(SubscriptionRef.get(stateRef));
-			expect(persisted.promptModes?.modelsByMode?.deep).toBe("kimi-coding/kimi-k2-thinking");
-			expect(persisted.promptModes?.modelsByMode?.smart).toBe("openai-codex/gpt-5.3-codex");
+			expect(persisted.execution?.modelsByMode?.deep).toBe("kimi-coding/kimi-k2-thinking");
+			expect(persisted.execution?.modelsByMode?.smart).toBe("openai-codex/gpt-5.3-codex");
 
 			// Restart should return to default mode instead of restoring a saved mode.
-			await Promise.resolve(
-				sessionSwitch?.(
-					{ type: "session_switch", reason: "resume" },
-					makeSessionStartContext(cwd, [
-						{
-							type: "custom",
-							customType: TAU_PERSISTED_STATE_TYPE,
-							data: {
-								promptModes: {
-									activeMode: "smart",
-									modelsByMode: {
-										smart: "openai-codex/gpt-5.3-codex",
-										deep: "kimi-coding/kimi-k2-thinking",
-									},
+			await dispatchLifecycleEvent(
+				mock,
+				"session_switch",
+				{ type: "session_switch", reason: "resume" },
+				makeSessionStartContext(cwd, [
+					{
+						type: "custom",
+						customType: TAU_PERSISTED_STATE_TYPE,
+						data: {
+							execution: {
+								selector: { mode: "smart" },
+								modelsByMode: {
+									smart: "openai-codex/gpt-5.3-codex",
+									deep: "kimi-coding/kimi-k2-thinking",
 								},
 							},
 						},
-					]),
-				),
+					},
+				]),
 			);
 
 			expect(mock.modeChangedEvents.at(-1)).toBe("default");
 			persisted = Effect.runSync(SubscriptionRef.get(stateRef));
-			expect(persisted.promptModes?.activeMode).toBe("default");
-			expect(persisted.promptModes?.modelsByMode?.smart).toBe("openai-codex/gpt-5.3-codex");
-			expect(persisted.promptModes?.modelsByMode?.deep).toBe("kimi-coding/kimi-k2-thinking");
+			expect(persisted.execution?.selector?.mode).toBe("default");
+			expect(persisted.execution?.modelsByMode?.smart).toBe("openai-codex/gpt-5.3-codex");
+			expect(persisted.execution?.modelsByMode?.deep).toBe("kimi-coding/kimi-k2-thinking");
 		});
 	});
 
@@ -524,8 +555,8 @@ describe("prompt-modes session_start", () => {
 		await withTempDir(async (cwd) => {
 			const stateRef = await Effect.runPromise(
 				SubscriptionRef.make<TauPersistedState>({
-					promptModes: {
-						activeMode: "default",
+					execution: {
+						selector: { mode: "default" },
 						modelsByMode: {
 							smart: "anthropic/claude-opus-4-5",
 						},
@@ -535,19 +566,16 @@ describe("prompt-modes session_start", () => {
 			const mock = makePiMock();
 			await setupPromptModes(stateRef, mock.pi);
 
-			const sessionStart = mock.handlers.get("session_start")?.[0];
-			expect(sessionStart).toBeTypeOf("function");
-
 			const ctx = makeSessionStartContext(cwd, []);
-			await Promise.resolve(sessionStart?.({ type: "session_start" }, ctx));
+			await dispatchLifecycleEvent(mock, "session_start", { type: "session_start" }, ctx);
 
 			expect(mock.setModelCalls).toHaveLength(0);
 			expect(mock.thinkingCalls).toHaveLength(0);
 			expect(mock.modeChangedEvents.at(-1)).toBe("default");
 
 			const persisted = Effect.runSync(SubscriptionRef.get(stateRef));
-			expect(persisted.promptModes?.activeMode).toBe("default");
-			expect(persisted.promptModes?.modelsByMode?.smart).toBe("anthropic/claude-opus-4-5");
+			expect(persisted.execution?.selector?.mode).toBe("default");
+			expect(persisted.execution?.modelsByMode?.smart).toBe("anthropic/claude-opus-4-5");
 		});
 	});
 
@@ -557,9 +585,7 @@ describe("prompt-modes session_start", () => {
 			const mock = makePiMock();
 			await setupPromptModes(stateRef, mock.pi);
 
-			const sessionStart = mock.handlers.get("session_start")?.[0];
 			const modeCommand = mock.commands.get("mode");
-			expect(sessionStart).toBeTypeOf("function");
 			expect(modeCommand).toBeTypeOf("function");
 
 			const presets = await Effect.runPromise(resolvePromptModePresets(cwd));
@@ -567,7 +593,12 @@ describe("prompt-modes session_start", () => {
 			const deepThinking = presets.deep.thinking;
 			const defaultModel = parseProviderModel("anthropic/claude-opus-4-5");
 			const defaultCtx = makeSessionStartContext(cwd, [], true, { model: defaultModel });
-			await Promise.resolve(sessionStart?.({ type: "session_start" }, defaultCtx));
+			await dispatchLifecycleEvent(
+				mock,
+				"session_start",
+				{ type: "session_start" },
+				defaultCtx,
+			);
 
 			await Promise.resolve(modeCommand?.("deep", defaultCtx as ExtensionCommandContext));
 			expect(mock.setModelCalls.at(-1)).toEqual(deepModel);
@@ -588,14 +619,14 @@ describe("prompt-modes session_start", () => {
 			expect(mock.thinkingCalls.at(-1)).toBe("medium");
 
 			const persisted = Effect.runSync(SubscriptionRef.get(stateRef));
-			expect(persisted.promptModes?.activeMode).toBe("default");
+			expect(persisted.execution?.selector?.mode).toBe("default");
 		});
 	});
 
 	it("does not register a tab shortcut that conflicts with pi built-ins", async () => {
 		await withTempDir(async (cwd) => {
 			const stateRef = await Effect.runPromise(
-				SubscriptionRef.make<TauPersistedState>({ promptModes: { activeMode: "smart" } }),
+				SubscriptionRef.make<TauPersistedState>({ execution: { selector: { mode: "smart" } } }),
 			);
 			const mock = makePiMock();
 			await setupPromptModes(stateRef, mock.pi);
@@ -609,23 +640,20 @@ describe("prompt-modes session_start", () => {
 	it("does not override model/thinking in non-interactive mode", async () => {
 		await withTempDir(async (cwd) => {
 			const stateRef = await Effect.runPromise(
-				SubscriptionRef.make<TauPersistedState>({ promptModes: { activeMode: "deep" } }),
+				SubscriptionRef.make<TauPersistedState>({ execution: { selector: { mode: "deep" } } }),
 			);
 			const mock = makePiMock();
 			await setupPromptModes(stateRef, mock.pi);
 
-			const sessionStart = mock.handlers.get("session_start")?.[0];
-			expect(sessionStart).toBeTypeOf("function");
-
 			const ctx = makeSessionStartContext(cwd, [], false);
-			await Promise.resolve(sessionStart?.({ type: "session_start" }, ctx));
+			await dispatchLifecycleEvent(mock, "session_start", { type: "session_start" }, ctx);
 
 			expect(mock.setModelCalls).toHaveLength(0);
 			expect(mock.thinkingCalls).toHaveLength(0);
 			expect(mock.modeChangedEvents).toHaveLength(0);
 
 			const persisted = Effect.runSync(SubscriptionRef.get(stateRef));
-			expect(persisted.promptModes?.activeMode).toBe("deep");
+			expect(persisted.execution?.selector?.mode).toBe("deep");
 		});
 	});
 });

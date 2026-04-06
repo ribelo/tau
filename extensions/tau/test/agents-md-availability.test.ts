@@ -22,6 +22,8 @@ import {
 
 import { PiAPILive } from "../src/effect/pi.js";
 import { PromptModes, PromptModesLive } from "../src/services/prompt-modes.js";
+import { ExecutionStateLive } from "../src/services/execution-state.js";
+import { ExecutionRuntimeLive } from "../src/services/execution-runtime.js";
 import { Persistence } from "../src/services/persistence.js";
 import { mergePersistedState, type TauPersistedState } from "../src/shared/state.js";
 
@@ -97,7 +99,7 @@ describe("AGENTS.md availability", () => {
 				// The rest of ExtensionAPI is not exercised by this test.
 			} as unknown as ExtensionAPI;
 
-			let persisted: TauPersistedState = { promptModes: { activeMode: "smart" } };
+			let persisted: TauPersistedState = { execution: { selector: { mode: "smart" } } };
 
 			const persistenceLayer = Layer.succeed(Persistence, {
 				getSnapshot: () => persisted,
@@ -128,10 +130,14 @@ describe("AGENTS.md availability", () => {
 				const pm = yield* PromptModes;
 				yield* pm.setup;
 			});
+			const executionStateLayer = ExecutionStateLive.pipe(Layer.provide(persistenceLayer));
+			const executionRuntimeLayer = ExecutionRuntimeLive.pipe(
+				Layer.provide(executionStateLayer),
+			);
 
 			const layer = PromptModesLive.pipe(
+				Layer.provide(executionRuntimeLayer),
 				Layer.provide(PiAPILive(pi)),
-				Layer.provide(persistenceLayer),
 			);
 
 			await Effect.runPromise(setup.pipe(Effect.provide(layer)));
@@ -198,7 +204,7 @@ describe("AGENTS.md availability", () => {
 				registerShortcut: () => undefined,
 			} as unknown as ExtensionAPI;
 
-			let persisted: TauPersistedState = { promptModes: { activeMode: "smart" } };
+			let persisted: TauPersistedState = { execution: { selector: { mode: "smart" } } };
 
 			const persistenceLayer = Layer.succeed(Persistence, {
 				getSnapshot: () => persisted,
@@ -229,10 +235,14 @@ describe("AGENTS.md availability", () => {
 				const pm = yield* PromptModes;
 				yield* pm.setup;
 			});
+			const executionStateLayer = ExecutionStateLive.pipe(Layer.provide(persistenceLayer));
+			const executionRuntimeLayer = ExecutionRuntimeLive.pipe(
+				Layer.provide(executionStateLayer),
+			);
 
 			const layer = PromptModesLive.pipe(
+				Layer.provide(executionRuntimeLayer),
 				Layer.provide(PiAPILive(pi)),
-				Layer.provide(persistenceLayer),
 			);
 
 			await Effect.runPromise(setup.pipe(Effect.provide(layer)));
@@ -320,7 +330,7 @@ describe("AGENTS.md availability", () => {
 				registerShortcut: () => undefined,
 			} as unknown as ExtensionAPI;
 
-			let persisted: TauPersistedState = { promptModes: { activeMode: "default" } };
+			let persisted: TauPersistedState = { execution: { selector: { mode: "default" } } };
 
 			const persistenceLayer = Layer.succeed(Persistence, {
 				getSnapshot: () => persisted,
@@ -351,10 +361,14 @@ describe("AGENTS.md availability", () => {
 				const pm = yield* PromptModes;
 				yield* pm.setup;
 			});
+			const executionStateLayer = ExecutionStateLive.pipe(Layer.provide(persistenceLayer));
+			const executionRuntimeLayer = ExecutionRuntimeLive.pipe(
+				Layer.provide(executionStateLayer),
+			);
 
 			const layer = PromptModesLive.pipe(
+				Layer.provide(executionRuntimeLayer),
 				Layer.provide(PiAPILive(pi)),
-				Layer.provide(persistenceLayer),
 			);
 
 			await Effect.runPromise(setup.pipe(Effect.provide(layer)));

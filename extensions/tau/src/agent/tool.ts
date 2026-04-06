@@ -13,6 +13,7 @@ import {
 	AgentSpawnRestricted,
 	AgentError,
 	type ControlSpawnOptions,
+	type ParentExecutionContext,
 	type WaitResult,
 } from "./services.js";
 import type { AgentId } from "./types.js";
@@ -122,6 +123,7 @@ export interface AgentToolContext {
 	parentSessionId: string;
 	parentAgentId?: AgentId | undefined;
 	parentModel: Model<Api> | undefined;
+	resolveParentExecution: () => Promise<ParentExecutionContext>;
 	modelRegistry: ModelRegistry;
 	cwd: string;
 	approvalBroker: ApprovalBroker | undefined;
@@ -285,12 +287,23 @@ export function createAgentToolDef(
 								new Error("spawn requires 'agent' and 'message'"),
 							);
 						}
+						const parentExecution = yield* Effect.tryPromise({
+							try: () => context.resolveParentExecution(),
+							catch: (cause) =>
+								new AgentError({
+									message:
+										cause instanceof Error
+											? cause.message
+											: String(cause),
+								}),
+						});
 						const id = yield* control.spawn({
 							agent: p.agent,
 							message: p.message,
 							result_schema: p.result_schema,
 							approvalBroker: context.approvalBroker,
 							parentSessionId: context.parentSessionId,
+							parentExecution,
 							parentAgentId: context.parentAgentId,
 							parentModel: context.parentModel,
 							modelRegistry: context.modelRegistry,

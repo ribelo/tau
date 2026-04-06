@@ -18,7 +18,7 @@ import { RalphRepoLive } from "../src/ralph/repo.js";
 import { decodeLoopStateSync, encodeLoopStateJsonSync } from "../src/ralph/schema.js";
 import { PromptModes } from "../src/services/prompt-modes.js";
 import { Ralph, RalphLive } from "../src/services/ralph.js";
-import { makePromptModesStubLayer, makePromptProfile } from "./ralph-test-helpers.js";
+import { makeExecutionProfile, makePromptModesStubLayer } from "./ralph-test-helpers.js";
 
 type EventHandler = (event: unknown, ctx: ExtensionContext) => unknown;
 
@@ -135,7 +135,7 @@ function writeLoopState(
 					: Option.some(input.activeIterationSessionFile),
 			advanceRequestedAt: Option.none(),
 			awaitingFinalize: input.awaitingFinalize ?? false,
-			promptProfile: makePromptProfile(),
+			executionProfile: makeExecutionProfile(),
 		}),
 		"utf-8",
 	);

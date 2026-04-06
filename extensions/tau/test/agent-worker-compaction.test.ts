@@ -108,6 +108,8 @@ const makeWorker = async (
 				infra: unknown,
 				models: readonly ModelSpec[],
 				parentModel: Model<Api> | undefined,
+				executionState: unknown,
+				executionProfile: unknown,
 				agentContext: unknown,
 			): AgentWorker;
 		}
@@ -124,8 +126,85 @@ const makeWorker = async (
 		definition.models,
 		undefined,
 		{
+			selector: {
+				mode: "default",
+			},
+			policy: {
+				tools: {
+					kind: "inherit",
+				},
+			},
+		},
+		{
+			selector: {
+				mode: "default",
+			},
+			promptProfile: {
+				mode: "default",
+				model: "openai/gpt-5-codex",
+				thinking: "medium",
+			},
+			policy: {
+				tools: {
+					kind: "inherit",
+				},
+			},
+		},
+		{
 			parentSessionId: "parent-session",
 			parentModel: undefined,
+			parentExecutionState: {
+				selector: {
+					mode: "default",
+				},
+				policy: {
+					tools: {
+						kind: "inherit",
+					},
+				},
+			},
+			parentExecutionProfile: {
+				selector: {
+					mode: "default",
+				},
+				promptProfile: {
+					mode: "default",
+					model: "openai/gpt-5-codex",
+					thinking: "medium",
+				},
+				policy: {
+					tools: {
+						kind: "inherit",
+					},
+				},
+			},
+			resolveParentExecution: async () => ({
+				state: {
+					selector: {
+						mode: "default",
+					},
+					policy: {
+						tools: {
+							kind: "inherit",
+						},
+					},
+				},
+				profile: {
+					selector: {
+						mode: "default",
+					},
+					promptProfile: {
+						mode: "default",
+						model: "openai/gpt-5-codex",
+						thinking: "medium",
+					},
+					policy: {
+						tools: {
+							kind: "inherit",
+						},
+					},
+				},
+			}),
 			modelRegistry: {},
 			cwd: process.cwd(),
 			approvalBroker: undefined,
