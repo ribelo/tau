@@ -194,7 +194,8 @@ export const startTau = (pi: ExtensionAPI) => {
 	) => currentRuntime.runPromise(effect);
 	const runSkillManager = <A, E>(effect: Effect.Effect<A, E, SkillManager>) =>
 		currentRuntime.runPromise(effect);
-	const runRalph = <A, E>(effect: Effect.Effect<A, E, Ralph>) => currentRuntime.runPromise(effect);
+	const runRalph = <A, E>(effect: Effect.Effect<A, E, Ralph | PromptModes>) =>
+		currentRuntime.runPromise(effect);
 	const runAutoresearch = <A, E>(effect: Effect.Effect<A, E, Autoresearch | Sandbox>) =>
 		currentRuntime.runPromise(effect);
 

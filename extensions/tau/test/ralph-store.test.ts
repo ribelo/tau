@@ -16,7 +16,9 @@ import type {
 import initRalph from "../src/ralph/index.js";
 import { RalphRepoLive } from "../src/ralph/repo.js";
 import { decodeLoopStateSync, encodeLoopStateJsonSync } from "../src/ralph/schema.js";
+import { PromptModes } from "../src/services/prompt-modes.js";
 import { Ralph, RalphLive } from "../src/services/ralph.js";
+import { makePromptModesStubLayer, makePromptProfile } from "./ralph-test-helpers.js";
 
 type EventHandler = (event: unknown, ctx: ExtensionContext) => unknown;
 
@@ -31,14 +33,18 @@ type SentUserMessage = {
 };
 
 type RalphRuntimeHarness = {
-	readonly run: <A, E>(effect: Effect.Effect<A, E, Ralph>) => Promise<A>;
+	readonly run: <A, E>(effect: Effect.Effect<A, E, Ralph | PromptModes>) => Promise<A>;
 	readonly dispose: () => Promise<void>;
 };
 
 function makeRalphRuntime(activeSubagents = false): RalphRuntimeHarness {
 	const layer = RalphLive({
 		hasActiveSubagents: () => Effect.succeed(activeSubagents),
-	}).pipe(Layer.provideMerge(RalphRepoLive), Layer.provide(NodeFileSystem.layer));
+	}).pipe(
+		Layer.provideMerge(RalphRepoLive),
+		Layer.provideMerge(makePromptModesStubLayer()),
+		Layer.provide(NodeFileSystem.layer),
+	);
 	const runtime = ManagedRuntime.make(layer);
 	return {
 		run: (effect) => runtime.runPromise(effect),
@@ -405,10 +411,11 @@ describe("ralph store behavior freeze", () => {
 		await ralphRuntime.run(
 			Effect.gen(function* () {
 				const ralph = yield* Ralph;
-				yield* ralph.startLoopState(cwd, {
-					loopName: "pausable-loop",
-					taskFile: path.join(".pi", "ralph", "tasks", "pausable-loop.md"),
-					maxIterations: 50,
+					yield* ralph.startLoopState(cwd, {
+						loopName: "pausable-loop",
+						taskFile: path.join(".pi", "ralph", "tasks", "pausable-loop.md"),
+						promptProfile: makePromptProfile(),
+						maxIterations: 50,
 					itemsPerIteration: 0,
 					reflectEvery: 0,
 					reflectInstructions: "reflect",
@@ -455,10 +462,11 @@ describe("ralph store behavior freeze", () => {
 		await ralphRuntime.run(
 			Effect.gen(function* () {
 				const ralph = yield* Ralph;
-				yield* ralph.startLoopState(cwd, {
-					loopName: "esc-stop-loop",
-					taskFile: path.join(".pi", "ralph", "tasks", "esc-stop-loop.md"),
-					maxIterations: 50,
+					yield* ralph.startLoopState(cwd, {
+						loopName: "esc-stop-loop",
+						taskFile: path.join(".pi", "ralph", "tasks", "esc-stop-loop.md"),
+						promptProfile: makePromptProfile(),
+						maxIterations: 50,
 					itemsPerIteration: 0,
 					reflectEvery: 0,
 					reflectInstructions: "reflect",
@@ -513,6 +521,7 @@ describe("ralph store behavior freeze", () => {
 					activeIterationSessionFile: pausedSessionFile,
 					advanceRequestedAt: null,
 					awaitingFinalize: false,
+					promptProfile: makePromptProfile(),
 				}),
 			),
 			"utf-8",
@@ -536,6 +545,7 @@ describe("ralph store behavior freeze", () => {
 					activeIterationSessionFile: null,
 					advanceRequestedAt: null,
 					awaitingFinalize: false,
+					promptProfile: makePromptProfile(),
 				}),
 			),
 			"utf-8",
@@ -593,6 +603,7 @@ describe("ralph store behavior freeze", () => {
 					activeIterationSessionFile: null,
 					advanceRequestedAt: null,
 					awaitingFinalize: false,
+					promptProfile: makePromptProfile(),
 				},
 				null,
 				2,

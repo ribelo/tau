@@ -10,6 +10,7 @@ import {
 	encodeLoopStateJson,
 	LoopNameSchema,
 } from "../src/ralph/schema.js";
+import { makePromptProfile } from "./ralph-test-helpers.js";
 
 const encodedLoopState: EncodedLoopState = {
 	name: "schema-loop",
@@ -27,6 +28,7 @@ const encodedLoopState: EncodedLoopState = {
 	activeIterationSessionFile: null,
 	advanceRequestedAt: null,
 	awaitingFinalize: false,
+	promptProfile: makePromptProfile(),
 };
 
 describe("ralph schema", () => {

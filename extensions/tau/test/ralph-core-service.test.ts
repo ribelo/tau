@@ -7,6 +7,7 @@ import type { AgentEndEvent } from "@mariozechner/pi-coding-agent";
 import { Deferred, Effect, Fiber, Layer, Option } from "effect";
 import { NodeFileSystem } from "@effect/platform-node";
 
+import type { PromptModeProfile } from "../src/prompt/profile.js";
 import { RalphRepo, RalphRepoLive } from "../src/ralph/repo.js";
 import {
 	Ralph,
@@ -17,6 +18,17 @@ import type { LoopState } from "../src/ralph/schema.js";
 
 function makeTempDir(): string {
 	return fs.mkdtempSync(path.join(os.tmpdir(), "tau-ralph-core-"));
+}
+
+function makePromptProfile(
+	overrides?: Partial<PromptModeProfile>,
+): PromptModeProfile {
+	return {
+		mode: "deep",
+		model: "openai-codex/gpt-5.3-codex",
+		thinking: "high",
+		...overrides,
+	};
 }
 
 function makeState(loopName: string, sessionFile: string): LoopState {
@@ -36,6 +48,7 @@ function makeState(loopName: string, sessionFile: string): LoopState {
 		activeIterationSessionFile: Option.some(sessionFile),
 		advanceRequestedAt: Option.none(),
 		awaitingFinalize: false,
+		promptProfile: makePromptProfile(),
 	};
 }
 
@@ -124,10 +137,11 @@ describe("ralph core service", () => {
 		const result = await Effect.runPromise(
 			Effect.gen(function* () {
 				const ralph = yield* Ralph;
-				yield* ralph.startLoopState(cwd, {
-					loopName: "visible-loop",
-					taskFile: path.join(".pi", "ralph", "tasks", "visible-loop.md"),
-					maxIterations: 50,
+					yield* ralph.startLoopState(cwd, {
+						loopName: "visible-loop",
+						taskFile: path.join(".pi", "ralph", "tasks", "visible-loop.md"),
+						promptProfile: makePromptProfile({ mode: "smart", model: "anthropic/claude-opus-4-5", thinking: "medium" }),
+						maxIterations: 50,
 					itemsPerIteration: 0,
 					reflectEvery: 0,
 					reflectInstructions: "reflect",
@@ -183,6 +197,7 @@ describe("ralph core service", () => {
 							sessionFile = iterationSessionFile;
 							return { cancelled: false } as const;
 						}),
+					applyPromptProfile: () => Effect.succeed({ applied: true as const }),
 					sendFollowUp: () =>
 						Effect.gen(function* () {
 							yield* Deferred.succeed(followUpStarted, undefined);
@@ -197,11 +212,13 @@ describe("ralph core service", () => {
 					cwd,
 					unrelatedSessionFile,
 					makeAgentEndEvent("unrelated"),
+					null,
 				);
 				const matching = yield* ralph.handleAgentEnd(
 					cwd,
 					iterationSessionFile,
 					makeAgentEndEvent("worked"),
+					makePromptProfile({ model: "anthropic/claude-opus-4-5", thinking: "medium", mode: "smart" }),
 				);
 
 				yield* Deferred.succeed(releaseFollowUp, undefined);
@@ -215,6 +232,96 @@ describe("ralph core service", () => {
 		expect(result.matching.consumedByWaitingLoop).toBe(true);
 		expect(result.runResult.status).toBe("stopped");
 		expect(Option.isSome(result.runResult.message)).toBe(true);
+	});
+
+	it("reapplies the latest prompt profile on the next Ralph iteration", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+		const loopName = "profile-loop";
+		const controllerSessionFile = path.join(cwd, ".pi", "sessions", "controller.session.json");
+		const iterationSessionFileA = path.join(cwd, ".pi", "sessions", "iteration-a.session.json");
+		const iterationSessionFileB = path.join(cwd, ".pi", "sessions", "iteration-b.session.json");
+
+		const initialProfile = makePromptProfile({
+			mode: "deep",
+			model: "openai-codex/gpt-5.3-codex",
+			thinking: "high",
+		});
+		const updatedProfile = makePromptProfile({
+			mode: "smart",
+			model: "anthropic/claude-opus-4-5",
+			thinking: "medium",
+		});
+
+		const result = await Effect.runPromise(
+			Effect.gen(function* () {
+				const repo = yield* RalphRepo;
+				const ralph = yield* Ralph;
+				yield* repo.saveState(cwd, {
+					...makeState(loopName, iterationSessionFileA),
+					iteration: 0,
+					controllerSessionFile: Option.some(controllerSessionFile),
+					activeIterationSessionFile: Option.none(),
+					promptProfile: initialProfile,
+				});
+				yield* repo.writeTaskFile(cwd, path.join(".pi", "ralph", "tasks", `${loopName}.md`), "# Task\n");
+
+				const appliedProfiles: PromptModeProfile[] = [];
+				let sessionFile = controllerSessionFile;
+				let newSessionCount = 0;
+
+				const makeBoundary = (
+					followUpStarted: Deferred.Deferred<void>,
+					releaseFollowUp: Deferred.Deferred<void>,
+				): RalphCommandBoundary => ({
+					cwd,
+					getSessionFile: () => sessionFile,
+					switchSession: (targetSessionFile) =>
+						Effect.sync(() => {
+							sessionFile = targetSessionFile;
+							return { cancelled: false } as const;
+						}),
+					newSession: () =>
+						Effect.sync(() => {
+							newSessionCount += 1;
+							sessionFile = newSessionCount === 1 ? iterationSessionFileA : iterationSessionFileB;
+							return { cancelled: false } as const;
+						}),
+					applyPromptProfile: (profile) =>
+						Effect.sync(() => {
+							appliedProfiles.push(profile);
+							return { applied: true } as const;
+						}),
+					sendFollowUp: () =>
+						Effect.gen(function* () {
+							yield* Deferred.succeed(followUpStarted, undefined);
+							yield* Deferred.await(releaseFollowUp);
+						}),
+				});
+
+				const startedA = yield* Deferred.make<void>();
+				const releaseA = yield* Deferred.make<void>();
+				const runFiberA = yield* Effect.forkDetach(ralph.runLoop(makeBoundary(startedA, releaseA), loopName));
+				yield* Deferred.await(startedA);
+				yield* ralph.handleAgentEnd(cwd, iterationSessionFileA, makeAgentEndEvent("worked"), updatedProfile);
+				yield* Deferred.succeed(releaseA, undefined);
+				yield* Fiber.join(runFiberA);
+
+				yield* ralph.resumeLoopState(cwd, loopName);
+
+				const startedB = yield* Deferred.make<void>();
+				const releaseB = yield* Deferred.make<void>();
+				const runFiberB = yield* Effect.forkDetach(ralph.runLoop(makeBoundary(startedB, releaseB), loopName));
+				yield* Deferred.await(startedB);
+				yield* ralph.handleAgentEnd(cwd, iterationSessionFileB, makeAgentEndEvent("worked again"), updatedProfile);
+				yield* Deferred.succeed(releaseB, undefined);
+				yield* Fiber.join(runFiberB);
+
+				return appliedProfiles;
+			}).pipe(Effect.provide(ralphLayer)),
+		);
+
+		expect(result).toEqual([initialProfile, updatedProfile]);
 	});
 
 	it("handles current-loop pause, resume, and stop through command-side Ralph methods", async () => {

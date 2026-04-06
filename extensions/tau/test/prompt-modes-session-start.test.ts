@@ -6,7 +6,11 @@ import * as path from "node:path";
 
 import { Effect, Layer, SubscriptionRef } from "effect";
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+	ExtensionContext,
+} from "@mariozechner/pi-coding-agent";
 
 import { PiAPILive } from "../src/effect/pi.js";
 import { resolvePromptModePresets, type PromptModeName } from "../src/prompt/modes.js";
@@ -20,14 +24,23 @@ import {
 
 type SessionStartHandler = (event: unknown, ctx: ExtensionContext) => unknown;
 type ShortcutHandler = (ctx: ExtensionContext) => Promise<void> | void;
+type CommandHandler = (args: string, ctx: ExtensionCommandContext) => Promise<void> | void;
+
+type ModelRef = {
+	readonly provider: string;
+	readonly id: string;
+};
 
 type PiMock = {
 	readonly pi: ExtensionAPI;
 	readonly handlers: Map<string, SessionStartHandler[]>;
+	readonly commands: Map<string, CommandHandler>;
 	readonly shortcuts: Map<string, ShortcutHandler>;
-	readonly setModelCalls: Array<{ readonly provider: string; readonly id: string }>;
+	readonly setModelCalls: Array<ModelRef>;
 	readonly thinkingCalls: string[];
 	readonly modeChangedEvents: PromptModeName[];
+	readonly getCurrentModel: () => ModelRef | undefined;
+	readonly getCurrentThinking: () => string;
 };
 
 type PiMockOptions = {
@@ -54,11 +67,13 @@ function parseProviderModel(model: string): { readonly provider: string; readonl
 
 function makePiMock(options?: PiMockOptions): PiMock {
 	const handlers = new Map<string, SessionStartHandler[]>();
+	const commands = new Map<string, CommandHandler>();
 	const shortcuts = new Map<string, ShortcutHandler>();
-	const setModelCalls: Array<{ readonly provider: string; readonly id: string }> = [];
+	const setModelCalls: Array<ModelRef> = [];
 	const thinkingCalls: string[] = [];
 	const modeChangedEvents: PromptModeName[] = [];
-	let currentModel: { readonly provider: string; readonly id: string } | undefined = undefined;
+	let currentModel: ModelRef | undefined = undefined;
+	let currentThinking = "medium";
 
 	const pi = {
 		on: (event: string, handler: unknown) => {
@@ -66,7 +81,15 @@ function makePiMock(options?: PiMockOptions): PiMock {
 			current.push(handler as SessionStartHandler);
 			handlers.set(event, current);
 		},
-		registerCommand: () => undefined,
+		registerCommand: (name: string, options: unknown) => {
+			if (
+				typeof options === "object" &&
+				options !== null &&
+				typeof (options as { handler?: unknown }).handler === "function"
+			) {
+				commands.set(name, (options as { handler: CommandHandler }).handler);
+			}
+		},
 		registerShortcut: (shortcut: string, options: unknown) => {
 			if (
 				typeof options === "object" &&
@@ -116,8 +139,10 @@ function makePiMock(options?: PiMockOptions): PiMock {
 		setThinkingLevel: (level: unknown) => {
 			if (typeof level === "string") {
 				thinkingCalls.push(level);
+				currentThinking = level;
 			}
 		},
+		getThinkingLevel: () => currentThinking,
 		events: {
 			emit: (event: string, payload: unknown) => {
 				if (
@@ -141,7 +166,17 @@ function makePiMock(options?: PiMockOptions): PiMock {
 		},
 	} as unknown as ExtensionAPI;
 
-	return { pi, handlers, shortcuts, setModelCalls, thinkingCalls, modeChangedEvents };
+	return {
+		pi,
+		handlers,
+		commands,
+		shortcuts,
+		setModelCalls,
+		thinkingCalls,
+		modeChangedEvents,
+		getCurrentModel: () => currentModel,
+		getCurrentThinking: () => currentThinking,
+	};
 }
 
 function makeSessionStartContext(
@@ -152,15 +187,20 @@ function makeSessionStartContext(
 		readonly editorText?: string;
 		readonly isIdle?: boolean;
 		readonly hasPendingMessages?: boolean;
+		readonly model?: ModelRef;
+		readonly selectChoice?: string;
 	},
 ): ExtensionContext {
 	const editorText = options?.editorText ?? "";
 	const isIdle = options?.isIdle ?? true;
 	const hasPendingMessages = options?.hasPendingMessages ?? false;
+	const model = options?.model;
+	const selectChoice = options?.selectChoice;
 
 	return {
 		cwd,
 		hasUI,
+		model,
 		modelRegistry: {
 			find: (provider: string, id: string) => ({ provider, id }),
 		},
@@ -176,6 +216,7 @@ function makeSessionStartContext(
 		getSystemPrompt: () => "",
 		ui: {
 			notify: () => undefined,
+			select: async () => selectChoice,
 			getEditorText: () => editorText,
 		},
 	} as unknown as ExtensionContext;
@@ -507,6 +548,47 @@ describe("prompt-modes session_start", () => {
 			const persisted = Effect.runSync(SubscriptionRef.get(stateRef));
 			expect(persisted.promptModes?.activeMode).toBe("default");
 			expect(persisted.promptModes?.modelsByMode?.smart).toBe("anthropic/claude-opus-4-5");
+		});
+	});
+
+	it("restores the captured default profile instead of keeping the active mode model", async () => {
+		await withTempDir(async (cwd) => {
+			const stateRef = await Effect.runPromise(SubscriptionRef.make<TauPersistedState>({}));
+			const mock = makePiMock();
+			await setupPromptModes(stateRef, mock.pi);
+
+			const sessionStart = mock.handlers.get("session_start")?.[0];
+			const modeCommand = mock.commands.get("mode");
+			expect(sessionStart).toBeTypeOf("function");
+			expect(modeCommand).toBeTypeOf("function");
+
+			const presets = await Effect.runPromise(resolvePromptModePresets(cwd));
+			const deepModel = parseProviderModel(presets.deep.model);
+			const deepThinking = presets.deep.thinking;
+			const defaultModel = parseProviderModel("anthropic/claude-opus-4-5");
+			const defaultCtx = makeSessionStartContext(cwd, [], true, { model: defaultModel });
+			await Promise.resolve(sessionStart?.({ type: "session_start" }, defaultCtx));
+
+			await Promise.resolve(modeCommand?.("deep", defaultCtx as ExtensionCommandContext));
+			expect(mock.setModelCalls.at(-1)).toEqual(deepModel);
+			expect(mock.thinkingCalls.at(-1)).toBe(deepThinking);
+
+			const currentModel = mock.getCurrentModel();
+			expect(currentModel).toEqual(deepModel);
+
+			const defaultReturnCtx = makeSessionStartContext(
+				cwd,
+				[],
+				true,
+				currentModel === undefined ? undefined : { model: currentModel },
+			);
+			await Promise.resolve(modeCommand?.("default", defaultReturnCtx as ExtensionCommandContext));
+
+			expect(mock.setModelCalls.at(-1)).toEqual(defaultModel);
+			expect(mock.thinkingCalls.at(-1)).toBe("medium");
+
+			const persisted = Effect.runSync(SubscriptionRef.get(stateRef));
+			expect(persisted.promptModes?.activeMode).toBe("default");
 		});
 	});
 

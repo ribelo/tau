@@ -1,5 +1,6 @@
 import { Effect, Schema } from "effect";
 
+import { PromptModeProfileSchema } from "../prompt/profile.js";
 import { RalphContractValidationError } from "./errors.js";
 
 const NonNegativeIntSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
@@ -43,6 +44,7 @@ export const LoopStateSchema = Schema.Struct({
 	activeIterationSessionFile: Schema.mutableKey(OptionalStringSchema),
 	advanceRequestedAt: Schema.mutableKey(OptionalStringSchema),
 	awaitingFinalize: Schema.mutableKey(Schema.Boolean),
+	promptProfile: Schema.mutableKey(PromptModeProfileSchema),
 });
 export type LoopState = Schema.Schema.Type<typeof LoopStateSchema>;
 export type EncodedLoopState = Schema.Codec.Encoded<typeof LoopStateSchema>;

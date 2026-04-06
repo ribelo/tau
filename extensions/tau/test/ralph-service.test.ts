@@ -16,7 +16,9 @@ import type {
 import initRalph from "../src/ralph/index.js";
 import { RalphRepoLive } from "../src/ralph/repo.js";
 import { decodeLoopStateSync, encodeLoopStateJsonSync } from "../src/ralph/schema.js";
+import { PromptModes } from "../src/services/prompt-modes.js";
 import { Ralph, RalphLive } from "../src/services/ralph.js";
+import { makePromptModesStubLayer, makePromptProfile } from "./ralph-test-helpers.js";
 
 type EventHandler = (event: unknown, ctx: ExtensionContext) => unknown;
 
@@ -40,7 +42,7 @@ type SentUserMessage = {
 };
 
 type RalphRuntimeHarness = {
-	readonly run: <A, E>(effect: Effect.Effect<A, E, Ralph>) => Promise<A>;
+	readonly run: <A, E>(effect: Effect.Effect<A, E, Ralph | PromptModes>) => Promise<A>;
 	readonly dispose: () => Promise<void>;
 };
 
@@ -71,7 +73,11 @@ type LoopStatus = "active" | "paused" | "completed";
 function makeRalphRuntime(activeSubagents: boolean): RalphRuntimeHarness {
 	const layer = RalphLive({
 		hasActiveSubagents: () => Effect.succeed(activeSubagents),
-	}).pipe(Layer.provideMerge(RalphRepoLive), Layer.provide(NodeFileSystem.layer));
+	}).pipe(
+		Layer.provideMerge(RalphRepoLive),
+		Layer.provideMerge(makePromptModesStubLayer()),
+		Layer.provide(NodeFileSystem.layer),
+	);
 	const runtime = ManagedRuntime.make(layer);
 	return {
 		run: (effect) => runtime.runPromise(effect),
@@ -129,6 +135,7 @@ function writeLoopState(
 					: Option.some(input.activeIterationSessionFile),
 			advanceRequestedAt: Option.none(),
 			awaitingFinalize: input.awaitingFinalize ?? false,
+			promptProfile: makePromptProfile(),
 		}),
 		"utf-8",
 	);
