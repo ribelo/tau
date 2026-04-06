@@ -5,10 +5,10 @@ description: Long-running iterative development loops with pacing control and ve
 
 # Ralph Wiggum - Long-Running Development Loops
 
-Use the `ralph_start` tool to begin a loop:
+Use the `ralph_create` tool to create a loop task:
 
 ```
-ralph_start({
+ralph_create({
   name: "loop-name",
   taskContent: "# Task\n\n## Goals\n- Goal 1\n\n## Checklist\n- [ ] Item 1\n- [ ] Item 2",
   maxIterations: 50,        // Default: 50
@@ -19,12 +19,13 @@ ralph_start({
 
 ## Loop Behavior
 
-1. **Write the task file**: The `ralph_start` tool creates `.pi/ralph/tasks/<name>.md` with the provided task content.
-2. Work on the task and update the file each iteration.
-3. Record verification evidence (commands run, file paths, outputs) in the task file.
-4. Call `ralph_done` to proceed to the next iteration.
-5. Output `<promise>COMPLETE</promise>` when finished.
-6. Stop when complete or when max iterations is reached (default 50).
+1. **Write the task file**: The `ralph_create` tool creates `.pi/ralph/tasks/<name>.md` with the provided task content.
+2. Start the fresh-session loop with `/ralph start <name>`.
+3. Work on the task and update the file each iteration.
+4. Record verification evidence (commands run, file paths, outputs) in the task file.
+5. Call `ralph_done` to proceed to the next iteration.
+6. Output `<promise>COMPLETE</promise>` when finished.
+7. Stop when complete or when max iterations is reached (default 50).
 
 ## User Commands
 

@@ -506,7 +506,7 @@ describe("ralph adapter boundary freeze", () => {
 		runtimes.push(ralphRuntime);
 		initRalph(piHarness.pi, ralphRuntime.run);
 
-		const startTool = piHarness.tools.get("ralph_start");
+		const startTool = piHarness.tools.get("ralph_create");
 		const doneTool = piHarness.tools.get("ralph_done");
 		const command = piHarness.commands.get("ralph");
 		expect(startTool).toBeDefined();

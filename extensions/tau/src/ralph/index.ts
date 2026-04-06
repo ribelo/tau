@@ -683,12 +683,12 @@ export default function initRalph(
 	});
 
 	pi.registerTool({
-		name: "ralph_start",
-		label: "Start Ralph Loop",
+		name: "ralph_create",
+		label: "Create Ralph Loop",
 		description:
 			"Create a Ralph task file for a long-running development loop. Fresh-session Ralph loops are started by the /ralph command.",
 		promptSnippet:
-			"Prepare a persistent multi-iteration Ralph loop task. The fresh-session controller is started by /ralph start.",
+			"Create a persistent multi-iteration Ralph loop task. The fresh-session controller is started by /ralph start.",
 		promptGuidelines: [
 			"Use this tool when the user explicitly wants an iterative loop, autonomous repeated passes, or paced multi-step execution.",
 			"This tool prepares the Ralph task file; the fresh-session controller is command-owned and starts via /ralph start.",
@@ -751,7 +751,7 @@ export default function initRalph(
 		renderCall(args, theme) {
 			const name = (args.name as string) || "";
 			const max = (args.maxIterations as number) || 50;
-			let text = theme.fg("toolTitle", theme.bold("ralph_start "));
+			let text = theme.fg("toolTitle", theme.bold("ralph_create "));
 			text += theme.fg("accent", name);
 			text += theme.fg("dim", ` (max ${max})`);
 			return new Text(text, 0, 0);
