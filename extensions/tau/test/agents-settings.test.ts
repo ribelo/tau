@@ -3,14 +3,58 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { Option } from "effect";
 
 import {
 	AgentSelectionStore,
 	getAgentSettingsPath,
 } from "../src/agents-menu/state.js";
+import { encodeLoopStateJsonSync } from "../src/ralph/schema.js";
+import { makeExecutionProfile } from "./ralph-test-helpers.js";
 
 async function makeWorkspace(): Promise<string> {
 	return fs.mkdtemp(path.join(os.tmpdir(), "tau-agents-settings-"));
+}
+
+async function writeRalphState(
+	workspace: string,
+	loopName: string,
+	input: {
+		readonly controllerSessionFile: string;
+		readonly activeIterationSessionFile?: string;
+		readonly status?: "active" | "paused" | "completed";
+	},
+): Promise<void> {
+	const statePath = path.join(workspace, ".pi", "ralph", "state", `${loopName}.state.json`);
+	await fs.mkdir(path.dirname(statePath), { recursive: true });
+	await fs.writeFile(
+		statePath,
+		encodeLoopStateJsonSync({
+			name: loopName,
+			taskFile: path.join(".pi", "ralph", "tasks", `${loopName}.md`),
+			iteration: 1,
+			maxIterations: 50,
+			itemsPerIteration: 0,
+			reflectEvery: 0,
+			reflectInstructions: "reflect",
+			status: input.status ?? "active",
+			startedAt: "2026-01-01T00:00:00.000Z",
+			completedAt:
+				input.status === "completed"
+					? Option.some("2026-01-01T01:00:00.000Z")
+					: Option.none(),
+			lastReflectionAt: 0,
+			controllerSessionFile: Option.some(input.controllerSessionFile),
+			activeIterationSessionFile:
+				input.activeIterationSessionFile === undefined
+					? Option.none()
+					: Option.some(input.activeIterationSessionFile),
+			advanceRequestedAt: Option.none(),
+			awaitingFinalize: false,
+			executionProfile: makeExecutionProfile(),
+		}),
+		"utf8",
+	);
 }
 
 describe("agent selection settings", () => {
@@ -120,5 +164,88 @@ describe("agent selection settings", () => {
 
 		expect(store.isDirtyForCwd(workspaceA)).toBe(true);
 		expect(store.isDirtyForCwd(workspaceB)).toBe(false);
+	});
+
+	it("applies the default Ralph agent allowlist for Ralph-owned sessions", async () => {
+		const workspace = await makeWorkspace();
+		cleanup.add(workspace);
+		const controllerSession = path.join(workspace, ".pi", "sessions", "controller.session.json");
+
+		await writeRalphState(workspace, "loop-a", {
+			controllerSessionFile: controllerSession,
+		});
+
+		const store = new AgentSelectionStore();
+		store.activate(workspace, ["deep", "finder", "librarian", "smart"]);
+
+		expect(store.isDisabledForSession(workspace, controllerSession, "finder")).toBe(false);
+		expect(store.isDisabledForSession(workspace, controllerSession, "librarian")).toBe(false);
+		expect(store.isDisabledForSession(workspace, controllerSession, "deep")).toBe(true);
+		expect(store.isDisabledForSession(workspace, controllerSession, "smart")).toBe(true);
+	});
+
+	it("uses tau.ralph.agents.enabled when configured", async () => {
+		const workspace = await makeWorkspace();
+		cleanup.add(workspace);
+		const settingsPath = getAgentSettingsPath(workspace);
+		const iterationSession = path.join(workspace, ".pi", "sessions", "iteration.session.json");
+
+		await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+		await fs.writeFile(
+			settingsPath,
+			JSON.stringify({ tau: { ralph: { agents: { enabled: ["finder", "oracle"] } } } }, null, 2),
+			"utf8",
+		);
+		await writeRalphState(workspace, "loop-b", {
+			controllerSessionFile: path.join(workspace, ".pi", "sessions", "controller.session.json"),
+			activeIterationSessionFile: iterationSession,
+		});
+
+		const store = new AgentSelectionStore();
+		store.activate(workspace, ["finder", "librarian", "oracle"]);
+
+		expect(store.isDisabledForSession(workspace, iterationSession, "finder")).toBe(false);
+		expect(store.isDisabledForSession(workspace, iterationSession, "oracle")).toBe(false);
+		expect(store.isDisabledForSession(workspace, iterationSession, "librarian")).toBe(true);
+	});
+
+	it("intersects Ralph allowlist with normal session agent settings", async () => {
+		const workspace = await makeWorkspace();
+		cleanup.add(workspace);
+		const settingsPath = getAgentSettingsPath(workspace);
+		const controllerSession = path.join(workspace, ".pi", "sessions", "controller.session.json");
+
+		await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+		await fs.writeFile(
+			settingsPath,
+			JSON.stringify({ tau: { agents: { enabled: ["librarian"] } } }, null, 2),
+			"utf8",
+		);
+		await writeRalphState(workspace, "loop-c", {
+			controllerSessionFile: controllerSession,
+		});
+
+		const store = new AgentSelectionStore();
+		store.activate(workspace, ["finder", "librarian"]);
+
+		expect(store.isDisabledForSession(workspace, controllerSession, "finder")).toBe(true);
+		expect(store.isDisabledForSession(workspace, controllerSession, "librarian")).toBe(false);
+	});
+
+	it("ignores completed Ralph loops when computing session restrictions", async () => {
+		const workspace = await makeWorkspace();
+		cleanup.add(workspace);
+		const controllerSession = path.join(workspace, ".pi", "sessions", "controller.session.json");
+
+		await writeRalphState(workspace, "loop-d", {
+			controllerSessionFile: controllerSession,
+			status: "completed",
+		});
+
+		const store = new AgentSelectionStore();
+		store.activate(workspace, ["deep", "finder", "librarian", "smart"]);
+
+		expect(store.isDisabledForSession(workspace, controllerSession, "deep")).toBe(false);
+		expect(store.isDisabledForSession(workspace, controllerSession, "smart")).toBe(false);
 	});
 });

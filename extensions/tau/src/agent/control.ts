@@ -15,7 +15,7 @@ import { AgentRegistry } from "./agent-registry.js";
 import { isFinal } from "./status.js";
 import type { AgentId } from "./types.js";
 import { Sandbox } from "../services/sandbox.js";
-import { isAgentDisabledForCwd } from "../agents-menu/index.js";
+import { isAgentDisabledForSession } from "../agents-menu/index.js";
 import { resolveAgentExecutionAtSpawn } from "./execution-profile.js";
 
 export const DEFAULT_WAIT_TIMEOUT_MS = 20 * 60 * 1000;
@@ -43,11 +43,11 @@ export const AgentControlLive = Layer.effect(
 					const parentExecution = opts.parentExecution;
 					const registry = yield* AgentRegistry.load(opts.cwd);
 
-					if (isAgentDisabledForCwd(opts.cwd, opts.agent)) {
-						const enabled = registry.names().filter((n) => !isAgentDisabledForCwd(opts.cwd, n));
+					if (isAgentDisabledForSession(opts.cwd, opts.parentSessionId, opts.agent)) {
+						const enabled = registry.names().filter((n) => !isAgentDisabledForSession(opts.cwd, opts.parentSessionId, n));
 						return yield* Effect.fail(
 							new AgentError({
-								message: `Agent "${opts.agent}" is disabled for this session. Use /agents to re-enable it. Available: ${enabled.join(", ")}`,
+								message: `Agent "${opts.agent}" is disabled for this session. Use /agents to inspect effective availability. Available: ${enabled.join(", ")}`,
 							}),
 						);
 					}

@@ -1,13 +1,19 @@
+import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { findNearestWorkspaceRoot } from "../shared/discovery.js";
 import { readJsonFile, writeJsonFile } from "../shared/fs.js";
 import { isRecord, type AnyRecord } from "../shared/json.js";
+import { loopOwnsSessionFile } from "../ralph/repo.js";
+import { RALPH_STATE_DIR } from "../ralph/paths.js";
+import { decodeLoopStateJsonSync } from "../ralph/schema.js";
 
 type ProjectAgentState = {
 	readonly disabledAgents: Set<string>;
 	dirty: boolean;
 };
+
+const DEFAULT_RALPH_ENABLED_AGENTS = ["finder", "librarian"] as const;
 
 function createProjectAgentState(disabledAgents: Iterable<string>, dirty: boolean): ProjectAgentState {
 	return {
@@ -29,6 +35,36 @@ function readEnabledAgentsFromSettings(
 	}
 
 	const agents = tau["agents"];
+	if (!isRecord(agents)) {
+		return undefined;
+	}
+
+	const enabled = agents["enabled"];
+	if (!Array.isArray(enabled)) {
+		return undefined;
+	}
+
+	return enabled.filter((value): value is string => typeof value === "string");
+}
+
+function readRalphEnabledAgentsFromSettings(
+	settings: AnyRecord | null,
+): ReadonlyArray<string> | undefined {
+	if (settings === null) {
+		return undefined;
+	}
+
+	const tau = settings["tau"];
+	if (!isRecord(tau)) {
+		return undefined;
+	}
+
+	const ralph = tau["ralph"];
+	if (!isRecord(ralph)) {
+		return undefined;
+	}
+
+	const agents = ralph["agents"];
 	if (!isRecord(agents)) {
 		return undefined;
 	}
@@ -71,6 +107,62 @@ export function getAgentSettingsPath(cwd: string): string {
 	return path.join(findNearestWorkspaceRoot(cwd), ".pi", "settings.json");
 }
 
+function getRalphStateDirectory(cwd: string): string {
+	return path.join(findNearestWorkspaceRoot(cwd), RALPH_STATE_DIR);
+}
+
+export function isRalphOwnedSession(cwd: string, sessionFile: string | undefined): boolean {
+	if (sessionFile === undefined) {
+		return false;
+	}
+
+	const stateDir = getRalphStateDirectory(cwd);
+	if (!fs.existsSync(stateDir)) {
+		return false;
+	}
+
+	let entries: ReadonlyArray<string>;
+	try {
+		entries = fs.readdirSync(stateDir);
+	} catch {
+		return false;
+	}
+
+	for (const entry of entries) {
+		if (!entry.endsWith(".state.json")) {
+			continue;
+		}
+		const filePath = path.join(stateDir, entry);
+		try {
+			const loop = decodeLoopStateJsonSync(fs.readFileSync(filePath, "utf-8"));
+			if (loop.status === "completed") {
+				continue;
+			}
+			if (loopOwnsSessionFile(loop, sessionFile)) {
+				return true;
+			}
+		} catch {
+			continue;
+		}
+	}
+
+	return false;
+}
+
+function isDisabledByRalphPolicy(
+	settings: AnyRecord | null,
+	cwd: string,
+	sessionFile: string | undefined,
+	name: string,
+): boolean {
+	if (!isRalphOwnedSession(cwd, sessionFile)) {
+		return false;
+	}
+
+	const enabledAgents = readRalphEnabledAgentsFromSettings(settings) ?? DEFAULT_RALPH_ENABLED_AGENTS;
+	return !enabledAgents.includes(name);
+}
+
 export class AgentSelectionStore {
 	private readonly states = new Map<string, ProjectAgentState>();
 
@@ -97,6 +189,12 @@ export class AgentSelectionStore {
 
 		const enabledAgents = readEnabledAgentsFromSettings(readJsonFile(settingsPath));
 		return enabledAgents === undefined ? false : !enabledAgents.includes(name);
+	}
+
+	isDisabledForSession(cwd: string, sessionFile: string | undefined, name: string): boolean {
+		const settingsPath = getAgentSettingsPath(cwd);
+		const settings = readJsonFile(settingsPath);
+		return this.isDisabledForCwd(cwd, name) || isDisabledByRalphPolicy(settings, cwd, sessionFile, name);
 	}
 
 	setEnabledForCwd(cwd: string, name: string, enabled: boolean): void {

@@ -12,7 +12,27 @@ import { AgentRegistry } from "../agent/agent-registry.js";
 import { buildToolDescription } from "../agent/tool.js";
 import type { AgentToolHandle } from "../agent/index.js";
 import { Effect } from "effect";
-import { AgentSelectionStore } from "./state.js";
+import {
+	AgentSelectionStore,
+	getAgentSettingsPath,
+	isRalphOwnedSession,
+} from "./state.js";
+
+function getSessionFileFromContext(ctx: { readonly sessionManager?: unknown }): string | undefined {
+	const sessionManager = ctx.sessionManager;
+	if (typeof sessionManager !== "object" || sessionManager === null) {
+		return undefined;
+	}
+	if (!("getSessionFile" in sessionManager)) {
+		return undefined;
+	}
+	const getSessionFile = sessionManager.getSessionFile;
+	if (typeof getSessionFile !== "function") {
+		return undefined;
+	}
+	const result = getSessionFile.call(sessionManager);
+	return typeof result === "string" ? result : undefined;
+}
 
 /**
 	 * Session-scoped agent enable/disable state with optional project persistence.
@@ -22,6 +42,14 @@ const agentSelections = new AgentSelectionStore();
 
 export function isAgentDisabledForCwd(cwd: string, name: string): boolean {
 	return agentSelections.isDisabledForCwd(cwd, name);
+}
+
+export function isAgentDisabledForSession(
+	cwd: string,
+	sessionFile: string | undefined,
+	name: string,
+): boolean {
+	return agentSelections.isDisabledForSession(cwd, sessionFile, name);
 }
 
 export function setAgentEnabledForCwd(cwd: string, name: string, enabled: boolean): void {
@@ -34,15 +62,23 @@ function loadRegistry(cwd: string): Effect.Effect<AgentRegistry, never> {
 	);
 }
 
-function refreshToolDescription(agentTool: AgentToolHandle, registry: AgentRegistry, cwd: string): void {
-	const description = buildToolDescription(registry, undefined, (name) => isAgentDisabledForCwd(cwd, name));
+function refreshToolDescription(
+	agentTool: AgentToolHandle,
+	registry: AgentRegistry,
+	cwd: string,
+	sessionFile: string | undefined,
+): void {
+	const description = buildToolDescription(
+		registry,
+		undefined,
+		(name) => isAgentDisabledForSession(cwd, sessionFile, name),
+	);
 	agentTool.refresh(description);
 }
 
 interface AgentItem {
 	name: string;
 	description: string;
-	enabled: boolean;
 }
 
 const AGENT_DESCRIPTION_MAX_CHARS = 72;
@@ -59,10 +95,11 @@ function syncAgentToolAvailability(
 	agentTool: AgentToolHandle,
 	registry: AgentRegistry,
 	cwd: string,
+	sessionFile: string | undefined,
 ): void {
-	refreshToolDescription(agentTool, registry, cwd);
+	refreshToolDescription(agentTool, registry, cwd, sessionFile);
 
-	const enabledCount = registry.names().filter((name) => !isAgentDisabledForCwd(cwd, name)).length;
+	const enabledCount = registry.names().filter((name) => !isAgentDisabledForSession(cwd, sessionFile, name)).length;
 	const activeTools = pi.getActiveTools();
 	const hasAgentTool = activeTools.includes("agent");
 
@@ -87,11 +124,14 @@ class AgentsSelectorComponent extends Container implements Focusable {
 	private listContainer: Container;
 	private footerText: Text;
 	private doneFn: () => void;
+	private cwd: string;
+	private sessionFile: string | undefined;
 	private onToggle: (name: string, enabled: boolean) => void;
 	private onPersist: () => void;
 	private onStateChange: () => void;
 	private theme: Theme;
 	private isDirty: boolean;
+	private ralphPolicyActive: boolean;
 
 	private _focused = false;
 	get focused(): boolean {
@@ -106,6 +146,7 @@ class AgentsSelectorComponent extends Container implements Focusable {
 		allNames: string[],
 		registry: AgentRegistry,
 		cwd: string,
+		sessionFile: string | undefined,
 		theme: Theme,
 		isDirty: boolean,
 		done: () => void,
@@ -114,8 +155,11 @@ class AgentsSelectorComponent extends Container implements Focusable {
 		onStateChange: () => void,
 	) {
 		super();
+		this.cwd = cwd;
+		this.sessionFile = sessionFile;
 		this.theme = theme;
 		this.isDirty = isDirty;
+		this.ralphPolicyActive = isRalphOwnedSession(cwd, sessionFile);
 		this.doneFn = done;
 		this.onToggle = onToggle;
 		this.onPersist = onPersist;
@@ -124,7 +168,7 @@ class AgentsSelectorComponent extends Container implements Focusable {
 		this.items = allNames.map((name) => {
 			const def = registry.get(name);
 			const desc = def?.description.split("\n")[0]?.trim() ?? "";
-			return { name, description: desc, enabled: !agentSelections.isDisabledForCwd(cwd, name) };
+			return { name, description: desc };
 		});
 		this.filteredItems = [...this.items];
 
@@ -145,20 +189,23 @@ class AgentsSelectorComponent extends Container implements Focusable {
 		this.updateList();
 	}
 
+	private isEnabled(name: string): boolean {
+		return !isAgentDisabledForSession(this.cwd, this.sessionFile, name);
+	}
+
 	private getFooterText(): string {
-		const enabled = this.items.filter((i) => i.enabled).length;
+		const enabled = this.items.filter((i) => this.isEnabled(i.name)).length;
 		const total = this.items.length;
-		const base = `  Enter toggle · Ctrl+T toggle all · Ctrl+S save · Esc close · ${enabled}/${total} enabled`;
+		const base = `  Enter toggle · Ctrl+T toggle all · Ctrl+S save · Esc close · ${enabled}/${total} enabled${this.ralphPolicyActive ? " · Ralph policy active" : ""}`;
 		return this.isDirty
 			? this.theme.fg("dim", `${base} `) + this.theme.fg("warning", "(unsaved)")
 			: this.theme.fg("dim", base);
 	}
 
 	private toggleAll(): void {
-		const nextEnabled = this.items.some((item) => !item.enabled);
+		const nextEnabled = this.items.some((item) => !this.isEnabled(item.name));
 		for (const item of this.items) {
-			if (item.enabled === nextEnabled) continue;
-			item.enabled = nextEnabled;
+			if (this.isEnabled(item.name) === nextEnabled) continue;
 			this.onToggle(item.name, nextEnabled);
 		}
 		this.isDirty = true;
@@ -188,7 +235,7 @@ class AgentsSelectorComponent extends Container implements Focusable {
 			const item = this.filteredItems[i]!;
 			const isSelected = i === this.selectedIndex;
 			const prefix = isSelected ? this.theme.fg("accent", "> ") : "  ";
-			const marker = item.enabled ? this.theme.fg("success", "✔") : this.theme.fg("dim", "✗");
+			const marker = this.isEnabled(item.name) ? this.theme.fg("success", "✔") : this.theme.fg("dim", "✗");
 			const nameText = isSelected ? this.theme.fg("accent", item.name) : item.name;
 			const shortDescription = truncateWithEllipsis(item.description, AGENT_DESCRIPTION_MAX_CHARS);
 			const desc = shortDescription.length > 0 ? this.theme.fg("dim", ` ${shortDescription}`) : "";
@@ -214,8 +261,7 @@ class AgentsSelectorComponent extends Container implements Focusable {
 		if (matchesKey(data, Key.enter)) {
 			const item = this.filteredItems[this.selectedIndex];
 			if (item) {
-				item.enabled = !item.enabled;
-				this.onToggle(item.name, item.enabled);
+				this.onToggle(item.name, !this.isEnabled(item.name));
 				this.isDirty = true;
 				this.refresh();
 				this.onStateChange();
@@ -263,17 +309,17 @@ class AgentsSelectorComponent extends Container implements Focusable {
 }
 
 export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHandle): void {
-	const syncForCwd = async (cwd: string) => {
+	const syncForCwd = async (cwd: string, sessionFile: string | undefined) => {
 		const registry = await Effect.runPromise(loadRegistry(cwd));
 		agentSelections.activate(cwd, registry.names());
-		syncAgentToolAvailability(pi, agentTool, registry, cwd);
+		syncAgentToolAvailability(pi, agentTool, registry, cwd, sessionFile);
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
 		const registry = await Effect.runPromise(loadRegistry(ctx.cwd));
 		agentSelections.activate(ctx.cwd, registry.names());
 		if (ctx.hasUI) {
-			syncAgentToolAvailability(pi, agentTool, registry, ctx.cwd);
+			syncAgentToolAvailability(pi, agentTool, registry, ctx.cwd, getSessionFileFromContext(ctx));
 		}
 	});
 	pi.on("session_switch", async (_event, ctx) => {
@@ -282,7 +328,7 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 			agentSelections.activate(ctx.cwd, registry.names());
 			return;
 		}
-		await syncForCwd(ctx.cwd);
+		await syncForCwd(ctx.cwd, getSessionFileFromContext(ctx));
 	});
 
 	pi.registerCommand("agents", {
@@ -303,6 +349,7 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 				const registry = await Effect.runPromise(loadRegistry(ctx.cwd));
 				agentSelections.activate(ctx.cwd, registry.names());
 				const allNames = registry.names();
+				const sessionFile = getSessionFileFromContext(ctx);
 
 			const trimmed = (args || "").trim();
 
@@ -313,7 +360,7 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 
 				if (action === "list") {
 					const lines = allNames.map((name: string) => {
-						const enabled = !isAgentDisabledForCwd(ctx.cwd, name);
+						const enabled = !isAgentDisabledForSession(ctx.cwd, sessionFile, name);
 						const def = registry.get(name);
 						const desc = truncateWithEllipsis(
 							def?.description.split("\n")[0]?.trim() ?? "",
@@ -322,6 +369,12 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 						const marker = enabled ? "✔" : "✗";
 						return `${marker} ${name}: ${desc}`;
 					});
+					if (isRalphOwnedSession(ctx.cwd, sessionFile)) {
+						lines.push(
+							"",
+							`Ralph policy active. Configure ${getAgentSettingsPath(ctx.cwd)} under tau.ralph.agents.enabled to change the Ralph allowlist.`,
+						);
+					}
 					ctx.ui.notify(lines.join("\n"), "info");
 					return;
 				}
@@ -335,8 +388,15 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 						return;
 					}
 					setAgentEnabledForCwd(ctx.cwd, agentName, action === "enable");
-					syncAgentToolAvailability(pi, agentTool, registry, ctx.cwd);
+					syncAgentToolAvailability(pi, agentTool, registry, ctx.cwd, sessionFile);
 					const state = action === "enable" ? "enabled" : "disabled";
+					if (action === "enable" && isAgentDisabledForSession(ctx.cwd, sessionFile, agentName)) {
+						ctx.ui.notify(
+							`Agent "${agentName}" enabled for this session, but Ralph policy still disables it here. Configure ${getAgentSettingsPath(ctx.cwd)} under tau.ralph.agents.enabled to allow it in Ralph loops.`,
+							"info",
+						);
+						return;
+					}
 					ctx.ui.notify(`Agent "${agentName}" ${state} for this session. Open /agents and press Ctrl+S to save to project settings.`, "info");
 					return;
 				}
@@ -354,6 +414,7 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 						allNames,
 						registry,
 						ctx.cwd,
+						sessionFile,
 						theme,
 						agentSelections.isDirtyForCwd(ctx.cwd),
 						() => done(undefined as unknown as void),
@@ -364,7 +425,7 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 							const settingsPath = agentSelections.persistForCwd(ctx.cwd, allNames);
 							ctx.ui.notify(`Saved agent selection to ${settingsPath}`, "info");
 						},
-						() => syncAgentToolAvailability(pi, agentTool, registry, ctx.cwd),
+						() => syncAgentToolAvailability(pi, agentTool, registry, ctx.cwd, sessionFile),
 					);
 					return selector;
 				});
