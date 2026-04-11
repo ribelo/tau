@@ -373,7 +373,7 @@ describe("ralph store behavior freeze", () => {
 		expect(sentUserMessages[1]?.prompt).toContain('/ralph start "docs/tasks/my task.md"');
 	});
 
-	it("/ralph create does not direct normal loop names to a matching backlog id", async () => {
+	it("/ralph create treats free-form requests as task descriptions and asks the model to choose a short name", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 
@@ -390,8 +390,41 @@ describe("ralph store behavior freeze", () => {
 		await command?.handler("create my-feature", context);
 
 		expect(sentUserMessages).toHaveLength(1);
-		expect(sentUserMessages[0]?.prompt).toContain("Create a Ralph task file for `my-feature`.");
+		expect(sentUserMessages[0]?.prompt).toContain("Create a Ralph task file for this request:");
+		expect(sentUserMessages[0]?.prompt).toContain("`my-feature`");
+		expect(sentUserMessages[0]?.prompt).toContain("Pick the best short name for the loop and task file.");
+		expect(sentUserMessages[0]?.prompt).toContain("Do not mirror the full request text into the file name.");
 		expect(sentUserMessages[0]?.prompt).not.toContain("backlog show my-feature");
+		expect(sentUserMessages[0]?.prompt).not.toContain(".pi/ralph/tasks/my-feature.md");
+		expect(sentUserMessages[0]?.prompt).not.toContain("/ralph start my-feature");
+		expect(notifications.some((entry) => entry.message.includes("choose a short name"))).toBe(true);
+	});
+
+	it("/ralph create does not turn long free-form requests into long task file paths", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const notifications: Notifications = [];
+		const { pi, commands, sentUserMessages } = makePiStub();
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(pi, ralphRuntime.run);
+
+		const command = commands.get("ralph");
+		expect(command).toBeDefined();
+
+		const context = makeContext(cwd, notifications);
+		await command?.handler(
+			"create make ralph task from all still open tasks you listed in previous message",
+			context,
+		);
+
+		expect(sentUserMessages).toHaveLength(1);
+		expect(sentUserMessages[0]?.prompt).toContain("Pick the best short name for the loop and task file.");
+		expect(sentUserMessages[0]?.prompt).toContain("Write the task file at `.pi/ralph/tasks/<chosen-name>.md` using apply_patch.");
+		expect(sentUserMessages[0]?.prompt).not.toContain(
+			".pi/ralph/tasks/make_ralph_task_from_all_still_open_tasks_you_listed_in_previous_message.md",
+		);
 	});
 
 	it("/ralph stop ends the active loop and /ralph pause keeps it resumable", async () => {

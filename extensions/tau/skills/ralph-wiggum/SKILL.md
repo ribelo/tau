@@ -29,7 +29,7 @@ ralph_create({
 
 ## User Commands
 
-- `/ralph create <name|path|backlog-id>` - Ask the current model to draft a task file.
+- `/ralph create <request|path|backlog-id>` - Ask the current model to draft a task file.
 - `/ralph start <name>` - Start a new loop.
 - `/ralph pause` - Pause loop and keep it resumable.
 - `/ralph stop` - End the active loop (when agent idle).
@@ -42,6 +42,8 @@ ralph_create({
 - `/ralph nuke [--yes]` - Delete all .ralph data.
 
 Press ESC to interrupt streaming. Run `/ralph pause` to keep the loop resumable, or `/ralph stop` when idle to end it.
+
+For free-form requests, `/ralph create <request>` should have the model choose a short loop name and write `.pi/ralph/tasks/<chosen-name>.md`.
 
 For backlog-backed work, use `/ralph create <backlog-id>` first. The model should inspect the issue with `backlog show <id>` and write `.pi/ralph/tasks/<id>.md`.
 

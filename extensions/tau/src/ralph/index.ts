@@ -154,13 +154,34 @@ function formatCommandArgument(value: string): string {
 	return /\s/.test(value) ? `"${value.replace(/"/g, '\\"')}"` : value;
 }
 
-function resolveLoopTarget(target: string): {
+const BACKLOG_ID_PATTERN =
+	/^[a-z][a-z0-9]*-(?=[a-z0-9]{3,8}(?:\.\d+){0,3}$)(?=[a-z0-9]*\d)[a-z0-9]{3,8}(?:\.\d+){0,3}$/;
+
+type ResolvedLoopTarget = {
 	readonly loopName: string;
 	readonly taskStem: string;
 	readonly taskFile: string;
 	readonly recommendedStartTarget: string;
 	readonly isPath: boolean;
-} {
+};
+
+type CreateTarget =
+	| {
+			readonly kind: "path";
+			readonly input: string;
+			readonly resolved: ResolvedLoopTarget;
+	  }
+	| {
+			readonly kind: "backlog";
+			readonly input: string;
+			readonly resolved: ResolvedLoopTarget;
+	  }
+	| {
+			readonly kind: "request";
+			readonly input: string;
+	  };
+
+function resolveLoopTarget(target: string): ResolvedLoopTarget {
 	const trimmed = stripSurroundingQuotes(target.trim());
 	const isPath = trimmed.includes("/") || trimmed.includes("\\") || trimmed.endsWith(".md");
 	const sourceLoopName = isPath
@@ -178,39 +199,73 @@ function resolveLoopTarget(target: string): {
 	};
 }
 
-function buildCreatePrompt(target: string): string {
-	const normalizedTarget = stripSurroundingQuotes(target.trim());
-	const resolved = resolveLoopTarget(normalizedTarget);
-	const lines = [
-		`Create a Ralph task file for \`${normalizedTarget}\`.`,
-		"",
-		`Write the task file at \`${resolved.taskFile}\` using apply_patch.`,
-		"Do not start the loop. Only create or update the task markdown file.",
-		"",
+function classifyCreateTarget(target: string): CreateTarget {
+	const input = stripSurroundingQuotes(target.trim());
+	const resolved = resolveLoopTarget(input);
+	if (resolved.isPath) {
+		return { kind: "path", input, resolved };
+	}
+	if (BACKLOG_ID_PATTERN.test(input)) {
+		return { kind: "backlog", input, resolved };
+	}
+	return { kind: "request", input };
+}
+
+function createPromptStructureLines(): ReadonlyArray<string> {
+	return [
 		"Use this structure:",
 		"- Title and brief summary",
 		"- Goals",
 		"- Checklist with discrete, verifiable items",
 		"- Verification with commands, files, or outputs to capture",
 		"- Notes for assumptions, decisions, and progress",
+	];
+}
+
+function buildCreatePrompt(target: string): string {
+	const createTarget = classifyCreateTarget(target);
+	const structureLines = createPromptStructureLines();
+
+	if (createTarget.kind === "request") {
+		return [
+			"Create a Ralph task file for this request:",
+			`\`${createTarget.input}\``,
+			"",
+			"Pick the best short name for the loop and task file.",
+			"Use a concise lowercase hyphenated name that fits naturally in `/ralph start <name>`.",
+			"Do not mirror the full request text into the file name.",
+			"Write the task file at `.pi/ralph/tasks/<chosen-name>.md` using apply_patch.",
+			"Do not start the loop. Only create or update the task markdown file.",
+			"",
+			...structureLines,
+			"",
+			"If this request clearly maps to a backlog item, inspect it first with `backlog show <id>` and synthesize the task from that issue.",
+			"Do not update backlog state.",
+			"",
+			"After writing the file, tell me the chosen name, the path, and recommend starting with `/ralph start <chosen-name>`.",
+		].join("\n");
+	}
+
+	return [
+		`Create a Ralph task file for \`${createTarget.input}\`.`,
+		"",
+		`Write the task file at \`${createTarget.resolved.taskFile}\` using apply_patch.`,
+		"Do not start the loop. Only create or update the task markdown file.",
+		"",
+		...structureLines,
 		"",
 		"If the target corresponds to a backlog item, inspect it first with `backlog show <id>` and synthesize the task from that issue.",
 		"Do not update backlog state.",
 		"Example backlog flow: `/ralph create foo-31z` should inspect `backlog show foo-31z` and write `.pi/ralph/tasks/foo-31z.md`.",
-	];
-
-	lines.push(
 		"",
-		`After writing the file, tell me the path and recommend starting with \`/ralph start ${resolved.recommendedStartTarget}\`.`,
-	);
-
-	return lines.join("\n");
+		`After writing the file, tell me the path and recommend starting with \`/ralph start ${createTarget.resolved.recommendedStartTarget}\`.`,
+	].join("\n");
 }
 
 const HELP = `Ralph Wiggum - Long-running development loops
 
 Commands:
-  /ralph create <name|path|backlog-id>  Ask the current model to draft a task file
+  /ralph create <request|path|backlog-id>  Ask the current model to draft a task file
   /ralph start <name|path> [options]  Start a new loop
   /ralph pause                        Pause current loop
   /ralph stop                         End active loop (idle only)
@@ -231,7 +286,7 @@ To pause: press ESC or run /ralph pause
 To stop: press ESC to interrupt, then run /ralph stop when idle
 
 Examples:
-  /ralph create my-feature
+  /ralph create "refactor auth retry flow"
   /ralph create foo-31z
   /ralph start my-feature
   /ralph start review --items-per-iteration 5 --reflect-every 10`;
@@ -377,19 +432,26 @@ export default function initRalph(
 				const [cmd] = args.trim().split(/\s+/);
 				const rest = cmd ? args.slice(args.indexOf(cmd) + cmd.length).trim() : "";
 
-				switch (cmd) {
-					case "create": {
-						const target = stripSurroundingQuotes(rest.trim());
-						if (!target) {
-							ctx.ui.notify("Usage: /ralph create <name|path|backlog-id>", "warning");
+					switch (cmd) {
+						case "create": {
+							const target = stripSurroundingQuotes(rest.trim());
+							if (!target) {
+								ctx.ui.notify("Usage: /ralph create <request|path|backlog-id>", "warning");
+								return;
+							}
+
+							const createTarget = classifyCreateTarget(target);
+							pi.sendUserMessage(buildCreatePrompt(target));
+							if (createTarget.kind === "request") {
+								ctx.ui.notify(
+									"Asked the current model to draft a Ralph task file and choose a short name",
+									"info",
+								);
+								return;
+							}
+							ctx.ui.notify(`Asked the current model to draft ${createTarget.resolved.taskFile}`, "info");
 							return;
 						}
-
-						const resolved = resolveLoopTarget(target);
-						pi.sendUserMessage(buildCreatePrompt(target));
-						ctx.ui.notify(`Asked the current model to draft ${resolved.taskFile}`, "info");
-						return;
-					}
 
 					case "start": {
 						const parsed = parseArgs(rest);
