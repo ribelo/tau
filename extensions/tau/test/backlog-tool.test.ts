@@ -71,4 +71,18 @@ describe("backlog tool", () => {
 			["tau-1", 1],
 		]);
 	});
+
+	it("rejects adding a new task under a closed epic with a clear error", async () => {
+		const workspaceRoot = await makeWorkspace();
+
+		await runBacklogCommand('create "Platform epic" --id tau-epic --type epic', workspaceRoot);
+		await runBacklogCommand('close tau-epic --reason "Done"', workspaceRoot);
+		await runBacklogCommand('create "Follow-up task" --id tau-task --type task', workspaceRoot);
+
+		const result = await runBacklogCommand("dep add tau-task tau-epic --type parent-child", workspaceRoot);
+
+		expect(result.ok).toBe(false);
+		expect(result.outputText).toContain("closed epic");
+		expect(result.outputText).toContain("tau-epic");
+	});
 });

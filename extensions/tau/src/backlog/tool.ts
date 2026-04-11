@@ -480,6 +480,14 @@ function dependencyDirection(parsed: ParsedCommand): "up" | "down" {
 }
 
 function formatBacklogError(error: unknown): string {
+	if (typeof error === "object" && error !== null) {
+		const record = error as Record<string, unknown>;
+		const reason = record["reason"];
+		if (typeof reason === "string" && reason.trim().length > 0) {
+			return reason;
+		}
+	}
+
 	if (error instanceof Error && error.message.trim().length > 0) {
 		return error.message;
 	}

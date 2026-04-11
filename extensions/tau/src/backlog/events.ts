@@ -298,7 +298,21 @@ export const BacklogCommandServiceLive = Layer.effect(
 				Effect.gen(function* () {
 					const issues = yield* loadCurrentIssuesForMutation();
 					const issue = yield* requireIssue(issues, input.issueId);
-					yield* requireIssue(issues, input.dependsOnId);
+					const dependsOnIssue = yield* requireIssue(issues, input.dependsOnId);
+
+					if (
+						input.dependencyType === "parent-child" &&
+						dependsOnIssue.issue_type === "epic" &&
+						(dependsOnIssue.status === "closed" || dependsOnIssue.status === "tombstone")
+					) {
+						return yield* Effect.fail(
+							new BacklogCommandUsageError({
+								command: "dep add",
+								usage: "dep add <id> <target> --type parent-child",
+								reason: `Cannot add ${issue.id} to closed epic ${dependsOnIssue.id}. Reopen the epic before adding child tasks.`,
+							}),
+						);
+					}
 					const recordedAt = Option.getOrElse(input.recordedAt, nowIso);
 					const dependency: Dependency = {
 						issue_id: input.issueId,
