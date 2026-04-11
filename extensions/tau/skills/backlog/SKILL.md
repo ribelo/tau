@@ -71,17 +71,11 @@ Think in terms of requirements, not chronology.
 
 Only `blocks` changes what is ready now. The others preserve structure and provenance.
 
-## Planning Guidance
+## Planning Boundary
 
-When formalizing complex work:
+This skill covers backlog mechanics and durable tracking.
 
-- Create one epic for the user-visible goal
-- Create tasks for concrete deliverables
-- Put the problem and context in `description`
-- Put implementation decisions and tradeoffs in `design`
-- Put observable success conditions in `acceptance-criteria`
-- Link children to the epic with `parent-child`
-- Link prerequisites with `blocks`
+For refining vague work into well-formed items with grounded questions, design decisions, and acceptance criteria, use the `$backlog-planning` skill.
 
 ## Practical Patterns
 

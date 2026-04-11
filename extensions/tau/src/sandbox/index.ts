@@ -903,9 +903,9 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 			};
 			if (typedParams.timeout !== undefined) {
 				// Heuristic: models RL-trained on codex-rs pass timeout in milliseconds
-				// (codex-rs uses timeout_ms) but tau expects seconds. Values above 1200
-				// (20 min) are almost certainly milliseconds, so auto-convert.
-				if (typedParams.timeout > 1200) {
+				// (codex-rs uses timeout_ms) but tau expects seconds. Values above 1800
+				// (30 min) are almost certainly milliseconds, so auto-convert.
+				if (typedParams.timeout > 1800) {
 					const corrected = Math.round(typedParams.timeout / 1000);
 					ctx.ui?.notify?.(
 						`Timeout ${typedParams.timeout}s looks like ms, using ${corrected}s`,
