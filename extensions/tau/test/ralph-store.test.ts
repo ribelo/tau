@@ -15,7 +15,13 @@ import type {
 
 import initRalph from "../src/ralph/index.js";
 import { RalphRepoLive } from "../src/ralph/repo.js";
-import { decodeLoopStateSync, encodeLoopStateJsonSync } from "../src/ralph/schema.js";
+import { decodeLoopStateSync } from "../src/ralph/schema.js";
+import {
+	decodeLoopPersistedStateJsonSync,
+	encodeLoopPersistedStateJsonSync,
+} from "../src/loops/schema.js";
+import { LoopRepoLive } from "../src/loops/repo.js";
+import { LoopEngineLive } from "../src/services/loop-engine.js";
 import { PromptModes } from "../src/services/prompt-modes.js";
 import { Ralph, RalphLive } from "../src/services/ralph.js";
 import { makeExecutionProfile, makePromptModesStubLayer } from "./ralph-test-helpers.js";
@@ -42,6 +48,7 @@ function makeRalphRuntime(activeSubagents = false): RalphRuntimeHarness {
 		hasActiveSubagents: () => Effect.succeed(activeSubagents),
 	}).pipe(
 		Layer.provideMerge(RalphRepoLive),
+		Layer.provideMerge(LoopEngineLive.pipe(Layer.provideMerge(LoopRepoLive))),
 		Layer.provideMerge(makePromptModesStubLayer()),
 		Layer.provide(NodeFileSystem.layer),
 	);
@@ -58,19 +65,101 @@ function makeTempDir(): string {
 
 function statePath(cwd: string, name: string, archived = false): string {
 	return archived
-		? path.join(cwd, ".pi", "ralph", "archive", "state", `${name}.state.json`)
-		: path.join(cwd, ".pi", "ralph", "state", `${name}.state.json`);
+		? path.join(cwd, ".pi", "loops", "archive", "state", `${name}.json`)
+		: path.join(cwd, ".pi", "loops", "state", `${name}.json`);
 }
 
 function taskPath(cwd: string, name: string, archived = false): string {
 	return archived
-		? path.join(cwd, ".pi", "ralph", "archive", "tasks", `${name}.md`)
-		: path.join(cwd, ".pi", "ralph", "tasks", `${name}.md`);
+		? path.join(cwd, ".pi", "loops", "archive", "tasks", `${name}.md`)
+		: path.join(cwd, ".pi", "loops", "tasks", `${name}.md`);
+}
+
+type ParsedLoopState = ReturnType<typeof decodeLoopStateSync>;
+
+function statusToLifecycle(status: ParsedLoopState["status"]): "active" | "paused" | "completed" {
+	if (status === "active") {
+		return "active";
+	}
+	if (status === "paused") {
+		return "paused";
+	}
+	return "completed";
+}
+
+function lifecycleToStatus(
+	lifecycle: "draft" | "active" | "paused" | "completed" | "archived",
+): ParsedLoopState["status"] {
+	if (lifecycle === "active") {
+		return "active";
+	}
+	if (lifecycle === "paused" || lifecycle === "draft") {
+		return "paused";
+	}
+	return "completed";
+}
+
+function encodeStateForStorage(state: ParsedLoopState): string {
+	return encodeLoopPersistedStateJsonSync({
+		taskId: state.name,
+		title: state.name,
+		taskFile: state.taskFile,
+		kind: "ralph",
+		lifecycle: statusToLifecycle(state.status),
+		createdAt: state.startedAt,
+		updatedAt: state.startedAt,
+		startedAt: Option.some(state.startedAt),
+		completedAt: state.completedAt,
+		archivedAt: Option.none(),
+		ownership: {
+			controller: Option.match(state.controllerSessionFile, {
+				onNone: () => Option.none(),
+				onSome: (sessionFile) => Option.some({ sessionId: sessionFile, sessionFile }),
+			}),
+			child: Option.match(state.activeIterationSessionFile, {
+				onNone: () => Option.none(),
+				onSome: (sessionFile) => Option.some({ sessionId: sessionFile, sessionFile }),
+			}),
+		},
+		ralph: {
+			iteration: state.iteration,
+			maxIterations: state.maxIterations,
+			itemsPerIteration: state.itemsPerIteration,
+			reflectEvery: state.reflectEvery,
+			reflectInstructions: state.reflectInstructions,
+			lastReflectionAt: state.lastReflectionAt,
+			advanceRequestedAt: state.advanceRequestedAt,
+			awaitingFinalize: state.awaitingFinalize,
+			pinnedExecutionProfile: state.executionProfile,
+		},
+	});
 }
 
 function readState(cwd: string, name: string, archived = false) {
-	const raw = JSON.parse(fs.readFileSync(statePath(cwd, name, archived), "utf-8"));
-	return decodeLoopStateSync(raw);
+	const state = decodeLoopPersistedStateJsonSync(
+		fs.readFileSync(statePath(cwd, name, archived), "utf-8"),
+	);
+	if (state.kind !== "ralph") {
+		throw new Error(`Expected ralph state for ${name}, got ${state.kind}`);
+	}
+	return {
+		name: state.taskId,
+		taskFile: state.taskFile,
+		iteration: state.ralph.iteration,
+		maxIterations: state.ralph.maxIterations,
+		itemsPerIteration: state.ralph.itemsPerIteration,
+		reflectEvery: state.ralph.reflectEvery,
+		reflectInstructions: state.ralph.reflectInstructions,
+		status: lifecycleToStatus(state.lifecycle),
+		startedAt: Option.getOrElse(state.startedAt, () => state.createdAt),
+		completedAt: state.completedAt,
+		lastReflectionAt: state.ralph.lastReflectionAt,
+		controllerSessionFile: Option.map(state.ownership.controller, (controller) => controller.sessionFile),
+		activeIterationSessionFile: Option.map(state.ownership.child, (child) => child.sessionFile),
+		advanceRequestedAt: state.ralph.advanceRequestedAt,
+		awaitingFinalize: state.ralph.awaitingFinalize,
+		executionProfile: state.ralph.pinnedExecutionProfile,
+	};
 }
 
 function makeContext(
@@ -232,7 +321,7 @@ describe("ralph store behavior freeze", () => {
 		expect(fs.existsSync(statePath(cwd, "alpha-loop"))).toBe(true);
 
 		const state = readState(cwd, "alpha-loop");
-		expect(state.taskFile).toBe(path.join(".pi", "ralph", "tasks", "alpha-loop.md"));
+		expect(state.taskFile).toBe(path.join(".pi", "loops", "tasks", "alpha-loop.md"));
 		expect(state.iteration).toBe(0);
 		expect(state.status).toBe("paused");
 		expect(Option.getOrUndefined(state.controllerSessionFile)).toContain("controller.session.json");
@@ -259,7 +348,7 @@ describe("ralph store behavior freeze", () => {
 		expect(sentUserMessages).toHaveLength(1);
 		expect(sentUserMessages[0]?.prompt).toContain("Create a Ralph task file for `foo-31z`.");
 		expect(sentUserMessages[0]?.prompt).toContain("backlog show foo-31z");
-		expect(sentUserMessages[0]?.prompt).toContain(".pi/ralph/tasks/foo-31z.md");
+		expect(sentUserMessages[0]?.prompt).toContain(".pi/loops/tasks/foo-31z.md");
 		expect(sentUserMessages[0]?.prompt).toContain("/ralph start foo-31z");
 		expect(notifications.some((entry) => entry.message.includes("foo-31z.md"))).toBe(true);
 	});
@@ -282,7 +371,7 @@ describe("ralph store behavior freeze", () => {
 
 		expect(sentUserMessages).toHaveLength(1);
 		expect(sentUserMessages[0]?.prompt).toContain("If the target corresponds to a backlog item, inspect it first with `backlog show <id>`");
-		expect(sentUserMessages[0]?.prompt).toContain(".pi/ralph/tasks/tau-6vi.1.md");
+		expect(sentUserMessages[0]?.prompt).toContain(".pi/loops/tasks/tau-6vi.1.md");
 		expect(sentUserMessages[0]?.prompt).toContain("/ralph start tau-6vi.1");
 	});
 
@@ -395,7 +484,7 @@ describe("ralph store behavior freeze", () => {
 		expect(sentUserMessages[0]?.prompt).toContain("Pick the best short name for the loop and task file.");
 		expect(sentUserMessages[0]?.prompt).toContain("Do not mirror the full request text into the file name.");
 		expect(sentUserMessages[0]?.prompt).not.toContain("backlog show my-feature");
-		expect(sentUserMessages[0]?.prompt).not.toContain(".pi/ralph/tasks/my-feature.md");
+		expect(sentUserMessages[0]?.prompt).not.toContain(".pi/loops/tasks/my-feature.md");
 		expect(sentUserMessages[0]?.prompt).not.toContain("/ralph start my-feature");
 		expect(notifications.some((entry) => entry.message.includes("choose a short name"))).toBe(true);
 	});
@@ -421,9 +510,9 @@ describe("ralph store behavior freeze", () => {
 
 		expect(sentUserMessages).toHaveLength(1);
 		expect(sentUserMessages[0]?.prompt).toContain("Pick the best short name for the loop and task file.");
-		expect(sentUserMessages[0]?.prompt).toContain("Write the task file at `.pi/ralph/tasks/<chosen-name>.md` using apply_patch.");
+		expect(sentUserMessages[0]?.prompt).toContain("Write the task file at `.pi/loops/tasks/<chosen-name>.md` using apply_patch.");
 		expect(sentUserMessages[0]?.prompt).not.toContain(
-			".pi/ralph/tasks/make_ralph_task_from_all_still_open_tasks_you_listed_in_previous_message.md",
+			".pi/loops/tasks/make_ralph_task_from_all_still_open_tasks_you_listed_in_previous_message.md",
 		);
 	});
 
@@ -446,7 +535,7 @@ describe("ralph store behavior freeze", () => {
 				const ralph = yield* Ralph;
 					yield* ralph.startLoopState(cwd, {
 						loopName: "pausable-loop",
-						taskFile: path.join(".pi", "ralph", "tasks", "pausable-loop.md"),
+						taskFile: path.join(".pi", "loops", "tasks", "pausable-loop.md"),
 						executionProfile: makeExecutionProfile(),
 						maxIterations: 50,
 					itemsPerIteration: 0,
@@ -497,7 +586,7 @@ describe("ralph store behavior freeze", () => {
 				const ralph = yield* Ralph;
 					yield* ralph.startLoopState(cwd, {
 						loopName: "esc-stop-loop",
-						taskFile: path.join(".pi", "ralph", "tasks", "esc-stop-loop.md"),
+						taskFile: path.join(".pi", "loops", "tasks", "esc-stop-loop.md"),
 						executionProfile: makeExecutionProfile(),
 						maxIterations: 50,
 					itemsPerIteration: 0,
@@ -534,13 +623,13 @@ describe("ralph store behavior freeze", () => {
 		const command = commands.get("ralph");
 		expect(command).toBeDefined();
 
-		fs.mkdirSync(path.join(cwd, ".pi", "ralph", "state"), { recursive: true });
+		fs.mkdirSync(path.join(cwd, ".pi", "loops", "state"), { recursive: true });
 		fs.writeFileSync(
 			statePath(cwd, "owned-paused"),
-			encodeLoopStateJsonSync(
+			encodeStateForStorage(
 				decodeLoopStateSync({
 					name: "owned-paused",
-					taskFile: path.join(".pi", "ralph", "tasks", "owned-paused.md"),
+					taskFile: path.join(".pi", "loops", "tasks", "owned-paused.md"),
 					iteration: 2,
 					maxIterations: 50,
 					itemsPerIteration: 0,
@@ -561,10 +650,10 @@ describe("ralph store behavior freeze", () => {
 		);
 		fs.writeFileSync(
 			statePath(cwd, "other-active"),
-			encodeLoopStateJsonSync(
+			encodeStateForStorage(
 				decodeLoopStateSync({
 					name: "other-active",
-					taskFile: path.join(".pi", "ralph", "tasks", "other-active.md"),
+					taskFile: path.join(".pi", "loops", "tasks", "other-active.md"),
 					iteration: 1,
 					maxIterations: 50,
 					itemsPerIteration: 0,
@@ -622,7 +711,7 @@ describe("ralph store behavior freeze", () => {
 			JSON.stringify(
 				{
 					name: "broken-loop",
-					taskFile: ".pi/ralph/tasks/broken-loop.md",
+					taskFile: ".pi/loops/tasks/broken-loop.md",
 					iteration: 1,
 					maxIterations: 10,
 					itemsPerIteration: 0,
@@ -650,11 +739,11 @@ describe("ralph store behavior freeze", () => {
 			notifications.find((entry) => entry.message.includes("Ralph state is invalid"))
 				?.message ?? "";
 		expect(message).toContain("Ralph state is invalid");
-		expect(message).toContain(".pi/ralph/state/broken-loop.state.json");
+		expect(message).toContain(".pi/loops/state/broken-loop.json");
 		expect(message).toContain("invalid-status");
 	});
 
-	it("archives paused loops, cleans completed loops, and nukes .pi/ralph", async () => {
+	it("archives paused loops, cleans completed loops, and nukes Ralph loop data", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 
@@ -666,10 +755,18 @@ describe("ralph store behavior freeze", () => {
 		const command = commands.get("ralph");
 		expect(command).toBeDefined();
 
-		const context = makeContext(cwd, notifications, [true, true, true]);
-		await command?.handler("start sleepy-loop", context);
-		await command?.handler("start done-a", context);
-		await command?.handler("start done-b", context);
+		const sleepyContext = makeContext(cwd, notifications, [true], {
+			sessionFile: path.join(cwd, ".pi", "sessions", "sleepy-controller.session.json"),
+		});
+		const doneAContext = makeContext(cwd, notifications, [true], {
+			sessionFile: path.join(cwd, ".pi", "sessions", "done-a-controller.session.json"),
+		});
+		const doneBContext = makeContext(cwd, notifications, [true], {
+			sessionFile: path.join(cwd, ".pi", "sessions", "done-b-controller.session.json"),
+		});
+		await command?.handler("start sleepy-loop", sleepyContext);
+		await command?.handler("start done-a", doneAContext);
+		await command?.handler("start done-b", doneBContext);
 
 		for (const loopName of ["done-a", "done-b"] as const) {
 			const state = readState(cwd, loopName);
@@ -680,26 +777,30 @@ describe("ralph store behavior freeze", () => {
 			};
 			fs.writeFileSync(
 				statePath(cwd, loopName),
-				encodeLoopStateJsonSync(completedState),
+				encodeStateForStorage(completedState),
 				"utf-8",
 			);
 		}
 
-		await command?.handler("archive sleepy-loop", context);
+		await command?.handler("archive sleepy-loop", sleepyContext);
 		expect(fs.existsSync(statePath(cwd, "sleepy-loop"))).toBe(false);
 		expect(fs.existsSync(taskPath(cwd, "sleepy-loop"))).toBe(false);
 		expect(fs.existsSync(statePath(cwd, "sleepy-loop", true))).toBe(true);
 		expect(fs.existsSync(taskPath(cwd, "sleepy-loop", true))).toBe(true);
 
-		await command?.handler("clean --all", context);
+		await command?.handler("clean --all", sleepyContext);
 		expect(fs.existsSync(statePath(cwd, "done-a"))).toBe(false);
 		expect(fs.existsSync(taskPath(cwd, "done-a"))).toBe(false);
 		expect(fs.existsSync(statePath(cwd, "done-b"))).toBe(false);
 		expect(fs.existsSync(taskPath(cwd, "done-b"))).toBe(false);
 		expect(fs.existsSync(statePath(cwd, "sleepy-loop", true))).toBe(true);
 
-		await command?.handler("nuke --yes", context);
+		await command?.handler("nuke --yes", sleepyContext);
 		expect(fs.existsSync(path.join(cwd, ".pi", "ralph"))).toBe(false);
-		expect(notifications.some((entry) => entry.message.includes("Removed .pi/ralph directory."))).toBe(true);
+		expect(
+			notifications.some((entry) =>
+				entry.message.includes("Removed Ralph loop data under .pi/loops."),
+			),
+		).toBe(true);
 	});
 });

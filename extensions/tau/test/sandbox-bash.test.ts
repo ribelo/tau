@@ -10,9 +10,9 @@ function makeTempDir(prefix: string): string {
 }
 
 describe("wrapCommandWithSandbox mount order", () => {
-	it("binds siblings of .pi/ralph/tasks as read-only and tasks as writable", async () => {
+	it("binds siblings of .pi/loops/tasks as read-only and tasks as writable", async () => {
 		const workspaceRoot = makeTempDir("tau-sandbox-bwrap-");
-		fs.mkdirSync(path.join(workspaceRoot, ".pi", "ralph", "tasks"), { recursive: true });
+		fs.mkdirSync(path.join(workspaceRoot, ".pi", "loops", "tasks"), { recursive: true });
 		fs.writeFileSync(path.join(workspaceRoot, ".pi", "settings.json"), "{}", "utf-8");
 
 		const result = await wrapCommandWithSandbox({
@@ -27,7 +27,7 @@ describe("wrapCommandWithSandbox mount order", () => {
 
 		const parts = result.wrappedCommand.split(" ");
 		const settingsPath = path.join(workspaceRoot, ".pi", "settings.json");
-		const tasksPath = path.join(workspaceRoot, ".pi", "ralph", "tasks");
+		const tasksPath = path.join(workspaceRoot, ".pi", "loops", "tasks");
 
 		function findRoBindIndex(targetPath: string): number {
 			for (let i = 0; i < parts.length - 1; i++) {
@@ -71,7 +71,7 @@ describe("wrapCommandWithSandbox mount order", () => {
 		if (!result.success) return;
 
 		const parts = result.wrappedCommand.split(" ");
-		const tasksPath = path.join(workspaceRoot, ".pi", "ralph", "tasks");
+		const tasksPath = path.join(workspaceRoot, ".pi", "loops", "tasks");
 		const piPath = path.join(workspaceRoot, ".pi");
 		const tasksBindIndex = parts.indexOf(tasksPath);
 

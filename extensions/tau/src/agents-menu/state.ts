@@ -1,12 +1,13 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import { Option } from "effect";
+
 import { findNearestWorkspaceRoot } from "../shared/discovery.js";
 import { readJsonFile, writeJsonFile } from "../shared/fs.js";
 import { isRecord, type AnyRecord } from "../shared/json.js";
-import { loopOwnsSessionFile } from "../ralph/repo.js";
-import { RALPH_STATE_DIR } from "../ralph/paths.js";
-import { decodeLoopStateJsonSync } from "../ralph/schema.js";
+import { LOOPS_STATE_DIR } from "../loops/paths.js";
+import { decodeLoopPersistedStateJsonSync } from "../loops/schema.js";
 
 type ProjectAgentState = {
 	readonly disabledAgents: Set<string>;
@@ -108,7 +109,32 @@ export function getAgentSettingsPath(cwd: string): string {
 }
 
 function getRalphStateDirectory(cwd: string): string {
-	return path.join(findNearestWorkspaceRoot(cwd), RALPH_STATE_DIR);
+	return path.join(findNearestWorkspaceRoot(cwd), LOOPS_STATE_DIR);
+}
+
+function stateOwnsSessionFile(
+	sessionFile: string,
+	state: ReturnType<typeof decodeLoopPersistedStateJsonSync>,
+): boolean {
+	if (state.kind !== "ralph") {
+		return false;
+	}
+	if (state.lifecycle === "completed" || state.lifecycle === "archived") {
+		return false;
+	}
+
+	const controllerMatches = Option.match(state.ownership.controller, {
+		onNone: () => false,
+		onSome: (controller) => controller.sessionFile === sessionFile,
+	});
+	if (controllerMatches) {
+		return true;
+	}
+
+	return Option.match(state.ownership.child, {
+		onNone: () => false,
+		onSome: (child) => child.sessionFile === sessionFile,
+	});
 }
 
 export function isRalphOwnedSession(cwd: string, sessionFile: string | undefined): boolean {
@@ -129,16 +155,13 @@ export function isRalphOwnedSession(cwd: string, sessionFile: string | undefined
 	}
 
 	for (const entry of entries) {
-		if (!entry.endsWith(".state.json")) {
+		if (!entry.endsWith(".json")) {
 			continue;
 		}
 		const filePath = path.join(stateDir, entry);
 		try {
-			const loop = decodeLoopStateJsonSync(fs.readFileSync(filePath, "utf-8"));
-			if (loop.status === "completed") {
-				continue;
-			}
-			if (loopOwnsSessionFile(loop, sessionFile)) {
+			const state = decodeLoopPersistedStateJsonSync(fs.readFileSync(filePath, "utf-8"));
+			if (stateOwnsSessionFile(sessionFile, state)) {
 				return true;
 			}
 		} catch {

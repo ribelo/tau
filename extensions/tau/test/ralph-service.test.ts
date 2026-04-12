@@ -15,7 +15,12 @@ import type {
 
 import initRalph from "../src/ralph/index.js";
 import { RalphRepoLive } from "../src/ralph/repo.js";
-import { decodeLoopStateSync, encodeLoopStateJsonSync } from "../src/ralph/schema.js";
+import {
+	decodeLoopPersistedStateJsonSync,
+	encodeLoopPersistedStateJsonSync,
+} from "../src/loops/schema.js";
+import { LoopRepoLive } from "../src/loops/repo.js";
+import { LoopEngineLive } from "../src/services/loop-engine.js";
 import { PromptModes } from "../src/services/prompt-modes.js";
 import { Ralph, RalphLive } from "../src/services/ralph.js";
 import { makeExecutionProfile, makePromptModesStubLayer } from "./ralph-test-helpers.js";
@@ -75,6 +80,7 @@ function makeRalphRuntime(activeSubagents: boolean): RalphRuntimeHarness {
 		hasActiveSubagents: () => Effect.succeed(activeSubagents),
 	}).pipe(
 		Layer.provideMerge(RalphRepoLive),
+		Layer.provideMerge(LoopEngineLive.pipe(Layer.provideMerge(LoopRepoLive))),
 		Layer.provideMerge(makePromptModesStubLayer()),
 		Layer.provide(NodeFileSystem.layer),
 	);
@@ -90,12 +96,47 @@ function makeTempDir(): string {
 }
 
 function loopStatePath(cwd: string, loopName: string): string {
-	return path.join(cwd, ".pi", "ralph", "state", `${loopName}.state.json`);
+	return path.join(cwd, ".pi", "loops", "state", `${loopName}.json`);
+}
+
+function lifecycleToStatus(lifecycle: "draft" | "active" | "paused" | "completed" | "archived"): LoopStatus {
+	switch (lifecycle) {
+		case "active":
+			return "active";
+		case "draft":
+		case "paused":
+			return "paused";
+		case "completed":
+		case "archived":
+			return "completed";
+	}
 }
 
 function readLoopState(cwd: string, loopName: string) {
-	const raw = JSON.parse(fs.readFileSync(loopStatePath(cwd, loopName), "utf-8"));
-	return decodeLoopStateSync(raw);
+	const state = decodeLoopPersistedStateJsonSync(
+		fs.readFileSync(loopStatePath(cwd, loopName), "utf-8"),
+	);
+	if (state.kind !== "ralph") {
+		throw new Error(`Expected ralph state for ${loopName}, got ${state.kind}`);
+	}
+	return {
+		name: state.taskId,
+		taskFile: state.taskFile,
+		iteration: state.ralph.iteration,
+		maxIterations: state.ralph.maxIterations,
+		itemsPerIteration: state.ralph.itemsPerIteration,
+		reflectEvery: state.ralph.reflectEvery,
+		reflectInstructions: state.ralph.reflectInstructions,
+		status: lifecycleToStatus(state.lifecycle),
+		startedAt: Option.getOrElse(state.startedAt, () => state.createdAt),
+		completedAt: state.completedAt,
+		lastReflectionAt: state.ralph.lastReflectionAt,
+		controllerSessionFile: Option.map(state.ownership.controller, (controller) => controller.sessionFile),
+		activeIterationSessionFile: Option.map(state.ownership.child, (child) => child.sessionFile),
+		advanceRequestedAt: state.ralph.advanceRequestedAt,
+		awaitingFinalize: state.ralph.awaitingFinalize,
+		executionProfile: state.ralph.pinnedExecutionProfile,
+	};
 }
 
 function writeLoopState(
@@ -111,31 +152,53 @@ function writeLoopState(
 ): void {
 	const filePath = loopStatePath(cwd, loopName);
 	fs.mkdirSync(path.dirname(filePath), { recursive: true });
-	const taskFile = path.join(".pi", "ralph", "tasks", `${loopName}.md`);
+	const status = input.status ?? "active";
+	const lifecycle =
+		status === "active"
+			? "active"
+			: status === "paused"
+				? "paused"
+				: "completed";
+	const taskFile = path.join(".pi", "loops", "tasks", `${loopName}.md`);
 	fs.mkdirSync(path.join(cwd, path.dirname(taskFile)), { recursive: true });
 	fs.writeFileSync(path.join(cwd, taskFile), "# Task\n", "utf-8");
 	fs.writeFileSync(
 		filePath,
-		encodeLoopStateJsonSync({
-			name: loopName,
+		encodeLoopPersistedStateJsonSync({
+			taskId: loopName,
+			title: loopName,
 			taskFile,
-			iteration: input.iteration ?? 1,
-			maxIterations: 50,
-			itemsPerIteration: 0,
-			reflectEvery: 0,
-			reflectInstructions: "reflect",
-			status: input.status ?? "active",
-			startedAt: "2026-01-01T00:00:00.000Z",
-			completedAt: Option.none(),
-			lastReflectionAt: 0,
-			controllerSessionFile: Option.some(input.controllerSessionFile),
-			activeIterationSessionFile:
-				input.activeIterationSessionFile === undefined
-					? Option.none()
-					: Option.some(input.activeIterationSessionFile),
-			advanceRequestedAt: Option.none(),
-			awaitingFinalize: input.awaitingFinalize ?? false,
-			executionProfile: makeExecutionProfile(),
+			kind: "ralph",
+			lifecycle,
+			createdAt: "2026-01-01T00:00:00.000Z",
+			updatedAt: "2026-01-01T00:00:00.000Z",
+			startedAt: Option.some("2026-01-01T00:00:00.000Z"),
+			completedAt: status === "completed" ? Option.some("2026-01-01T01:00:00.000Z") : Option.none(),
+			archivedAt: Option.none(),
+			ownership: {
+				controller: Option.some({
+					sessionId: input.controllerSessionFile,
+					sessionFile: input.controllerSessionFile,
+				}),
+				child:
+					input.activeIterationSessionFile === undefined
+						? Option.none()
+						: Option.some({
+							sessionId: input.activeIterationSessionFile,
+							sessionFile: input.activeIterationSessionFile,
+						}),
+			},
+			ralph: {
+				iteration: input.iteration ?? 1,
+				maxIterations: 50,
+				itemsPerIteration: 0,
+				reflectEvery: 0,
+				reflectInstructions: "reflect",
+				lastReflectionAt: 0,
+				advanceRequestedAt: Option.none(),
+				awaitingFinalize: input.awaitingFinalize ?? false,
+				pinnedExecutionProfile: makeExecutionProfile(),
+			},
 		}),
 		"utf-8",
 	);

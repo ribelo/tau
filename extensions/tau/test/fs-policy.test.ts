@@ -109,9 +109,9 @@ describe("checkWriteAllowed symlink hardening", () => {
 });
 
 describe("checkWriteAllowed workspace protected path policy", () => {
-	it("allows writes to .pi/ralph/tasks", () => {
+	it("allows writes to .pi/loops/tasks", () => {
 		const workspaceRoot = makeTempDir("tau-fs-workspace-");
-		const tasksDir = path.join(workspaceRoot, ".pi", "ralph", "tasks");
+		const tasksDir = path.join(workspaceRoot, ".pi", "loops", "tasks");
 		fs.mkdirSync(tasksDir, { recursive: true });
 
 		const result = checkWriteAllowed({
@@ -123,9 +123,9 @@ describe("checkWriteAllowed workspace protected path policy", () => {
 		expect(result).toEqual({ allowed: true });
 	});
 
-	it("denies writes to .pi/ralph/state", () => {
+	it("denies writes to .pi/loops/state", () => {
 		const workspaceRoot = makeTempDir("tau-fs-workspace-");
-		const stateDir = path.join(workspaceRoot, ".pi", "ralph", "state");
+		const stateDir = path.join(workspaceRoot, ".pi", "loops", "state");
 		fs.mkdirSync(stateDir, { recursive: true });
 
 		const result = checkWriteAllowed({
@@ -165,10 +165,10 @@ describe("checkWriteAllowed workspace protected path policy", () => {
 		expectDenied(result, "protected workspace metadata under .pi/");
 	});
 
-	it("denies .pi/ralph/tasks symlink traversal into protected state", () => {
+	it("denies .pi/loops/tasks symlink traversal into protected state", () => {
 		const workspaceRoot = makeTempDir("tau-fs-workspace-");
-		const tasksDir = path.join(workspaceRoot, ".pi", "ralph", "tasks");
-		const stateDir = path.join(workspaceRoot, ".pi", "ralph", "state");
+		const tasksDir = path.join(workspaceRoot, ".pi", "loops", "tasks");
+		const stateDir = path.join(workspaceRoot, ".pi", "loops", "state");
 		fs.mkdirSync(tasksDir, { recursive: true });
 		fs.mkdirSync(stateDir, { recursive: true });
 

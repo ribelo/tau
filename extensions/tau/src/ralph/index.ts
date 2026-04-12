@@ -28,7 +28,7 @@ import {
 } from "./schema.js";
 
 const INVALID_STATE_HINT =
-	"Ralph state is invalid and could not be decoded. Repair or remove invalid files under .pi/ralph (or reset with /ralph nuke --yes).";
+	"Ralph state is invalid and could not be decoded. Repair or remove invalid files under .pi/loops (or reset with /ralph nuke --yes).";
 
 const DEFAULT_TEMPLATE = `# Task
 
@@ -81,6 +81,8 @@ function handlePersistedStateFailure(
 		"ralph.loop_state",
 		"ralph.loop_state.json",
 		"ralph.legacy_layout",
+		"loops.state",
+		"loops.state.json",
 	];
 	if (!knownEntities.includes(error.entity)) {
 		return Option.none();
@@ -234,7 +236,7 @@ function buildCreatePrompt(target: string): string {
 			"Pick the best short name for the loop and task file.",
 			"Use a concise lowercase hyphenated name that fits naturally in `/ralph start <name>`.",
 			"Do not mirror the full request text into the file name.",
-			"Write the task file at `.pi/ralph/tasks/<chosen-name>.md` using apply_patch.",
+			"Write the task file at `.pi/loops/tasks/<chosen-name>.md` using apply_patch.",
 			"Do not start the loop. Only create or update the task markdown file.",
 			"",
 			...structureLines,
@@ -256,7 +258,7 @@ function buildCreatePrompt(target: string): string {
 		"",
 		"If the target corresponds to a backlog item, inspect it first with `backlog show <id>` and synthesize the task from that issue.",
 		"Do not update backlog state.",
-		"Example backlog flow: `/ralph create foo-31z` should inspect `backlog show foo-31z` and write `.pi/ralph/tasks/foo-31z.md`.",
+		"Example backlog flow: `/ralph create foo-31z` should inspect `backlog show foo-31z` and write `.pi/loops/tasks/foo-31z.md`.",
 		"",
 		`After writing the file, tell me the path and recommend starting with \`/ralph start ${createTarget.resolved.recommendedStartTarget}\`.`,
 	].join("\n");
@@ -275,7 +277,7 @@ Commands:
   /ralph archive <name>               Move loop to archive
   /ralph clean [--all]                Clean completed loops
   /ralph list --archived              Show archived loops
-  /ralph nuke [--yes]                 Delete all .pi/ralph data
+  /ralph nuke [--yes]                 Delete all Ralph loop data under .pi/loops
 
 Options:
   --items-per-iteration N  Suggest N items per turn (prompt hint)
@@ -695,19 +697,19 @@ export default function initRalph(
 					case "nuke": {
 						const force = rest.trim() === "--yes";
 						const warning =
-							"This deletes all .pi/ralph state, task, and archive files. External task files are not removed.";
+							"This deletes all Ralph state, task, and archive files under .pi/loops. Non-Ralph loop data is kept.";
 
 						const runNuke = async () => {
 							const result = await withRalph((ralph) => ralph.nukeLoops(ctx.cwd));
 							if (!result.removed) {
 								if (ctx.hasUI) {
-									ctx.ui.notify("No .pi/ralph directory found.", "info");
+									ctx.ui.notify("No Ralph loop data found under .pi/loops.", "info");
 								}
 								return;
 							}
 
 							if (ctx.hasUI) {
-								ctx.ui.notify("Removed .pi/ralph directory.", "info");
+								ctx.ui.notify("Removed Ralph loop data under .pi/loops.", "info");
 							}
 							await updateUI(ctx.cwd, ctx);
 						};

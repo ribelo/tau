@@ -9,7 +9,7 @@ export interface ProtectedPathRule {
 
 export const WORKSPACE_PROTECTED_RULES: ProtectedPathRule[] = [
 	{ rootSegment: ".git", writableExceptionSegments: [] },
-	{ rootSegment: ".pi", writableExceptionSegments: [".pi/ralph/tasks"] },
+	{ rootSegment: ".pi", writableExceptionSegments: [".pi/loops/tasks"] },
 ];
 
 export interface ResolvedProtectedPathRule {

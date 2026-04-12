@@ -5,6 +5,8 @@ import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, Layer } from "effect";
 
 import { RalphRepoLive } from "../src/ralph/repo.js";
+import { LoopRepoLive } from "../src/loops/repo.js";
+import { LoopEngineLive } from "../src/services/loop-engine.js";
 import { Ralph, RalphLive } from "../src/services/ralph.js";
 
 describe("ralph adapter surface", () => {
@@ -16,7 +18,11 @@ describe("ralph adapter surface", () => {
 	it("keeps RalphService as a domain boundary without raw repo/ref primitives", async () => {
 		const layer = RalphLive({
 			hasActiveSubagents: () => Effect.succeed(false),
-		}).pipe(Layer.provideMerge(RalphRepoLive), Layer.provide(NodeFileSystem.layer));
+		}).pipe(
+			Layer.provideMerge(RalphRepoLive),
+			Layer.provideMerge(LoopEngineLive.pipe(Layer.provideMerge(LoopRepoLive))),
+			Layer.provide(NodeFileSystem.layer),
+		);
 
 		const service = await Effect.runPromise(
 			Effect.gen(function* () {

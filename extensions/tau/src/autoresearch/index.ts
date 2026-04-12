@@ -1,52 +1,67 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 import type {
-	AgentEndEvent,
 	ExtensionAPI,
+	ExtensionCommandContext,
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 import { truncateTail, formatSize, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@mariozechner/pi-coding-agent";
 import type { TruncationResult } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { matchesKey, Text } from "@mariozechner/pi-tui";
+import { Text } from "@mariozechner/pi-tui";
 import { Effect, Option } from "effect";
 
 import { Sandbox } from "../services/sandbox.js";
 import { PromptModes } from "../services/prompt-modes.js";
 import {
-	Autoresearch,
-	type AutoresearchExecutionBoundary,
-	type AutoresearchService,
+	LoopEngine,
+	type LoopEngineService,
+} from "../services/loop-engine.js";
+import {
 	type BenchmarkProgress,
 	type ExecuteBenchmarkInput,
-	type LogExperimentResult,
 	type RunDetails,
 } from "../services/autoresearch.js";
 import type { ExecutionProfile } from "../execution/schema.js";
 import { getSandboxedBashOperations } from "../sandbox/index.js";
 import type { BashOperations } from "@mariozechner/pi-coding-agent";
 import {
+	LoopContractValidationError,
+	LoopLifecycleConflictError,
+	LoopOwnershipValidationError,
+	LoopTaskAlreadyExistsError,
+	LoopTaskNotFoundError,
+	LoopAmbiguousOwnershipError,
+} from "../loops/errors.js";
+import {
+	decodeLoopTaskIdSync,
+	decodeAutoresearchPhaseSnapshotJsonSync,
+	decodeLoopPersistedStateJsonSync,
+	encodeLoopPersistedStateJsonSync,
+	type AutoresearchLoopPersistedState,
+	type IsolatedCheckout,
+	type LoopPersistedState,
+	type LoopSessionRef,
+} from "../loops/schema.js";
+import {
+	loopPhaseFile,
+	loopRunDirectory,
+	loopRunsDirectory,
+	loopStateFile,
+	loopTaskFile,
+} from "../loops/paths.js";
+import {
+	normalizeAutoresearchTaskContractInput,
+	parseAutoresearchTaskDocument,
+	renderAutoresearchTaskDocument,
+} from "./task-contract.js";
+import {
 	AutoresearchValidationError,
 	AutoresearchGitError,
-	AutoresearchBenchmarkCommandMismatchError,
-	AutoresearchFingerprintMismatchError,
-	AutoresearchMaxExperimentsReachedError,
-	AutoresearchNoPendingRunError,
-	AutoresearchContractValidationError,
 } from "./errors.js";
-import { readAutoresearchContractFromContent } from "./contract.js";
-import {
-	AUTORESEARCH_MD,
-	AUTORESEARCH_SH,
-	AUTORESEARCH_CHECKS_SH,
-	AUTORESEARCH_JSONL,
-	AUTORESEARCH_IDEAS_MD,
-	AUTORESEARCH_DIR,
-} from "./paths.js";
-import { resolveWorkDir, resolveMaxExperiments, loadAutoresearchConfig } from "./config.js";
 import {
 	formatNum,
 	formatElapsed,
@@ -55,57 +70,360 @@ import {
 	EXPERIMENT_MAX_BYTES,
 	EXPERIMENT_MAX_LINES,
 } from "./helpers.js";
-import {
-	renderWidget,
-	renderExpandedHeader,
-	renderDashboardLines,
-	renderOverlayRunningLine,
-	renderOverlayFooter,
-} from "./dashboard.js";
-import { renderRunExperimentResult } from "./run-experiment-render.js";
-import { shouldDeferAutoresearchResumeUntilAfterCompaction } from "./auto-resume.js";
-import { shouldCloseAutoresearchOverlay } from "./overlay-input.js";
 
 // ------------------------------------------------------------------------------
 // Helpers
 // ------------------------------------------------------------------------------
 
-function getSessionKey(ctx: ExtensionContext): string {
-	return ctx.sessionManager.getSessionId();
+function stripSurroundingQuotes(value: string): string {
+	return value.replace(/^"|"$/g, "");
 }
 
-function getWorkDir(ctxCwd: string): string {
-	const result = loadAutoresearchConfig(ctxCwd);
-	if (result.error) {
-		throw new Error(result.error);
-	}
-	return resolveWorkDir(ctxCwd, result.config);
+function tokenizeCommandArgs(args: string): ReadonlyArray<string> {
+	return (args.match(/(?:[^\s"]+|"[^"]*")+/g) ?? []).map((token) =>
+		stripSurroundingQuotes(token),
+	);
 }
 
-function validateWorkDir(ctxCwd: string): string | null {
-	const configResult = loadAutoresearchConfig(ctxCwd);
-	if (configResult.error) {
-		return `Invalid autoresearch.config.json: ${configResult.error}`;
+function commandSessionRef(
+	ctx: Pick<ExtensionCommandContext, "sessionManager">,
+): Option.Option<LoopSessionRef> {
+	const sessionFile =
+		typeof ctx.sessionManager.getSessionFile === "function"
+			? ctx.sessionManager.getSessionFile()
+			: undefined;
+	if (sessionFile === undefined) {
+		return Option.none();
 	}
-	const workDir = resolveWorkDir(ctxCwd, configResult.config);
-	if (workDir === ctxCwd) return null;
-	try {
-		const stat = fs.statSync(workDir);
-		if (!stat.isDirectory()) {
-			return `workingDir "${workDir}" (from autoresearch.config.json) is not a directory.`;
+	return Option.some({
+		sessionId: ctx.sessionManager.getSessionId(),
+		sessionFile,
+	});
+}
+
+function isAutoresearchLoopState(state: LoopPersistedState): boolean {
+	return (
+		state.kind === "autoresearch" ||
+		(state.kind === "blocked_manual_resolution" && state.previousKind === "autoresearch")
+	);
+}
+
+function formatAutoresearchLoopState(state: LoopPersistedState): string {
+	if (state.kind === "autoresearch") {
+		const pendingRun = Option.match(state.autoresearch.pendingRunId, {
+			onNone: () => "none",
+			onSome: (runId) => runId,
+		});
+		const phase = Option.match(state.autoresearch.phaseId, {
+			onNone: () => "none",
+			onSome: (phaseId) => phaseId,
+		});
+		return `${state.taskId}: ${state.lifecycle} (phase=${phase}, pending_run=${pendingRun}, runs=${state.autoresearch.runCount})`;
+	}
+	if (state.kind === "blocked_manual_resolution") {
+		return `${state.taskId}: blocked (${state.blocked.reasonCode}) ${state.blocked.message}`;
+	}
+	return `${state.taskId}: ${state.lifecycle}`;
+}
+
+function validateTaskId(input: string): string {
+	return decodeLoopTaskIdSync(input.trim());
+}
+
+function createDefaultTaskDocument(taskId: string, goalText: string): string {
+	const defaultContract = normalizeAutoresearchTaskContractInput({
+		title: taskId,
+		benchmarkCommand: "bash autoresearch.sh",
+		checksCommand: Option.none(),
+		metricName: "metric",
+		metricUnit: "",
+		metricDirection: "lower",
+		scopeRoot: ".",
+		scopePaths: ["."],
+		offLimits: [],
+		constraints: [],
+		maxIterations: Option.none(),
+	});
+	return renderAutoresearchTaskDocument(defaultContract, goalText);
+}
+
+type AutoresearchRunOutcome = "keep" | "discard" | "crash" | "checks_failed";
+
+type PersistedAutoresearchRun = {
+	readonly kind: "autoresearch_run";
+	readonly version: 1;
+	readonly taskId: string;
+	readonly runId: string;
+	readonly runNumber: number;
+	readonly phaseId: string;
+	readonly createdAt: string;
+	readonly childSession: LoopSessionRef;
+	readonly controllerSession: LoopSessionRef;
+	readonly benchmark: {
+		readonly command: string;
+		readonly durationSeconds: number;
+		readonly exitCode: number | null;
+		readonly timedOut: boolean;
+		readonly passed: boolean;
+		readonly logFile: string;
+		readonly tailOutput: string;
+	};
+	readonly checks: {
+		readonly command: string;
+		readonly durationSeconds: number;
+		readonly passed: boolean | null;
+		readonly timedOut: boolean;
+		readonly logFile: string | null;
+		readonly outputTail: string;
+	} | null;
+	readonly parsed: {
+		readonly metricName: string;
+		readonly metricUnit: string;
+		readonly metrics: Record<string, number> | null;
+		readonly primary: number | null;
+		readonly asi: Record<string, unknown> | null;
+	};
+	readonly fullOutputLogFile: string | null;
+	readonly finalized: {
+		readonly status: AutoresearchRunOutcome;
+		readonly description: string;
+		readonly decidedAt: string;
+		readonly metrics: Record<string, number> | null;
+		readonly asi: Record<string, unknown> | null;
+	} | null;
+};
+
+const RUN_BENCHMARK_LOG_FILE = "benchmark.log";
+const RUN_CHECKS_LOG_FILE = "checks.log";
+const RUN_FULL_OUTPUT_LOG_FILE = "benchmark.full.log";
+const RUN_RECORD_FILE = "run.json";
+const LEGACY_AUTORESEARCH_ARTIFACTS = [
+	".autoresearch",
+	"autoresearch.jsonl",
+	"autoresearch.md",
+	"autoresearch.ideas.md",
+	"autoresearch.program.md",
+	"autoresearch.config.json",
+] as const;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function sessionRefMatches(left: LoopSessionRef, right: LoopSessionRef): boolean {
+	return left.sessionId === right.sessionId || left.sessionFile === right.sessionFile;
+}
+
+function writeAtomicFileSync(filePath: string, content: string): void {
+	const parent = path.dirname(filePath);
+	fs.mkdirSync(parent, { recursive: true });
+	const tempPath = path.join(
+		parent,
+		`.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+	);
+	fs.writeFileSync(tempPath, content, "utf-8");
+	fs.renameSync(tempPath, filePath);
+}
+
+function assertNoLegacyAutoresearchLayout(cwd: string): void {
+	const present = LEGACY_AUTORESEARCH_ARTIFACTS.filter((artifact) =>
+		fs.existsSync(path.resolve(cwd, artifact)),
+	);
+	if (present.length === 0) {
+		return;
+	}
+	throw new LoopContractValidationError({
+		entity: "loops.autoresearch.legacy_layout",
+		reason:
+			`Legacy autoresearch artifacts are present: ${present.join(", ")}. ` +
+			"Legacy autoresearch files are not imported automatically. Remove them or import them explicitly before creating task-scoped loops.",
+	});
+}
+
+function requireAutoresearchLoopState(state: LoopPersistedState): AutoresearchLoopPersistedState {
+	if (state.kind !== "autoresearch") {
+		throw new AutoresearchValidationError({
+			reason: `Task ${state.taskId} is ${state.kind}. Autoresearch tools require kind=autoresearch.`,
+		});
+	}
+	return state;
+}
+
+function isLoopSessionRef(value: unknown): value is LoopSessionRef {
+	if (!isRecord(value)) {
+		return false;
+	}
+	return (
+		typeof value["sessionId"] === "string" &&
+		value["sessionId"].trim().length > 0 &&
+		typeof value["sessionFile"] === "string" &&
+		value["sessionFile"].trim().length > 0
+	);
+}
+
+function isFiniteNumberOrNull(value: unknown): value is number | null {
+	return value === null || (typeof value === "number" && Number.isFinite(value));
+}
+
+function isNumericRecordOrNull(value: unknown): value is Record<string, number> | null {
+	if (value === null) {
+		return true;
+	}
+	if (!isRecord(value)) {
+		return false;
+	}
+	for (const entry of Object.values(value)) {
+		if (typeof entry !== "number" || !Number.isFinite(entry)) {
+			return false;
 		}
-	} catch {
-		return `workingDir "${workDir}" (from autoresearch.config.json) does not exist.`;
 	}
-	return null;
+	return true;
 }
 
-function getMaxExperiments(ctxCwd: string): number | null {
-	const result = loadAutoresearchConfig(ctxCwd);
-	if (result.error) {
-		throw new Error(result.error);
+function isUnknownRecordOrNull(value: unknown): value is Record<string, unknown> | null {
+	return value === null || isRecord(value);
+}
+
+function isRunOutcome(value: unknown): value is AutoresearchRunOutcome {
+	return (
+		value === "keep" ||
+		value === "discard" ||
+		value === "crash" ||
+		value === "checks_failed"
+	);
+}
+
+function isPersistedAutoresearchRun(value: unknown): value is PersistedAutoresearchRun {
+	if (!isRecord(value)) {
+		return false;
 	}
-	return resolveMaxExperiments(result.config);
+	if (value["kind"] !== "autoresearch_run" || value["version"] !== 1) {
+		return false;
+	}
+	if (
+		typeof value["taskId"] !== "string" ||
+		typeof value["runId"] !== "string" ||
+		typeof value["phaseId"] !== "string" ||
+		typeof value["createdAt"] !== "string" ||
+		typeof value["runNumber"] !== "number"
+	) {
+		return false;
+	}
+	if (!isLoopSessionRef(value["childSession"]) || !isLoopSessionRef(value["controllerSession"])) {
+		return false;
+	}
+
+	const benchmark = value["benchmark"];
+	if (!isRecord(benchmark)) {
+		return false;
+	}
+	if (
+		typeof benchmark["command"] !== "string" ||
+		typeof benchmark["durationSeconds"] !== "number" ||
+		!isFiniteNumberOrNull(benchmark["exitCode"]) ||
+		typeof benchmark["timedOut"] !== "boolean" ||
+		typeof benchmark["passed"] !== "boolean" ||
+		typeof benchmark["logFile"] !== "string" ||
+		typeof benchmark["tailOutput"] !== "string"
+	) {
+		return false;
+	}
+
+	const checks = value["checks"];
+	if (checks !== null) {
+		if (!isRecord(checks)) {
+			return false;
+		}
+		if (
+			typeof checks["command"] !== "string" ||
+			typeof checks["durationSeconds"] !== "number" ||
+			(checks["passed"] !== null && typeof checks["passed"] !== "boolean") ||
+			typeof checks["timedOut"] !== "boolean" ||
+			(checks["logFile"] !== null && typeof checks["logFile"] !== "string") ||
+			typeof checks["outputTail"] !== "string"
+		) {
+			return false;
+		}
+	}
+
+	const parsed = value["parsed"];
+	if (!isRecord(parsed)) {
+		return false;
+	}
+	if (
+		typeof parsed["metricName"] !== "string" ||
+		typeof parsed["metricUnit"] !== "string" ||
+		!isNumericRecordOrNull(parsed["metrics"]) ||
+		!isFiniteNumberOrNull(parsed["primary"]) ||
+		!isUnknownRecordOrNull(parsed["asi"])
+	) {
+		return false;
+	}
+
+	if (value["fullOutputLogFile"] !== null && typeof value["fullOutputLogFile"] !== "string") {
+		return false;
+	}
+
+	const finalized = value["finalized"];
+	if (finalized !== null) {
+		if (!isRecord(finalized)) {
+			return false;
+		}
+		if (
+			!isRunOutcome(finalized["status"]) ||
+			typeof finalized["description"] !== "string" ||
+			typeof finalized["decidedAt"] !== "string" ||
+			!isNumericRecordOrNull(finalized["metrics"]) ||
+			!isUnknownRecordOrNull(finalized["asi"])
+		) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+function parsePersistedRunRecord(content: string, runFile: string): PersistedAutoresearchRun {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(content) as unknown;
+	} catch (error) {
+		throw new LoopContractValidationError({
+			entity: "loops.run",
+			reason: `${runFile}: invalid JSON (${String(error)})`,
+		});
+	}
+
+	if (!isPersistedAutoresearchRun(parsed)) {
+		throw new LoopContractValidationError({
+			entity: "loops.run",
+			reason: `${runFile}: run record does not match the canonical schema.`,
+		});
+	}
+
+	return parsed;
+}
+
+function listRunRecordsForTask(cwd: string, taskId: string): ReadonlyArray<PersistedAutoresearchRun> {
+	const runsRoot = path.resolve(cwd, loopRunsDirectory(taskId));
+	if (!fs.existsSync(runsRoot)) {
+		return [];
+	}
+
+	const entries = fs.readdirSync(runsRoot, { withFileTypes: true });
+	const runs: PersistedAutoresearchRun[] = [];
+	for (const entry of entries) {
+		if (!entry.isDirectory()) {
+			continue;
+		}
+		const runFile = path.join(runsRoot, entry.name, RUN_RECORD_FILE);
+		if (!fs.existsSync(runFile)) {
+			continue;
+		}
+		const runContent = fs.readFileSync(runFile, "utf-8");
+		runs.push(parsePersistedRunRecord(runContent, runFile));
+	}
+	return runs;
 }
 
 // ------------------------------------------------------------------------------
@@ -113,7 +431,7 @@ function getMaxExperiments(ctxCwd: string): number | null {
 // ------------------------------------------------------------------------------
 
 async function executeBenchmarkAsync(
-	input: ExecuteBenchmarkInput,
+	input: ExecuteBenchmarkInput & { readonly checksCommand?: Option.Option<string> },
 	onUpdate:
 		| ((result: { content: Array<{ type: "text"; text: string }>; details: BenchmarkProgress }) => void)
 		| undefined,
@@ -127,6 +445,7 @@ async function executeBenchmarkAsync(
 		command,
 		timeoutSeconds,
 		checksTimeoutSeconds,
+		checksCommand,
 		metricName,
 		metricUnit,
 		signal,
@@ -191,8 +510,12 @@ async function executeBenchmarkAsync(
 	let checksOutput = "";
 	let checksDuration = 0;
 
-	const checksShPath = path.join(workDir, AUTORESEARCH_CHECKS_SH);
-	if (benchmarkPassed && fs.existsSync(checksShPath)) {
+	const explicitChecksCommand = checksCommand ?? Option.none<string>();
+	const resolvedChecksCommand = Option.match(explicitChecksCommand, {
+		onSome: (command) => command,
+		onNone: () => null,
+	});
+	if (benchmarkPassed && resolvedChecksCommand !== null) {
 		const checksChunks: Buffer[] = [];
 		const ct0 = Date.now();
 		const checksOptions: { onData: (data: Buffer) => void; timeout?: number; signal?: AbortSignal } = {
@@ -205,7 +528,7 @@ async function executeBenchmarkAsync(
 			checksOptions.signal = signal;
 		}
 
-		const checksResult = await ops.exec(`bash ${checksShPath}`, workDir, checksOptions);
+		const checksResult = await ops.exec(resolvedChecksCommand, workDir, checksOptions);
 
 		checksDuration = (Date.now() - ct0) / 1000;
 		checksTimedOut = checksResult.exitCode === null;
@@ -271,210 +594,294 @@ async function executeBenchmarkAsync(
 // Git execution
 // ------------------------------------------------------------------------------
 
-async function runCommitKeep(
-	workDir: string,
-	experiment: { commit: string; status: string; description: string; metric: number; metrics: Record<string, number> },
-	committablePaths: readonly string[],
-	ops: BashOperations,
-): Promise<{ commit: string; note: string }> {
-	let output = "";
-	const onData = (data: Buffer) => {
-		output += data.toString("utf-8");
-	};
+type ShellCommandResult = {
+	readonly exitCode: number | null;
+	readonly output: string;
+};
 
-	const gitCheck = await ops.exec("git rev-parse --is-inside-work-tree", workDir, { onData, timeout: 5000 });
-	if (gitCheck.exitCode !== 0) {
-		throw new Error("not inside a git repository");
-	}
+type IsolatedCheckoutFinalizeResult = {
+	readonly note: string;
+	readonly phaseBaseCommit: string;
+	readonly commit: string | null;
+};
 
-	output = "";
-	const sidecars = new Set([AUTORESEARCH_MD, AUTORESEARCH_SH, AUTORESEARCH_CHECKS_SH]);
-	const pathsToStage: string[] = [];
-	const missingFilesToCheck: string[] = [];
-
-	for (const p of committablePaths) {
-		if (sidecars.has(p)) {
-			if (fs.existsSync(path.join(workDir, p))) {
-				pathsToStage.push(p);
-			}
-			continue;
-		}
-		const fullPath = path.join(workDir, p);
-		try {
-			fs.statSync(fullPath);
-			pathsToStage.push(p);
-		} catch {
-			missingFilesToCheck.push(p);
-		}
-	}
-
-	if (missingFilesToCheck.length > 0) {
-		let lsOutput = "";
-		await ops.exec(
-			`git ls-files --error-unmatch ${missingFilesToCheck.map((p) => JSON.stringify(p)).join(" ")}`,
-			workDir,
-			{ onData: (data) => { lsOutput += data.toString("utf-8"); }, timeout: 5000 },
-		);
-		const trackedLines = new Set(
-			lsOutput
-				.trim()
-				.split("\n")
-				.map((line) => line.trim())
-				.filter((line) => line.length > 0),
-		);
-		for (const p of missingFilesToCheck) {
-			if (trackedLines.has(p)) {
-				pathsToStage.push(p);
-			}
-		}
-	}
-
-	if (pathsToStage.length > 0) {
-		const stageCmd = `git add -- ${pathsToStage.map((p) => JSON.stringify(p)).join(" ")}`;
-		const stageResult = await ops.exec(stageCmd, workDir, { onData, timeout: 10000 });
-		if (stageResult.exitCode !== 0) {
-			throw new Error(`git add failed: ${output.trim()}`);
-		}
-	}
-
-	output = "";
-	const diffResult = await ops.exec("git diff --cached --quiet", workDir, { onData, timeout: 10000 });
-	if (diffResult.exitCode === 0) {
-		return { commit: experiment.commit, note: "nothing to commit" };
-	}
-
-	output = "";
-	const resultData: Record<string, unknown> = {
-		status: experiment.status,
-		metric: experiment.metric,
-		...experiment.metrics,
-	};
-	const trailerJson = JSON.stringify(resultData);
-	const commitMsg = `${experiment.description}\n\nResult: ${trailerJson}`;
-	const commitResult = await ops.exec(`git commit -m ${JSON.stringify(commitMsg)}`, workDir, { onData, timeout: 10000 });
-	if (commitResult.exitCode !== 0) {
-		throw new Error(`git commit failed: ${output.trim()}`);
-	}
-
-	output = "";
-	const shaResult = await ops.exec("git rev-parse --short=7 HEAD", workDir, { onData, timeout: 5000 });
-	const sha = shaResult.exitCode === 0 ? output.trim() : experiment.commit;
-	return { commit: sha.slice(0, 7), note: `committed ${sha.slice(0, 7)}` };
+function makeIsolatedCheckoutPath(workspaceRoot: string, taskId: string): string {
+	const digest = createHash("sha256")
+		.update(`${workspaceRoot}:${taskId}`)
+		.digest("hex")
+		.slice(0, 12);
+	return path.join(os.tmpdir(), "tau-autoresearch-checkouts", `${taskId}-${digest}`);
 }
 
-async function runRevertNonKeep(
-	workDir: string,
-	scopePaths: readonly string[],
-	ops: BashOperations,
-): Promise<{ note: string }> {
-	let output = "";
-	const onData = (data: Buffer) => {
-		output += data.toString("utf-8");
-	};
-
-	const gitCheck = await ops.exec("git rev-parse --is-inside-work-tree", workDir, { onData, timeout: 5000 });
-	if (gitCheck.exitCode !== 0) {
-		throw new Error("not inside a git repository");
-	}
-
-	const pathsToRevert = scopePaths.length > 0 ? scopePaths : ["."];
-	const checkoutPaths = pathsToRevert.map((p) => JSON.stringify(p)).join(" ");
-
-	output = "";
-	const checkoutResult = await ops.exec(`git checkout -- ${checkoutPaths}`, workDir, { onData, timeout: 10000 });
-	if (checkoutResult.exitCode !== 0) {
-		throw new Error(`git checkout failed: ${output.trim()}`);
-	}
-
-	for (const p of pathsToRevert) {
-		await ops.exec(`git clean -fd ${JSON.stringify(p)} 2>/dev/null`, workDir, { onData: () => {}, timeout: 5000 });
-	}
-
-	return { note: "reverted changes" };
+function makeTaskBranchName(taskId: string): string {
+	const suffix = taskId.replace(/[^A-Za-z0-9._-]/g, "-");
+	return `tau/autoresearch/${suffix}`;
 }
 
-// ------------------------------------------------------------------------------
-// Execution boundary factory
-// ------------------------------------------------------------------------------
-
-function createExecutionBoundary(
-	pi: ExtensionAPI,
-	ctx: ExtensionContext,
-	subagent: boolean,
-	applyExecutionProfileInSession: (
-		profile: ExecutionProfile,
-		ctx: ExtensionContext,
-	) => Promise<{ readonly applied: true } | { readonly applied: false; readonly reason: string }>,
-	onUpdate?: (result: { content: Array<{ type: "text"; text: string }>; details: BenchmarkProgress }) => void,
-	signal?: AbortSignal,
-): AutoresearchExecutionBoundary {
+async function runShellCommand(
+	ops: BashOperations,
+	command: string,
+	cwd: string,
+	timeoutSeconds: number,
+): Promise<ShellCommandResult> {
+	let output = "";
+	const result = await ops.exec(command, cwd, {
+		onData: (data) => {
+			output += data.toString("utf-8");
+		},
+		timeout: timeoutSeconds,
+	});
 	return {
-		executeBenchmark: (input) =>
-			Effect.gen(function* () {
-				const ops = getSandboxedBashOperations(ctx, false);
-				if (!ops) {
-					return yield* Effect.fail(
-						new AutoresearchValidationError({ reason: "Sandbox bash operations are not available." }),
-					);
-				}
-				return yield* Effect.tryPromise({
-					try: () => executeBenchmarkAsync({ ...input, signal }, onUpdate, ops),
-					catch: (e) => new AutoresearchValidationError({ reason: String(e) }),
-				});
-			}),
+		exitCode: result.exitCode,
+		output: output.trim(),
+	};
+}
 
-		commitKeep: (workDir, experiment, committablePaths) =>
-			Effect.gen(function* () {
-				if (subagent) {
-					return yield* Effect.fail(
-						new AutoresearchGitError({ reason: "Git commands are blocked in subagent mode." }),
-					);
-				}
-				const ops = getSandboxedBashOperations(ctx, false);
-				if (!ops) {
-					return yield* Effect.fail(
-						new AutoresearchGitError({ reason: "Sandbox bash operations are not available." }),
-					);
-				}
-				return yield* Effect.tryPromise({
-					try: () => runCommitKeep(workDir, experiment, committablePaths, ops),
-					catch: (e) => new AutoresearchGitError({ reason: String(e) }),
-				});
-			}),
+async function runGitOrThrow(
+	ops: BashOperations,
+	workDir: string,
+	command: string,
+	action: string,
+	timeoutSeconds: number,
+): Promise<string> {
+	const result = await runShellCommand(ops, command, workDir, timeoutSeconds);
+	if (result.exitCode === 0) {
+		return result.output;
+	}
 
-		revertNonKeep: (workDir, scopePaths) =>
-			Effect.gen(function* () {
-				if (subagent) {
-					return yield* Effect.fail(
-						new AutoresearchGitError({ reason: "Git commands are blocked in subagent mode." }),
-					);
-				}
-				const ops = getSandboxedBashOperations(ctx, false);
-				if (!ops) {
-					return yield* Effect.fail(
-						new AutoresearchGitError({ reason: "Sandbox bash operations are not available." }),
-					);
-				}
-				return yield* Effect.tryPromise({
-					try: () => runRevertNonKeep(workDir, scopePaths, ops),
-					catch: (e) => new AutoresearchGitError({ reason: String(e) }),
-				});
-			}),
+	const timedOut = result.exitCode === null;
+	const reasonSuffix = result.output.length > 0 ? `: ${result.output}` : "";
+	throw new AutoresearchGitError({
+		reason: timedOut
+			? `${action} timed out in ${workDir}${reasonSuffix}`
+			: `${action} failed in ${workDir}${reasonSuffix}`,
+	});
+}
 
-		sendFollowUp: (prompt) =>
-			Effect.sync(() => {
-				pi.sendUserMessage(prompt, { deliverAs: "followUp" });
-			}),
+async function resolveGitHeadCommit(ops: BashOperations, workDir: string): Promise<string> {
+	const output = await runGitOrThrow(
+		ops,
+		workDir,
+		"git rev-parse --verify HEAD",
+		"resolve HEAD commit",
+		5,
+	);
+	const commit = output.trim();
+	if (commit.length === 0) {
+		throw new AutoresearchGitError({
+			reason: `resolve HEAD commit returned empty output for ${workDir}`,
+		});
+	}
+	return commit;
+}
 
-		applyExecutionProfile: (profile) =>
-			Effect.promise(() => applyExecutionProfileInSession(profile, ctx)).pipe(
-				Effect.catch((error: unknown) =>
-					Effect.succeed({
-						applied: false as const,
-						reason: String(error),
-					}),
-				),
-			),
+function resolveIsolatedScopeWorkDir(checkoutPath: string, scopeRoot: string): string {
+	const normalizedRoot = path.normalize(scopeRoot);
+	if (path.isAbsolute(normalizedRoot)) {
+		throw new AutoresearchValidationError({
+			reason: `scope.root must be relative for isolated autoresearch checkout execution. Received: ${scopeRoot}`,
+		});
+	}
+
+	const resolved = path.resolve(checkoutPath, normalizedRoot);
+	const checkoutRoot = path.resolve(checkoutPath);
+	if (resolved !== checkoutRoot && !resolved.startsWith(`${checkoutRoot}${path.sep}`)) {
+		throw new AutoresearchValidationError({
+			reason: `scope.root resolves outside the isolated checkout: ${scopeRoot}`,
+		});
+	}
+	return resolved;
+}
+
+async function ensureIsolatedCheckout(
+	workspaceRoot: string,
+	state: AutoresearchLoopPersistedState,
+	ops: BashOperations,
+): Promise<IsolatedCheckout> {
+	if (Option.isSome(state.autoresearch.isolatedCheckout)) {
+		const persisted = state.autoresearch.isolatedCheckout.value;
+		if (!fs.existsSync(persisted.checkoutPath)) {
+			throw new AutoresearchGitError({
+				reason: `isolated checkout path is missing: ${persisted.checkoutPath}`,
+			});
+		}
+
+		await runGitOrThrow(
+			ops,
+			persisted.checkoutPath,
+			"git rev-parse --is-inside-work-tree",
+			"validate isolated checkout repository",
+			5,
+		);
+		await runGitOrThrow(
+			ops,
+			persisted.checkoutPath,
+			`git checkout ${JSON.stringify(persisted.taskBranch)}`,
+			"switch isolated checkout branch",
+			10,
+		);
+		await runGitOrThrow(
+			ops,
+			persisted.checkoutPath,
+			`git rev-parse --verify ${JSON.stringify(persisted.phaseBaseCommit)}`,
+			"validate isolated checkout phase base commit",
+			5,
+		);
+		return persisted;
+	}
+
+	await runGitOrThrow(
+		ops,
+		workspaceRoot,
+		"git rev-parse --is-inside-work-tree",
+		"validate workspace repository",
+		5,
+	);
+	const baseCommit = await resolveGitHeadCommit(ops, workspaceRoot);
+
+	const checkoutPath = makeIsolatedCheckoutPath(workspaceRoot, state.taskId);
+	if (fs.existsSync(checkoutPath)) {
+		const entries = fs.readdirSync(checkoutPath);
+		if (entries.length > 0) {
+			throw new AutoresearchGitError({
+				reason: `isolated checkout path already exists and is not empty: ${checkoutPath}`,
+			});
+		}
+		fs.rmSync(checkoutPath, { recursive: true, force: true });
+	}
+
+	await runGitOrThrow(
+		ops,
+		workspaceRoot,
+		`git clone --quiet --no-hardlinks ${JSON.stringify(workspaceRoot)} ${JSON.stringify(checkoutPath)}`,
+		"create isolated checkout",
+		120,
+	);
+
+	const taskBranch = makeTaskBranchName(state.taskId);
+	await runGitOrThrow(
+		ops,
+		checkoutPath,
+		`git checkout -B ${JSON.stringify(taskBranch)} ${JSON.stringify(baseCommit)}`,
+		"initialize isolated checkout branch",
+		20,
+	);
+
+	return {
+		checkoutPath,
+		taskBranch,
+		phaseBaseCommit: baseCommit,
+	};
+}
+
+async function finalizeKeepOnIsolatedCheckout(
+	checkout: IsolatedCheckout,
+	run: PersistedAutoresearchRun,
+	input: {
+		readonly description: string;
+		readonly status: AutoresearchRunOutcome;
+		readonly metrics: Record<string, number> | undefined;
+		readonly asi: Record<string, unknown> | null;
+	},
+	ops: BashOperations,
+): Promise<IsolatedCheckoutFinalizeResult> {
+	await runGitOrThrow(
+		ops,
+		checkout.checkoutPath,
+		`git checkout ${JSON.stringify(checkout.taskBranch)}`,
+		"switch isolated checkout branch",
+		10,
+	);
+	await runGitOrThrow(
+		ops,
+		checkout.checkoutPath,
+		"git add -A",
+		"stage isolated checkout changes",
+		10,
+	);
+
+	const diffResult = await runShellCommand(
+		ops,
+		"git diff --cached --quiet",
+		checkout.checkoutPath,
+		10,
+	);
+
+	if (diffResult.exitCode === 0) {
+		const headCommit = await resolveGitHeadCommit(ops, checkout.checkoutPath);
+		return {
+			note: `No isolated checkout changes to commit on ${checkout.taskBranch}.`,
+			phaseBaseCommit: headCommit,
+			commit: null,
+		};
+	}
+
+	if (diffResult.exitCode !== 1) {
+		const reasonSuffix = diffResult.output.length > 0 ? `: ${diffResult.output}` : "";
+		throw new AutoresearchGitError({
+			reason: `inspect staged isolated checkout changes failed${reasonSuffix}`,
+		});
+	}
+
+	const resultSummary: Record<string, unknown> = {
+		status: input.status,
+		run_id: run.runId,
+		run_number: run.runNumber,
+		phase_id: run.phaseId,
+		metrics: input.metrics ?? null,
+		asi: input.asi,
+	};
+
+	const commitMessage =
+		`autoresearch(${run.taskId}) run ${run.runNumber}: ${input.description}\n\n` +
+		`result: ${JSON.stringify(resultSummary)}`;
+	await runGitOrThrow(
+		ops,
+		checkout.checkoutPath,
+		`git commit -m ${JSON.stringify(commitMessage)}`,
+		"commit kept isolated checkout changes",
+		20,
+	);
+
+	const headCommit = await resolveGitHeadCommit(ops, checkout.checkoutPath);
+	return {
+		note: `Committed kept changes on ${checkout.taskBranch} at ${headCommit.slice(0, 7)}.`,
+		phaseBaseCommit: headCommit,
+		commit: headCommit,
+	};
+}
+
+async function cleanupNonKeepOnIsolatedCheckout(
+	checkout: IsolatedCheckout,
+	ops: BashOperations,
+): Promise<IsolatedCheckoutFinalizeResult> {
+	await runGitOrThrow(
+		ops,
+		checkout.checkoutPath,
+		`git checkout ${JSON.stringify(checkout.taskBranch)}`,
+		"switch isolated checkout branch",
+		10,
+	);
+	await runGitOrThrow(
+		ops,
+		checkout.checkoutPath,
+		`git reset --hard ${JSON.stringify(checkout.phaseBaseCommit)}`,
+		"reset isolated checkout to phase base commit",
+		10,
+	);
+	await runGitOrThrow(
+		ops,
+		checkout.checkoutPath,
+		"git clean -fd",
+		"clean isolated checkout untracked files",
+		10,
+	);
+
+	const headCommit = await resolveGitHeadCommit(ops, checkout.checkoutPath);
+	return {
+		note: `Reset isolated checkout branch ${checkout.taskBranch} to ${headCommit.slice(0, 7)}.`,
+		phaseBaseCommit: headCommit,
+		commit: null,
 	};
 }
 
@@ -533,116 +940,22 @@ function buildRunExperimentText(details: RunDetails): string {
 
 	return text;
 }
-
-function currentResults(results: readonly { segment: number }[], segment: number) {
-	return results.filter((r) => r.segment === segment);
-}
-
-function buildLogExperimentText(result: LogExperimentResult): string {
-	const { experiment, state, wallClockSeconds } = result;
-	const segmentCount = currentResults(state.results, state.currentSegment).length;
-
-	let text = `Logged #${state.results.length}: ${experiment.status} — ${experiment.description}`;
-
-	if (state.bestMetric !== null) {
-		text += `\nBaseline ${state.metricName}: ${formatNum(state.bestMetric, state.metricUnit)}`;
-		if (segmentCount > 1 && experiment.status === "keep" && experiment.metric > 0) {
-			const delta = experiment.metric - state.bestMetric;
-			const pct = ((delta / state.bestMetric) * 100).toFixed(1);
-			const sign = delta > 0 ? "+" : "";
-			text += ` | this: ${formatNum(experiment.metric, state.metricUnit)} (${sign}${pct}%)`;
-		}
-	}
-
-	if (Object.keys(experiment.metrics).length > 0) {
-		const parts: string[] = [];
-		for (const [name, value] of Object.entries(experiment.metrics)) {
-			const def = state.secondaryMetrics.find((m) => m.name === name);
-			const unit = def?.unit ?? "";
-			parts.push(`${name}: ${formatNum(value, unit)}`);
-		}
-		text += `\nSecondary: ${parts.join("  ")}`;
-	}
-
-	if (experiment.asi && Object.keys(experiment.asi).length > 0) {
-		const asiParts: string[] = [];
-		for (const [k, v] of Object.entries(experiment.asi)) {
-			const s = typeof v === "string" ? v : JSON.stringify(v);
-			asiParts.push(`${k}: ${s.length > 80 ? s.slice(0, 77) + "..." : s}`);
-		}
-		if (asiParts.length > 0) {
-			text += `\nASI: ${asiParts.join(" | ")}`;
-		}
-	}
-
-	if (state.confidence !== null) {
-		const confStr = state.confidence.toFixed(1);
-		if (state.confidence >= 2.0) {
-			text += `\nConfidence: ${confStr}x noise floor — improvement is likely real`;
-		} else if (state.confidence >= 1.0) {
-			text += `\nConfidence: ${confStr}x noise floor — improvement is above noise but marginal`;
-		} else {
-			text += `\nConfidence: ${confStr}x noise floor — improvement is within noise`;
-		}
-	}
-
-	text += `\n(${segmentCount} experiments`;
-	if (state.maxExperiments !== null) {
-		text += ` / ${state.maxExperiments} max`;
-	}
-	text += `)`;
-
-	if (result.gitNote) {
-		text += `\nGit: ${result.gitNote}`;
-	}
-
-	if (wallClockSeconds !== null) {
-		text += `\nWall clock: ${wallClockSeconds.toFixed(1)}s`;
-	}
-
-	return text;
-}
-
 // ------------------------------------------------------------------------------
 // Extension
 // ------------------------------------------------------------------------------
 
 export default function initAutoresearch(
 	pi: ExtensionAPI,
-	runEffect: <A, E>(effect: Effect.Effect<A, E, Autoresearch | Sandbox | PromptModes>) => Promise<A>,
+	runEffect: <A, E>(
+		effect: Effect.Effect<A, E, LoopEngine | Sandbox | PromptModes>,
+	) => Promise<A>,
 ): void {
-	const pendingResumeMessages = new Map<string, { message: string; fallbackTimer: ReturnType<typeof setTimeout> }>();
-
-	const clearPendingResumeMessage = (sessionId: string): void => {
-		const pending = pendingResumeMessages.get(sessionId);
-		if (!pending) return;
-		clearTimeout(pending.fallbackTimer);
-		pendingResumeMessages.delete(sessionId);
-	};
-
-	const scheduleResumeMessage = (sessionId: string, message: string): void => {
-		clearPendingResumeMessage(sessionId);
-		const fallbackTimer = setTimeout(() => {
-			const pending = pendingResumeMessages.get(sessionId);
-			if (!pending) return;
-			pendingResumeMessages.delete(sessionId);
-			pi.sendUserMessage(pending.message);
-		}, 30_000);
-		pendingResumeMessages.set(sessionId, { message, fallbackTimer });
-	};
-
-	const flushPendingResumeMessage = (sessionId: string): void => {
-		const pending = pendingResumeMessages.get(sessionId);
-		if (!pending) return;
-		clearTimeout(pending.fallbackTimer);
-		pendingResumeMessages.delete(sessionId);
-		pi.sendUserMessage(pending.message);
-	};
-
-	const withAutoresearch = <A, E>(f: (service: AutoresearchService) => Effect.Effect<A, E, never>): Promise<A> =>
+	const withLoopEngine = <A, E>(
+		f: (service: LoopEngineService) => Effect.Effect<A, E, never>,
+	): Promise<A> =>
 		runEffect(
 			Effect.gen(function* () {
-				const service = yield* Autoresearch;
+				const service = yield* LoopEngine;
 				return yield* f(service);
 			}),
 		);
@@ -671,324 +984,380 @@ export default function initAutoresearch(
 	): Promise<ExecutionProfile | null> =>
 		withPromptModes((promptModes) => promptModes.captureCurrentExecutionProfile(ctx));
 
-	const applyExecutionProfileInSession = (
-		profile: ExecutionProfile,
-		ctx: ExtensionContext,
-	): Promise<{ readonly applied: true } | { readonly applied: false; readonly reason: string }> =>
-		withPromptModes((promptModes) =>
-			promptModes.applyExecutionProfile(profile, ctx, {
-				notifyOnSuccess: false,
-				persist: false,
-				ephemeral: true,
-			}).pipe(
-				Effect.map((result) =>
-					result.applied
-						? ({ applied: true } as const)
-						: ({ applied: false, reason: result.reason } as const),
-				),
-			),
-		);
+	type ActiveAutoresearchChildContext = {
+		readonly session: LoopSessionRef;
+		readonly loopState: AutoresearchLoopPersistedState;
+		readonly controller: LoopSessionRef;
+		readonly child: LoopSessionRef;
+	};
 
-	const getSessionKey = (ctx: ExtensionContext) => ctx.sessionManager.getSessionId();
+	const readCanonicalLoopState = (cwd: string, taskId: string): LoopPersistedState => {
+		const statePath = path.resolve(cwd, loopStateFile(taskId));
+		if (!fs.existsSync(statePath)) {
+			throw new LoopTaskNotFoundError({ taskId });
+		}
+		const content = fs.readFileSync(statePath, "utf-8");
+		return decodeLoopPersistedStateJsonSync(content);
+	};
+
+	const writeCanonicalLoopState = (cwd: string, state: LoopPersistedState): void => {
+		const statePath = path.resolve(cwd, loopStateFile(state.taskId));
+		writeAtomicFileSync(statePath, encodeLoopPersistedStateJsonSync(state));
+	};
+
+	const loadPhaseSnapshotForState = (
+		cwd: string,
+		state: AutoresearchLoopPersistedState,
+	) => {
+		const phaseId = Option.match(state.autoresearch.phaseId, {
+			onNone: () => {
+				throw new AutoresearchValidationError({
+					reason: `Autoresearch task ${state.taskId} has no active phase snapshot. Start or resume the loop first.`,
+				});
+			},
+			onSome: (value) => value,
+		});
+		const snapshotPath = path.resolve(cwd, loopPhaseFile(state.taskId, phaseId));
+		if (!fs.existsSync(snapshotPath)) {
+			throw new LoopContractValidationError({
+				entity: "loops.phase_snapshot",
+				reason: `${loopPhaseFile(state.taskId, phaseId)} does not exist.`,
+			});
+		}
+		const content = fs.readFileSync(snapshotPath, "utf-8");
+		return decodeAutoresearchPhaseSnapshotJsonSync(content);
+	};
+
+	const resolveActiveAutoresearchChildContext = async (
+		ctx: ExtensionContext,
+	): Promise<ActiveAutoresearchChildContext> => {
+		const session = commandSessionRef(ctx);
+		if (Option.isNone(session)) {
+			throw new AutoresearchValidationError({
+				reason: "Autoresearch run tools require an interactive session file.",
+			});
+		}
+
+		const owned = await withLoopEngine((engine) =>
+			engine.resolveOwnedLoop(ctx.cwd, session.value),
+		);
+		if (Option.isNone(owned)) {
+			throw new AutoresearchValidationError({
+				reason: "No loop is owned by the current session.",
+			});
+		}
+
+		if (owned.value.kind === "blocked_manual_resolution") {
+			throw new AutoresearchValidationError({
+				reason: `Task ${owned.value.taskId} is blocked for manual resolution: ${owned.value.blocked.message}`,
+			});
+		}
+
+		const loopState = requireAutoresearchLoopState(owned.value);
+		if (loopState.lifecycle !== "active") {
+			throw new AutoresearchValidationError({
+				reason: `Autoresearch task ${loopState.taskId} is ${loopState.lifecycle}. Start or resume it before running trials.`,
+			});
+		}
+
+		const controller = Option.match(loopState.ownership.controller, {
+			onNone: () => {
+				throw new AutoresearchValidationError({
+					reason: `Autoresearch task ${loopState.taskId} has no controller session ownership.`,
+				});
+			},
+			onSome: (value) => value,
+		});
+		const child = Option.match(loopState.ownership.child, {
+			onNone: () => {
+				throw new AutoresearchValidationError({
+					reason: `Autoresearch task ${loopState.taskId} has no active child session. Start the next trial iteration first.`,
+				});
+			},
+			onSome: (value) => value,
+		});
+
+		if (!sessionRefMatches(child, session.value)) {
+			const fromController = sessionRefMatches(controller, session.value);
+			throw new AutoresearchValidationError({
+				reason: fromController
+					? `Session ${session.value.sessionId} is the controller session for ${loopState.taskId}. autoresearch_run and autoresearch_done are child-session tools only.`
+					: `Session ${session.value.sessionId} does not match the active child session for ${loopState.taskId}.`,
+			});
+		}
+
+		return {
+			session: session.value,
+			loopState,
+			controller,
+			child,
+		};
+	};
+
+	const makeRunId = (runNumber: number): string =>
+		`run-${String(runNumber).padStart(4, "0")}-${Date.now()}`;
+
+	const readRunRecord = (cwd: string, taskId: string, runId: string): PersistedAutoresearchRun => {
+		const runPath = path.resolve(cwd, loopRunDirectory(taskId, runId), RUN_RECORD_FILE);
+		if (!fs.existsSync(runPath)) {
+			throw new LoopContractValidationError({
+				entity: "loops.run",
+				reason: `${path.relative(cwd, runPath)} does not exist.`,
+			});
+		}
+		return parsePersistedRunRecord(fs.readFileSync(runPath, "utf-8"), runPath);
+	};
+
+	const writeRunRecord = (cwd: string, run: PersistedAutoresearchRun): void => {
+		const runPath = path.resolve(cwd, loopRunDirectory(run.taskId, run.runId), RUN_RECORD_FILE);
+		writeAtomicFileSync(runPath, `${JSON.stringify(run, null, 2)}\n`);
+	};
 
 	const autoresearchHelp = () =>
 		[
-			"Usage: /autoresearch [off|clear|<text>]",
+			"Usage: /autoresearch <command>",
 			"",
-			"<text> enters autoresearch mode and starts or resumes the loop.",
-			"off leaves autoresearch mode.",
-			"clear deletes autoresearch.jsonl and turns autoresearch mode off.",
+			"Commands:",
+			"  create <task-id> [goal]    Create an autoresearch loop task under .pi/loops/tasks/<task-id>.md",
+			"  start <task-id>            Start an autoresearch loop",
+			"  resume <task-id>           Resume a paused autoresearch loop",
+			"  pause [task-id]            Pause an active autoresearch loop",
+			"  stop [task-id]             Stop an active or paused autoresearch loop",
+			"  status [--archived]        Show autoresearch loops",
+			"  archive <task-id>          Archive a stopped autoresearch loop",
+			"  cancel <task-id>           Delete a non-active autoresearch loop",
+			"  clean [--all]              Remove completed autoresearch loops",
 		].join("\n");
-
-	const expandedState = new Map<string, boolean>();
-	const latestViewData = new Map<string, import("../services/autoresearch.js").AutoresearchViewData>();
-	type OverlayState = {
-		tui: import("@mariozechner/pi-tui").TUI;
-		done: () => void;
-		spinnerTimer?: ReturnType<typeof setInterval>;
-		spinnerFrame: number;
-	};
-	const overlayStates = new Map<string, OverlayState>();
-
-	const requestOverlayRender = (sessionId: string): void => {
-		const state = overlayStates.get(sessionId);
-		if (state) {
-			state.tui.invalidate();
-		}
-	};
-
-	const closeFullscreenOverlay = (sessionId: string): void => {
-		const state = overlayStates.get(sessionId);
-		if (state) {
-			state.done();
-			if (state.spinnerTimer) clearInterval(state.spinnerTimer);
-			overlayStates.delete(sessionId);
-		}
-	};
-
-	const updateUI = async (ctx: ExtensionContext): Promise<void> => {
-		if (!ctx.hasUI || typeof ctx.ui.setWidget !== "function") return;
-
-		const sessionId = getSessionKey(ctx);
-		const viewData = await withAutoresearch((service) => service.getViewData(sessionId));
-		latestViewData.set(sessionId, viewData);
-		requestOverlayRender(sessionId);
-
-		if (viewData.totalRunCount === 0 && !viewData.runningExperiment) {
-			ctx.ui.setWidget("autoresearch", undefined);
-			return;
-		}
-
-		const expanded = expandedState.get(sessionId) ?? false;
-
-		ctx.ui.setWidget("autoresearch", (_tui, theme) => {
-			const width = process.stdout.columns ?? 120;
-			return new Text(renderWidget(viewData, width, theme, expanded), 0, 0);
-		});
-	};
-
-	const openFullscreenOverlay = async (ctx: ExtensionContext): Promise<void> => {
-		if (!ctx.hasUI) return;
-		const sessionId = getSessionKey(ctx);
-		const viewData = latestViewData.get(sessionId);
-		if (!viewData) return;
-		if (viewData.totalRunCount === 0 && !viewData.runningExperiment) {
-			ctx.ui.notify("No autoresearch results yet", "info");
-			return;
-		}
-		await ctx.ui.custom<void>(
-			(tui, theme, _kb, done) => {
-				const state: OverlayState = { tui, done, spinnerFrame: 0 };
-				state.spinnerTimer = setInterval(() => {
-					state.spinnerFrame += 1;
-					tui.invalidate();
-				}, 80);
-				overlayStates.set(sessionId, state);
-
-				let scrollOffset = 0;
-				return {
-						render(width: number): string[] {
-							const currentView = latestViewData.get(sessionId);
-							if (!currentView) {
-								done(undefined);
-								return [];
-							}
-						const terminalRows = process.stdout.rows ?? 40;
-						const header = renderExpandedHeader(currentView, width, theme);
-						const body = renderDashboardLines(currentView, width, theme, 0);
-						if (currentView.runningExperiment) {
-							body.push(renderOverlayRunningLine(currentView, theme, width, state.spinnerFrame));
-						}
-						const viewportRows = Math.max(4, terminalRows - 4);
-						const maxScroll = Math.max(0, body.length - viewportRows);
-						if (scrollOffset > maxScroll) scrollOffset = maxScroll;
-						const visible = body.slice(scrollOffset, scrollOffset + viewportRows);
-						const footer = renderOverlayFooter(width, scrollOffset, viewportRows, body.length, theme);
-						return [
-							header,
-							...visible,
-							...Array.from({ length: Math.max(0, viewportRows - visible.length) }, () => ""),
-							footer,
-						];
-					},
-						handleInput(data: string): void {
-							const currentView = latestViewData.get(sessionId);
-						const totalRows =
-							(currentView
-								? renderDashboardLines(currentView, process.stdout.columns ?? 120, theme, 0).length +
-								  (currentView.runningExperiment ? 1 : 0)
-								: 0);
-						const terminalRows = process.stdout.rows ?? 40;
-						const viewportRows = Math.max(4, terminalRows - 4);
-						const maxScroll = Math.max(0, totalRows - viewportRows);
-							if (shouldCloseAutoresearchOverlay(data)) {
-								done(undefined);
-								return;
-							}
-						if (matchesKey(data, "up") || data === "k") {
-							scrollOffset = Math.max(0, scrollOffset - 1);
-						} else if (matchesKey(data, "down") || data === "j") {
-							scrollOffset = Math.min(maxScroll, scrollOffset + 1);
-						} else if (matchesKey(data, "pageUp") || data === "u") {
-							scrollOffset = Math.max(0, scrollOffset - viewportRows);
-						} else if (matchesKey(data, "pageDown") || data === "d") {
-							scrollOffset = Math.min(maxScroll, scrollOffset + viewportRows);
-						} else if (data === "g") {
-							scrollOffset = 0;
-						} else if (data === "G") {
-							scrollOffset = maxScroll;
-						}
-						tui.invalidate();
-					},
-					invalidate(): void {},
-					dispose(): void {
-						if (state.spinnerTimer) clearInterval(state.spinnerTimer);
-						overlayStates.delete(sessionId);
-					},
-				};
-			},
-			{
-				overlay: true,
-				overlayOptions: { width: "95%", maxHeight: "90%", anchor: "center" },
-			},
-		);
-	};
-
-	const rehydrate = async (ctx: ExtensionContext) => {
-		const sessionId = getSessionKey(ctx);
-		let workDir: string;
-		try {
-			workDir = getWorkDir(ctx.cwd);
-		} catch {
-			return;
-		}
-		await withAutoresearch((service) => service.rehydrate(sessionId, workDir));
-		await updateUI(ctx);
-	};
 
 	// --------------------------------------------------------------------------
 	// Tools
 	// --------------------------------------------------------------------------
 
 	pi.registerTool({
-		name: "init_experiment",
-		label: "Init Experiment",
+		name: "autoresearch_run",
+		label: "Autoresearch Run",
 		description:
-			"Initialize the experiment session. Call once before the first run_experiment to set the name, primary metric, unit, and direction. Writes the config header to autoresearch.jsonl.",
-		promptSnippet: "Initialize experiment session (name, metric, unit, direction). Call once before first run.",
+			"Execute exactly one autoresearch trial and persist artifacts under .pi/loops/runs/<task-id>/<run-id>/.",
+		promptSnippet: "Execute one autoresearch trial and persist run artifacts.",
 		promptGuidelines: [
-			"Call init_experiment exactly once at the start of an autoresearch session, before the first run_experiment.",
-			"If autoresearch.jsonl already exists with a config, do NOT call init_experiment again.",
-			"If the optimization target changes (different benchmark, metric, or workload), call init_experiment again to insert a new config header and reset the baseline.",
+			"Autoresearch loop ownership resolves the active trial context automatically.",
+			"Each autoresearch task allows only one pending trial at a time.",
+			"Call autoresearch_done after autoresearch_run to finalize the pending trial.",
 		],
 		parameters: Type.Object({
-			name: Type.String({
-				description:
-					'Human-readable name for this experiment session (e.g. "Optimizing liquid for fastest execution and parsing")',
-			}),
-			metric_name: Type.String({
-				description:
-					'Display name for the primary metric (e.g. "total_us", "bundle_kb", "val_bpb"). Shown in dashboard headers.',
-			}),
-			metric_unit: Type.Optional(
-				Type.String({
-					description:
-						'Unit for the primary metric. Use "us", "ms", "s", "kb", "mb", or "" for unitless. Default: ""',
-				}),
-			),
-			direction: Type.Optional(
-				Type.String({
-					description: 'Whether "lower" or "higher" is better for the primary metric. Default: "lower".',
-				}),
+			timeout: Type.Optional(Type.Number({ description: "Benchmark timeout in seconds (default 600)." })),
+			checks_timeout: Type.Optional(
+				Type.Number({ description: "Checks timeout in seconds when checks_command is set (default 300)." }),
 			),
 		}),
 
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const workDirError = validateWorkDir(ctx.cwd);
-			if (workDirError) {
-				return {
-					content: [{ type: "text", text: `Error: ${workDirError}` }],
-					details: {},
-				};
-			}
-			const workDir = getWorkDir(ctx.cwd);
-			const maxExperiments = getMaxExperiments(ctx.cwd);
-			const sessionId = getSessionKey(ctx);
-			const executionProfile = await captureCurrentExecutionProfile(ctx);
-			if (executionProfile === null) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: "Error: could not capture the current execution profile. Set /mode and retry init_experiment.",
-						},
-					],
-					details: {},
-					isError: true,
-				};
-			}
-
-			let contractContent: string;
-			try {
-				contractContent = fs.readFileSync(path.join(workDir, AUTORESEARCH_MD), "utf-8");
-			} catch {
-				return {
-					content: [{ type: "text", text: `Error: ${AUTORESEARCH_MD} does not exist. Create it before initializing autoresearch.` }],
-					details: {},
-					isError: true,
-				};
-			}
-			const contractResult = readAutoresearchContractFromContent(contractContent, path.join(workDir, AUTORESEARCH_MD));
-			if (contractResult.errors.length > 0) {
-				return {
-					content: [{ type: "text", text: `Error: ${contractResult.errors.join(" ")}` }],
-					details: {},
-					isError: true,
-				};
-			}
+		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			let nextStateWritten = false;
+			let runDirectoryToCleanup: string | null = null;
+			let previousState: AutoresearchLoopPersistedState | null = null;
+			let isolatedCheckoutForRecovery: IsolatedCheckout | null = null;
 
 			try {
-				const result = await withAutoresearch((service) =>
-					service.initExperiment(sessionId, workDir, {
-						name: params.name,
-						metricName: params.metric_name,
-						metricUnit: params.metric_unit ?? "",
-						direction: params.direction === "higher" ? "higher" : "lower",
-						benchmarkCommand: contractResult.contract.benchmark.command ?? "bash autoresearch.sh",
-						scopePaths: contractResult.contract.scopePaths,
-						offLimits: contractResult.contract.offLimits,
-						constraints: contractResult.contract.constraints,
-						executionProfile,
-						maxExperiments,
-					}),
+				const active = await resolveActiveAutoresearchChildContext(ctx);
+				const persisted = requireAutoresearchLoopState(
+					readCanonicalLoopState(ctx.cwd, active.loopState.taskId),
 				);
-				await updateUI(ctx);
 
-				const reinitNote = result.isReinitializing
-					? " (re-initialized — previous results archived, new baseline needed)"
-					: "";
-				const limitNote =
-					maxExperiments !== null ? `\nMax iterations: ${maxExperiments} (from autoresearch.config.json)` : "";
-				const workDirNote = workDir !== ctx.cwd ? `\nWorking directory: ${workDir}` : "";
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Experiment initialized: "${result.name}"${reinitNote}\nMetric: ${result.metricName} (${result.metricUnit || "unitless"}, ${result.direction} is better)${limitNote}${workDirNote}\nConfig written to autoresearch.jsonl. Now run the baseline with run_experiment.`,
-						},
-					],
-					details: {},
-				};
-			} catch (error) {
-				if (error instanceof AutoresearchValidationError) {
+				if (persisted.lifecycle !== "active") {
 					return {
-						content: [{ type: "text", text: `Error: ${error.reason}` }],
+						content: [
+							{ type: "text", text: `Error: autoresearch task ${persisted.taskId} is ${persisted.lifecycle}.` },
+						],
 						details: {},
 						isError: true,
 					};
 				}
-				if (error instanceof AutoresearchBenchmarkCommandMismatchError) {
+
+				if (Option.isSome(persisted.autoresearch.pendingRunId)) {
 					return {
 						content: [
 							{
 								type: "text",
-								text: `Error: benchmark command mismatch. Expected: ${error.expected}, Received: ${error.received}`,
+								text: `Error: task ${persisted.taskId} already has pending run ${persisted.autoresearch.pendingRunId.value}. Finalize it with autoresearch_done first.`,
 							},
 						],
 						details: {},
 						isError: true,
 					};
 				}
-				if (error instanceof AutoresearchFingerprintMismatchError) {
+
+				const existingChildRun = listRunRecordsForTask(ctx.cwd, persisted.taskId).find((run) =>
+					sessionRefMatches(run.childSession, active.child),
+				);
+				if (existingChildRun !== undefined) {
 					return {
-						content: [{ type: "text", text: `Error: ${error.reason}` }],
+						content: [
+							{
+								type: "text",
+								text: `Error: child session ${active.child.sessionId} already executed run ${existingChildRun.runId} for task ${persisted.taskId}. Create a new child session for the next trial.`,
+							},
+						],
 						details: {},
 						isError: true,
 					};
 				}
-				if (error instanceof AutoresearchContractValidationError) {
+
+				const phaseSnapshot = loadPhaseSnapshotForState(ctx.cwd, persisted);
+
+				const ops = getSandboxedBashOperations(ctx, false);
+				if (!ops) {
+					throw new AutoresearchValidationError({ reason: "Sandbox bash operations are not available." });
+				}
+
+				const isolatedCheckout = await ensureIsolatedCheckout(ctx.cwd, persisted, ops);
+				const phaseBaseCommit = await resolveGitHeadCommit(ops, isolatedCheckout.checkoutPath);
+				isolatedCheckoutForRecovery = {
+					...isolatedCheckout,
+					phaseBaseCommit,
+				};
+
+				const runNumber = persisted.autoresearch.runCount + 1;
+				const runId = makeRunId(runNumber);
+				const runDirectory = path.resolve(ctx.cwd, loopRunDirectory(persisted.taskId, runId));
+				runDirectoryToCleanup = runDirectory;
+
+				previousState = persisted;
+				const now = new Date().toISOString();
+				const pendingState: AutoresearchLoopPersistedState = {
+					...persisted,
+					updatedAt: now,
+					autoresearch: {
+						...persisted.autoresearch,
+						pendingRunId: Option.some(runId),
+						runCount: runNumber,
+						isolatedCheckout: Option.some(isolatedCheckoutForRecovery),
+					},
+				};
+				writeCanonicalLoopState(ctx.cwd, pendingState);
+				nextStateWritten = true;
+
+				fs.mkdirSync(runDirectory, { recursive: true });
+				const benchmarkLogPath = path.join(runDirectory, RUN_BENCHMARK_LOG_FILE);
+				const checksLogPath = Option.match(phaseSnapshot.benchmark.checksCommand, {
+					onNone: () => Option.none<string>(),
+					onSome: () => Option.some(path.join(runDirectory, RUN_CHECKS_LOG_FILE)),
+				});
+
+				const workDir = resolveIsolatedScopeWorkDir(
+					isolatedCheckoutForRecovery.checkoutPath,
+					phaseSnapshot.scope.root,
+				);
+				const details = await executeBenchmarkAsync(
+					{
+						workDir,
+						runDirectory,
+						benchmarkLogPath,
+						checksLogPath,
+						checksCommand: phaseSnapshot.benchmark.checksCommand,
+						command: phaseSnapshot.benchmark.command,
+						timeoutSeconds: params.timeout ?? 600,
+						checksTimeoutSeconds: params.checks_timeout ?? 300,
+						metricName: phaseSnapshot.metric.name,
+						metricUnit: phaseSnapshot.metric.unit,
+						signal,
+					},
+					onUpdate,
+					ops,
+				);
+
+				const copiedFullOutput = Option.match(details.fullOutputPath, {
+					onNone: () => null,
+					onSome: (sourcePath) => {
+						const targetPath = path.join(runDirectory, RUN_FULL_OUTPUT_LOG_FILE);
+						fs.copyFileSync(sourcePath, targetPath);
+						return RUN_FULL_OUTPUT_LOG_FILE;
+					},
+				});
+
+				const runRecord: PersistedAutoresearchRun = {
+					kind: "autoresearch_run",
+					version: 1,
+					taskId: persisted.taskId,
+					runId,
+					runNumber,
+					phaseId: phaseSnapshot.phaseId,
+					createdAt: now,
+					childSession: active.child,
+					controllerSession: active.controller,
+					benchmark: {
+						command: phaseSnapshot.benchmark.command,
+						durationSeconds: details.durationSeconds,
+						exitCode: details.exitCode,
+						timedOut: details.timedOut,
+						passed: details.passed,
+						logFile: RUN_BENCHMARK_LOG_FILE,
+						tailOutput: details.llmTailOutput,
+					},
+					checks: Option.match(phaseSnapshot.benchmark.checksCommand, {
+						onNone: () => null,
+						onSome: (command) => ({
+							command,
+							durationSeconds: details.checksDuration,
+							passed: details.checksPass,
+							timedOut: details.checksTimedOut,
+							logFile: Option.isSome(checksLogPath) ? RUN_CHECKS_LOG_FILE : null,
+							outputTail: details.checksOutput,
+						}),
+					}),
+					parsed: {
+						metricName: details.metricName,
+						metricUnit: details.metricUnit,
+						metrics: details.parsedMetrics,
+						primary: details.parsedPrimary,
+						asi: details.parsedAsi,
+					},
+					fullOutputLogFile: copiedFullOutput,
+					finalized: null,
+				};
+				writeRunRecord(ctx.cwd, runRecord);
+
+				let text = `Run ${runNumber} recorded as pending (${runId}). Finalize with autoresearch_done.\n`;
+				text += buildRunExperimentText(details);
+				return {
+					content: [{ type: "text", text }],
+					details: {
+						run_id: runId,
+						run_number: runNumber,
+						task_id: persisted.taskId,
+						phase_id: phaseSnapshot.phaseId,
+						benchmark_command: phaseSnapshot.benchmark.command,
+					},
+				};
+			} catch (error) {
+				if (nextStateWritten && previousState !== null) {
+					const recoveredState: AutoresearchLoopPersistedState = {
+						...previousState,
+						updatedAt: new Date().toISOString(),
+						autoresearch: {
+							...previousState.autoresearch,
+							isolatedCheckout:
+								isolatedCheckoutForRecovery === null
+									? previousState.autoresearch.isolatedCheckout
+									: Option.some(isolatedCheckoutForRecovery),
+						},
+					};
+					writeCanonicalLoopState(ctx.cwd, recoveredState);
+				}
+				if (runDirectoryToCleanup !== null) {
+					fs.rmSync(runDirectoryToCleanup, { recursive: true, force: true });
+				}
+
+				if (
+					error instanceof AutoresearchValidationError ||
+					error instanceof AutoresearchGitError ||
+					error instanceof LoopContractValidationError ||
+					error instanceof LoopTaskNotFoundError ||
+					error instanceof LoopAmbiguousOwnershipError ||
+					error instanceof LoopLifecycleConflictError ||
+					error instanceof LoopOwnershipValidationError
+				) {
 					return {
-						content: [{ type: "text", text: `Error: ${error.reason}` }],
+						content: [{ type: "text", text: `Error: ${"reason" in error ? String(error.reason) : String(error)}` }],
 						details: {},
 						isError: true,
 					};
@@ -998,216 +1367,232 @@ export default function initAutoresearch(
 		},
 
 		renderCall(args, theme) {
-			let text = theme.fg("toolTitle", theme.bold("init_experiment "));
-			text += theme.fg("accent", (args.name as string) ?? "");
+			let text = theme.fg("toolTitle", theme.bold("autoresearch_run"));
+			if (typeof args.timeout === "number") {
+				text += theme.fg("dim", ` timeout=${args.timeout}s`);
+			}
 			return new Text(text, 0, 0);
 		},
 
-		renderResult(result, _options, theme) {
+		renderResult(result, _options, _theme) {
 			const msg = result.content[0];
 			return new Text(msg?.type === "text" ? msg.text : "", 0, 0);
 		},
 	});
 
 	pi.registerTool({
-		name: "run_experiment",
-		label: "Run Experiment",
+		name: "autoresearch_done",
+		label: "Autoresearch Done",
 		description:
-			"Run a shell command as an experiment. Times wall-clock duration, captures output, detects pass/fail via exit code. Use for any autoresearch experiment.",
-		promptSnippet: "Run a timed experiment command (captures duration, output, exit code)",
+			"Finalize the pending autoresearch trial with keep/discard/crash/checks_failed.",
+		promptSnippet: "Finalize one pending autoresearch trial.",
 		promptGuidelines: [
-			"Use run_experiment instead of bash when running experiment commands — it handles timing and output capture automatically.",
-			"After run_experiment, always call log_experiment to record the result.",
-			"If the benchmark script outputs structured METRIC lines, run_experiment will parse them automatically.",
+			"Autoresearch loop ownership resolves the pending trial automatically.",
+			"Call this exactly once for each pending autoresearch_run.",
 		],
 		parameters: Type.Object({
-			command: Type.String({
-				description: "Shell command to run (e.g. 'pnpm test:vitest', 'uv run train.py')",
-			}),
-			timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional)" })),
+			status: Type.Union([
+				Type.Literal("keep"),
+				Type.Literal("discard"),
+				Type.Literal("crash"),
+				Type.Literal("checks_failed"),
+			]),
+			description: Type.String({ description: "Short summary of what this trial proved." }),
+			metrics: Type.Optional(Type.Record(Type.String(), Type.Number())),
+			asi: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 		}),
 
-		async execute(_toolCallId, params, signal, onUpdate, ctx) {
-			const workDirError = validateWorkDir(ctx.cwd);
-			if (workDirError) {
-				return {
-					content: [{ type: "text", text: `Error: ${workDirError}` }],
-					details: {},
-				};
-			}
-			const workDir = getWorkDir(ctx.cwd);
-			const sessionId = getSessionKey(ctx);
-			const subagent = await getSubagent();
-			const boundary = createExecutionBoundary(
-				pi,
-				ctx,
-				subagent,
-				applyExecutionProfileInSession,
-				onUpdate,
-				signal,
-			);
-			const usage = ctx.getContextUsage();
-			const contextUsage =
-				usage && usage.tokens !== null
-					? { tokens: usage.tokens, contextWindow: usage.contextWindow }
-					: undefined;
-
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			let taskIdForBlock: string | null = null;
+			let pendingRunIdForBlock: string | null = null;
+			let checkoutPathForBlock: string | null = null;
+			let shouldBlockForManualResolution = false;
 			try {
-				const details = await withAutoresearch((service) =>
-					service.runExperiment(
-						sessionId,
-						workDir,
-						{
-							command: params.command,
-							timeoutSeconds: params.timeout ?? 600,
-							checksTimeoutSeconds: 300,
-							contextUsage,
-						},
-						boundary,
-					),
+				const active = await resolveActiveAutoresearchChildContext(ctx);
+				const persisted = requireAutoresearchLoopState(
+					readCanonicalLoopState(ctx.cwd, active.loopState.taskId),
 				);
-				await updateUI(ctx);
-				return {
-					content: [{ type: "text", text: buildRunExperimentText(details) }],
-					details: { ...details },
-				};
-			} catch (error) {
-				if (error instanceof AutoresearchValidationError) {
+				taskIdForBlock = persisted.taskId;
+
+				const pendingRunId = Option.match(persisted.autoresearch.pendingRunId, {
+					onNone: () => {
+						throw new AutoresearchValidationError({
+							reason: `Task ${persisted.taskId} has no pending run. Call autoresearch_run first.`,
+						});
+					},
+					onSome: (value) => value,
+				});
+				pendingRunIdForBlock = pendingRunId;
+
+				const runRecord = readRunRecord(ctx.cwd, persisted.taskId, pendingRunId);
+				if (runRecord.finalized !== null) {
 					return {
-						content: [{ type: "text", text: `Error: ${error.reason}` }],
+						content: [{ type: "text", text: `Error: run ${pendingRunId} is already finalized.` }],
 						details: {},
 						isError: true,
 					};
 				}
-				if (error instanceof AutoresearchFingerprintMismatchError) {
-					return {
-						content: [{ type: "text", text: `Error: ${error.reason}` }],
-						details: {},
-						isError: true,
-					};
-				}
-				if (error instanceof AutoresearchMaxExperimentsReachedError) {
+				if (!sessionRefMatches(runRecord.childSession, active.child)) {
 					return {
 						content: [
 							{
 								type: "text",
-								text: `Maximum experiments reached (${error.maxExperiments}). Call init_experiment to start a new segment.`,
+								text: `Error: run ${pendingRunId} belongs to child session ${runRecord.childSession.sessionId}, not ${active.child.sessionId}.`,
 							},
 						],
 						details: {},
 						isError: true,
 					};
 				}
-				throw error;
-			}
-		},
 
-		renderCall(args, theme) {
-			let text = theme.fg("toolTitle", theme.bold("run_experiment "));
-			text += theme.fg("muted", (args.command as string) ?? "");
-			if (args.timeout) {
-				text += theme.fg("dim", ` (timeout: ${args.timeout}s)`);
-			}
-			return new Text(text, 0, 0);
-		},
+				const finalizedAsi = params.asi === undefined ? null : isRecord(params.asi) ? params.asi : null;
+				if (params.asi !== undefined && !isRecord(params.asi)) {
+					return {
+						content: [{ type: "text", text: "Error: asi must be a JSON object when provided." }],
+						details: {},
+						isError: true,
+					};
+				}
 
-		renderResult(result, options, theme) {
-			return renderRunExperimentResult(result, options, theme);
-		},
-	});
+				const subagent = await getSubagent();
+				if (subagent) {
+					throw new AutoresearchGitError({
+						reason: "Git commands are blocked in subagent mode.",
+					});
+				}
 
-	pi.registerTool({
-		name: "log_experiment",
-		label: "Log Experiment",
-		description:
-			"Record an experiment result. Tracks metrics, updates the status widget and dashboard. Call after every run_experiment.",
-		promptSnippet: "Log experiment result (commit, metric, status, description)",
-		promptGuidelines: [
-			"Always call log_experiment after run_experiment to record the result.",
-			"log_experiment automatically commits on 'keep', and reverts on 'discard'/'crash'/'checks_failed'.",
-			"Always include the asi parameter. At minimum: {\"hypothesis\": \"what you tried\"}.",
-		],
-		parameters: Type.Object({
-			commit: Type.String({ description: "Git commit hash (short, 7 chars)" }),
-			metric: Type.Number({
-				description: "The primary optimization metric value. 0 for crashes.",
-			}),
-			status: Type.String({ description: "keep, discard, crash, or checks_failed" }),
-			description: Type.String({ description: "Short description of what this experiment tried" }),
-			metrics: Type.Optional(Type.Record(Type.String(), Type.Number())),
-			force: Type.Optional(Type.Boolean()),
-			asi: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-		}),
+				const ops = getSandboxedBashOperations(ctx, false);
+				if (!ops) {
+					throw new AutoresearchGitError({
+						reason: "Sandbox bash operations are not available.",
+					});
+				}
 
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const workDirError = validateWorkDir(ctx.cwd);
-			if (workDirError) {
-				return {
-					content: [{ type: "text", text: `Error: ${workDirError}` }],
-					details: {},
+				const persistedCheckout = Option.match(persisted.autoresearch.isolatedCheckout, {
+					onNone: () => {
+						throw new AutoresearchGitError({
+							reason: `Task ${persisted.taskId} has no isolated checkout metadata.`,
+						});
+					},
+					onSome: (value) => value,
+				});
+				checkoutPathForBlock = persistedCheckout.checkoutPath;
+				shouldBlockForManualResolution = true;
+
+				const isolatedCheckout = await ensureIsolatedCheckout(ctx.cwd, persisted, ops);
+				checkoutPathForBlock = isolatedCheckout.checkoutPath;
+
+				const vcsResult =
+					params.status === "keep"
+						? await finalizeKeepOnIsolatedCheckout(
+							isolatedCheckout,
+							runRecord,
+							{
+								description: params.description,
+								status: params.status,
+								metrics: params.metrics,
+								asi: finalizedAsi,
+							},
+							ops,
+						)
+						: await cleanupNonKeepOnIsolatedCheckout(
+							{
+								...isolatedCheckout,
+								phaseBaseCommit: persistedCheckout.phaseBaseCommit,
+							},
+							ops,
+						);
+
+				const nextIsolatedCheckout: IsolatedCheckout = {
+					...isolatedCheckout,
+					phaseBaseCommit: vcsResult.phaseBaseCommit,
 				};
-			}
-			const workDir = getWorkDir(ctx.cwd);
-			const sessionId = getSessionKey(ctx);
-			const subagent = await getSubagent();
-			const boundary = createExecutionBoundary(pi, ctx, subagent, applyExecutionProfileInSession);
 
-			const status = params.status as "keep" | "discard" | "crash" | "checks_failed";
-			if (!["keep", "discard", "crash", "checks_failed"].includes(status)) {
-				return {
-					content: [{ type: "text", text: `Error: invalid status "${status}"` }],
-					details: {},
-					isError: true,
+				const finalizedRun: PersistedAutoresearchRun = {
+					...runRecord,
+					finalized: {
+						status: params.status,
+						description: params.description,
+						decidedAt: new Date().toISOString(),
+						metrics: params.metrics ?? null,
+						asi: finalizedAsi,
+					},
 				};
-			}
+				writeRunRecord(ctx.cwd, finalizedRun);
 
-			try {
-				const result = await withAutoresearch((service) =>
-					service.logExperiment(
-						sessionId,
-						workDir,
+				const nextState: AutoresearchLoopPersistedState = {
+					...persisted,
+					updatedAt: new Date().toISOString(),
+					autoresearch: {
+						...persisted.autoresearch,
+						pendingRunId: Option.none<string>(),
+						isolatedCheckout: Option.some(nextIsolatedCheckout),
+					},
+				};
+				writeCanonicalLoopState(ctx.cwd, nextState);
+
+				return {
+					content: [
 						{
-							commit: params.commit,
-							metric: params.metric,
-							status,
-							description: params.description,
-							metrics: params.metrics ?? undefined,
-							force: params.force ?? false,
-							asi: (params.asi ?? undefined) as Record<string, unknown> | undefined,
+							type: "text",
+							text: `Finalized run ${pendingRunId} as ${params.status}. Pending trial cleared for task ${persisted.taskId}. ${vcsResult.note}`,
 						},
-						boundary,
-					),
-				);
-				await updateUI(ctx);
-				return {
-					content: [{ type: "text", text: buildLogExperimentText(result) }],
-					details: {},
+					],
+					details: {
+						task_id: persisted.taskId,
+						run_id: pendingRunId,
+						status: params.status,
+						isolated_checkout_path: nextIsolatedCheckout.checkoutPath,
+						isolated_branch: nextIsolatedCheckout.taskBranch,
+						phase_base_commit: nextIsolatedCheckout.phaseBaseCommit,
+						kept_commit: vcsResult.commit,
+					},
 				};
 			} catch (error) {
-				if (error instanceof AutoresearchValidationError) {
+				if (error instanceof AutoresearchGitError && taskIdForBlock !== null && shouldBlockForManualResolution) {
+					const blockTaskId = taskIdForBlock;
+					try {
+						await withLoopEngine((engine) =>
+							engine.blockLoopForManualResolution(ctx.cwd, blockTaskId, {
+								reasonCode: "autoresearch.vcs.manual_resolution",
+								message: `Autoresearch VCS finalization requires manual resolution: ${error.reason}`,
+								recoveryActions: [
+									`Inspect isolated checkout state at ${checkoutPathForBlock ?? "(unknown)"}.`,
+									`Resolve VCS state manually and then resolve ${loopStateFile(blockTaskId)} before resuming or archiving the task.`,
+								],
+								recoveryNotes: [
+									`pending_run=${pendingRunIdForBlock ?? "unknown"}`,
+									`checkout_path=${checkoutPathForBlock ?? "unknown"}`,
+								],
+							}),
+						);
+					} catch {
+						// keep original error response below
+					}
+
 					return {
-						content: [{ type: "text", text: `Error: ${error.reason}` }],
+						content: [
+							{
+								type: "text",
+								text: `Error: ${error.reason}\nTask ${blockTaskId} moved to blocked manual-resolution state for operator recovery.`,
+							},
+						],
 						details: {},
 						isError: true,
 					};
 				}
-				if (error instanceof AutoresearchFingerprintMismatchError) {
+
+				if (
+					error instanceof AutoresearchValidationError ||
+					error instanceof AutoresearchGitError ||
+					error instanceof LoopContractValidationError ||
+					error instanceof LoopTaskNotFoundError ||
+					error instanceof LoopAmbiguousOwnershipError ||
+					error instanceof LoopLifecycleConflictError ||
+					error instanceof LoopOwnershipValidationError
+				) {
 					return {
-						content: [{ type: "text", text: `Error: ${error.reason}` }],
-						details: {},
-						isError: true,
-					};
-				}
-				if (error instanceof AutoresearchNoPendingRunError) {
-					return {
-						content: [{ type: "text", text: `Error: ${error.reason}` }],
-						details: {},
-						isError: true,
-					};
-				}
-				if (error instanceof AutoresearchGitError) {
-					return {
-						content: [{ type: "text", text: `Git error: ${error.reason}` }],
+						content: [{ type: "text", text: `Error: ${"reason" in error ? String(error.reason) : String(error)}` }],
 						details: {},
 						isError: true,
 					};
@@ -1217,19 +1602,12 @@ export default function initAutoresearch(
 		},
 
 		renderCall(args, theme) {
-			let text = theme.fg("toolTitle", theme.bold("log_experiment "));
-			const color =
-				args.status === "keep"
-					? "success"
-					: args.status === "crash" || args.status === "checks_failed"
-						? "error"
-						: "warning";
-			text += theme.fg(color, String(args.status));
-			text += " " + theme.fg("dim", String(args.description));
+			let text = theme.fg("toolTitle", theme.bold("autoresearch_done "));
+			text += theme.fg("accent", String(args.status));
 			return new Text(text, 0, 0);
 		},
 
-		renderResult(result, _options, theme) {
+		renderResult(result, _options, _theme) {
 			const msg = result.content[0];
 			return new Text(msg?.type === "text" ? msg.text : "", 0, 0);
 		},
@@ -1240,265 +1618,274 @@ export default function initAutoresearch(
 	// --------------------------------------------------------------------------
 
 	pi.registerCommand("autoresearch", {
-		description: "Start, stop, clear, or resume autoresearch mode",
+		description: "Manage task-scoped autoresearch loops",
 		handler: async (args, ctx) => {
-			const sessionId = getSessionKey(ctx);
-			const trimmedArgs = (args ?? "").trim();
-			const command = trimmedArgs.toLowerCase();
+			const tokens = tokenizeCommandArgs(args ?? "");
+			const command = (tokens[0] ?? "").toLowerCase();
+			const rest = tokens.slice(1);
 
-			if (!trimmedArgs) {
-				ctx.ui.notify(autoresearchHelp(), "info");
-				return;
-			}
+			const requireTaskId = (value: string | undefined, usage: string): string | null => {
+				if (!value || value.trim().length === 0) {
+					ctx.ui.notify(`Usage: ${usage}`, "warning");
+					return null;
+				}
+				return validateTaskId(value);
+			};
 
-			if (command === "off") {
-				await withAutoresearch((service) => service.setMode(sessionId, false, null));
-				ctx.ui.notify("Autoresearch mode OFF", "info");
-				await updateUI(ctx);
-				return;
-			}
+			const resolveScopedTaskId = async (): Promise<string | null> => {
+				const session = commandSessionRef(ctx);
+				if (Option.isNone(session)) {
+					ctx.ui.notify("Autoresearch commands require an interactive session file.", "error");
+					return null;
+				}
 
-			if (command === "clear") {
-				await withAutoresearch((service) =>
-					Effect.gen(function* () {
-						yield* service.clearSession(sessionId);
-						yield* service.setMode(sessionId, false, null);
-					}),
+				const owned = await withLoopEngine((engine) =>
+					engine.resolveOwnedLoop(ctx.cwd, session.value),
 				);
-				let workDir: string;
-				try {
-					workDir = getWorkDir(ctx.cwd);
-				} catch (error) {
-					ctx.ui.notify(`Invalid autoresearch.config.json: ${String(error)}`, "error");
+				if (Option.isNone(owned) || !isAutoresearchLoopState(owned.value)) {
+					ctx.ui.notify("No autoresearch loop is owned by the current session.", "warning");
+					return null;
+				}
+				return owned.value.taskId;
+			};
+
+			try {
+				if (!command) {
+					ctx.ui.notify(autoresearchHelp(), "info");
 					return;
 				}
-				const jsonlPath = path.join(workDir, AUTORESEARCH_JSONL);
-				const runsDir = path.join(workDir, AUTORESEARCH_DIR, "runs");
-				try {
-					if (fs.existsSync(jsonlPath)) {
-						fs.unlinkSync(jsonlPath);
+
+					switch (command) {
+						case "create": {
+							assertNoLegacyAutoresearchLayout(ctx.cwd);
+							const taskId = requireTaskId(rest[0], "/autoresearch create <task-id> [goal]");
+							if (taskId === null) {
+								return;
+							}
+							const executionProfile = await captureCurrentExecutionProfile(ctx);
+							if (executionProfile === null) {
+								ctx.ui.notify("Could not capture the current execution profile for this autoresearch task.", "error");
+								return;
+							}
+
+							const goalText = rest.slice(1).join(" ");
+							const taskPath = loopTaskFile(taskId);
+							const taskAbsolutePath = path.resolve(ctx.cwd, taskPath);
+							const taskContent = fs.existsSync(taskAbsolutePath)
+								? fs.readFileSync(taskAbsolutePath, "utf-8")
+								: createDefaultTaskDocument(taskId, goalText);
+							const contract = parseAutoresearchTaskDocument(taskContent, taskPath);
+
+							await withLoopEngine((engine) =>
+								engine.createLoop(ctx.cwd, {
+									kind: "autoresearch",
+									taskId,
+									title: contract.title,
+									taskContent: goalText,
+									benchmarkCommand: contract.benchmark.command,
+									checksCommand: contract.benchmark.checksCommand,
+									metricName: contract.metric.name,
+									metricUnit: contract.metric.unit,
+									metricDirection: contract.metric.direction,
+									scopeRoot: contract.scope.root,
+									scopePaths: contract.scope.paths,
+									offLimits: contract.scope.offLimits,
+									constraints: contract.constraints,
+									executionProfile,
+								}),
+							);
+
+							ctx.ui.notify(`Created autoresearch task "${taskId}" at ${taskPath}`, "info");
+							return;
+						}
+
+					case "start": {
+						const taskId = requireTaskId(rest[0], "/autoresearch start <task-id>");
+						if (taskId === null) {
+							return;
+						}
+						const session = commandSessionRef(ctx);
+						if (Option.isNone(session)) {
+							ctx.ui.notify("Autoresearch start requires an interactive session file.", "error");
+							return;
+						}
+
+						await withLoopEngine((engine) =>
+							engine.startLoop(ctx.cwd, taskId, session.value),
+						);
+						ctx.ui.notify(`Started autoresearch loop "${taskId}"`, "info");
+						return;
 					}
-				} catch {
-					// ignore
-				}
-				try {
-					if (fs.existsSync(runsDir)) {
-						fs.rmSync(runsDir, { recursive: true, force: true });
+
+					case "resume": {
+						const taskId = requireTaskId(rest[0], "/autoresearch resume <task-id>");
+						if (taskId === null) {
+							return;
+						}
+						const session = commandSessionRef(ctx);
+						if (Option.isNone(session)) {
+							ctx.ui.notify("Autoresearch resume requires an interactive session file.", "error");
+							return;
+						}
+
+						await withLoopEngine((engine) =>
+							engine.resumeLoop(ctx.cwd, taskId, session.value),
+						);
+						ctx.ui.notify(`Resumed autoresearch loop "${taskId}"`, "info");
+						return;
 					}
-				} catch {
-					// ignore
+
+					case "pause": {
+						const taskId = rest[0]
+							? requireTaskId(rest[0], "/autoresearch pause [task-id]")
+							: await resolveScopedTaskId();
+						if (taskId === null) {
+							return;
+						}
+						await withLoopEngine((engine) => engine.pauseLoop(ctx.cwd, taskId));
+						ctx.ui.notify(`Paused autoresearch loop "${taskId}"`, "info");
+						return;
+					}
+
+					case "stop": {
+						const taskId = rest[0]
+							? requireTaskId(rest[0], "/autoresearch stop [task-id]")
+							: await resolveScopedTaskId();
+						if (taskId === null) {
+							return;
+						}
+						const persisted = readCanonicalLoopState(ctx.cwd, taskId);
+						if (
+							persisted.kind === "autoresearch" &&
+							Option.isSome(persisted.autoresearch.pendingRunId)
+						) {
+							ctx.ui.notify(
+								`Cannot stop autoresearch loop "${taskId}" while run ${persisted.autoresearch.pendingRunId.value} is pending. Finalize it with autoresearch_done first.`,
+								"warning",
+							);
+							return;
+						}
+						await withLoopEngine((engine) => engine.stopLoop(ctx.cwd, taskId));
+						ctx.ui.notify(`Stopped autoresearch loop "${taskId}"`, "info");
+						return;
+					}
+
+					case "status": {
+						if (rest.length > 1 || (rest.length === 1 && rest[0] !== "--archived")) {
+							ctx.ui.notify("Usage: /autoresearch status [--archived]", "warning");
+							return;
+						}
+						const archived = rest[0] === "--archived";
+						const loops = await withLoopEngine((engine) =>
+							engine.listLoops(ctx.cwd, archived),
+						);
+						const autoresearchLoops = loops.filter((loop) => isAutoresearchLoopState(loop));
+						if (autoresearchLoops.length === 0) {
+							ctx.ui.notify(
+								archived ? "No archived autoresearch loops." : "No autoresearch loops found.",
+								"info",
+							);
+							return;
+						}
+
+						const heading = archived ? "Archived autoresearch loops" : "Autoresearch loops";
+						ctx.ui.notify(
+							`${heading}:\n${autoresearchLoops.map((loop) => formatAutoresearchLoopState(loop)).join("\n")}`,
+							"info",
+						);
+						return;
+					}
+
+					case "archive": {
+						const taskId = requireTaskId(rest[0], "/autoresearch archive <task-id>");
+						if (taskId === null) {
+							return;
+						}
+						await withLoopEngine((engine) => engine.archiveLoop(ctx.cwd, taskId));
+						ctx.ui.notify(`Archived autoresearch loop "${taskId}"`, "info");
+						return;
+					}
+
+					case "cancel": {
+						const taskId = requireTaskId(rest[0], "/autoresearch cancel <task-id>");
+						if (taskId === null) {
+							return;
+						}
+						await withLoopEngine((engine) => engine.cancelLoop(ctx.cwd, taskId));
+						ctx.ui.notify(`Cancelled autoresearch loop "${taskId}"`, "info");
+						return;
+					}
+
+					case "clean": {
+						if (rest.length > 1 || (rest.length === 1 && rest[0] !== "--all")) {
+							ctx.ui.notify("Usage: /autoresearch clean [--all]", "warning");
+							return;
+						}
+						const removeArtifacts = rest[0] === "--all";
+						const loops = await withLoopEngine((engine) => engine.listLoops(ctx.cwd, false));
+						const completed = loops.filter(
+							(loop) => loop.kind === "autoresearch" && loop.lifecycle === "completed",
+						);
+						if (completed.length === 0) {
+							ctx.ui.notify("No completed autoresearch loops to clean.", "info");
+							return;
+						}
+						for (const loop of completed) {
+							if (removeArtifacts) {
+								await withLoopEngine((engine) => engine.cancelLoop(ctx.cwd, loop.taskId));
+								continue;
+							}
+							fs.rmSync(path.resolve(ctx.cwd, loopStateFile(loop.taskId)), {
+								force: true,
+							});
+						}
+						ctx.ui.notify(
+							removeArtifacts
+								? `Removed ${completed.length} completed autoresearch loop(s).`
+								: `Cleaned ${completed.length} completed autoresearch loop state file(s).`,
+							"info",
+						);
+						return;
+					}
+
+					default: {
+						ctx.ui.notify(autoresearchHelp(), "info");
+						return;
+					}
 				}
-				ctx.ui.notify("Deleted autoresearch.jsonl and turned autoresearch mode OFF", "info");
-				await updateUI(ctx);
-				return;
-			}
-
-			const isActive = await withAutoresearch((service) =>
-				service.getViewData(sessionId).pipe(Effect.map((v) => v.autoresearchMode)),
-			);
-
-			if (isActive) {
-				ctx.ui.notify("Autoresearch already active — use '/autoresearch off' to stop first", "info");
-				return;
-			}
-
-			await withAutoresearch((service) => service.setMode(sessionId, true, trimmedArgs));
-
-			let workDir: string;
-			try {
-				workDir = getWorkDir(ctx.cwd);
 			} catch (error) {
-				await withAutoresearch((service) => service.setMode(sessionId, false, null));
-				ctx.ui.notify(`Invalid autoresearch.config.json: ${String(error)}`, "error");
-				return;
-			}
-			const mdPath = path.join(workDir, AUTORESEARCH_MD);
-			const hasRules = fs.existsSync(mdPath);
-
-			if (hasRules) {
-				ctx.ui.notify("Autoresearch mode ON — rules loaded from autoresearch.md", "info");
-				pi.sendUserMessage(`Autoresearch mode active. ${trimmedArgs}`);
-			} else {
-				ctx.ui.notify("Autoresearch mode ON — no autoresearch.md found, setting up", "info");
-				pi.sendUserMessage(`Start autoresearch: ${trimmedArgs}`);
-			}
-			await updateUI(ctx);
-		},
-	});
-
-	// --------------------------------------------------------------------------
-	// Shortcuts
-	// --------------------------------------------------------------------------
-
-	pi.registerShortcut("ctrl+x", {
-		description: "Toggle autoresearch dashboard",
-		handler(ctx): void {
-			const sessionId = getSessionKey(ctx);
-			const viewData = latestViewData.get(sessionId);
-			if (!viewData || (viewData.totalRunCount === 0 && !viewData.runningExperiment)) {
-				ctx.ui.notify("No autoresearch results yet", "info");
-				return;
-			}
-			expandedState.set(sessionId, !expandedState.get(sessionId));
-			void updateUI(ctx);
-		},
-	});
-
-	pi.registerShortcut("ctrl+shift+x", {
-		description: "Show autoresearch dashboard overlay",
-		handler(ctx): Promise<void> {
-			return openFullscreenOverlay(ctx);
-		},
-	});
-
-	// --------------------------------------------------------------------------
-	// Lifecycle hooks
-	// --------------------------------------------------------------------------
-
-	pi.on("session_start", async (_event, ctx) => {
-		clearPendingResumeMessage(getSessionKey(ctx));
-		await rehydrate(ctx);
-	});
-
-	pi.on("session_switch", async (_event, ctx) => {
-		clearPendingResumeMessage(getSessionKey(ctx));
-		await rehydrate(ctx);
-	});
-
-	pi.on("session_fork", async (_event, ctx) => {
-		clearPendingResumeMessage(getSessionKey(ctx));
-		await rehydrate(ctx);
-	});
-
-	pi.on("session_tree", async (_event, ctx) => {
-		await rehydrate(ctx);
-	});
-
-	pi.on("session_before_switch", async (_event, ctx) => {
-		const sessionId = getSessionKey(ctx);
-		closeFullscreenOverlay(sessionId);
-	});
-
-	pi.on("agent_start", async (_event, ctx) => {
-		const sessionId = getSessionKey(ctx);
-		await withAutoresearch((service) => service.resetSessionCounters(sessionId));
-	});
-
-	pi.on("before_agent_start", async (event, ctx) => {
-		const sessionId = getSessionKey(ctx);
-		const isActive = await withAutoresearch((service) =>
-			service.getViewData(sessionId).pipe(Effect.map((v) => v.autoresearchMode)),
-		);
-		if (!isActive) return;
-
-		const pinnedExecutionProfile = await withAutoresearch((service) =>
-			service.getExecutionProfile(sessionId),
-		);
-		if (pinnedExecutionProfile === null) {
-			if (ctx.hasUI) {
-				ctx.ui.notify(
-					"Autoresearch segment has no pinned execution profile. Re-run init_experiment before continuing.",
-					"error",
-				);
-			}
-			return;
-		}
-
-		const appliedExecutionProfile = await applyExecutionProfileInSession(
-			pinnedExecutionProfile,
-			ctx,
-		);
-		if (!appliedExecutionProfile.applied) {
-			if (ctx.hasUI) {
-				ctx.ui.notify(
-					`Autoresearch could not apply pinned execution profile: ${appliedExecutionProfile.reason}`,
-					"error",
-				);
-			}
-			return;
-		}
-
-		let workDir: string;
-		try {
-			workDir = getWorkDir(ctx.cwd);
-		} catch {
-			return;
-		}
-		const mdPath = path.join(workDir, AUTORESEARCH_MD);
-		const ideasPath = path.join(workDir, AUTORESEARCH_IDEAS_MD);
-		const checksPath = path.join(workDir, AUTORESEARCH_CHECKS_SH);
-		const hasIdeas = fs.existsSync(ideasPath);
-		const hasChecks = fs.existsSync(checksPath);
-
-		let extra =
-			"\n\n## Autoresearch Mode (ACTIVE)" +
-			"\nYou are in autoresearch mode. Optimize the primary metric through an autonomous experiment loop." +
-			"\nUse init_experiment, run_experiment, and log_experiment tools." +
-			`\nExperiment rules: ${mdPath} — read this file at the start of every session.` +
-			"\nWrite promising but deferred optimizations as bullet points to autoresearch.ideas.md.";
-
-		if (hasChecks) {
-			extra +=
-				"\n\n## Backpressure Checks (ACTIVE)" +
-				`\n${checksPath} exists and runs automatically after every passing benchmark.` +
-				"\nIf checks fail, use status 'checks_failed' in log_experiment.";
-		}
-
-		if (hasIdeas) {
-			extra += `\n\nIdeas backlog exists at ${ideasPath}.`;
-		}
-
-		return {
-			systemPrompt: event.systemPrompt + extra,
-		};
-	});
-
-	pi.on("agent_end", async (_event, ctx) => {
-		const sessionId = getSessionKey(ctx);
-		let workDir: string;
-		try {
-			workDir = getWorkDir(ctx.cwd);
-		} catch {
-			return;
-		}
-		const subagent = await getSubagent();
-		const boundary = createExecutionBoundary(pi, ctx, subagent, applyExecutionProfileInSession);
-		const usage = ctx.getContextUsage();
-		const tokens = usage?.tokens ?? null;
-
-		try {
-			const result = await withAutoresearch((service) =>
-				service.onAgentEnd(sessionId, workDir, boundary),
-			);
-			if (result.didResume) {
-				const ideasPath = path.join(workDir, AUTORESEARCH_IDEAS_MD);
-				const hasIdeas = fs.existsSync(ideasPath);
-				let msg = "Autoresearch loop ended. Resume the experiment loop.";
-				if (hasIdeas) {
-					msg += " Check autoresearch.ideas.md for promising paths.";
+				if (error instanceof LoopTaskAlreadyExistsError) {
+					ctx.ui.notify(`Autoresearch task "${error.taskId}" already exists.`, "warning");
+					return;
 				}
-				const usageNow = ctx.getContextUsage();
-				if (shouldDeferAutoresearchResumeUntilAfterCompaction(usageNow)) {
-					scheduleResumeMessage(sessionId, msg);
-				} else {
-					pi.sendUserMessage(msg);
+				if (error instanceof LoopTaskNotFoundError) {
+					ctx.ui.notify(`Autoresearch task "${error.taskId}" not found.`, "error");
+					return;
 				}
-			} else if (result.blockedReason !== null && ctx.hasUI) {
-				ctx.ui.notify(`Autoresearch auto-resume blocked: ${result.blockedReason}`, "error");
+				if (error instanceof LoopLifecycleConflictError) {
+					ctx.ui.notify(
+						`Lifecycle conflict for "${error.taskId}": expected ${error.expected}, actual ${error.actual}.`,
+						"warning",
+					);
+					return;
+				}
+				if (error instanceof LoopOwnershipValidationError) {
+					ctx.ui.notify(`Ownership error for "${error.taskId}": ${error.reason}`, "error");
+					return;
+				}
+				if (error instanceof LoopAmbiguousOwnershipError) {
+					ctx.ui.notify(
+						`Ambiguous loop ownership for this session: ${error.matchingTaskIds.join(", ")}`,
+						"error",
+					);
+					return;
+				}
+				if (error instanceof LoopContractValidationError) {
+					ctx.ui.notify(`${error.entity}: ${error.reason}`, "error");
+					return;
+				}
+				throw error;
 			}
-		} catch {
-			// ignore
-		} finally {
-			await withAutoresearch((service) => service.recordAgentEndTokens(sessionId, tokens));
-			await updateUI(ctx);
-		}
-	});
-
-	pi.on("session_compact", async (_event, ctx) => {
-		flushPendingResumeMessage(getSessionKey(ctx));
-	});
-
-	pi.on("session_shutdown", async (_event, ctx) => {
-		clearPendingResumeMessage(getSessionKey(ctx));
+		},
 	});
 }

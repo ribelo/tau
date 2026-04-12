@@ -19,7 +19,7 @@ function makeTempDir(): string {
 function makeLoopState(loopName: string): LoopState {
 	return {
 		name: loopName,
-		taskFile: path.join(".pi", "ralph", "tasks", `${loopName}.md`),
+		taskFile: path.join(".pi", "loops", "tasks", `${loopName}.md`),
 		iteration: 2,
 		maxIterations: 50,
 		itemsPerIteration: 0,
@@ -81,7 +81,7 @@ describe("ralph repo", () => {
 		expect(Option.isNone(loaded)).toBe(true);
 	});
 
-	it("archives state and task files under .pi/ralph/archive", async () => {
+	it("archives state and task files under .pi/loops/archive", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 
@@ -101,10 +101,10 @@ describe("ralph repo", () => {
 			}).pipe(Effect.provide(ralphRepoLayer)),
 		);
 
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "state", "sleepy-loop.state.json"))).toBe(false);
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "archive", "state", "sleepy-loop.state.json"))).toBe(true);
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "tasks", "sleepy-loop.md"))).toBe(false);
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "archive", "tasks", "sleepy-loop.md"))).toBe(true);
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "state", "sleepy-loop.json"))).toBe(false);
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "archive", "state", "sleepy-loop.json"))).toBe(true);
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "tasks", "sleepy-loop.md"))).toBe(false);
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "archive", "tasks", "sleepy-loop.md"))).toBe(true);
 	});
 
 	it("archives loop task files when loop names start with the archive prefix", async () => {
@@ -127,8 +127,8 @@ describe("ralph repo", () => {
 			}).pipe(Effect.provide(ralphRepoLayer)),
 		);
 
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "tasks", "archive-loop.md"))).toBe(false);
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "archive", "tasks", "archive-loop.md"))).toBe(true);
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "tasks", "archive-loop.md"))).toBe(false);
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "archive", "tasks", "archive-loop.md"))).toBe(true);
 	});
 
 	it("fails fast when legacy flat layout is detected in root", async () => {

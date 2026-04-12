@@ -1,9 +1,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import { Option } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { readAutoresearchContractFromContent } from "../src/autoresearch/contract.js";
+import { parseAutoresearchTaskDocument } from "../src/autoresearch/task-contract.js";
 
 const SKILL_PATH = path.resolve("skills/autoresearch-create/SKILL.md");
 
@@ -22,27 +23,44 @@ function extractFencedBlock(content: string, language: string): string {
 }
 
 describe("autoresearch-create skill", () => {
-	it("documents an autoresearch.md example compatible with tau's contract parser", () => {
+	it("documents a canonical .pi/loops task example compatible with the task-contract parser", () => {
 		const skill = fs.readFileSync(SKILL_PATH, "utf-8");
 		const markdownExample = extractFencedBlock(skill, "markdown");
-		const result = readAutoresearchContractFromContent(markdownExample, SKILL_PATH);
+		const contract = parseAutoresearchTaskDocument(
+			markdownExample,
+			".pi/loops/tasks/sample.md",
+		);
 
-		expect(result.errors).toEqual([]);
-		expect(result.contract.benchmark.command).toBe("bash autoresearch.sh");
-		expect(result.contract.benchmark.primaryMetric).toBe("<metric_name>");
-		expect(result.contract.benchmark.direction).toBe("lower");
-		expect(result.contract.scopePaths).toEqual(["<path-one>", "<path-two>"]);
-		expect(result.contract.offLimits).toEqual(["<off-limits-path>"]);
-		expect(result.contract.constraints).toEqual(["<hard-rule-one>", "<hard-rule-two>"]);
+		expect(contract.title).toBe("optimize-loop-runtime");
+		expect(contract.benchmark.command).toBe("bash scripts/bench.sh");
+		expect(
+			Option.match(contract.benchmark.checksCommand, {
+				onNone: () => null,
+				onSome: (value) => value,
+			}),
+		).toBe("bash scripts/checks.sh");
+		expect(contract.metric.name).toBe("total_ms");
+		expect(contract.metric.unit).toBe("ms");
+		expect(contract.metric.direction).toBe("lower");
+		expect(contract.scope.root).toBe("extensions/tau");
+		expect(contract.scope.paths).toEqual(["src", "test"]);
+		expect(contract.scope.offLimits).toEqual(["dist"]);
+		expect(contract.constraints).toEqual(["keep gate green", "no new dependencies"]);
+		expect(
+			Option.match(contract.limits, {
+				onNone: () => null,
+				onSome: (value) => value.maxIterations,
+			}),
+		).toBe(30);
 	});
 
 	it("documents current tau-specific Autoresearch requirements", () => {
 		const skill = fs.readFileSync(SKILL_PATH, "utf-8");
 
-		expect(skill).toContain("Always include `asi` in `log_experiment`.");
-		expect(skill).toContain("`asi.rollback_reason`");
-		expect(skill).toContain("`asi.next_action_hint`");
-		expect(skill).toContain("Tau pins the execution profile at initialization time.");
-		expect(skill).toContain("Tau currently uses its built-in checks timeout");
+		expect(skill).toContain("/autoresearch create <task-id> [goal]");
+		expect(skill).toContain("Use `autoresearch_run` to execute exactly one trial");
+		expect(skill).toContain("Use `autoresearch_done` exactly once to finalize the pending run.");
+		expect(skill).toContain("Run artifacts are canonical under `.pi/loops/runs/<task-id>/<run-id>/`.");
+		expect(skill).toContain("Legacy cwd-global autoresearch files are not steady-state inputs");
 	});
 });

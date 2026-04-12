@@ -9,7 +9,7 @@ import {
 	AgentSelectionStore,
 	getAgentSettingsPath,
 } from "../src/agents-menu/state.js";
-import { encodeLoopStateJsonSync } from "../src/ralph/schema.js";
+import { encodeLoopPersistedStateJsonSync } from "../src/loops/schema.js";
 import { makeExecutionProfile } from "./ralph-test-helpers.js";
 
 async function makeWorkspace(): Promise<string> {
@@ -25,33 +25,55 @@ async function writeRalphState(
 		readonly status?: "active" | "paused" | "completed";
 	},
 ): Promise<void> {
-	const statePath = path.join(workspace, ".pi", "ralph", "state", `${loopName}.state.json`);
+	const statePath = path.join(workspace, ".pi", "loops", "state", `${loopName}.json`);
 	await fs.mkdir(path.dirname(statePath), { recursive: true });
+	const status = input.status ?? "active";
+	const lifecycle =
+		status === "active"
+			? "active"
+			: status === "paused"
+				? "paused"
+				: "completed";
 	await fs.writeFile(
 		statePath,
-		encodeLoopStateJsonSync({
-			name: loopName,
-			taskFile: path.join(".pi", "ralph", "tasks", `${loopName}.md`),
-			iteration: 1,
-			maxIterations: 50,
-			itemsPerIteration: 0,
-			reflectEvery: 0,
-			reflectInstructions: "reflect",
-			status: input.status ?? "active",
-			startedAt: "2026-01-01T00:00:00.000Z",
+		encodeLoopPersistedStateJsonSync({
+			taskId: loopName,
+			title: loopName,
+			taskFile: path.join(".pi", "loops", "tasks", `${loopName}.md`),
+			kind: "ralph",
+			lifecycle,
+			createdAt: "2026-01-01T00:00:00.000Z",
+			updatedAt: "2026-01-01T00:00:00.000Z",
+			startedAt: Option.some("2026-01-01T00:00:00.000Z"),
 			completedAt:
-				input.status === "completed"
+				status === "completed"
 					? Option.some("2026-01-01T01:00:00.000Z")
 					: Option.none(),
-			lastReflectionAt: 0,
-			controllerSessionFile: Option.some(input.controllerSessionFile),
-			activeIterationSessionFile:
-				input.activeIterationSessionFile === undefined
-					? Option.none()
-					: Option.some(input.activeIterationSessionFile),
-			advanceRequestedAt: Option.none(),
-			awaitingFinalize: false,
-			executionProfile: makeExecutionProfile(),
+			archivedAt: Option.none(),
+			ownership: {
+				controller: Option.some({
+					sessionId: input.controllerSessionFile,
+					sessionFile: input.controllerSessionFile,
+				}),
+				child:
+					input.activeIterationSessionFile === undefined
+						? Option.none()
+						: Option.some({
+							sessionId: input.activeIterationSessionFile,
+							sessionFile: input.activeIterationSessionFile,
+						}),
+			},
+			ralph: {
+				iteration: 1,
+				maxIterations: 50,
+				itemsPerIteration: 0,
+				reflectEvery: 0,
+				reflectInstructions: "reflect",
+				lastReflectionAt: 0,
+				advanceRequestedAt: Option.none(),
+				awaitingFinalize: false,
+				pinnedExecutionProfile: makeExecutionProfile(),
+			},
 		}),
 		"utf8",
 	);

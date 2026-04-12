@@ -9,6 +9,8 @@ import { NodeFileSystem } from "@effect/platform-node";
 
 import type { ExecutionProfile } from "../src/execution/schema.js";
 import { RalphRepo, RalphRepoLive } from "../src/ralph/repo.js";
+import { LoopRepoLive } from "../src/loops/repo.js";
+import { LoopEngineLive } from "../src/services/loop-engine.js";
 import {
 	Ralph,
 	RalphLive,
@@ -28,7 +30,7 @@ function makeTempDir(): string {
 function makeState(loopName: string, sessionFile: string): LoopState {
 	return {
 		name: loopName,
-		taskFile: path.join(".pi", "ralph", "tasks", `${loopName}.md`),
+		taskFile: path.join(".pi", "loops", "tasks", `${loopName}.md`),
 		iteration: 3,
 		maxIterations: 50,
 		itemsPerIteration: 0,
@@ -38,7 +40,9 @@ function makeState(loopName: string, sessionFile: string): LoopState {
 		startedAt: "2026-01-01T00:00:00.000Z",
 		completedAt: Option.none(),
 		lastReflectionAt: 0,
-		controllerSessionFile: Option.some(path.join(path.dirname(sessionFile), "controller.session.json")),
+		controllerSessionFile: Option.some(
+			path.join(path.dirname(sessionFile), `${loopName}-controller.session.json`),
+		),
 		activeIterationSessionFile: Option.some(sessionFile),
 		advanceRequestedAt: Option.none(),
 		awaitingFinalize: false,
@@ -61,7 +65,11 @@ function makeAgentEndEvent(text: string): AgentEndEvent {
 
 const ralphLayer = RalphLive({
 	hasActiveSubagents: () => Effect.succeed(false),
-}).pipe(Layer.provideMerge(RalphRepoLive), Layer.provide(NodeFileSystem.layer));
+}).pipe(
+	Layer.provideMerge(RalphRepoLive),
+	Layer.provideMerge(LoopEngineLive.pipe(Layer.provideMerge(LoopRepoLive))),
+	Layer.provide(NodeFileSystem.layer),
+);
 
 describe("ralph core service", () => {
 	const tempDirs: string[] = [];
@@ -133,7 +141,7 @@ describe("ralph core service", () => {
 				const ralph = yield* Ralph;
 				yield* ralph.startLoopState(cwd, {
 					loopName: "visible-loop",
-					taskFile: path.join(".pi", "ralph", "tasks", "visible-loop.md"),
+					taskFile: path.join(".pi", "loops", "tasks", "visible-loop.md"),
 					executionProfile: makeExecutionProfile({ mode: "smart", model: "anthropic/claude-opus-4-5", thinking: "medium" }),
 					maxIterations: 50,
 					itemsPerIteration: 0,
@@ -172,7 +180,7 @@ describe("ralph core service", () => {
 					controllerSessionFile: Option.some(controllerSessionFile),
 					activeIterationSessionFile: Option.none(),
 				});
-				yield* repo.writeTaskFile(cwd, path.join(".pi", "ralph", "tasks", `${loopName}.md`), "# Task\n");
+				yield* repo.writeTaskFile(cwd, path.join(".pi", "loops", "tasks", `${loopName}.md`), "# Task\n");
 
 				const followUpStarted = yield* Deferred.make<void>();
 				const releaseFollowUp = yield* Deferred.make<void>();
@@ -252,7 +260,7 @@ describe("ralph core service", () => {
 					activeIterationSessionFile: Option.none(),
 					executionProfile: pinnedExecutionProfile,
 				});
-				yield* repo.writeTaskFile(cwd, path.join(".pi", "ralph", "tasks", `${loopName}.md`), "# Task\n");
+				yield* repo.writeTaskFile(cwd, path.join(".pi", "loops", "tasks", `${loopName}.md`), "# Task\n");
 
 				const appliedProfiles: ExecutionProfile[] = [];
 				let sessionFile = controllerSessionFile;
@@ -370,11 +378,13 @@ describe("ralph core service", () => {
 					...makeState("done-a", sessionFile),
 					status: "completed",
 					completedAt: Option.some("2026-01-01T00:00:00.000Z"),
+					activeIterationSessionFile: Option.none(),
 				};
 				const doneB: LoopState = {
 					...makeState("done-b", sessionFile),
 					status: "completed",
 					completedAt: Option.some("2026-01-01T00:00:00.000Z"),
+					activeIterationSessionFile: Option.none(),
 				};
 				yield* repo.saveState(cwd, doneA);
 				yield* repo.writeTaskFile(cwd, doneA.taskFile, "# Task\n");
@@ -389,14 +399,14 @@ describe("ralph core service", () => {
 
 		expect(beforeNuke.archived.status).toBe("archived");
 		expect(beforeNuke.cleaned.cleanedLoops).toEqual(["done-a", "done-b"]);
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "state", "sleepy-loop.state.json"))).toBe(false);
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "tasks", "sleepy-loop.md"))).toBe(false);
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "archive", "state", "sleepy-loop.state.json"))).toBe(true);
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "archive", "tasks", "sleepy-loop.md"))).toBe(true);
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "state", "done-a.state.json"))).toBe(false);
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "tasks", "done-a.md"))).toBe(false);
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "state", "done-b.state.json"))).toBe(false);
-		expect(fs.existsSync(path.join(cwd, ".pi", "ralph", "tasks", "done-b.md"))).toBe(false);
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "state", "sleepy-loop.json"))).toBe(false);
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "tasks", "sleepy-loop.md"))).toBe(false);
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "archive", "state", "sleepy-loop.json"))).toBe(true);
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "archive", "tasks", "sleepy-loop.md"))).toBe(true);
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "state", "done-a.json"))).toBe(false);
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "tasks", "done-a.md"))).toBe(false);
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "state", "done-b.json"))).toBe(false);
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "tasks", "done-b.md"))).toBe(false);
 
 		const nuked = await Effect.runPromise(
 			Effect.gen(function* () {

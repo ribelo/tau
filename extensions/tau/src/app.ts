@@ -15,8 +15,6 @@ import {
 } from "./services/execution-runtime.js";
 import { CuratedMemory, CuratedMemoryLive } from "./services/curated-memory.js";
 import { Ralph, RalphLive } from "./services/ralph.js";
-import { Autoresearch, AutoresearchLive } from "./services/autoresearch.js";
-import { AutoresearchRepoLive } from "./autoresearch/repo.js";
 import { SkillManager, SkillManagerLive } from "./services/skill-manager.js";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import initExa from "./exa/index.js";
@@ -50,6 +48,8 @@ import { buildToolDescription } from "./agent/tool.js";
 import { createSkillMarkerRuntime } from "./skill-marker/index.js";
 import { installSqliteExperimentalWarningFilter } from "./shared/sqlite-warning.js";
 import { RalphRepoLive } from "./ralph/repo.js";
+import { LoopRepoLive } from "./loops/repo.js";
+import { LoopEngine, LoopEngineLive } from "./services/loop-engine.js";
 import initDream from "./dream/init.js";
 import { DreamLockLive } from "./dream/lock.js";
 import { DreamSchedulerLive } from "./dream/scheduler.js";
@@ -119,10 +119,9 @@ const createMainLayer = (agentRuntimeBridge: AgentRuntimeBridgeService) => {
 
 	const RalphLayer = RalphLive({
 		hasActiveSubagents,
-	}).pipe(Layer.provideMerge(RalphRepoLive), Layer.provide(NodeFileSystem.layer));
-
-	const AutoresearchLayer = AutoresearchLive.pipe(
-		Layer.provide(AutoresearchRepoLive),
+	}).pipe(
+		Layer.provideMerge(RalphRepoLive),
+		Layer.provideMerge(LoopEngineLive.pipe(Layer.provideMerge(LoopRepoLive))),
 		Layer.provide(NodeFileSystem.layer),
 	);
 
@@ -141,7 +140,6 @@ const createMainLayer = (agentRuntimeBridge: AgentRuntimeBridgeService) => {
 		SkillManagerLayer,
 		AgentLayer,
 		RalphLayer,
-		AutoresearchLayer,
 	).pipe(Layer.provide(PiLoggerLive));
 };
 
@@ -156,7 +154,7 @@ type TauRuntime = ManagedRuntime.ManagedRuntime<
 	| AgentControl
 	| SkillManager
 	| Ralph
-	| Autoresearch
+	| LoopEngine
 	| DreamLock
 	| DreamScheduler
 	| DreamTaskRegistry
@@ -212,7 +210,7 @@ export const startTau = (pi: ExtensionAPI) => {
 	const runRalph = <A, E>(effect: Effect.Effect<A, E, Ralph | PromptModes>) =>
 		currentRuntime.runPromise(effect);
 	const runAutoresearch = <A, E>(
-		effect: Effect.Effect<A, E, Autoresearch | Sandbox | PromptModes>,
+		effect: Effect.Effect<A, E, LoopEngine | Sandbox | PromptModes>,
 	) =>
 		currentRuntime.runPromise(effect);
 
