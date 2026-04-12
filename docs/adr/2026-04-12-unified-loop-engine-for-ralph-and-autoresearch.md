@@ -84,12 +84,16 @@ The canonical layout is:
 
 - `.pi/loops/tasks/<task-id>.md`
 - `.pi/loops/state/<task-id>.json`
+- `.pi/loops/phases/<task-id>/<phase-id>.json`
 - `.pi/loops/runs/<task-id>/<run-id>/...`
 - `.pi/loops/archive/tasks/<task-id>.md`
 - `.pi/loops/archive/state/<task-id>.json`
+- `.pi/loops/archive/phases/<task-id>/<phase-id>.json`
 - `.pi/loops/archive/runs/<task-id>/<run-id>/...`
 
 Tau may store additional loop-owned runtime metadata under `.pi/loops/**` when needed. That metadata remains machine-managed.
+
+Each autoresearch phase also has an explicit machine-owned snapshot artifact. Phase snapshots live under `.pi/loops/phases/**` so phase identity, pinned execution profile, and blocked-phase debugging remain inspectable after later task edits.
 
 The following layouts are not runtime storage after this redesign:
 
@@ -127,6 +131,8 @@ That state is a strict tagged union with:
 - shared loop fields
 - `kind: "ralph"` specialization state
 - `kind: "autoresearch"` specialization state
+
+The shared union also includes an explicit blocked/manual-resolution shape with a reason code, operator-facing recovery message, and enough metadata to resume or abandon the task safely after intervention.
 
 Tau does not use separate runtime models such as Ralph state files on one side and autoresearch JSONL replay on the other.
 
@@ -172,6 +178,14 @@ The body holds:
 - progress
 - next steps
 
+The task document uses stable machine-owned anchors.
+
+- frontmatter is schema-owned
+- workflow-managed sections use stable headings and stable structural meaning
+- prose inside those sections remains human-editable unless a section is explicitly runtime-owned
+
+Implementations do not guess where to rewrite structured progress, reflection output, findings, or next steps.
+
 ### 6. Phase model for autoresearch
 
 Autoresearch uses immutable phases.
@@ -214,6 +228,8 @@ Phase identity does not include:
 
 Markdown body edits are non-phase-defining and never invalidate a phase.
 
+`scope.paths` and `scope.off_limits` are normalized relative to `scope.root`, persisted in normalized form, and rejected if normalization would escape `scope.root`.
+
 ### 7. Session and iteration lifecycle
 
 The loop engine uses Ralph-style controller ownership.
@@ -221,6 +237,8 @@ The loop engine uses Ralph-style controller ownership.
 - the command layer owns session creation and switching
 - each active task has one controller session
 - each active task has at most one active child session
+
+Persisted state stores both the opaque session id and the session file path for controller and child sessions. Session ids drive live runtime ownership. Session file paths support recovery, UI navigation, and restart-time reconciliation.
 
 Each child session represents one iteration.
 
@@ -306,6 +324,8 @@ Invariants:
 - calling autoresearch tools from the controller session, from unrelated sessions, or with no active autoresearch task is invalid and fails fast
 
 Unsafe VCS cleanup is not a normal trial outcome. If tau cannot safely resolve the isolated checkout for a non-keep result, `autoresearch_done` fails fast, preserves the task for operator intervention, and does not record a synthetic fallback outcome.
+
+Kept changes remain on the task's isolated branch and checkout until an explicit later integration step. `keep` does not implicitly propagate accepted changes into the user's primary workspace checkout.
 
 ### 10. Reflection and notes
 
