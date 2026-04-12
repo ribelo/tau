@@ -64,6 +64,7 @@ import {
 } from "./dashboard.js";
 import { renderRunExperimentResult } from "./run-experiment-render.js";
 import { shouldDeferAutoresearchResumeUntilAfterCompaction } from "./auto-resume.js";
+import { shouldCloseAutoresearchOverlay } from "./overlay-input.js";
 
 // ------------------------------------------------------------------------------
 // Helpers
@@ -766,12 +767,12 @@ export default function initAutoresearch(
 
 				let scrollOffset = 0;
 				return {
-					render(width: number): string[] {
-						const currentView = latestViewData.get(sessionId);
-						if (!currentView) {
-							done();
-							return [];
-						}
+						render(width: number): string[] {
+							const currentView = latestViewData.get(sessionId);
+							if (!currentView) {
+								done(undefined);
+								return [];
+							}
 						const terminalRows = process.stdout.rows ?? 40;
 						const header = renderExpandedHeader(currentView, width, theme);
 						const body = renderDashboardLines(currentView, width, theme, 0);
@@ -790,8 +791,8 @@ export default function initAutoresearch(
 							footer,
 						];
 					},
-					handleInput(data: string): void {
-						const currentView = latestViewData.get(sessionId);
+						handleInput(data: string): void {
+							const currentView = latestViewData.get(sessionId);
 						const totalRows =
 							(currentView
 								? renderDashboardLines(currentView, process.stdout.columns ?? 120, theme, 0).length +
@@ -800,10 +801,10 @@ export default function initAutoresearch(
 						const terminalRows = process.stdout.rows ?? 40;
 						const viewportRows = Math.max(4, terminalRows - 4);
 						const maxScroll = Math.max(0, totalRows - viewportRows);
-						if (matchesKey(data, "escape") || matchesKey(data, "esc") || data === "q") {
-							done();
-							return;
-						}
+							if (shouldCloseAutoresearchOverlay(data)) {
+								done(undefined);
+								return;
+							}
 						if (matchesKey(data, "up") || data === "k") {
 							scrollOffset = Math.max(0, scrollOffset - 1);
 						} else if (matchesKey(data, "down") || data === "j") {
