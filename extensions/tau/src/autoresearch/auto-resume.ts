@@ -8,6 +8,5 @@ export function shouldDeferAutoresearchResumeUntilAfterCompaction(
 ): boolean {
 	if (!usage) return false;
 	if (usage.tokens === null) return false;
-	if (usage.contextWindow <= reserveTokens) return false;
 	return usage.tokens >= usage.contextWindow - reserveTokens;
 }

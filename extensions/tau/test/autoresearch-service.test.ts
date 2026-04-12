@@ -424,4 +424,51 @@ describe("autoresearch service freeze", () => {
 		expect(resumeResult.blockedReason).toBeNull();
 		expect(applyCalls).toBe(1);
 	});
+
+	it("does not auto-resume a later turn that made no autoresearch progress", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+		writeAutoresearchMd(cwd, BASELINE_MD);
+		writeAutoresearchSh(cwd, BASELINE_SH);
+
+		const harness = makeAutoresearchRuntime();
+		runtimes.push(harness);
+
+		await harness.run(
+			Effect.gen(function* () {
+				const service = yield* Autoresearch;
+				yield* service.initExperiment("s1", cwd, {
+					name: "speedup",
+					metricName: "runtime_ms",
+					metricUnit: "",
+					direction: "lower",
+					benchmarkCommand: "bash autoresearch.sh",
+					scopePaths: ["src"],
+					offLimits: ["src/legacy"],
+					constraints: ["no regressions"],
+					executionProfile: TEST_EXECUTION_PROFILE,
+				});
+				yield* service.resetSessionCounters("s1");
+			}),
+		);
+
+		const resumeResult = await harness.run(
+			Effect.gen(function* () {
+				const service = yield* Autoresearch;
+				return yield* service.onAgentEnd("s1", cwd, {
+					executeBenchmark: () =>
+						Effect.die(new Error("executeBenchmark should not be called in onAgentEnd test")),
+					commitKeep: () =>
+						Effect.die(new Error("commitKeep should not be called in onAgentEnd test")),
+					revertNonKeep: () =>
+						Effect.die(new Error("revertNonKeep should not be called in onAgentEnd test")),
+					sendFollowUp: () => Effect.void,
+					applyExecutionProfile: () => Effect.succeed({ applied: true as const }),
+				});
+			}),
+		);
+
+		expect(resumeResult.didResume).toBe(false);
+		expect(resumeResult.blockedReason).toBeNull();
+	});
 });

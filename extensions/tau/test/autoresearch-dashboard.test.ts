@@ -167,4 +167,71 @@ describe("autoresearch widget rendering", () => {
 		expect(table).toContain("discard");
 		expect(table).not.toContain("base222");
 	});
+
+	it("keeps earlier-segment rows visible in the expanded dashboard", () => {
+		const lines = renderDashboardLines(
+			makeViewData({
+				currentSegment: 1,
+				currentSegmentRunCount: 1,
+				totalRunCount: 3,
+				currentSegmentKeptCount: 1,
+				bestMetric: 3500,
+				bestPrimaryMetric: 3500,
+				bestRunNumber: 3,
+				results: [
+					{
+						runNumber: 1,
+						commit: "old1111",
+						metric: 3725,
+						metrics: { ttfb_ms: 500 },
+						status: "keep",
+						description: "old baseline",
+						timestamp: 1,
+						segment: 0,
+						confidence: null,
+						asi: { hypothesis: "baseline" },
+					},
+					{
+						runNumber: 2,
+						commit: "old2222",
+						metric: 3652,
+						metrics: { ttfb_ms: 510 },
+						status: "discard",
+						description: "old regression",
+						timestamp: 2,
+						segment: 0,
+						confidence: null,
+						asi: {
+							hypothesis: "old attempt",
+							rollback_reason: "regressed",
+							next_action_hint: "revert",
+						},
+					},
+					{
+						runNumber: 3,
+						commit: "new3333",
+						metric: 3500,
+						metrics: { ttfb_ms: 490 },
+						status: "keep",
+						description: "new baseline",
+						timestamp: 3,
+						segment: 1,
+						confidence: null,
+						asi: { hypothesis: "new baseline" },
+					},
+				],
+			}),
+			240,
+			plainTheme,
+			8,
+		);
+
+		const table = lines.join("\n");
+		expect(table).toContain("Archived from earlier segments: 2 runs");
+		expect(table).toContain("(old)");
+		expect(table).toContain("old baseline");
+		expect(table).toContain("old regression");
+		expect(table).toContain("new3333");
+		expect(table).not.toContain("old1111");
+	});
 });

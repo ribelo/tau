@@ -154,6 +154,7 @@ export interface PendingRunSummary {
 export interface SessionRuntime {
 	autoresearchMode: boolean;
 	autoResumeArmed: boolean;
+	loopProgressThisTurn: boolean;
 	lastAutoResumePendingRunNumber: number | null;
 	lastAutoResumeAt: number | null;
 	autoResumeCountThisSegment: number;
@@ -175,6 +176,7 @@ function createSessionRuntime(): SessionRuntime {
 	return {
 		autoresearchMode: false,
 		autoResumeArmed: false,
+		loopProgressThisTurn: false,
 		lastAutoResumePendingRunNumber: null,
 		lastAutoResumeAt: null,
 		autoResumeCountThisSegment: 0,
@@ -660,6 +662,7 @@ export const AutoresearchLive = Layer.effect(
 					runtime.state = createExperimentState();
 				}
 				runtime.autoResumeArmed = false;
+				runtime.loopProgressThisTurn = false;
 				runtime.lastAutoResumePendingRunNumber = null;
 				runtime.runningExperiment = null;
 				const loggedRunNumbers = collectLoggedRunNumbers(runtime.state.results);
@@ -885,6 +888,7 @@ export const AutoresearchLive = Layer.effect(
 
 				runtime.autoresearchMode = true;
 				runtime.autoResumeArmed = true;
+				runtime.loopProgressThisTurn = true;
 				runtime.lastAutoResumePendingRunNumber = null;
 				runtime.lastAutoResumeAt = null;
 				runtime.autoResumeCountThisSegment = 0;
@@ -1060,6 +1064,7 @@ export const AutoresearchLive = Layer.effect(
 					runNumber,
 				};
 				runtime.autoResumeArmed = true;
+				runtime.loopProgressThisTurn = true;
 				runtime.lastAutoResumePendingRunNumber = null;
 
 				const runJsonContent = {
@@ -1358,11 +1363,12 @@ export const AutoresearchLive = Layer.effect(
 
 				const shouldResumePendingRun =
 					pendingRun !== null && runtime.lastAutoResumePendingRunNumber !== pendingRun.runNumber;
-				if (!shouldResumePendingRun && !runtime.autoResumeArmed) {
+				const shouldResumeExperimentLoop = runtime.autoResumeArmed && runtime.loopProgressThisTurn;
+				if (!shouldResumePendingRun && !shouldResumeExperimentLoop) {
 					return { didResume: false, blockedReason: null };
 				}
 
-				const isExperimentLoopResume = runtime.autoResumeArmed;
+				const isExperimentLoopResume = shouldResumeExperimentLoop;
 				const now = Date.now();
 				if (
 					!isExperimentLoopResume &&
@@ -1396,6 +1402,7 @@ export const AutoresearchLive = Layer.effect(
 				runtime.lastAutoResumeAt = now;
 				runtime.autoResumeCountThisSegment += 1;
 				runtime.autoResumeArmed = false;
+				runtime.loopProgressThisTurn = false;
 				runtime.lastAutoResumePendingRunNumber = pendingRun?.runNumber ?? null;
 
 				// Adapter is responsible for deciding whether to actually send the follow-up
@@ -1409,6 +1416,7 @@ export const AutoresearchLive = Layer.effect(
 				const runtime = yield* ensureSession(sessionId);
 				runtime.autoresearchMode = enabled;
 				runtime.autoResumeArmed = false;
+				runtime.loopProgressThisTurn = false;
 				runtime.goal = goal;
 				runtime.lastAutoResumePendingRunNumber = null;
 			},
@@ -1443,6 +1451,7 @@ export const AutoresearchLive = Layer.effect(
 		)(function* (sessionId) {
 			const runtime = yield* ensureSession(sessionId);
 			runtime.experimentsThisSession = 0;
+			runtime.loopProgressThisTurn = false;
 		});
 
 		return Autoresearch.of({

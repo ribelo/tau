@@ -233,9 +233,9 @@ export function renderDashboardLines(
 	lines.push(renderTableHeader(viewData, width, theme));
 	lines.push(theme.fg("dim", "-".repeat(Math.max(0, width - 1))));
 
-	const visible = maxRows > 0 ? current.slice(-maxRows) : current;
-	if (visible.length < current.length) {
-		lines.push(theme.fg("dim", `... ${current.length - visible.length} earlier runs hidden ...`));
+	const visible = maxRows > 0 ? results.slice(-maxRows) : results;
+	if (visible.length < results.length) {
+		lines.push(theme.fg("dim", `... ${results.length - visible.length} earlier runs hidden ...`));
 	}
 	for (const result of visible) {
 		lines.push(renderResultRow(result, viewData, baselineSecondary, width, theme));
@@ -259,23 +259,34 @@ function renderResultRow(
 	theme: Theme,
 ): string {
 	const runNumber = result.runNumber ?? viewData.results.indexOf(result) + 1;
-	const commitValue = result.status === "keep" ? result.commit || "-" : "-";
+	const isOld = result.segment !== viewData.currentSegment;
+	const commitValue = isOld ? "(old)" : result.status === "keep" ? result.commit || "-" : "-";
 	const secondary = viewData.secondaryMetrics
 		.map((metric) =>
 			truncateToWidth(
-				renderSecondaryCell(result.metrics[metric.name], metric.unit, baselineSecondary[metric.name]),
+				renderSecondaryCell(
+					result.metrics[metric.name],
+					metric.unit,
+					isOld ? undefined : baselineSecondary[metric.name],
+				),
 				10,
 			).padEnd(11),
 		)
 		.join("");
-	const statusColor = result.status === "keep" ? "success" : result.status === "discard" ? "warning" : "error";
+	const statusColor = isOld
+		? "dim"
+		: result.status === "keep"
+			? "success"
+			: result.status === "discard"
+				? "warning"
+				: "error";
 	const line =
 		`${theme.fg("dim", String(runNumber).padEnd(4))}` +
-		`${theme.fg("accent", commitValue.padEnd(10))}` +
+		`${theme.fg(isOld ? "dim" : "accent", commitValue.padEnd(10))}` +
 		`${theme.fg(statusColor, formatNum(result.metric, viewData.metricUnit).padEnd(12))}` +
 		`${secondary}` +
 		`${theme.fg(statusColor, result.status.padEnd(14))}` +
-		`${theme.fg("muted", result.description)}`;
+		`${theme.fg(isOld ? "dim" : "muted", result.description)}`;
 	return truncateToWidth(line, width);
 }
 

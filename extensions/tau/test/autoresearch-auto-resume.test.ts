@@ -32,4 +32,14 @@ describe("autoresearch auto-resume compaction guard", () => {
 			}),
 		).toBe(false);
 	});
+
+	it("still defers on small context windows when already past the compaction threshold", () => {
+		expect(
+			shouldDeferAutoresearchResumeUntilAfterCompaction({
+				tokens: 6_000,
+				contextWindow: 8_000,
+				percent: 75,
+			}),
+		).toBe(true);
+	});
 });
