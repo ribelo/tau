@@ -8,7 +8,8 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
-import { truncateTail, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@mariozechner/pi-coding-agent";
+import { truncateTail, formatSize, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@mariozechner/pi-coding-agent";
+import type { TruncationResult } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { matchesKey, Text } from "@mariozechner/pi-tui";
 import { Effect, Option } from "effect";
@@ -61,6 +62,7 @@ import {
 	renderOverlayRunningLine,
 	renderOverlayFooter,
 } from "./dashboard.js";
+import { renderRunExperimentResult } from "./run-experiment-render.js";
 
 // ------------------------------------------------------------------------------
 // Helpers
@@ -214,11 +216,16 @@ async function executeBenchmarkAsync(
 	}
 
 	const passed = benchmarkPassed && (checksPass === null || checksPass);
+	const displayTruncation = truncateTail(fullOutput, {
+		maxLines: DEFAULT_MAX_LINES,
+		maxBytes: DEFAULT_MAX_BYTES,
+	});
 
 	const llmTruncation = truncateTail(fullOutput, {
 		maxLines: EXPERIMENT_MAX_LINES,
 		maxBytes: EXPERIMENT_MAX_BYTES,
 	});
+	const truncation: TruncationResult | null = llmTruncation.truncated ? llmTruncation : null;
 
 	const totalLines = fullOutput.split("\n").length;
 	let fullOutputPath: string | undefined;
@@ -242,7 +249,8 @@ async function executeBenchmarkAsync(
 		passed,
 		crashed: !passed,
 		timedOut: processTimedOut,
-		tailOutput: llmTruncation.content,
+		tailOutput: displayTruncation.content,
+		llmTailOutput: llmTruncation.content,
 		checksPass,
 		checksTimedOut,
 		checksOutput: checksOutput.split("\n").slice(-80).join("\n"),
@@ -253,6 +261,7 @@ async function executeBenchmarkAsync(
 		metricName,
 		metricUnit,
 		fullOutputPath: fullOutputPath ? Option.some(fullOutputPath) : Option.none(),
+		truncation,
 	};
 }
 
@@ -506,10 +515,14 @@ function buildRunExperimentText(details: RunDetails): string {
 		text += `\n`;
 	}
 
-	text += `\n${details.tailOutput}`;
+	text += `\n${details.llmTailOutput}`;
 
-	if (Option.isSome(details.fullOutputPath)) {
-		text += `\n\n[Full output: ${details.fullOutputPath.value}]`;
+	if (details.truncation !== null && Option.isSome(details.fullOutputPath)) {
+		if (details.truncation.truncatedBy === "lines") {
+			text += `\n\n[Showing last ${details.truncation.outputLines} of ${details.truncation.totalLines} lines. Full output: ${details.fullOutputPath.value}]`;
+		} else {
+			text += `\n\n[Showing last ${details.truncation.outputLines} lines (${formatSize(EXPERIMENT_MAX_BYTES)} limit). Full output: ${details.fullOutputPath.value}]`;
+		}
 	}
 
 	if (details.checksPass === false && details.checksOutput) {
@@ -1068,20 +1081,8 @@ export default function initAutoresearch(
 			return new Text(text, 0, 0);
 		},
 
-		renderResult(result, { isPartial }, theme) {
-			if (isPartial) {
-				const details = result.details as BenchmarkProgress | undefined;
-				const elapsed = details?.elapsed ?? "";
-				let text = theme.fg("warning", `Running${elapsed ? ` ${elapsed}` : ""}...`);
-				if (details?.tailOutput) {
-					const lines = details.tailOutput.split("\n").slice(-3);
-					text += "\n" + theme.fg("dim", lines.join("\n"));
-				}
-				return new Text(text, 0, 0);
-			}
-
-			const msg = result.content[0];
-			return new Text(msg?.type === "text" ? msg.text : "", 0, 0);
+		renderResult(result, options, theme) {
+			return renderRunExperimentResult(result, options, theme);
 		},
 	});
 

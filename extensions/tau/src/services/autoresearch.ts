@@ -1,6 +1,7 @@
 import * as path from "node:path";
 
 import { Clock, Effect, Layer, Option, Ref, ServiceMap } from "effect";
+import type { TruncationResult } from "@mariozechner/pi-coding-agent";
 
 import { AutoresearchRepo } from "../autoresearch/repo.js";
 import {
@@ -70,6 +71,7 @@ export interface RunDetails {
 	readonly crashed: boolean;
 	readonly timedOut: boolean;
 	readonly tailOutput: string;
+	readonly llmTailOutput: string;
 	readonly checksPass: boolean | null;
 	readonly checksTimedOut: boolean;
 	readonly checksOutput: string;
@@ -80,6 +82,7 @@ export interface RunDetails {
 	readonly metricName: string;
 	readonly metricUnit: string;
 	readonly fullOutputPath: Option.Option<string>;
+	readonly truncation: TruncationResult | null;
 }
 
 export interface BenchmarkProgress {
