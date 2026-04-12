@@ -21,6 +21,120 @@ export function renderExpandedHeader(viewData: AutoresearchViewData, width: numb
 	return truncateToWidth(theme.fg("accent", label) + theme.fg("dim", "-".repeat(fillWidth)) + hint, width);
 }
 
+export function renderCompactRunningLine(
+	viewData: AutoresearchViewData,
+	width: number,
+	theme: Theme,
+): string {
+	const parts = [theme.fg("accent", "autoresearch"), theme.fg("warning", " running...")];
+
+	if (viewData.name) {
+		parts.push(theme.fg("dim", ` | ${viewData.name}`));
+	}
+
+	if (viewData.runningExperiment) {
+		parts.push(theme.fg("dim", ` | ${viewData.runningExperiment.command}`));
+	}
+
+	parts.push(theme.fg("dim", "  (waiting for first logged result)"));
+	return truncateToWidth(parts.join(""), width);
+}
+
+export function renderCompactSummary(viewData: AutoresearchViewData, width: number, theme: Theme): string {
+	const current = currentResults(viewData.results, viewData.currentSegment);
+	const discarded = current.filter((result) => result.status === "discard").length;
+	const baseline = findBaselineMetric(viewData.results, viewData.currentSegment);
+	const baselineSecondary = findBaselineSecondary(
+		viewData.results,
+		viewData.currentSegment,
+		viewData.secondaryMetrics,
+	);
+	const best = findBestResult(viewData.results, viewData.currentSegment, viewData.bestDirection);
+	const displayVal = viewData.bestPrimaryMetric ?? viewData.bestMetric;
+
+	const parts = [
+		theme.fg("accent", "autoresearch"),
+		theme.fg("muted", ` ${viewData.totalRunCount} runs`),
+		theme.fg("success", ` ${viewData.currentSegmentKeptCount} kept`),
+	];
+
+	if (discarded > 0) {
+		parts.push(theme.fg("warning", ` ${discarded} discarded`));
+	}
+	if (viewData.currentSegmentCrashedCount > 0) {
+		parts.push(theme.fg("error", ` ${viewData.currentSegmentCrashedCount} crashed`));
+	}
+	if (viewData.currentSegmentChecksFailedCount > 0) {
+		parts.push(theme.fg("error", ` ${viewData.currentSegmentChecksFailedCount} checks failed`));
+	}
+
+	if (displayVal !== null) {
+		parts.push(theme.fg("dim", " | "));
+		parts.push(
+			theme.fg("warning", theme.bold(`★ ${viewData.metricName}: ${formatNum(displayVal, viewData.metricUnit)}`)),
+		);
+		if (viewData.bestRunNumber !== null) {
+			parts.push(theme.fg("dim", ` #${viewData.bestRunNumber}`));
+		}
+	}
+
+	if (
+		baseline !== null &&
+		viewData.bestPrimaryMetric !== null &&
+		baseline !== 0 &&
+		viewData.bestPrimaryMetric !== baseline
+	) {
+		const pct = ((viewData.bestPrimaryMetric - baseline) / baseline) * 100;
+		const sign = pct > 0 ? "+" : "";
+		const color = isImprovement(viewData.bestPrimaryMetric, baseline, viewData.bestDirection) ? "success" : "error";
+		parts.push(theme.fg(color, ` (${sign}${pct.toFixed(1)}%)`));
+	}
+
+	if (viewData.confidence !== null) {
+		const confColor = viewData.confidence >= 2.0 ? "success" : viewData.confidence >= 1.0 ? "warning" : "error";
+		parts.push(theme.fg("dim", " | "));
+		parts.push(theme.fg(confColor, `conf: ${viewData.confidence.toFixed(1)}x`));
+	}
+
+	if (best && viewData.secondaryMetrics.length > 0) {
+		for (const metric of viewData.secondaryMetrics) {
+			const summary = renderCompactSecondarySummary(
+				metric.name,
+				best.result.metrics[metric.name],
+				baselineSecondary[metric.name],
+				metric.unit,
+			);
+			if (!summary) continue;
+			parts.push(theme.fg("dim", "  "));
+			parts.push(theme.fg("muted", summary));
+		}
+	}
+
+	if (viewData.name) {
+		parts.push(theme.fg("dim", ` | ${viewData.name}`));
+	}
+
+	parts.push(theme.fg("dim", "  (ctrl+x expand • ctrl+shift+x fullscreen)"));
+	return truncateToWidth(parts.join(""), width);
+}
+
+export function renderWidget(
+	viewData: AutoresearchViewData,
+	width: number,
+	theme: Theme,
+	expanded: boolean,
+): string {
+	if (expanded) {
+		return [renderExpandedHeader(viewData, width, theme), ...renderDashboardLines(viewData, width, theme, 8)].join("\n");
+	}
+
+	if (viewData.runningExperiment && viewData.totalRunCount === 0) {
+		return renderCompactRunningLine(viewData, width, theme);
+	}
+
+	return renderCompactSummary(viewData, width, theme);
+}
+
 export function renderDashboardLines(
 	viewData: AutoresearchViewData,
 	width: number,
@@ -188,6 +302,21 @@ function renderSecondarySummary(
 	return `${name} ${formatNum(value, unit)} ${sign}${delta.toFixed(1)}%`;
 }
 
+function renderCompactSecondarySummary(
+	name: string,
+	value: number | undefined,
+	baseline: number | undefined,
+	unit: string,
+): string | null {
+	if (value === undefined) return null;
+	if (baseline === undefined || baseline === 0 || baseline === value) {
+		return `${name}: ${formatNum(value, unit)}`;
+	}
+	const delta = ((value - baseline) / baseline) * 100;
+	const sign = delta > 0 ? "+" : "";
+	return `${name}: ${formatNum(value, unit)} ${sign}${delta.toFixed(1)}%`;
+}
+
 export function renderOverlayRunningLine(
 	viewData: AutoresearchViewData,
 	theme: Theme,
@@ -218,4 +347,8 @@ export function renderOverlayFooter(
 	const hint = theme.fg("dim", ` j/k u/d g/G esc/q${position} `);
 	const fill = Math.max(0, width - visibleWidth(hint));
 	return theme.fg("dim", "-".repeat(fill)) + hint;
+}
+
+function isImprovement(current: number, baseline: number, direction: "lower" | "higher"): boolean {
+	return direction === "lower" ? current < baseline : current > baseline;
 }

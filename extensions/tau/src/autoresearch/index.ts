@@ -53,9 +53,9 @@ import {
 	parseAsiLines,
 	EXPERIMENT_MAX_BYTES,
 	EXPERIMENT_MAX_LINES,
-	isBetter,
 } from "./helpers.js";
 import {
+	renderWidget,
 	renderExpandedHeader,
 	renderDashboardLines,
 	renderOverlayRunningLine,
@@ -699,76 +699,8 @@ export default function initAutoresearch(
 		const expanded = expandedState.get(sessionId) ?? false;
 
 		ctx.ui.setWidget("autoresearch", (_tui, theme) => {
-			if (viewData.runningExperiment && !expanded) {
-				const parts = [
-					theme.fg("accent", "autoresearch"),
-					theme.fg("warning", " running..."),
-				];
-				if (viewData.name) {
-					parts.push(theme.fg("dim", ` | ${viewData.name}`));
-				}
-				return new Text(parts.join(""), 0, 0);
-			}
-
-			if (expanded) {
-				const width = process.stdout.columns ?? 120;
-				const lines = [
-					renderExpandedHeader(viewData, width, theme),
-					...renderDashboardLines(viewData, width, theme, 8),
-				];
-				return new Text(lines.join("\n"), 0, 0);
-			}
-
-			const parts: string[] = [
-				theme.fg("accent", "autoresearch"),
-				theme.fg("muted", ` ${viewData.totalRunCount} runs`),
-				theme.fg("success", ` ${viewData.currentSegmentKeptCount} kept`),
-			];
-
-			if (viewData.currentSegmentCrashedCount > 0) {
-				parts.push(theme.fg("error", ` ${viewData.currentSegmentCrashedCount} crashed`));
-			}
-			if (viewData.currentSegmentChecksFailedCount > 0) {
-				parts.push(theme.fg("error", ` ${viewData.currentSegmentChecksFailedCount} checks failed`));
-			}
-
-			const displayVal = viewData.bestPrimaryMetric ?? viewData.bestMetric;
-			if (displayVal !== null) {
-				parts.push(theme.fg("dim", " | "));
-				parts.push(
-					theme.fg("warning", theme.bold(`${viewData.metricName}: ${formatNum(displayVal, viewData.metricUnit)}`)),
-				);
-				if (viewData.bestRunNumber !== null) {
-					parts.push(theme.fg("dim", ` #${viewData.bestRunNumber}`));
-				}
-			}
-
-			if (
-				viewData.bestMetric !== null &&
-				viewData.bestPrimaryMetric !== null &&
-				viewData.bestMetric !== 0 &&
-				viewData.bestPrimaryMetric !== viewData.bestMetric
-			) {
-				const pct = ((viewData.bestPrimaryMetric - viewData.bestMetric) / viewData.bestMetric) * 100;
-				const sign = pct > 0 ? "+" : "";
-				const color = isBetter(viewData.bestPrimaryMetric, viewData.bestMetric, viewData.bestDirection)
-					? "success"
-					: "error";
-				parts.push(theme.fg(color, ` (${sign}${pct.toFixed(1)}%)`));
-			}
-
-			if (viewData.confidence !== null) {
-				const confStr = viewData.confidence.toFixed(1);
-				const confColor = viewData.confidence >= 2.0 ? "success" : viewData.confidence >= 1.0 ? "warning" : "error";
-				parts.push(theme.fg("dim", " | "));
-				parts.push(theme.fg(confColor, `conf: ${confStr}x`));
-			}
-
-			if (viewData.name) {
-				parts.push(theme.fg("dim", ` | ${viewData.name}`));
-			}
-
-			return new Text(parts.join(""), 0, 0);
+			const width = process.stdout.columns ?? 120;
+			return new Text(renderWidget(viewData, width, theme, expanded), 0, 0);
 		});
 	};
 
