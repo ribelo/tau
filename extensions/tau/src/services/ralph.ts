@@ -785,7 +785,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 			const cleanCompletedLoops: RalphService["cleanCompletedLoops"] = Effect.fn(
 				"Ralph.cleanCompletedLoops",
 			)(function* (cwd, all) {
-				const cleaned = yield* mapLoopEngineError(loopEngine.cleanLoops(cwd, all));
+				const cleaned = yield* mapLoopEngineError(loopEngine.cleanLoops(cwd, all, "ralph"));
 				const currentLoop = yield* getCurrentLoop;
 				if (
 					Option.isSome(currentLoop) &&

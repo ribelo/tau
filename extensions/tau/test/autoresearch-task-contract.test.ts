@@ -59,6 +59,40 @@ describe("autoresearch task contract", () => {
 		).toThrow(LoopContractValidationError);
 	});
 
+	it("rejects absolute scope.root values", () => {
+		expect(() =>
+			normalizeAutoresearchTaskContractInput({
+				title: "Absolute root check",
+				benchmarkCommand: "bash scripts/bench.sh",
+				checksCommand: Option.none(),
+				metricName: "latency_ms",
+				metricUnit: "ms",
+				metricDirection: "lower",
+				scopeRoot: "/tmp/workspace",
+				scopePaths: ["src"],
+				offLimits: [],
+				constraints: ["no-new-deps"],
+				maxIterations: Option.none(),
+			}),
+		).toThrow(LoopContractValidationError);
+
+		expect(() =>
+			normalizeAutoresearchTaskContractInput({
+				title: "Windows absolute root check",
+				benchmarkCommand: "bash scripts/bench.sh",
+				checksCommand: Option.none(),
+				metricName: "latency_ms",
+				metricUnit: "ms",
+				metricDirection: "lower",
+				scopeRoot: "C:\\workspace",
+				scopePaths: ["src"],
+				offLimits: [],
+				constraints: ["no-new-deps"],
+				maxIterations: Option.none(),
+			}),
+		).toThrow(LoopContractValidationError);
+	});
+
 	it("phase fingerprint ignores notes and changes only when contract/profile changes", () => {
 		const baseContract = normalizeAutoresearchTaskContractInput({
 			title: "Fingerprint check",

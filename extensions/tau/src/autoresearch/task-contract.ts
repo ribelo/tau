@@ -153,7 +153,14 @@ function normalizeScopeRoot(rawRoot: string, entity: string): string {
 	if (raw.length === 0) {
 		throw contractError(entity, "scope.root must be a non-empty string.");
 	}
+	const windowsNormalized = raw.replaceAll("\\", "/");
+	if (/^[A-Za-z]:\//.test(windowsNormalized) || windowsNormalized.startsWith("//")) {
+		throw contractError(entity, "scope.root must be a relative path inside the workspace root.");
+	}
 	const normalized = path.posix.normalize(raw);
+	if (path.posix.isAbsolute(normalized)) {
+		throw contractError(entity, "scope.root must be a relative path inside the workspace root.");
+	}
 	if (normalized === ".." || normalized.startsWith("../")) {
 		throw contractError(entity, "scope.root cannot escape the workspace root.");
 	}

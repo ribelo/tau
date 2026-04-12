@@ -124,6 +124,7 @@ const AutoresearchLoopStateDetailsSchema = Schema.Struct({
 	phaseId: Schema.OptionFromNullOr(PhaseIdSchema),
 	pendingRunId: OptionalStringSchema,
 	runCount: NonNegativeIntSchema,
+	maxIterations: Schema.OptionFromNullOr(NonNegativeIntSchema),
 	benchmarkCommand: Schema.NonEmptyString,
 	checksCommand: OptionalStringSchema,
 	metricName: Schema.NonEmptyString,

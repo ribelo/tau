@@ -167,6 +167,7 @@ describe("loop engine service", () => {
 					scopePaths: ["src", "./src/../bench"],
 					offLimits: ["vendor", "./vendor"],
 					constraints: ["no-new-deps", "no-new-deps"],
+					maxIterations: Option.some(20),
 					executionProfile: makeExecutionProfile(),
 				});
 
@@ -207,6 +208,7 @@ describe("loop engine service", () => {
 
 		expect(result.started.autoresearch.scopePaths).toEqual(["bench", "src"]);
 		expect(result.started.autoresearch.offLimits).toEqual(["vendor"]);
+		expect(Option.getOrUndefined(result.started.autoresearch.maxIterations)).toBe(20);
 		expect(result.parsedContract.scope.paths).toEqual(["bench", "src"]);
 		expect(result.snapshot.phaseId).toBe(result.phaseId);
 		expect(result.snapshot.metric.name).toBe("latency_ms");
@@ -241,6 +243,7 @@ describe("loop engine service", () => {
 					scopePaths: ["src"],
 					offLimits: ["dist"],
 					constraints: ["no-new-deps"],
+					maxIterations: Option.none(),
 					executionProfile: makeExecutionProfile(),
 				});
 
@@ -318,6 +321,78 @@ describe("loop engine service", () => {
 				),
 			),
 		).toBe(true);
+	});
+
+	it("captures autoresearch execution profile at phase start", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const controller = makeSession("controller-profile", "controller-profile.session.json");
+		const profileAtCreate = makeExecutionProfile({
+			mode: "smart",
+			model: "anthropic/claude-opus-4-5",
+			thinking: "medium",
+		});
+		const profileAtStart = makeExecutionProfile({
+			mode: "rush",
+			model: "openai/gpt-5-mini",
+			thinking: "low",
+		});
+
+		const result = await Effect.runPromise(
+			Effect.gen(function* () {
+				const engine = yield* LoopEngine;
+				const repo = yield* LoopRepo;
+
+				yield* engine.createLoop(cwd, {
+					kind: "autoresearch",
+					taskId: "ar-profile-capture",
+					title: "Autoresearch profile capture",
+					taskContent: "Validate phase-start execution profile pinning.",
+					benchmarkCommand: "bash scripts/bench.sh",
+					checksCommand: Option.none(),
+					metricName: "latency_ms",
+					metricUnit: "ms",
+					metricDirection: "lower",
+					scopeRoot: ".",
+					scopePaths: ["src"],
+					offLimits: [],
+					constraints: ["no-new-deps"],
+					maxIterations: Option.none(),
+					executionProfile: profileAtCreate,
+				});
+
+				const started = yield* engine.startLoop(
+					cwd,
+					"ar-profile-capture",
+					controller,
+					profileAtStart,
+				);
+				if (started.kind !== "autoresearch") {
+					throw new Error("expected autoresearch state");
+				}
+
+				const phaseId = Option.match(started.autoresearch.phaseId, {
+					onNone: () => {
+						throw new Error("missing phase id");
+					},
+					onSome: (value) => value,
+				});
+
+				const snapshot = yield* repo.loadPhaseSnapshot(cwd, "ar-profile-capture", phaseId);
+				if (Option.isNone(snapshot)) {
+					throw new Error("missing phase snapshot");
+				}
+
+				return {
+					started,
+					snapshot: snapshot.value,
+				};
+			}).pipe(Effect.provide(loopEngineLayer)),
+		);
+
+		expect(result.started.autoresearch.pinnedExecutionProfile).toEqual(profileAtStart);
+		expect(result.snapshot.pinnedExecutionProfile).toEqual(profileAtStart);
 	});
 
 	it("fails fast when ownership resolution is ambiguous", async () => {
@@ -406,5 +481,118 @@ describe("loop engine service", () => {
 				}).pipe(Effect.provide(loopEngineLayer)),
 			),
 		).rejects.toBeInstanceOf(LoopOwnershipValidationError);
+	});
+
+	it("cleans completed loops by workflow kind", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		await Effect.runPromise(
+			Effect.gen(function* () {
+				const engine = yield* LoopEngine;
+
+				yield* engine.createLoop(cwd, {
+					kind: "ralph",
+					taskId: "clean-ralph",
+					title: "Clean Ralph",
+					taskContent: "# Ralph\n",
+					maxIterations: 5,
+					itemsPerIteration: 1,
+					reflectEvery: 2,
+					reflectInstructions: "reflect",
+					executionProfile: makeExecutionProfile(),
+				});
+				yield* engine.startLoop(cwd, "clean-ralph", makeSession("c-ralph", "c-ralph.session.json"));
+				yield* engine.stopLoop(cwd, "clean-ralph");
+
+				yield* engine.createLoop(cwd, {
+					kind: "autoresearch",
+					taskId: "clean-autoresearch",
+					title: "Clean Autoresearch",
+					taskContent: "Autoresearch cleanup scope.",
+					benchmarkCommand: "bash scripts/bench.sh",
+					checksCommand: Option.none(),
+					metricName: "latency_ms",
+					metricUnit: "ms",
+					metricDirection: "lower",
+					scopeRoot: ".",
+					scopePaths: ["src"],
+					offLimits: ["dist"],
+					constraints: ["no-new-deps"],
+					maxIterations: Option.none(),
+					executionProfile: makeExecutionProfile(),
+				});
+				yield* engine.startLoop(
+					cwd,
+					"clean-autoresearch",
+					makeSession("c-ar", "c-ar.session.json"),
+				);
+				yield* engine.stopLoop(cwd, "clean-autoresearch");
+
+				yield* engine.cleanLoops(cwd, false, "ralph");
+			}).pipe(Effect.provide(loopEngineLayer)),
+		);
+
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "state", "clean-ralph.json"))).toBe(
+			false,
+		);
+		expect(
+			fs.existsSync(path.join(cwd, ".pi", "loops", "state", "clean-autoresearch.json")),
+		).toBe(true);
+	});
+
+	it("preserves pre-block loop state snapshot for manual resolution recovery", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const blocked = await Effect.runPromise(
+			Effect.gen(function* () {
+				const engine = yield* LoopEngine;
+
+				yield* engine.createLoop(cwd, {
+					kind: "autoresearch",
+					taskId: "blocked-autoresearch",
+					title: "Blocked autoresearch",
+					taskContent: "Exercise manual resolution snapshot preservation.",
+					benchmarkCommand: "bash scripts/bench.sh",
+					checksCommand: Option.none(),
+					metricName: "latency_ms",
+					metricUnit: "ms",
+					metricDirection: "lower",
+					scopeRoot: ".",
+					scopePaths: ["src"],
+					offLimits: [],
+					constraints: ["no-new-deps"],
+					maxIterations: Option.none(),
+					executionProfile: makeExecutionProfile(),
+				});
+
+				yield* engine.startLoop(
+					cwd,
+					"blocked-autoresearch",
+					makeSession("blocked-controller", "blocked-controller.session.json"),
+				);
+
+				return yield* engine.blockLoopForManualResolution(cwd, "blocked-autoresearch", {
+					reasonCode: "autoresearch.vcs.manual_resolution",
+					message: "manual recovery required",
+					recoveryActions: ["inspect checkout"],
+					recoveryNotes: ["pending_run=run-0001"],
+				});
+			}).pipe(Effect.provide(loopEngineLayer)),
+		);
+
+		const preservedNote = blocked.blocked.recoveryNotes.find((note) =>
+			note.startsWith("preserved_state_base64="),
+		);
+		expect(preservedNote).toBeDefined();
+		if (preservedNote === undefined) {
+			return;
+		}
+
+		const encoded = preservedNote.slice("preserved_state_base64=".length);
+		const decoded = Buffer.from(encoded, "base64").toString("utf-8");
+		const parsed = JSON.parse(decoded) as { readonly kind?: unknown };
+		expect(parsed.kind).toBe("autoresearch");
 	});
 });

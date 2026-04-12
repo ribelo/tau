@@ -20,6 +20,7 @@ import {
 } from "../loops/errors.js";
 import {
 	decodeLoopTaskIdSync,
+	encodeLoopPersistedStateJsonSync,
 	type BlockedManualResolutionLoopState,
 	type LoopPersistedState,
 	type LoopSessionRef,
@@ -58,6 +59,7 @@ export type LoopCreateAutoresearchInput = {
 	readonly scopePaths: readonly string[];
 	readonly offLimits: readonly string[];
 	readonly constraints: readonly string[];
+	readonly maxIterations: Option.Option<number>;
 	readonly executionProfile: ExecutionProfile;
 };
 
@@ -74,6 +76,8 @@ export type LoopCleanResult = {
 	readonly cleanedTaskIds: readonly string[];
 };
 
+export type LoopCleanKind = "all" | "ralph" | "autoresearch";
+
 export interface LoopEngineService {
 	readonly createLoop: (
 		cwd: string,
@@ -83,11 +87,13 @@ export interface LoopEngineService {
 		cwd: string,
 		taskId: string,
 		controller: LoopSessionRef,
+		executionProfile?: ExecutionProfile,
 	) => Effect.Effect<LoopPersistedState, LoopEngineError, never>;
 	readonly resumeLoop: (
 		cwd: string,
 		taskId: string,
 		controller: LoopSessionRef,
+		executionProfile?: ExecutionProfile,
 	) => Effect.Effect<LoopPersistedState, LoopEngineError, never>;
 	readonly pauseLoop: (
 		cwd: string,
@@ -108,6 +114,7 @@ export interface LoopEngineService {
 	readonly cleanLoops: (
 		cwd: string,
 		all: boolean,
+		kind?: LoopCleanKind,
 	) => Effect.Effect<LoopCleanResult, LoopEngineError, never>;
 	readonly listLoops: (
 		cwd: string,
@@ -333,6 +340,7 @@ export const LoopEngineLive = Layer.effect(
 					scopePaths: [...contract.scope.paths],
 					offLimits: [...contract.scope.offLimits],
 					constraints: [...contract.constraints],
+					maxIterations: Option.map(contract.limits, (value) => value.maxIterations),
 				},
 			} satisfies LoopPersistedState;
 		});
@@ -387,9 +395,17 @@ export const LoopEngineLive = Layer.effect(
 							scopePaths: input.scopePaths,
 							offLimits: input.offLimits,
 							constraints: input.constraints,
-							maxIterations: Option.none(),
+							maxIterations: input.maxIterations,
 						})
 						: null;
+
+				const normalizedAutoresearchMaxIterations =
+					normalizedAutoresearchContract === null
+						? Option.none<number>()
+						: Option.map(
+							normalizedAutoresearchContract.limits,
+							(value) => value.maxIterations,
+						);
 
 				const normalizedTitle = normalizedAutoresearchContract?.title ?? input.title;
 				const taskContent =
@@ -440,6 +456,7 @@ export const LoopEngineLive = Layer.effect(
 								phaseId: Option.none(),
 								pendingRunId: Option.none(),
 								runCount: 0,
+								maxIterations: normalizedAutoresearchMaxIterations,
 								benchmarkCommand:
 									normalizedAutoresearchContract?.benchmark.command ??
 									input.benchmarkCommand,
@@ -477,7 +494,7 @@ export const LoopEngineLive = Layer.effect(
 		);
 
 		const startLoop: LoopEngineService["startLoop"] = Effect.fn("LoopEngine.startLoop")(
-			function* (cwd, taskId, controller) {
+			function* (cwd, taskId, controller, executionProfile) {
 				const state = yield* ensureLoadedState(cwd, taskId);
 				yield* validateState(state);
 
@@ -528,9 +545,11 @@ export const LoopEngineLive = Layer.effect(
 							},
 								autoresearch: {
 									...state.autoresearch,
+									pinnedExecutionProfile:
+										executionProfile ?? state.autoresearch.pinnedExecutionProfile,
 									pendingRunId: Option.none(),
 								},
-							};
+						};
 
 				const nextState =
 					nextStateBase.kind === "autoresearch"
@@ -546,7 +565,7 @@ export const LoopEngineLive = Layer.effect(
 		);
 
 		const resumeLoop: LoopEngineService["resumeLoop"] = Effect.fn("LoopEngine.resumeLoop")(
-			function* (cwd, taskId, controller) {
+			function* (cwd, taskId, controller, executionProfile) {
 				const state = yield* ensureLoadedState(cwd, taskId);
 				yield* validateState(state);
 				if (state.kind === "blocked_manual_resolution") {
@@ -598,6 +617,11 @@ export const LoopEngineLive = Layer.effect(
 							ownership: {
 								controller: Option.some(controller),
 								child: Option.none(),
+							},
+							autoresearch: {
+								...state.autoresearch,
+								pinnedExecutionProfile:
+									executionProfile ?? state.autoresearch.pinnedExecutionProfile,
 							},
 						};
 
@@ -760,14 +784,18 @@ export const LoopEngineLive = Layer.effect(
 			return nextState;
 		});
 
-		const blockLoopForManualResolution: LoopEngineService["blockLoopForManualResolution"] =
-			Effect.fn("LoopEngine.blockLoopForManualResolution")(
-				function* (cwd, taskId, input) {
-					const state = yield* ensureLoadedState(cwd, taskId);
-					yield* validateState(state);
+			const blockLoopForManualResolution: LoopEngineService["blockLoopForManualResolution"] =
+				Effect.fn("LoopEngine.blockLoopForManualResolution")(
+					function* (cwd, taskId, input) {
+						const state = yield* ensureLoadedState(cwd, taskId);
+						yield* validateState(state);
+						const preservedStateBase64 = Buffer.from(
+							encodeLoopPersistedStateJsonSync(state),
+							"utf-8",
+						).toString("base64");
 
-					const blockedAt = yield* nowIso;
-					const nextState: BlockedManualResolutionLoopState = {
+						const blockedAt = yield* nowIso;
+						const nextState: BlockedManualResolutionLoopState = {
 						taskId: state.taskId,
 						title: state.title,
 						taskFile: state.taskFile,
@@ -786,14 +814,17 @@ export const LoopEngineLive = Layer.effect(
 							controller: state.ownership.controller,
 							child: Option.none(),
 						},
-						blocked: {
-							reasonCode: input.reasonCode,
-							message: input.message,
-							blockedAt,
-							recoveryActions: [...input.recoveryActions],
-							recoveryNotes: [...input.recoveryNotes],
-						},
-					};
+							blocked: {
+								reasonCode: input.reasonCode,
+								message: input.message,
+								blockedAt,
+								recoveryActions: [...input.recoveryActions],
+								recoveryNotes: [
+									...input.recoveryNotes,
+									`preserved_state_base64=${preservedStateBase64}`,
+								],
+							},
+						};
 
 					yield* validateLoopOwnership(nextState);
 					yield* repo.saveState(cwd, nextState);
@@ -924,11 +955,14 @@ export const LoopEngineLive = Layer.effect(
 		);
 
 		const cleanLoops: LoopEngineService["cleanLoops"] = Effect.fn("LoopEngine.cleanLoops")(
-			function* (cwd, all) {
+			function* (cwd, all, kind = "all") {
 				const states = yield* loadAllValidated(cwd);
 				const cleanedTaskIds: string[] = [];
 				for (const state of states) {
 					if (state.lifecycle !== "completed") {
+						continue;
+					}
+					if (kind !== "all" && state.kind !== kind) {
 						continue;
 					}
 					yield* repo.deleteState(cwd, state.taskId);
