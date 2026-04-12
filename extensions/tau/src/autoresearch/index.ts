@@ -63,6 +63,7 @@ import {
 	renderOverlayFooter,
 } from "./dashboard.js";
 import { renderRunExperimentResult } from "./run-experiment-render.js";
+import { shouldDeferAutoresearchResumeUntilAfterCompaction } from "./auto-resume.js";
 
 // ------------------------------------------------------------------------------
 // Helpers
@@ -609,6 +610,34 @@ export default function initAutoresearch(
 	pi: ExtensionAPI,
 	runEffect: <A, E>(effect: Effect.Effect<A, E, Autoresearch | Sandbox | PromptModes>) => Promise<A>,
 ): void {
+	const pendingResumeMessages = new Map<string, { message: string; fallbackTimer: ReturnType<typeof setTimeout> }>();
+
+	const clearPendingResumeMessage = (sessionId: string): void => {
+		const pending = pendingResumeMessages.get(sessionId);
+		if (!pending) return;
+		clearTimeout(pending.fallbackTimer);
+		pendingResumeMessages.delete(sessionId);
+	};
+
+	const scheduleResumeMessage = (sessionId: string, message: string): void => {
+		clearPendingResumeMessage(sessionId);
+		const fallbackTimer = setTimeout(() => {
+			const pending = pendingResumeMessages.get(sessionId);
+			if (!pending) return;
+			pendingResumeMessages.delete(sessionId);
+			pi.sendUserMessage(pending.message);
+		}, 30_000);
+		pendingResumeMessages.set(sessionId, { message, fallbackTimer });
+	};
+
+	const flushPendingResumeMessage = (sessionId: string): void => {
+		const pending = pendingResumeMessages.get(sessionId);
+		if (!pending) return;
+		clearTimeout(pending.fallbackTimer);
+		pendingResumeMessages.delete(sessionId);
+		pi.sendUserMessage(pending.message);
+	};
+
 	const withAutoresearch = <A, E>(f: (service: AutoresearchService) => Effect.Effect<A, E, never>): Promise<A> =>
 		runEffect(
 			Effect.gen(function* () {
@@ -1326,14 +1355,17 @@ export default function initAutoresearch(
 	// --------------------------------------------------------------------------
 
 	pi.on("session_start", async (_event, ctx) => {
+		clearPendingResumeMessage(getSessionKey(ctx));
 		await rehydrate(ctx);
 	});
 
 	pi.on("session_switch", async (_event, ctx) => {
+		clearPendingResumeMessage(getSessionKey(ctx));
 		await rehydrate(ctx);
 	});
 
 	pi.on("session_fork", async (_event, ctx) => {
+		clearPendingResumeMessage(getSessionKey(ctx));
 		await rehydrate(ctx);
 	});
 
@@ -1444,7 +1476,12 @@ export default function initAutoresearch(
 				if (hasIdeas) {
 					msg += " Check autoresearch.ideas.md for promising paths.";
 				}
-				pi.sendUserMessage(msg);
+				const usageNow = ctx.getContextUsage();
+				if (shouldDeferAutoresearchResumeUntilAfterCompaction(usageNow)) {
+					scheduleResumeMessage(sessionId, msg);
+				} else {
+					pi.sendUserMessage(msg);
+				}
 			} else if (result.blockedReason !== null && ctx.hasUI) {
 				ctx.ui.notify(`Autoresearch auto-resume blocked: ${result.blockedReason}`, "error");
 			}
@@ -1454,5 +1491,13 @@ export default function initAutoresearch(
 			await withAutoresearch((service) => service.recordAgentEndTokens(sessionId, tokens));
 			await updateUI(ctx);
 		}
+	});
+
+	pi.on("session_compact", async (_event, ctx) => {
+		flushPendingResumeMessage(getSessionKey(ctx));
+	});
+
+	pi.on("session_shutdown", async (_event, ctx) => {
+		clearPendingResumeMessage(getSessionKey(ctx));
 	});
 }
