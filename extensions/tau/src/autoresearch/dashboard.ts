@@ -259,6 +259,7 @@ function renderResultRow(
 	theme: Theme,
 ): string {
 	const runNumber = result.runNumber ?? viewData.results.indexOf(result) + 1;
+	const commitValue = result.status === "keep" ? result.commit || "-" : "-";
 	const secondary = viewData.secondaryMetrics
 		.map((metric) =>
 			truncateToWidth(
@@ -270,7 +271,7 @@ function renderResultRow(
 	const statusColor = result.status === "keep" ? "success" : result.status === "discard" ? "warning" : "error";
 	const line =
 		`${theme.fg("dim", String(runNumber).padEnd(4))}` +
-		`${theme.fg("accent", (result.commit || "-").padEnd(10))}` +
+		`${theme.fg("accent", commitValue.padEnd(10))}` +
 		`${theme.fg(statusColor, formatNum(result.metric, viewData.metricUnit).padEnd(12))}` +
 		`${secondary}` +
 		`${theme.fg(statusColor, result.status.padEnd(14))}` +

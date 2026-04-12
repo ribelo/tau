@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { Theme } from "@mariozechner/pi-coding-agent";
 
 import { renderWidget } from "../src/autoresearch/dashboard.js";
+import { renderDashboardLines } from "../src/autoresearch/dashboard.js";
 import type { AutoresearchViewData } from "../src/services/autoresearch.js";
 
 const plainTheme = {
@@ -120,5 +121,50 @@ describe("autoresearch widget rendering", () => {
 		expect(rendered).toContain("autoresearch running...");
 		expect(rendered).toContain("bash autoresearch.sh");
 		expect(rendered).toContain("waiting for first logged result");
+	});
+
+	it("shows commit hashes only for kept rows", () => {
+		const lines = renderDashboardLines(
+			makeViewData({
+				results: [
+					{
+						runNumber: 1,
+						commit: "keep111",
+						metric: 3652,
+						metrics: { ttfb_ms: 500 },
+						status: "keep",
+						description: "baseline",
+						timestamp: 1,
+						segment: 0,
+						confidence: null,
+						asi: { hypothesis: "baseline" },
+					},
+					{
+						runNumber: 2,
+						commit: "base222",
+						metric: 3900,
+						metrics: { ttfb_ms: 520 },
+						status: "discard",
+						description: "regression",
+						timestamp: 2,
+						segment: 0,
+						confidence: null,
+						asi: {
+							hypothesis: "try cache",
+							rollback_reason: "regressed",
+							next_action_hint: "revert",
+						},
+					},
+				],
+			}),
+			240,
+			plainTheme,
+			8,
+		);
+
+		const table = lines.join("\n");
+		expect(table).toContain("keep111");
+		expect(table).toContain("discard");
+		expect(table).not.toContain("base222");
 	});
 });
