@@ -51,7 +51,7 @@ Autoresearch still keeps its benchmark-specific behavior.
 - metrics and confidence
 - run artifacts
 - keep and discard decisions
-- trial-scoped VCS handling
+- explicit workspace-state trial resolution
 
 ## Decision details
 
@@ -72,7 +72,7 @@ Workflow specializations own only their domain behavior.
 | Workflow | Owns |
 | --- | --- |
 | `ralph` | checklist pacing, reflection cadence, completion semantics, generic task execution |
-| `autoresearch` | phase contracts, trial execution, result capture, reflection-generated research directions, VCS trial decisions |
+| `autoresearch` | phase contracts, trial execution, result capture, reflection-generated research directions, workspace-state trial decisions |
 
 There is no separate top-level Ralph engine and no separate top-level autoresearch engine after this redesign.
 
@@ -118,7 +118,7 @@ These paths are runtime-owned and machine-managed:
 - `.pi/loops/state/**`
 - `.pi/loops/runs/**`
 - `.pi/loops/archive/**`
-- isolated autoresearch checkout metadata and other loop-owned runtime data
+- other loop-owned runtime data under `.pi/loops/**`
 
 General agent file editing and ad hoc shell workflows do not treat runtime-owned loop paths as normal working files.
 
@@ -247,7 +247,7 @@ For autoresearch, one iteration equals one trial.
 That child session may:
 
 - inspect and update the task file
-- edit code in the task's working checkout
+- edit code in the task's workspace scope
 - execute one benchmark trial
 - finalize that trial
 
@@ -307,7 +307,7 @@ The only autoresearch loop tools are:
 
 - is the only way to resolve the pending trial
 - records the trial decision and structured result
-- performs the matching task-scoped VCS action
+- clears the pending trial while leaving the workspace exactly as the child session finalized it
 - is valid only inside the active controller-owned autoresearch child session for the matching task
 
 Valid autoresearch outcomes are:
@@ -323,9 +323,9 @@ Invariants:
 - a second `autoresearch_run` before `autoresearch_done` is invalid
 - calling autoresearch tools from the controller session, from unrelated sessions, or with no active autoresearch task is invalid and fails fast
 
-Unsafe VCS cleanup is not a normal trial outcome. If tau cannot safely resolve the isolated checkout for a non-keep result, `autoresearch_done` fails fast, preserves the task for operator intervention, and does not record a synthetic fallback outcome.
+The workspace state seen by `autoresearch_run` is the same workspace state the child session edits. Tau does not clone the repository or move trial execution into a hidden checkout.
 
-Kept changes remain on the task's isolated branch and checkout until an explicit later integration step. `keep` does not implicitly propagate accepted changes into the user's primary workspace checkout.
+`keep`, `discard`, `crash`, and `checks_failed` are result labels. `autoresearch_done` records the label and clears ownership for the next child session. It does not mutate the workspace to implement cleanup.
 
 ### 10. Reflection and notes
 
@@ -344,35 +344,21 @@ Autoresearch reflection must:
 
 Ideas remain inside the task markdown body. They are not stored in a separate autoresearch sidecar file.
 
-### 11. VCS isolation model
+### 11. Workspace execution model
 
-Autoresearch trials run in a controller-owned, task-scoped isolated VCS checkout.
+Autoresearch trials run in the user's real workspace under the task's `scope.root`.
 
-That isolated checkout is:
+The child session edits files in that same workspace, and `autoresearch_run` executes the benchmark against those exact edits.
 
-- unique per task
-- separate from the user's primary workspace checkout
-- never shared across tasks
+The canonical loop state records task ownership, phase identity, pending-run state, and run artifacts. It does not record hidden checkout paths, task branches, or trial-only cloned repositories.
 
-The canonical loop state records:
+Workspace behavior:
 
-- the resolved isolated checkout path
-- the task branch
-- the phase base commit
+- `autoresearch_run` executes in the real workspace scope
+- `autoresearch_done` records the outcome label and clears the pending trial
+- the workspace is left untouched by trial finalization logic
 
-The physical path of the isolated checkout is not part of the architectural contract.
-
-Implementations should prefer a tau-owned task-local location associated with `.pi/loops` when that integrates cleanly with workspace protection. This ADR does not require a specific filesystem location.
-
-VCS behavior:
-
-- `keep` commits are recorded in the isolated checkout
-- non-keep outcomes reset only the isolated checkout
-- the user’s primary workspace is not cleaned, reset, or destructively restored to implement autoresearch cleanup
-
-Tau never uses destructive restore, clean, or reset operations in the user’s primary workspace to implement autoresearch trial cleanup.
-
-If VCS resolution is ambiguous, overlaps unrelated changes, or cannot safely restore the isolated checkout, the task remains blocked for manual operator resolution instead of inventing a fallback trial result.
+Tau never clones the repository to execute autoresearch trials, and it never uses destructive restore, clean, or reset operations in the user's primary workspace to implement autoresearch cleanup.
 
 ### 12. Legacy handling
 
@@ -423,7 +409,7 @@ This ADR does not do the following.
 | Make autoresearch a thin veneer over current Ralph without a shared core | Forces benchmark-specific state into the wrong abstraction or duplicates a second engine beside Ralph |
 | Preserve `.pi/ralph/**` and cwd-global autoresearch files as parallel runtime layouts | Violates canonical architecture goals and invites long-term compatibility drift |
 | Keep `init_experiment`, `run_experiment`, and `log_experiment` as aliases | Recreates the old lifecycle under new names and undermines the controller-owned iteration model |
-| Continue destructive cleanup in the user’s primary checkout | Unsafe in a shared multi-agent repo and inconsistent with task-scoped VCS isolation |
+| Continue destructive cleanup in the user’s primary checkout | Unsafe in a shared multi-agent repo and incompatible with leaving the real workspace as the explicit source of truth |
 
 ## Consequences
 
@@ -434,7 +420,7 @@ This ADR does not do the following.
 - consistent fresh-context boundaries
 - task-local notes and state
 - cleaner benchmark phase model
-- safer autoresearch git behavior
+- autoresearch benchmarks run against the real workspace toolchain and files
 - less architectural duplication
 
 ### Costs
@@ -461,7 +447,7 @@ Implement in this order.
 4. Implement autoresearch as a new specialization on the shared engine.
 5. Replace autoresearch root files with task-local markdown and state.
 6. Replace the current autoresearch tool trio with `autoresearch_run` and `autoresearch_done`.
-7. Introduce task-scoped isolated VCS checkout orchestration.
+7. Keep autoresearch execution pinned to the real workspace scope with no hidden trial checkout.
 8. Add an explicit importer only if legacy data must be preserved.
 9. Delete the old Ralph and autoresearch runtime implementations.
 
@@ -472,7 +458,7 @@ The next design reviews should focus on:
 1. the shared loop state machine and service boundaries
 2. path policy and task-repo ownership under `.pi/loops/**`
 3. autoresearch phase schema and fingerprint normalization
-4. isolated checkout orchestration and failure semantics
+4. workspace execution semantics and explicit post-trial state handling
 5. command UX and child-session ownership rules
 
 This ADR is the foundation. Later implementation docs should refine APIs and state schemas without changing these architectural decisions.

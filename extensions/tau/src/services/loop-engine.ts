@@ -482,7 +482,6 @@ export const LoopEngineLive = Layer.effect(
 									...(normalizedAutoresearchContract?.constraints ?? input.constraints),
 								],
 								pinnedExecutionProfile: input.executionProfile,
-								isolatedCheckout: Option.none(),
 							},
 						};
 

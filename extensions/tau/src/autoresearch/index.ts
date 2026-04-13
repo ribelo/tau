@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 
 import type {
 	ExtensionAPI,
@@ -43,7 +43,6 @@ import {
 	decodeLoopPersistedStateJsonSync,
 	encodeLoopPersistedStateJsonSync,
 	type AutoresearchLoopPersistedState,
-	type IsolatedCheckout,
 	type LoopPersistedState,
 	type LoopSessionRef,
 } from "../loops/schema.js";
@@ -601,7 +600,7 @@ async function executeBenchmarkAsync(
 }
 
 // ------------------------------------------------------------------------------
-// Git execution
+// Workspace execution
 // ------------------------------------------------------------------------------
 
 type ShellCommandResult = {
@@ -609,24 +608,11 @@ type ShellCommandResult = {
 	readonly output: string;
 };
 
-type IsolatedCheckoutFinalizeResult = {
+type WorkspaceFinalizeResult = {
 	readonly note: string;
-	readonly phaseBaseCommit: string;
 	readonly commit: string | null;
+	readonly warning: string | null;
 };
-
-function makeIsolatedCheckoutPath(workspaceRoot: string, taskId: string): string {
-	const digest = createHash("sha256")
-		.update(`${workspaceRoot}:${taskId}`)
-		.digest("hex")
-		.slice(0, 12);
-	return path.join(os.tmpdir(), "tau-autoresearch-checkouts", `${taskId}-${digest}`);
-}
-
-function makeTaskBranchName(taskId: string): string {
-	const suffix = taskId.replace(/[^A-Za-z0-9._-]/g, "-");
-	return `tau/autoresearch/${suffix}`;
-}
 
 async function runShellCommand(
 	ops: BashOperations,
@@ -658,7 +644,6 @@ async function runGitOrThrow(
 	if (result.exitCode === 0) {
 		return result.output;
 	}
-
 	const timedOut = result.exitCode === null;
 	const reasonSuffix = result.output.length > 0 ? `: ${result.output}` : "";
 	throw new AutoresearchGitError({
@@ -668,130 +653,9 @@ async function runGitOrThrow(
 	});
 }
 
-async function resolveGitHeadCommit(ops: BashOperations, workDir: string): Promise<string> {
-	const output = await runGitOrThrow(
-		ops,
-		workDir,
-		"git rev-parse --verify HEAD",
-		"resolve HEAD commit",
-		5,
-	);
-	const commit = output.trim();
-	if (commit.length === 0) {
-		throw new AutoresearchGitError({
-			reason: `resolve HEAD commit returned empty output for ${workDir}`,
-		});
-	}
-	return commit;
-}
-
-function resolveIsolatedScopeWorkDir(checkoutPath: string, scopeRoot: string): string {
-	const normalizedRoot = path.normalize(scopeRoot);
-	if (path.isAbsolute(normalizedRoot)) {
-		throw new AutoresearchValidationError({
-			reason: `scope.root must be relative for isolated autoresearch checkout execution. Received: ${scopeRoot}`,
-		});
-	}
-
-	const resolved = path.resolve(checkoutPath, normalizedRoot);
-	const checkoutRoot = path.resolve(checkoutPath);
-	if (resolved !== checkoutRoot && !resolved.startsWith(`${checkoutRoot}${path.sep}`)) {
-		throw new AutoresearchValidationError({
-			reason: `scope.root resolves outside the isolated checkout: ${scopeRoot}`,
-		});
-	}
-	return resolved;
-}
-
-async function ensureIsolatedCheckout(
-	workspaceRoot: string,
-	state: AutoresearchLoopPersistedState,
-	ops: BashOperations,
-): Promise<IsolatedCheckout> {
-	if (Option.isSome(state.autoresearch.isolatedCheckout)) {
-		const persisted = state.autoresearch.isolatedCheckout.value;
-		if (!fs.existsSync(persisted.checkoutPath)) {
-			throw new AutoresearchGitError({
-				reason: `isolated checkout path is missing: ${persisted.checkoutPath}`,
-			});
-		}
-
-		await runGitOrThrow(
-			ops,
-			persisted.checkoutPath,
-			"git rev-parse --is-inside-work-tree",
-			"validate isolated checkout repository",
-			5,
-		);
-		await runGitOrThrow(
-			ops,
-			persisted.checkoutPath,
-			`git checkout ${JSON.stringify(persisted.taskBranch)}`,
-			"switch isolated checkout branch",
-			10,
-		);
-		await runGitOrThrow(
-			ops,
-			persisted.checkoutPath,
-			`git rev-parse --verify ${JSON.stringify(persisted.phaseBaseCommit)}`,
-			"validate isolated checkout phase base commit",
-			5,
-		);
-		return persisted;
-	}
-
-	await runGitOrThrow(
-		ops,
-		workspaceRoot,
-		"git rev-parse --is-inside-work-tree",
-		"validate workspace repository",
-		5,
-	);
-	const baseCommit = await resolveGitHeadCommit(ops, workspaceRoot);
-
-	const checkoutPath = makeIsolatedCheckoutPath(workspaceRoot, state.taskId);
-	if (fs.existsSync(checkoutPath)) {
-		const entries = fs.readdirSync(checkoutPath);
-		if (entries.length > 0) {
-			throw new AutoresearchGitError({
-				reason: `isolated checkout path already exists and is not empty: ${checkoutPath}`,
-			});
-		}
-		fs.rmSync(checkoutPath, { recursive: true, force: true });
-	}
-
-	await runGitOrThrow(
-		ops,
-		workspaceRoot,
-		`git clone --quiet --no-hardlinks ${JSON.stringify(workspaceRoot)} ${JSON.stringify(checkoutPath)}`,
-		"create isolated checkout",
-		120,
-	);
-
-	const taskBranch = makeTaskBranchName(state.taskId);
-	await runGitOrThrow(
-		ops,
-		checkoutPath,
-		`git checkout -B ${JSON.stringify(taskBranch)} ${JSON.stringify(baseCommit)}`,
-		"initialize isolated checkout branch",
-		20,
-	);
-
-	return {
-		checkoutPath,
-		taskBranch,
-		phaseBaseCommit: baseCommit,
-	};
-}
-
-async function finalizeKeepOnIsolatedCheckout(
-	checkout: IsolatedCheckout,
+async function finalizeKeepInWorkspace(
+	workDir: string,
 	run: PersistedAutoresearchRun,
-	scope: {
-		readonly root: string;
-		readonly paths: readonly string[];
-		readonly offLimits: readonly string[];
-	},
 	input: {
 		readonly description: string;
 		readonly status: AutoresearchRunOutcome;
@@ -799,224 +663,108 @@ async function finalizeKeepOnIsolatedCheckout(
 		readonly asi: Record<string, unknown> | null;
 	},
 	ops: BashOperations,
-): Promise<IsolatedCheckoutFinalizeResult> {
-	const normalizeRelativePath = (value: string): string =>
-		path.posix.normalize(value.replaceAll("\\", "/"));
-
-	const toRepoPath = (entry: string): string => {
-		const normalizedRoot = normalizeRelativePath(scope.root);
-		const normalizedEntry = normalizeRelativePath(entry);
-		if (normalizedRoot === ".") {
-			return normalizedEntry;
+): Promise<WorkspaceFinalizeResult> {
+	try {
+		await runGitOrThrow(ops, workDir, "git add -A", "stage workspace changes", 10);
+		const diffResult = await runShellCommand(ops, "git diff --cached --quiet", workDir, 10);
+		if (diffResult.exitCode === 0) {
+			return {
+				note: "Git: nothing to commit (working tree clean).",
+				commit: null,
+				warning: null,
+			};
 		}
-		if (normalizedEntry === ".") {
-			return normalizedRoot;
+		if (diffResult.exitCode !== 1) {
+			const reasonSuffix = diffResult.output.length > 0 ? `: ${diffResult.output}` : "";
+			throw new AutoresearchGitError({
+				reason: `inspect staged workspace changes failed${reasonSuffix}`,
+			});
 		}
-		return path.posix.join(normalizedRoot, normalizedEntry);
-	};
 
-	const isWithinPath = (filePath: string, targetPath: string): boolean => {
-		if (targetPath === ".") {
-			return true;
-		}
-		return filePath === targetPath || filePath.startsWith(`${targetPath}/`);
-	};
-
-	const parsePathLines = (output: string): string[] =>
-		output
-			.split("\n")
-			.map((line) => line.trim())
-			.filter((line) => line.length > 0)
-			.map((line) => normalizeRelativePath(line));
-
-	await runGitOrThrow(
-		ops,
-		checkout.checkoutPath,
-		`git checkout ${JSON.stringify(checkout.taskBranch)}`,
-		"switch isolated checkout branch",
-		10,
-	);
-
-	const trackedChanges = parsePathLines(
-		await runGitOrThrow(
+		const resultSummary: Record<string, unknown> = {
+			status: input.status,
+			run_id: run.runId,
+			run_number: run.runNumber,
+			phase_id: run.phaseId,
+			metrics: input.metrics ?? null,
+			asi: input.asi,
+		};
+		const commitMessage =
+			`autoresearch(${run.taskId}) run ${run.runNumber}: ${input.description}\n\n` +
+			`result: ${JSON.stringify(resultSummary)}`;
+		const commitOutput = await runGitOrThrow(
 			ops,
-			checkout.checkoutPath,
-			"git diff --name-only",
-			"list isolated checkout tracked changes",
-			10,
-		),
-	);
-	const stagedChanges = parsePathLines(
-		await runGitOrThrow(
+			workDir,
+			`git commit -m ${JSON.stringify(commitMessage)}`,
+			"commit kept workspace changes",
+			20,
+		);
+		const sha = await runGitOrThrow(
 			ops,
-			checkout.checkoutPath,
-			"git diff --name-only --cached",
-			"list isolated checkout staged changes",
-			10,
-		),
-	);
-	const untrackedChanges = parsePathLines(
-		await runGitOrThrow(
-			ops,
-			checkout.checkoutPath,
-			"git ls-files --others --exclude-standard",
-			"list isolated checkout untracked changes",
-			10,
-		),
-	);
-	const ignoredChanges = parsePathLines(
-		await runGitOrThrow(
-			ops,
-			checkout.checkoutPath,
-			"git ls-files --others --ignored --exclude-standard",
-			"list isolated checkout ignored changes",
-			10,
-		),
-	);
-
-	const changedPaths = Array.from(
-		new Set([...trackedChanges, ...stagedChanges, ...untrackedChanges, ...ignoredChanges]),
-	);
-	const scopePaths = scope.paths.map((entry) => toRepoPath(entry));
-	const offLimitPaths = scope.offLimits.map((entry) => toRepoPath(entry));
-
-	const outOfScope = changedPaths.filter(
-		(filePath) => !scopePaths.some((targetPath) => isWithinPath(filePath, targetPath)),
-	);
-	if (outOfScope.length > 0) {
-		throw new AutoresearchValidationError({
-			reason:
-				`Cannot keep run ${run.runId}: changed files outside scope.paths were detected (${outOfScope.join(", ")}).`,
-		});
-	}
-
-	const offLimitChanges = changedPaths.filter((filePath) =>
-		offLimitPaths.some((targetPath) => isWithinPath(filePath, targetPath)),
-	);
-	if (offLimitChanges.length > 0) {
-		throw new AutoresearchValidationError({
-			reason:
-				`Cannot keep run ${run.runId}: changed files under scope.off_limits were detected (${offLimitChanges.join(", ")}).`,
-		});
-	}
-
-	const ignoredSet = new Set(ignoredChanges);
-	const stageTargets = changedPaths.filter(
-		(filePath) => !ignoredSet.has(filePath),
-	).filter((filePath) =>
-		scopePaths.some((targetPath) => isWithinPath(filePath, targetPath)),
-	);
-
-	if (stageTargets.length > 0) {
-		for (const targetPath of stageTargets) {
-			await runGitOrThrow(
-				ops,
-				checkout.checkoutPath,
-				`git add -A -- ${JSON.stringify(targetPath)}`,
-				"stage scoped isolated checkout changes",
-				10,
-			);
-		}
-	}
-
-	const ignoredScopeTargets = ignoredChanges.filter((filePath) =>
-		scopePaths.some((targetPath) => isWithinPath(filePath, targetPath)),
-	);
-	if (ignoredScopeTargets.length > 0) {
-		for (const targetPath of ignoredScopeTargets) {
-			await runGitOrThrow(
-				ops,
-				checkout.checkoutPath,
-				`git clean -fdX -- ${JSON.stringify(targetPath)}`,
-				"remove ignored scoped isolated checkout artifacts",
-				10,
-			);
-		}
-	}
-
-	const diffResult = await runShellCommand(
-		ops,
-		"git diff --cached --quiet",
-		checkout.checkoutPath,
-		10,
-	);
-
-	if (diffResult.exitCode === 0) {
-		const headCommit = await resolveGitHeadCommit(ops, checkout.checkoutPath);
+			workDir,
+			"git rev-parse --short=7 HEAD",
+			"resolve kept commit",
+			5,
+		);
+		const firstLine = commitOutput.split("\n")[0]?.trim() ?? "";
 		return {
-			note: `No isolated checkout changes to commit on ${checkout.taskBranch}.`,
-			phaseBaseCommit: headCommit,
+			note:
+				firstLine.length > 0
+					? `Git: committed — ${firstLine}`
+					: `Git: committed ${sha.trim()}`,
+				commit: sha.trim().slice(0, 7),
+				warning: null,
+			};
+	} catch (error) {
+		return {
+			note: "Git: keep requested but commit did not complete.",
 			commit: null,
+			warning: error instanceof Error ? error.message : String(error),
 		};
 	}
+}
 
-	if (diffResult.exitCode !== 1) {
-		const reasonSuffix = diffResult.output.length > 0 ? `: ${diffResult.output}` : "";
-		throw new AutoresearchGitError({
-			reason: `inspect staged isolated checkout changes failed${reasonSuffix}`,
+async function finalizeNonKeepInWorkspace(
+	workDir: string,
+	status: Exclude<AutoresearchRunOutcome, "keep">,
+	ops: BashOperations,
+): Promise<WorkspaceFinalizeResult> {
+	try {
+		await runGitOrThrow(ops, workDir, "git checkout -- .", "revert workspace changes", 10);
+		await runGitOrThrow(ops, workDir, "git clean -fd", "clean workspace untracked files", 10);
+		return {
+			note: `Git: reverted workspace changes (${status}).`,
+			commit: null,
+			warning: null,
+		};
+	} catch (error) {
+		return {
+			note: `Git: ${status} requested but revert did not complete.`,
+			commit: null,
+			warning: error instanceof Error ? error.message : String(error),
+		};
+	}
+}
+
+function resolveWorkspaceScopeWorkDir(workspaceRoot: string, scopeRoot: string): string {
+	const normalizedRoot = path.normalize(scopeRoot);
+	if (path.isAbsolute(normalizedRoot)) {
+		throw new AutoresearchValidationError({
+			reason: `scope.root must be relative to the workspace root. Received: ${scopeRoot}`,
 		});
 	}
 
-	const resultSummary: Record<string, unknown> = {
-		status: input.status,
-		run_id: run.runId,
-		run_number: run.runNumber,
-		phase_id: run.phaseId,
-		metrics: input.metrics ?? null,
-		asi: input.asi,
-	};
-
-	const commitMessage =
-		`autoresearch(${run.taskId}) run ${run.runNumber}: ${input.description}\n\n` +
-		`result: ${JSON.stringify(resultSummary)}`;
-	await runGitOrThrow(
-		ops,
-		checkout.checkoutPath,
-		`git commit -m ${JSON.stringify(commitMessage)}`,
-		"commit kept isolated checkout changes",
-		20,
-	);
-
-	const headCommit = await resolveGitHeadCommit(ops, checkout.checkoutPath);
-	return {
-		note: `Committed kept changes on ${checkout.taskBranch} at ${headCommit.slice(0, 7)}.`,
-		phaseBaseCommit: headCommit,
-		commit: headCommit,
-	};
-}
-
-async function cleanupNonKeepOnIsolatedCheckout(
-	checkout: IsolatedCheckout,
-	ops: BashOperations,
-): Promise<IsolatedCheckoutFinalizeResult> {
-	await runGitOrThrow(
-		ops,
-		checkout.checkoutPath,
-		`git checkout ${JSON.stringify(checkout.taskBranch)}`,
-		"switch isolated checkout branch",
-		10,
-	);
-	await runGitOrThrow(
-		ops,
-		checkout.checkoutPath,
-		`git reset --hard ${JSON.stringify(checkout.phaseBaseCommit)}`,
-		"reset isolated checkout to phase base commit",
-		10,
-	);
-	await runGitOrThrow(
-		ops,
-		checkout.checkoutPath,
-		"git clean -fd",
-		"clean isolated checkout untracked files",
-		10,
-	);
-
-	const headCommit = await resolveGitHeadCommit(ops, checkout.checkoutPath);
-	return {
-		note: `Reset isolated checkout branch ${checkout.taskBranch} to ${headCommit.slice(0, 7)}.`,
-		phaseBaseCommit: headCommit,
-		commit: null,
-	};
+	const resolved = path.resolve(workspaceRoot, normalizedRoot);
+	const normalizedWorkspaceRoot = path.resolve(workspaceRoot);
+	if (
+		resolved !== normalizedWorkspaceRoot &&
+		!resolved.startsWith(`${normalizedWorkspaceRoot}${path.sep}`)
+	) {
+		throw new AutoresearchValidationError({
+			reason: `scope.root resolves outside the workspace root: ${scopeRoot}`,
+		});
+	}
+	return resolved;
 }
 
 // ------------------------------------------------------------------------------
@@ -1091,15 +839,6 @@ export default function initAutoresearch(
 			Effect.gen(function* () {
 				const service = yield* LoopEngine;
 				return yield* f(service);
-			}),
-		);
-
-	const getSubagent = (): Promise<boolean> =>
-		runEffect(
-			Effect.gen(function* () {
-				const sandbox = yield* Sandbox;
-				const config = yield* sandbox.getConfig;
-				return config.subagent;
 			}),
 		);
 
@@ -1769,7 +1508,6 @@ export default function initAutoresearch(
 			let nextStateWritten = false;
 			let runDirectoryToCleanup: string | null = null;
 			let previousState: AutoresearchLoopPersistedState | null = null;
-			let isolatedCheckoutForRecovery: IsolatedCheckout | null = null;
 
 			try {
 				const active = await resolveActiveAutoresearchChildContext(ctx);
@@ -1839,13 +1577,6 @@ export default function initAutoresearch(
 					throw new AutoresearchValidationError({ reason: "Sandbox bash operations are not available." });
 				}
 
-				const isolatedCheckout = await ensureIsolatedCheckout(ctx.cwd, persisted, ops);
-				const phaseBaseCommit = await resolveGitHeadCommit(ops, isolatedCheckout.checkoutPath);
-				isolatedCheckoutForRecovery = {
-					...isolatedCheckout,
-					phaseBaseCommit,
-				};
-
 				const runNumber = persisted.autoresearch.runCount + 1;
 				const runId = makeRunId(runNumber);
 				const runDirectory = path.resolve(ctx.cwd, loopRunDirectory(persisted.taskId, runId));
@@ -1860,7 +1591,6 @@ export default function initAutoresearch(
 						...persisted.autoresearch,
 						pendingRunId: Option.some(runId),
 						runCount: runNumber,
-						isolatedCheckout: Option.some(isolatedCheckoutForRecovery),
 					},
 				};
 				writeCanonicalLoopState(ctx.cwd, pendingState);
@@ -1873,10 +1603,7 @@ export default function initAutoresearch(
 					onSome: () => Option.some(path.join(runDirectory, RUN_CHECKS_LOG_FILE)),
 				});
 
-				const workDir = resolveIsolatedScopeWorkDir(
-					isolatedCheckoutForRecovery.checkoutPath,
-					phaseSnapshot.scope.root,
-				);
+				const workDir = resolveWorkspaceScopeWorkDir(ctx.cwd, phaseSnapshot.scope.root);
 				const details = await executeBenchmarkAsync(
 					{
 						workDir,
@@ -1964,13 +1691,6 @@ export default function initAutoresearch(
 					const recoveredState: AutoresearchLoopPersistedState = {
 						...previousState,
 						updatedAt: new Date().toISOString(),
-						autoresearch: {
-							...previousState.autoresearch,
-							isolatedCheckout:
-								isolatedCheckoutForRecovery === null
-									? previousState.autoresearch.isolatedCheckout
-									: Option.some(isolatedCheckoutForRecovery),
-						},
 					};
 					writeCanonicalLoopState(ctx.cwd, recoveredState);
 				}
@@ -1980,7 +1700,6 @@ export default function initAutoresearch(
 
 				if (
 					error instanceof AutoresearchValidationError ||
-					error instanceof AutoresearchGitError ||
 					error instanceof LoopContractValidationError ||
 					error instanceof LoopTaskNotFoundError ||
 					error instanceof LoopAmbiguousOwnershipError ||
@@ -2020,6 +1739,7 @@ export default function initAutoresearch(
 		promptGuidelines: [
 			"Autoresearch loop ownership resolves the pending trial automatically.",
 			"Call this exactly once for each pending autoresearch_run.",
+			"This tool automatically commits kept workspace changes and reverts discarded/crashed/check-failed workspace changes. Do not commit or revert manually.",
 		],
 		parameters: Type.Object({
 			status: Type.Union([
@@ -2034,16 +1754,11 @@ export default function initAutoresearch(
 		}),
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			let taskIdForBlock: string | null = null;
-			let pendingRunIdForBlock: string | null = null;
-			let checkoutPathForBlock: string | null = null;
-			let shouldBlockForManualResolution = false;
 			try {
 				const active = await resolveActiveAutoresearchChildContext(ctx);
 				const persisted = requireAutoresearchLoopState(
 					readCanonicalLoopState(ctx.cwd, active.loopState.taskId),
 				);
-				taskIdForBlock = persisted.taskId;
 
 				const pendingRunId = Option.match(persisted.autoresearch.pendingRunId, {
 					onNone: () => {
@@ -2053,7 +1768,6 @@ export default function initAutoresearch(
 					},
 					onSome: (value) => value,
 				});
-				pendingRunIdForBlock = pendingRunId;
 
 				const runRecord = readRunRecord(ctx.cwd, persisted.taskId, pendingRunId);
 				if (runRecord.finalized !== null) {
@@ -2085,45 +1799,18 @@ export default function initAutoresearch(
 					};
 				}
 
-				const subagent = await getSubagent();
-				if (subagent) {
-					throw new AutoresearchGitError({
-						reason: "Git commands are blocked in subagent mode.",
-					});
-				}
-
+				const phaseSnapshot = loadPhaseSnapshot(ctx.cwd, persisted.taskId, runRecord.phaseId);
+				const workDir = resolveWorkspaceScopeWorkDir(ctx.cwd, phaseSnapshot.scope.root);
 				const ops = getSandboxedBashOperations(ctx, false);
 				if (!ops) {
-					throw new AutoresearchGitError({
-						reason: "Sandbox bash operations are not available.",
-					});
+					throw new AutoresearchValidationError({ reason: "Sandbox bash operations are not available." });
 				}
 
-				const persistedCheckout = Option.match(persisted.autoresearch.isolatedCheckout, {
-					onNone: () => {
-						throw new AutoresearchGitError({
-							reason: `Task ${persisted.taskId} has no isolated checkout metadata.`,
-						});
-					},
-					onSome: (value) => value,
-				});
-				checkoutPathForBlock = persistedCheckout.checkoutPath;
-				shouldBlockForManualResolution = true;
-
-				const isolatedCheckout = await ensureIsolatedCheckout(ctx.cwd, persisted, ops);
-				checkoutPathForBlock = isolatedCheckout.checkoutPath;
-				const phaseSnapshot = loadPhaseSnapshot(
-					ctx.cwd,
-					persisted.taskId,
-					runRecord.phaseId,
-				);
-
-				const vcsResult =
+				const gitResult =
 					params.status === "keep"
-						? await finalizeKeepOnIsolatedCheckout(
-							isolatedCheckout,
+						? await finalizeKeepInWorkspace(
+							workDir,
 							runRecord,
-							phaseSnapshot.scope,
 							{
 								description: params.description,
 								status: params.status,
@@ -2132,18 +1819,7 @@ export default function initAutoresearch(
 							},
 							ops,
 						)
-						: await cleanupNonKeepOnIsolatedCheckout(
-							{
-								...isolatedCheckout,
-								phaseBaseCommit: persistedCheckout.phaseBaseCommit,
-							},
-							ops,
-						);
-
-				const nextIsolatedCheckout: IsolatedCheckout = {
-					...isolatedCheckout,
-					phaseBaseCommit: vcsResult.phaseBaseCommit,
-				};
+						: await finalizeNonKeepInWorkspace(workDir, params.status, ops);
 
 				const finalizedRun: PersistedAutoresearchRun = {
 					...runRecord,
@@ -2167,7 +1843,6 @@ export default function initAutoresearch(
 					autoresearch: {
 						...persisted.autoresearch,
 						pendingRunId: Option.none<string>(),
-						isolatedCheckout: Option.some(nextIsolatedCheckout),
 					},
 				};
 				writeCanonicalLoopState(ctx.cwd, nextState);
@@ -2181,53 +1856,21 @@ export default function initAutoresearch(
 					content: [
 						{
 							type: "text",
-							text: `Finalized run ${pendingRunId} as ${params.status}. Pending trial cleared for task ${persisted.taskId}. Child session ownership cleared. ${vcsResult.note}`,
+							text:
+								`Finalized run ${pendingRunId} as ${params.status}. Pending trial cleared for task ${persisted.taskId}. Child session ownership cleared. ${gitResult.note}` +
+								(gitResult.warning === null ? "" : `\nWarning: ${gitResult.warning}`),
 						},
 					],
 					details: {
 						task_id: persisted.taskId,
 						run_id: pendingRunId,
 						status: params.status,
-						isolated_checkout_path: nextIsolatedCheckout.checkoutPath,
-						isolated_branch: nextIsolatedCheckout.taskBranch,
-						phase_base_commit: nextIsolatedCheckout.phaseBaseCommit,
-						kept_commit: vcsResult.commit,
+						workspace_root: workDir,
+						kept_commit: gitResult.commit,
+						git_warning: gitResult.warning,
 					},
 				};
 			} catch (error) {
-				if (error instanceof AutoresearchGitError && taskIdForBlock !== null && shouldBlockForManualResolution) {
-					const blockTaskId = taskIdForBlock;
-					try {
-						await withLoopEngine((engine) =>
-							engine.blockLoopForManualResolution(ctx.cwd, blockTaskId, {
-								reasonCode: "autoresearch.vcs.manual_resolution",
-								message: `Autoresearch VCS finalization requires manual resolution: ${error.reason}`,
-								recoveryActions: [
-									`Inspect isolated checkout state at ${checkoutPathForBlock ?? "(unknown)"}.`,
-									`Resolve VCS state manually and then resolve ${loopStateFile(blockTaskId)} before resuming or archiving the task.`,
-								],
-								recoveryNotes: [
-									`pending_run=${pendingRunIdForBlock ?? "unknown"}`,
-									`checkout_path=${checkoutPathForBlock ?? "unknown"}`,
-								],
-							}),
-						);
-					} catch {
-						// keep original error response below
-					}
-
-					return {
-						content: [
-							{
-								type: "text",
-								text: `Error: ${error.reason}\nTask ${blockTaskId} moved to blocked manual-resolution state for operator recovery.`,
-							},
-						],
-						details: {},
-						isError: true,
-					};
-				}
-
 				if (
 					error instanceof AutoresearchValidationError ||
 					error instanceof AutoresearchGitError ||

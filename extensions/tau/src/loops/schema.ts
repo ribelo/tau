@@ -113,13 +113,6 @@ const RalphLoopStateDetailsSchema = Schema.Struct({
 });
 export type RalphLoopStateDetails = Schema.Schema.Type<typeof RalphLoopStateDetailsSchema>;
 
-const IsolatedCheckoutSchema = Schema.Struct({
-	checkoutPath: Schema.NonEmptyString,
-	taskBranch: Schema.NonEmptyString,
-	phaseBaseCommit: Schema.NonEmptyString,
-});
-export type IsolatedCheckout = Schema.Schema.Type<typeof IsolatedCheckoutSchema>;
-
 const AutoresearchLoopStateDetailsSchema = Schema.Struct({
 	phaseId: Schema.OptionFromNullOr(PhaseIdSchema),
 	pendingRunId: OptionalStringSchema,
@@ -135,7 +128,6 @@ const AutoresearchLoopStateDetailsSchema = Schema.Struct({
 	offLimits: Schema.Array(Schema.NonEmptyString),
 	constraints: Schema.Array(Schema.NonEmptyString),
 	pinnedExecutionProfile: ExecutionProfileSchema,
-	isolatedCheckout: Schema.OptionFromNullOr(IsolatedCheckoutSchema),
 });
 export type AutoresearchLoopStateDetails = Schema.Schema.Type<
 	typeof AutoresearchLoopStateDetailsSchema
