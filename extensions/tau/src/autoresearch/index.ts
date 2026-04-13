@@ -877,6 +877,8 @@ export default function initAutoresearch(
 	);
 
 	const expandedState = new Map<string, boolean>();
+	const activeAutoresearchLoops = new Map<string, { cancelled: boolean }>();
+	const waitingAutoresearchAgentEnds = new Map<string, (event: unknown) => void>();
 	type OverlayState = {
 		readonly tui: import("@mariozechner/pi-tui").TUI;
 		readonly done: (value: void) => void;
@@ -1002,6 +1004,18 @@ export default function initAutoresearch(
 				onSome: (value) => value,
 			}),
 		};
+	};
+
+	const waitForAutoresearchAgentEnd = (sessionFile: string): Promise<unknown> =>
+		new Promise((resolve) => {
+			waitingAutoresearchAgentEnds.set(sessionFile, resolve);
+		});
+
+	const cancelAutoresearchLoop = (cwd: string, taskId: string): void => {
+		const active = activeAutoresearchLoops.get(`${cwd}:${taskId}`);
+		if (active) {
+			active.cancelled = true;
+		}
 	};
 
 	const openFullscreenOverlay = async (cwd: string, ctx: ExtensionContext): Promise<void> => {
@@ -1397,6 +1411,85 @@ export default function initAutoresearch(
 			"Do not start a second trial in this session. If you cannot safely run a trial, explain why and stop.",
 		];
 		pi.sendUserMessage(lines.join("\n"), { deliverAs: "followUp" });
+	};
+
+	const runAutoresearchLoop = (ctx: ExtensionCommandContext, taskId: string): void => {
+		const loopKey = `${ctx.cwd}:${taskId}`;
+		if (activeAutoresearchLoops.has(loopKey)) {
+			return;
+		}
+
+		const control = { cancelled: false };
+		activeAutoresearchLoops.set(loopKey, control);
+
+		void (async () => {
+			try {
+				while (!control.cancelled) {
+					const persisted = requireAutoresearchLoopState(readCanonicalLoopState(ctx.cwd, taskId));
+					if (persisted.lifecycle !== "active") {
+						return;
+					}
+
+					if (
+						Option.isSome(persisted.autoresearch.maxIterations) &&
+						persisted.autoresearch.runCount >= persisted.autoresearch.maxIterations.value &&
+						Option.isNone(persisted.autoresearch.pendingRunId)
+					) {
+						await withLoopEngine((engine) => engine.stopLoop(ctx.cwd, taskId));
+						if (ctx.hasUI) {
+							ctx.ui.notify(
+								`Autoresearch task ${taskId} reached limits.max_iterations=${persisted.autoresearch.maxIterations.value}.`,
+								"info",
+							);
+						}
+						await updateAutoresearchUI(ctx.cwd, ctx);
+						return;
+					}
+
+					const currentChild = Option.getOrUndefined(persisted.ownership.child);
+					const child =
+						currentChild ??
+						(await ensureAutoresearchChildSession(ctx, taskId));
+					if (currentChild === undefined) {
+						queueAutoresearchChildPrompt(ctx.cwd, taskId);
+					}
+
+					await waitForAutoresearchAgentEnd(child.sessionFile);
+
+					if (control.cancelled) {
+						return;
+					}
+
+					const afterTurn = requireAutoresearchLoopState(readCanonicalLoopState(ctx.cwd, taskId));
+					if (afterTurn.lifecycle !== "active") {
+						return;
+					}
+
+					if (Option.isSome(afterTurn.autoresearch.pendingRunId)) {
+						await withLoopEngine((engine) => engine.pauseLoop(ctx.cwd, taskId));
+						if (ctx.hasUI) {
+							ctx.ui.notify(
+								`Autoresearch paused: child session for ${taskId} ended without autoresearch_done.`,
+								"warning",
+							);
+						}
+						await updateAutoresearchUI(ctx.cwd, ctx);
+						return;
+					}
+				}
+			} catch (error) {
+				if (ctx.hasUI) {
+					ctx.ui.notify(
+						error instanceof Error ? error.message : String(error),
+						"error",
+					);
+				}
+				await updateAutoresearchUI(ctx.cwd, ctx);
+				return;
+			} finally {
+				activeAutoresearchLoops.delete(loopKey);
+			}
+		})();
 	};
 
 	const clearAutoresearchUI = (ctx: ExtensionContext): void => {
@@ -1846,10 +1939,6 @@ export default function initAutoresearch(
 					},
 				};
 				writeCanonicalLoopState(ctx.cwd, nextState);
-				pi.sendUserMessage(
-					`Autoresearch trial finalized for ${persisted.taskId}. Run /autoresearch resume ${persisted.taskId} from the controller session to start the next trial.`,
-					{ deliverAs: "followUp" },
-				);
 				await updateAutoresearchUI(ctx.cwd, ctx);
 
 				return {
@@ -1857,7 +1946,7 @@ export default function initAutoresearch(
 						{
 							type: "text",
 							text:
-								`Finalized run ${pendingRunId} as ${params.status}. Pending trial cleared for task ${persisted.taskId}. Child session ownership cleared. ${gitResult.note}` +
+								`Finalized run ${pendingRunId} as ${params.status}. Pending trial cleared for task ${persisted.taskId}. Child session ownership cleared. Next trial will start automatically if the task remains active. ${gitResult.note}` +
 								(gitResult.warning === null ? "" : `\nWarning: ${gitResult.warning}`),
 						},
 					],
@@ -2022,6 +2111,7 @@ export default function initAutoresearch(
 							"info",
 						);
 						await updateAutoresearchUI(ctx.cwd, ctx);
+						runAutoresearchLoop(ctx, taskId);
 						return;
 					}
 
@@ -2065,6 +2155,7 @@ export default function initAutoresearch(
 							"info",
 						);
 						await updateAutoresearchUI(ctx.cwd, ctx);
+						runAutoresearchLoop(ctx, taskId);
 						return;
 					}
 
@@ -2087,6 +2178,7 @@ export default function initAutoresearch(
 							return;
 						}
 						await withLoopEngine((engine) => engine.pauseLoop(ctx.cwd, taskId));
+						cancelAutoresearchLoop(ctx.cwd, taskId);
 						ctx.ui.notify(`Paused autoresearch loop "${taskId}"`, "info");
 						await updateAutoresearchUI(ctx.cwd, ctx);
 						return;
@@ -2111,6 +2203,7 @@ export default function initAutoresearch(
 							return;
 						}
 						await withLoopEngine((engine) => engine.stopLoop(ctx.cwd, taskId));
+						cancelAutoresearchLoop(ctx.cwd, taskId);
 						ctx.ui.notify(`Stopped autoresearch loop "${taskId}"`, "info");
 						await updateAutoresearchUI(ctx.cwd, ctx);
 						return;
@@ -2148,6 +2241,7 @@ export default function initAutoresearch(
 							return;
 						}
 						await withLoopEngine((engine) => engine.archiveLoop(ctx.cwd, taskId));
+						cancelAutoresearchLoop(ctx.cwd, taskId);
 						ctx.ui.notify(`Archived autoresearch loop "${taskId}"`, "info");
 						await updateAutoresearchUI(ctx.cwd, ctx);
 						return;
@@ -2159,6 +2253,7 @@ export default function initAutoresearch(
 							return;
 						}
 						await withLoopEngine((engine) => engine.cancelLoop(ctx.cwd, taskId));
+						cancelAutoresearchLoop(ctx.cwd, taskId);
 						ctx.ui.notify(`Cancelled autoresearch loop "${taskId}"`, "info");
 						await updateAutoresearchUI(ctx.cwd, ctx);
 						return;
@@ -2251,6 +2346,31 @@ export default function initAutoresearch(
 		handler(ctx): Promise<void> {
 			return openFullscreenOverlay(ctx.cwd, ctx);
 		},
+	});
+
+	pi.on("agent_end", async (event, ctx) => {
+		const sessionFile = ctx.sessionManager.getSessionFile?.();
+		if (sessionFile !== undefined) {
+			const resolve = waitingAutoresearchAgentEnds.get(sessionFile);
+			if (resolve) {
+				waitingAutoresearchAgentEnds.delete(sessionFile);
+				resolve(event);
+			}
+		}
+
+		try {
+			await updateAutoresearchUI(ctx.cwd, ctx);
+		} catch (error) {
+			if (
+				error instanceof LoopOwnershipValidationError ||
+				error instanceof LoopAmbiguousOwnershipError ||
+				error instanceof LoopContractValidationError
+			) {
+				clearAutoresearchUI(ctx);
+				return;
+			}
+			throw error;
+		}
 	});
 
 	pi.on("session_start", async (_event, ctx) => {

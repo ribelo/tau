@@ -303,6 +303,7 @@ describe("autoresearch adapter", () => {
 		tempDirs.push(cwd);
 
 		const context = makeContext(cwd);
+		const controllerSession = context.getSessionFile();
 		const piHarness = makePiHarness();
 		const runtime = makeRuntime();
 		runtimes.push(runtime);
@@ -326,6 +327,8 @@ describe("autoresearch adapter", () => {
 		expect(text).toContain("autoresearch_done exactly once");
 		expect(context.statusUpdates.at(-1)).toContain("autoresearch: improve-local-pdp-web-vitals");
 		expect(renderWidgetUpdate(context.widgetUpdates.at(-1))).toContain("autoresearch 0 runs");
+		context.setSessionFile(controllerSession);
+		await command?.handler("stop improve-local-pdp-web-vitals", context.ctx);
 	});
 
 	it("queues a follow-up prompt when /autoresearch resume relaunches the next child session", async () => {
@@ -360,6 +363,7 @@ describe("autoresearch adapter", () => {
 		expect(text).toContain("autoresearch_done exactly once");
 		expect(context.statusUpdates.at(-1)).toContain("autoresearch: improve-local-pdp-web-vitals");
 		expect(renderWidgetUpdate(context.widgetUpdates.at(-1))).toContain("autoresearch 0 runs");
+		await command?.handler("stop improve-local-pdp-web-vitals", context.ctx);
 	});
 
 	it("restores the autoresearch widget on session switch for an owned child session", async () => {
@@ -367,6 +371,7 @@ describe("autoresearch adapter", () => {
 		tempDirs.push(cwd);
 
 		const context = makeContext(cwd);
+		const controllerSession = context.getSessionFile();
 		const piHarness = makePiHarness();
 		const runtime = makeRuntime();
 		runtimes.push(runtime);
@@ -385,6 +390,8 @@ describe("autoresearch adapter", () => {
 
 		expect(context.statusUpdates.at(-1)).toContain("autoresearch: improve-local-pdp-web-vitals");
 		expect(renderWidgetUpdate(context.widgetUpdates.at(-1))).toContain("ctrl+x expand");
+		context.setSessionFile(controllerSession);
+		await command?.handler("stop improve-local-pdp-web-vitals", context.ctx);
 	});
 
 	it("registers ctrl+x and ctrl+shift+x autoresearch shortcuts", async () => {
@@ -392,6 +399,7 @@ describe("autoresearch adapter", () => {
 		tempDirs.push(cwd);
 
 		const context = makeContext(cwd);
+		const controllerSession = context.getSessionFile();
 		const piHarness = makePiHarness();
 		const runtime = makeRuntime();
 		runtimes.push(runtime);
@@ -410,5 +418,7 @@ describe("autoresearch adapter", () => {
 		await toggle?.(context.ctx);
 
 		expect(renderWidgetUpdate(context.widgetUpdates.at(-1))).toContain("Current segment:");
+		context.setSessionFile(controllerSession);
+		await command?.handler("stop improve-local-pdp-web-vitals", context.ctx);
 	});
 });

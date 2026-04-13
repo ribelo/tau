@@ -256,6 +256,10 @@ describe("autoresearch tool runtime", () => {
 		tempDirs.push(cwd);
 
 		const context = makeContext(cwd);
+		const controllerSession = context.ctx.sessionManager.getSessionFile();
+		if (controllerSession === undefined) {
+			throw new Error("missing controller session file");
+		}
 		const piHarness = makePiHarness();
 		const runtime = makeRuntime();
 		runtimes.push(runtime);
@@ -296,6 +300,8 @@ describe("autoresearch tool runtime", () => {
 		const benchmarkCalls = execCalls.filter((call) => call.command === "bash autoresearch.sh");
 		expect(benchmarkCalls).toHaveLength(1);
 		expect(benchmarkCalls[0]?.cwd).toBe(cwd);
+		context.setSessionFile(controllerSession);
+		await command?.handler("stop improve-local-pdp-web-vitals", context.ctx);
 	});
 
 	it("auto-commits kept runs in the real workspace", async () => {
@@ -303,6 +309,10 @@ describe("autoresearch tool runtime", () => {
 		tempDirs.push(cwd);
 
 		const context = makeContext(cwd);
+		const controllerSession = context.ctx.sessionManager.getSessionFile();
+		if (controllerSession === undefined) {
+			throw new Error("missing controller session file");
+		}
 		const piHarness = makePiHarness();
 		const runtime = makeRuntime();
 		runtimes.push(runtime);
@@ -367,6 +377,8 @@ describe("autoresearch tool runtime", () => {
 			throw new Error("expected text result");
 		}
 		expect(doneResult.content[0].text).toContain("Git: committed");
+		context.setSessionFile(controllerSession);
+		await command.handler("stop improve-local-pdp-web-vitals", context.ctx);
 	});
 
 	it("auto-reverts discarded runs in the real workspace", async () => {
@@ -374,6 +386,10 @@ describe("autoresearch tool runtime", () => {
 		tempDirs.push(cwd);
 
 		const context = makeContext(cwd);
+		const controllerSession = context.ctx.sessionManager.getSessionFile();
+		if (controllerSession === undefined) {
+			throw new Error("missing controller session file");
+		}
 		const piHarness = makePiHarness();
 		const runtime = makeRuntime();
 		runtimes.push(runtime);
@@ -428,6 +444,8 @@ describe("autoresearch tool runtime", () => {
 			throw new Error("expected text result");
 		}
 		expect(doneResult.content[0].text).toContain("Git: reverted workspace changes (discard)");
+		context.setSessionFile(controllerSession);
+		await command.handler("stop improve-local-pdp-web-vitals", context.ctx);
 	});
 
 	it("renders autoresearch_run results differently in compact and expanded mode", async () => {
@@ -510,5 +528,66 @@ describe("autoresearch tool runtime", () => {
 		expect(compact).not.toContain("line 1");
 		expect(expanded).toContain("line 1");
 		expect(expanded).toContain("Full output: /tmp/full.log");
+	});
+
+	it("starts the next trial automatically after agent_end without manual resume", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const context = makeContext(cwd);
+		const controllerSession = context.ctx.sessionManager.getSessionFile();
+		if (controllerSession === undefined) {
+			throw new Error("missing controller session file");
+		}
+		const piHarness = makePiHarness();
+		const runtime = makeRuntime();
+		runtimes.push(runtime);
+		initAutoresearch(piHarness.pi, runtime.run);
+
+		getSandboxedBashOperationsMock.mockReturnValue({
+			exec: async (command, _commandCwd, options) => {
+				if (command === "bash autoresearch.sh") {
+					options.onData?.(Buffer.from('METRIC metric=123\nASI hypothesis="workspace"\n'));
+					return { exitCode: 0 };
+				}
+				if (command === "git checkout -- .") {
+					return { exitCode: 0 };
+				}
+				if (command === "git clean -fd") {
+					return { exitCode: 0 };
+				}
+
+				throw new Error(`Unexpected command: ${command}`);
+			},
+		} as BashOperations);
+
+		const command = piHarness.commands.get("autoresearch");
+		const runTool = piHarness.tools.get("autoresearch_run");
+		const doneTool = piHarness.tools.get("autoresearch_done");
+		if (command === undefined || runTool === undefined || doneTool === undefined) {
+			throw new Error("autoresearch command or tools were not registered");
+		}
+
+		await command.handler("create improve-local-pdp-web-vitals", context.ctx);
+		await command.handler("start improve-local-pdp-web-vitals", context.ctx);
+		expect(context.newSessionCalls).toHaveLength(1);
+
+		const firstChildSessionFile = context.ctx.sessionManager.getSessionFile();
+		await runTool.execute("tool-call-1", {}, new AbortController().signal, undefined, context.ctx);
+		await doneTool.execute(
+			"tool-call-2",
+			{ status: "discard", description: "discarded idea", asi: { hypothesis: "workspace" } },
+			new AbortController().signal,
+			undefined,
+			context.ctx,
+		);
+
+		await piHarness.fire("agent_end", { type: "agent_end" }, context.ctx);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(firstChildSessionFile).not.toBe(context.ctx.sessionManager.getSessionFile());
+		expect(context.newSessionCalls).toHaveLength(2);
+		context.setSessionFile(controllerSession);
+		await command.handler("stop improve-local-pdp-web-vitals", context.ctx);
 	});
 });
