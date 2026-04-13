@@ -71,6 +71,7 @@ import {
 	EXPERIMENT_MAX_BYTES,
 	EXPERIMENT_MAX_LINES,
 } from "./helpers.js";
+import { renderRunExperimentResult } from "./run-experiment-render.js";
 import { renderWidget, renderExpandedHeader, renderDashboardLines, renderOverlayRunningLine, renderOverlayFooter } from "./dashboard.js";
 import { shouldCloseAutoresearchOverlay } from "./overlay-input.js";
 import type { ExperimentResult } from "./schema.js";
@@ -1724,9 +1725,8 @@ export default function initAutoresearch(
 			return new Text(text, 0, 0);
 		},
 
-		renderResult(result, _options, _theme) {
-			const msg = result.content[0];
-			return new Text(msg?.type === "text" ? msg.text : "", 0, 0);
+		renderResult(result, options, theme) {
+		return renderRunExperimentResult(result, options, theme);
 		},
 	});
 

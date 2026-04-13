@@ -5,6 +5,8 @@ import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, Layer, ManagedRuntime, Stream } from "effect";
+import { Option } from "effect";
+import { Text } from "@mariozechner/pi-tui";
 
 import type {
 	BashOperations,
@@ -426,5 +428,87 @@ describe("autoresearch tool runtime", () => {
 			throw new Error("expected text result");
 		}
 		expect(doneResult.content[0].text).toContain("Git: reverted workspace changes (discard)");
+	});
+
+	it("renders autoresearch_run results differently in compact and expanded mode", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const piHarness = makePiHarness();
+		const runtime = makeRuntime();
+		runtimes.push(runtime);
+		initAutoresearch(piHarness.pi, runtime.run);
+
+		const runTool = piHarness.tools.get("autoresearch_run");
+		if (runTool === undefined) {
+			throw new Error("autoresearch_run tool was not registered");
+		}
+
+		const toolResult = {
+			content: [{ type: "text" as const, text: "unused" }],
+			details: {
+				command: "bash autoresearch.sh",
+				exitCode: 0,
+				durationSeconds: 12.3,
+				passed: true,
+				crashed: false,
+				timedOut: false,
+				tailOutput: ["line 1", "line 2", "line 3", "line 4", "line 5", "line 6", "line 7"].join("\n"),
+				llmTailOutput: "line 6\nline 7",
+				checksPass: true,
+				checksTimedOut: false,
+				checksOutput: "",
+				checksDuration: 1.2,
+				parsedMetrics: { lcp_ms: 3652 },
+				parsedPrimary: 3652,
+				parsedAsi: null,
+				metricName: "lcp_ms",
+				metricUnit: "ms",
+				benchmarkLogPath: "/tmp/benchmark.log",
+				checksLogPath: Option.none(),
+				runDirectory: "/tmp/run-0001",
+				runNumber: 1,
+				fullOutputPath: Option.some("/tmp/full.log"),
+				truncation: {
+					content: "line 6\nline 7",
+					truncated: true,
+					truncatedBy: "lines" as const,
+					totalLines: 7,
+					totalBytes: 42,
+					outputLines: 2,
+					outputBytes: 12,
+					lastLinePartial: false,
+					firstLineExceedsLimit: false,
+					maxLines: 2,
+					maxBytes: 4096,
+				},
+			},
+		};
+
+		const renderResult = runTool.renderResult as unknown as (
+			result: unknown,
+			options: { readonly expanded: boolean; readonly isPartial: boolean },
+			theme: { readonly fg: (_color: string, text: string) => string; readonly bold: (text: string) => string },
+		) => Text;
+
+		const compact = renderResult(
+			toolResult,
+			{ expanded: false, isPartial: false },
+			{ fg: (_color: string, text: string) => text, bold: (text: string) => text },
+		)
+			.render(240)
+			.join("\n");
+		const expanded = renderResult(
+			toolResult,
+			{ expanded: true, isPartial: false },
+			{ fg: (_color: string, text: string) => text, bold: (text: string) => text },
+		)
+			.render(240)
+			.join("\n");
+
+		expect(compact).toContain("line 7");
+		expect(compact).not.toContain("line 1");
+		expect(expanded).toContain("line 1");
+		expect(expanded).toContain("Full output: /tmp/full.log");
 	});
 });
