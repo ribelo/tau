@@ -159,4 +159,20 @@ describe("memory renderer", () => {
 		expect(rendered).toContain("beta");
 		expect(rendered).not.toContain("\r");
 	});
+
+	it("renders the stored scope for successful read results", () => {
+		const entry = createMemoryEntry("boring durable fact", { scope: "user" });
+		const rendered = renderToolResult({
+			content: [{ type: "text", text: `id: ${entry.id}\nscope: ${entry.scope}` }],
+			details: {
+				success: true,
+				action: "read",
+				entry,
+			},
+		});
+
+		expect(rendered).toContain("memory read");
+		expect(rendered).toContain(`id      : ${entry.id}`);
+		expect(rendered).toContain("scope   : user");
+	});
 });

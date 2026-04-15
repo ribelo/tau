@@ -175,6 +175,7 @@ export function renderMemoriesMessage(details: MemoriesMessageDetails, theme: Th
 function renderSuccess(details: MemoryToolDetails, message: string, theme: Theme): Text {
 	const entry = details.entry;
 	const bucket = details.bucket;
+	const resolvedScope = details.scope ?? entry?.scope;
 	const out: string[] = [theme.fg("dim", SEPARATOR)];
 
 	out.push(`\n${theme.fg("success", "✔")} ${theme.fg("toolTitle", theme.bold(actionLabel(details.action)))}`);
@@ -184,7 +185,7 @@ function renderSuccess(details: MemoryToolDetails, message: string, theme: Theme
 
 	if (entry) {
 		out.push(`\n  ${theme.fg("muted", "id".padEnd(8))}: ${theme.fg("accent", entry.id)}`);
-		out.push(`\n  ${theme.fg("muted", "scope".padEnd(8))}: ${scopeText(details.scope, theme)}`);
+		out.push(`\n  ${theme.fg("muted", "scope".padEnd(8))}: ${scopeText(resolvedScope, theme)}`);
 		out.push(
 			`\n  ${theme.fg("muted", "size".padEnd(8))}: ${theme.fg("toolOutput", `${entry.content.length} chars`)}`,
 		);
