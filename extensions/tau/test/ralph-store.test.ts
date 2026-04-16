@@ -329,6 +329,52 @@ describe("ralph store behavior freeze", () => {
 		expect(notifications.some((entry) => entry.message.includes("Started loop \"alpha-loop\""))).toBe(true);
 	});
 
+	it("/ralph start rejects extra positional arguments instead of starting the wrong loop", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const notifications: Notifications = [];
+		const { pi, commands } = makePiStub();
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(pi, ralphRuntime.run);
+
+		const command = commands.get("ralph");
+		expect(command).toBeDefined();
+
+		const context = makeContext(cwd, notifications, [true]);
+		await command?.handler("start erg-9iks --max-iterations 12 --items-per-iteration 2 2", context);
+
+		expect(fs.existsSync(taskPath(cwd, "erg-9iks"))).toBe(false);
+		expect(fs.existsSync(taskPath(cwd, "2"))).toBe(false);
+		expect(
+			notifications.some((entry) => entry.message.includes("unexpected extra argument \"2\"")),
+		).toBe(true);
+	});
+
+	it("/ralph start rejects unknown options instead of reinterpreting their values as loop names", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const notifications: Notifications = [];
+		const { pi, commands } = makePiStub();
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(pi, ralphRuntime.run);
+
+		const command = commands.get("ralph");
+		expect(command).toBeDefined();
+
+		const context = makeContext(cwd, notifications, [true]);
+		await command?.handler("start erg-9iks --max-iterations 12 --itemsPerIteration 2", context);
+
+		expect(fs.existsSync(taskPath(cwd, "erg-9iks"))).toBe(false);
+		expect(fs.existsSync(taskPath(cwd, "2"))).toBe(false);
+		expect(
+			notifications.some((entry) => entry.message.includes("unknown option \"--itemsPerIteration\"")),
+		).toBe(true);
+	});
+
 	it("/ralph create asks the current model to draft a backlog-based task file", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);

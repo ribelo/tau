@@ -109,13 +109,36 @@ function formatLoop(loop: LoopState): string {
 	return `${loop.name}: ${status} (iteration ${iter})`;
 }
 
-function parseArgs(argsStr: string): {
-	name: string;
-	maxIterations: number;
-	itemsPerIteration: number;
-	reflectEvery: number;
-	reflectInstructions: string;
-} {
+type RalphStartArgs = {
+	readonly name: string;
+	readonly maxIterations: number;
+	readonly itemsPerIteration: number;
+	readonly reflectEvery: number;
+	readonly reflectInstructions: string;
+};
+
+type RalphStartArgsParseResult =
+	| {
+			readonly ok: true;
+			readonly value: RalphStartArgs;
+	  }
+	| {
+			readonly ok: false;
+			readonly error: string;
+	  };
+
+function parseNonNegativeIntegerOption(option: string, rawValue: string): RalphStartArgsParseResult | number {
+	const value = Number.parseInt(rawValue, 10);
+	if (!Number.isInteger(value) || value < 0) {
+		return {
+			ok: false,
+			error: `${option} expects a non-negative integer, got "${rawValue}"`,
+		};
+	}
+	return value;
+}
+
+function parseArgs(argsStr: string): RalphStartArgsParseResult {
 	const tokens = argsStr.match(/(?:[^\s"]+|"[^"]*")+/g) ?? [];
 	const result = {
 		name: "",
@@ -127,25 +150,67 @@ function parseArgs(argsStr: string): {
 
 	for (let i = 0; i < tokens.length; i++) {
 		const token = tokens[i]!;
-		const next = tokens[i + 1];
-		if (token === "--max-iterations" && next) {
-			result.maxIterations = parseInt(next, 10) || 0;
-			i++;
-		} else if (token === "--items-per-iteration" && next) {
-			result.itemsPerIteration = parseInt(next, 10) || 0;
-			i++;
-		} else if (token === "--reflect-every" && next) {
-			result.reflectEvery = parseInt(next, 10) || 0;
-			i++;
-		} else if (token === "--reflect-instructions" && next) {
-			result.reflectInstructions = next.replace(/^"|"$/g, "");
-			i++;
-		} else if (!token.startsWith("--")) {
-			result.name = token.replace(/^"|"$/g, "");
+		if (token.startsWith("--")) {
+			const equalsIndex = token.indexOf("=");
+			const option = equalsIndex === -1 ? token : token.slice(0, equalsIndex);
+			const inlineValue = equalsIndex === -1 ? undefined : token.slice(equalsIndex + 1);
+			const next = tokens[i + 1];
+			const rawValue = inlineValue ?? next;
+			if (rawValue === undefined) {
+				return {
+					ok: false,
+					error: `missing value for ${option}`,
+				};
+			}
+
+			if (option === "--max-iterations") {
+				const parsed = parseNonNegativeIntegerOption(option, rawValue);
+				if (typeof parsed !== "number") {
+					return parsed;
+				}
+				result.maxIterations = parsed;
+			} else if (option === "--items-per-iteration") {
+				const parsed = parseNonNegativeIntegerOption(option, rawValue);
+				if (typeof parsed !== "number") {
+					return parsed;
+				}
+				result.itemsPerIteration = parsed;
+			} else if (option === "--reflect-every") {
+				const parsed = parseNonNegativeIntegerOption(option, rawValue);
+				if (typeof parsed !== "number") {
+					return parsed;
+				}
+				result.reflectEvery = parsed;
+			} else if (option === "--reflect-instructions") {
+				result.reflectInstructions = rawValue.replace(/^"|"$/g, "");
+			} else {
+				return {
+					ok: false,
+					error: `unknown option "${option}"`,
+				};
+			}
+
+			if (inlineValue === undefined) {
+				i++;
+			}
+			continue;
+		}
+
+		const positional = token.replace(/^"|"$/g, "");
+		if (!result.name) {
+			result.name = positional;
+		} else {
+			return {
+				ok: false,
+				error: `unexpected extra argument "${positional}"`,
+			};
 		}
 	}
 
-	return result;
+	return {
+		ok: true,
+		value: result,
+	};
 }
 
 function stripSurroundingQuotes(value: string): string {
@@ -457,7 +522,14 @@ export default function initRalph(
 
 					case "start": {
 						const parsed = parseArgs(rest);
-						if (!parsed.name) {
+						if (!parsed.ok) {
+							ctx.ui.notify(
+								`Invalid Ralph start arguments: ${parsed.error}`,
+								"warning",
+							);
+							return;
+						}
+						if (!parsed.value.name) {
 							ctx.ui.notify(
 								"Usage: /ralph start <name|path> [--items-per-iteration N] [--reflect-every N] [--max-iterations N]",
 								"warning",
@@ -465,7 +537,7 @@ export default function initRalph(
 							return;
 						}
 
-						const resolved = resolveLoopTarget(parsed.name);
+						const resolved = resolveLoopTarget(parsed.value.name);
 						const loopName = resolved.loopName;
 						const taskFile = resolved.taskFile;
 					const executionProfile = await captureCurrentExecutionProfile(ctx);
@@ -480,10 +552,10 @@ export default function initRalph(
 							loopName,
 							taskFile,
 							executionProfile,
-							maxIterations: parsed.maxIterations,
-							itemsPerIteration: parsed.itemsPerIteration,
-								reflectEvery: parsed.reflectEvery,
-								reflectInstructions: parsed.reflectInstructions,
+							maxIterations: parsed.value.maxIterations,
+							itemsPerIteration: parsed.value.itemsPerIteration,
+								reflectEvery: parsed.value.reflectEvery,
+								reflectInstructions: parsed.value.reflectInstructions,
 								controllerSessionFile:
 									controllerSessionFile === undefined
 										? Option.none()
