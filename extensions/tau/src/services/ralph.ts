@@ -182,9 +182,18 @@ export interface RalphLiveConfig {
 }
 
 type PendingAgentEndWait = {
-	readonly deferred: Deferred.Deferred<AgentEndEvent>;
+	readonly deferred: Deferred.Deferred<IterationSignal>;
 	readonly iterationSessionFile: string;
 };
+
+type IterationSignal =
+	| {
+			readonly _tag: "agent_end";
+			readonly event: AgentEndEvent;
+	  }
+	| {
+			readonly _tag: "session_shutdown";
+	  };
 
 const extractLastAssistantText = (event: AgentEndEvent): string => {
 	const lastAssistant = [...event.messages]
@@ -422,6 +431,21 @@ export const RalphLive = (config: RalphLiveConfig) =>
 				const scoped = yield* repo.findLoopBySessionFile(cwd, sessionFile);
 				if (Option.isSome(scoped)) {
 					yield* repo.saveState(cwd, scoped.value);
+				}
+
+				if (sessionFile === undefined) {
+					return;
+				}
+
+				const pending = yield* Ref.get(waitingAgentEndRef);
+				if (
+					Option.isSome(pending) &&
+					pending.value.iterationSessionFile === sessionFile
+				) {
+					yield* Ref.set(waitingAgentEndRef, Option.none());
+					yield* Deferred.succeed(pending.value.deferred, {
+						_tag: "session_shutdown",
+					});
 				}
 			});
 
@@ -873,26 +897,28 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					return continueLoop;
 				});
 
-			const waitForAgentEnd = Effect.fn("Ralph.waitForAgentEnd")(function* (iterationSessionFile: string) {
-				const deferred = yield* Deferred.make<AgentEndEvent>();
-				yield* Ref.set(
-					waitingAgentEndRef,
-					Option.some({
-						deferred,
-						iterationSessionFile,
-					}),
-				);
-				const awaitEvent = Deferred.await(deferred).pipe(
-					Effect.ensuring(
-						Ref.update(waitingAgentEndRef, (current) =>
-							Option.isSome(current) && current.value.deferred === deferred
-								? Option.none()
-								: current,
+			const waitForIterationSignal = Effect.fn("Ralph.waitForIterationSignal")(
+				function* (iterationSessionFile: string) {
+					const deferred = yield* Deferred.make<IterationSignal>();
+					yield* Ref.set(
+						waitingAgentEndRef,
+						Option.some({
+							deferred,
+							iterationSessionFile,
+						}),
+					);
+					const awaitEvent = Deferred.await(deferred).pipe(
+						Effect.ensuring(
+							Ref.update(waitingAgentEndRef, (current) =>
+								Option.isSome(current) && current.value.deferred === deferred
+									? Option.none()
+									: current,
+							),
 						),
-					),
-				);
-				return { awaitEvent } as const;
-			});
+					);
+					return { awaitEvent } as const;
+				},
+			);
 
 			const runSingleIteration = (
 				boundary: RalphCommandBoundary,
@@ -1009,34 +1035,44 @@ export const RalphLive = (config: RalphLiveConfig) =>
 						afterSession.iteration > 1 &&
 						(afterSession.iteration - 1) % afterSession.reflectEvery === 0;
 
-					const { awaitEvent } = yield* waitForAgentEnd(iterationSessionFile);
+					let pendingSignal = yield* waitForIterationSignal(iterationSessionFile);
 					yield* boundary.sendFollowUp(buildPrompt(afterSession, taskContent.value, needsReflection));
-					const event = yield* awaitEvent;
 
-					const afterTurnOption = yield* repo.loadState(boundary.cwd, loopName);
-					if (Option.isNone(afterTurnOption) || afterTurnOption.value.status !== "active") {
-						return stoppedWithoutMessage;
+					while (true) {
+						const signal = yield* pendingSignal.awaitEvent;
+
+						const afterTurnOption = yield* repo.loadState(boundary.cwd, loopName);
+						if (Option.isNone(afterTurnOption) || afterTurnOption.value.status !== "active") {
+							return stoppedWithoutMessage;
+						}
+
+						const afterTurn = afterTurnOption.value;
+						if (signal._tag === "session_shutdown") {
+							if (afterTurn.awaitingFinalize) {
+								return continueLoop;
+							}
+							return yield* pauseLoop(
+								boundary.cwd,
+								afterTurn,
+								`Iteration ${afterTurn.iteration} session shut down before ralph_done. Ralph paused. Use /ralph resume ${loopName} to continue.`,
+								"stopped",
+							);
+						}
+
+						if (hasCompletionMarker(signal.event)) {
+							return yield* completeLoop(
+								boundary.cwd,
+								afterTurn,
+								`───────────────────────────────────────────────────────────────────────\n✅ RALPH LOOP COMPLETE: ${afterTurn.name} | ${afterTurn.iteration} iterations\n───────────────────────────────────────────────────────────────────────`,
+							);
+						}
+
+						if (afterTurn.awaitingFinalize) {
+							return continueLoop;
+						}
+
+						pendingSignal = yield* waitForIterationSignal(iterationSessionFile);
 					}
-
-					const afterTurn = afterTurnOption.value;
-					if (hasCompletionMarker(event)) {
-						return yield* completeLoop(
-							boundary.cwd,
-							afterTurn,
-							`───────────────────────────────────────────────────────────────────────\n✅ RALPH LOOP COMPLETE: ${afterTurn.name} | ${afterTurn.iteration} iterations\n───────────────────────────────────────────────────────────────────────`,
-						);
-					}
-
-					if (!afterTurn.awaitingFinalize) {
-						return yield* pauseLoop(
-							boundary.cwd,
-							afterTurn,
-							`Iteration ${afterTurn.iteration} ended without ralph_done. Ralph paused. Use /ralph resume ${loopName} to continue.`,
-							"stopped",
-						);
-					}
-
-					return continueLoop;
 				});
 
 			const runLoop: RalphService["runLoop"] = Effect.fn("Ralph.runLoop")(
@@ -1141,7 +1177,10 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					pending.value.iterationSessionFile === sessionFile
 				) {
 					yield* Ref.set(waitingAgentEndRef, Option.none());
-					yield* Deferred.succeed(pending.value.deferred, event);
+					yield* Deferred.succeed(pending.value.deferred, {
+						_tag: "agent_end",
+						event,
+					});
 					return {
 						consumedByWaitingLoop: true,
 						banner: Option.none(),

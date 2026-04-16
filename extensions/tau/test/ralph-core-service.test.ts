@@ -162,7 +162,7 @@ describe("ralph core service", () => {
 		}
 	});
 
-	it("registers and scopes pending agent_end waits before follow-up dispatch", async () => {
+	it("keeps iteration ownership after a handled child-session end so ralph_done still works", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 		const loopName = "handshake-loop";
@@ -177,6 +177,7 @@ describe("ralph core service", () => {
 				yield* repo.saveState(cwd, {
 					...makeState(loopName, iterationSessionFile),
 					iteration: 0,
+					maxIterations: 1,
 					controllerSessionFile: Option.some(controllerSessionFile),
 					activeIterationSessionFile: Option.none(),
 				});
@@ -222,16 +223,37 @@ describe("ralph core service", () => {
 				);
 
 				yield* Deferred.succeed(releaseFollowUp, undefined);
-				const runResult = yield* Fiber.join(runFiber).pipe(Effect.timeout("500 millis"));
+				yield* Effect.sleep("10 millis");
 
-				return { unrelated, matching, runResult };
+				const afterHandledEnd = yield* repo.loadState(cwd, loopName);
+				const done = yield* ralph.recordIterationDone(cwd, iterationSessionFile);
+				const afterDone = yield* repo.loadState(cwd, loopName);
+
+				yield* Fiber.interrupt(runFiber);
+
+				return { unrelated, matching, afterHandledEnd, done, afterDone };
 			}).pipe(Effect.provide(ralphLayer)),
 		);
 
 		expect(result.unrelated.consumedByWaitingLoop).toBe(false);
 		expect(result.matching.consumedByWaitingLoop).toBe(true);
-		expect(result.runResult.status).toBe("stopped");
-		expect(Option.isSome(result.runResult.message)).toBe(true);
+		expect(Option.isSome(result.afterHandledEnd)).toBe(true);
+		if (Option.isSome(result.afterHandledEnd)) {
+			expect(result.afterHandledEnd.value.status).toBe("active");
+			expect(result.afterHandledEnd.value.awaitingFinalize).toBe(false);
+			expect(Option.getOrUndefined(result.afterHandledEnd.value.activeIterationSessionFile)).toBe(
+				iterationSessionFile,
+			);
+		}
+		expect(result.done.text).toContain("Iteration 1 complete. Finalize recorded.");
+		expect(Option.isSome(result.afterDone)).toBe(true);
+		if (Option.isSome(result.afterDone)) {
+			expect(result.afterDone.value.status).toBe("active");
+			expect(result.afterDone.value.awaitingFinalize).toBe(true);
+			expect(Option.getOrUndefined(result.afterDone.value.activeIterationSessionFile)).toBe(
+				iterationSessionFile,
+			);
+		}
 	});
 
 	it("reapplies the pinned execution profile on each Ralph iteration", async () => {
@@ -256,6 +278,7 @@ describe("ralph core service", () => {
 				yield* repo.saveState(cwd, {
 					...makeState(loopName, iterationSessionFileA),
 					iteration: 0,
+					maxIterations: 2,
 					controllerSessionFile: Option.some(controllerSessionFile),
 					activeIterationSessionFile: Option.none(),
 					executionProfile: pinnedExecutionProfile,
@@ -265,11 +288,13 @@ describe("ralph core service", () => {
 				const appliedProfiles: ExecutionProfile[] = [];
 				let sessionFile = controllerSessionFile;
 				let newSessionCount = 0;
+				let followUpCount = 0;
+				const startedA = yield* Deferred.make<void>();
+				const releaseA = yield* Deferred.make<void>();
+				const startedB = yield* Deferred.make<void>();
+				const releaseB = yield* Deferred.make<void>();
 
-				const makeBoundary = (
-					followUpStarted: Deferred.Deferred<void>,
-					releaseFollowUp: Deferred.Deferred<void>,
-				): RalphCommandBoundary => ({
+				const boundary: RalphCommandBoundary = {
 					cwd,
 					getSessionFile: () => sessionFile,
 					switchSession: (targetSessionFile) =>
@@ -290,28 +315,29 @@ describe("ralph core service", () => {
 						}),
 					sendFollowUp: () =>
 						Effect.gen(function* () {
-							yield* Deferred.succeed(followUpStarted, undefined);
-							yield* Deferred.await(releaseFollowUp);
-						}),
-				});
+							if (followUpCount === 0) {
+								followUpCount += 1;
+								yield* Deferred.succeed(startedA, undefined);
+								yield* Deferred.await(releaseA);
+								return;
+							}
 
-				const startedA = yield* Deferred.make<void>();
-				const releaseA = yield* Deferred.make<void>();
-				const runFiberA = yield* Effect.forkDetach(ralph.runLoop(makeBoundary(startedA, releaseA), loopName));
+							followUpCount += 1;
+							yield* Deferred.succeed(startedB, undefined);
+							yield* Deferred.await(releaseB);
+						}),
+				};
+
+				const runFiber = yield* Effect.forkDetach(ralph.runLoop(boundary, loopName));
 				yield* Deferred.await(startedA);
+				yield* ralph.recordIterationDone(cwd, iterationSessionFileA);
 				yield* ralph.handleAgentEnd(cwd, iterationSessionFileA, makeAgentEndEvent("worked"));
 				yield* Deferred.succeed(releaseA, undefined);
-				yield* Fiber.join(runFiberA);
-
-				yield* ralph.resumeLoopState(cwd, loopName);
-
-				const startedB = yield* Deferred.make<void>();
-				const releaseB = yield* Deferred.make<void>();
-				const runFiberB = yield* Effect.forkDetach(ralph.runLoop(makeBoundary(startedB, releaseB), loopName));
 				yield* Deferred.await(startedB);
+				yield* ralph.recordIterationDone(cwd, iterationSessionFileB);
 				yield* ralph.handleAgentEnd(cwd, iterationSessionFileB, makeAgentEndEvent("worked again"));
 				yield* Deferred.succeed(releaseB, undefined);
-				yield* Fiber.join(runFiberB);
+				yield* Fiber.join(runFiber);
 
 				return appliedProfiles;
 			}).pipe(Effect.provide(ralphLayer)),

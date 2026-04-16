@@ -385,7 +385,7 @@ describe("ralph service behavior freeze", () => {
 		}
 	});
 
-	it("resumes a paused loop and honors the ralph_done finalize handshake", async () => {
+	it("keeps iteration ownership across handled child-session ends until ralph_done", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 
@@ -399,25 +399,27 @@ describe("ralph service behavior freeze", () => {
 		expect(command).toBeDefined();
 		expect(doneTool).toBeDefined();
 
-		const context = makeContext(cwd, [
-			{ cancelled: false },
-			{ cancelled: false },
-			{ cancelled: true },
-		]);
+		const context = makeContext(cwd, [{ cancelled: false }]);
 
-		const startPromise = command?.handler("start resume-loop", context.ctx);
+		let startResolved = false;
+		const startPromise = Promise.resolve(
+			command?.handler("start handled-error-loop --max-iterations 1", context.ctx),
+		).then(() => {
+			startResolved = true;
+		});
 		await waitFor(() => piHarness.sentUserMessages.length === 1);
 
-		await piHarness.fire("agent_end", agentEndPayload("worked but no done"), context.ctx);
-		await startPromise;
+		await piHarness.fire("agent_end", agentEndPayload("apply_patch failed once"), context.ctx);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(startResolved).toBe(false);
 
-		const afterFirstIteration = readLoopState(cwd, "resume-loop");
-		expect(afterFirstIteration.status).toBe("paused");
+		const afterFirstIteration = readLoopState(cwd, "handled-error-loop");
+		expect(afterFirstIteration.status).toBe("active");
 		expect(afterFirstIteration.iteration).toBe(1);
 		expect(afterFirstIteration.awaitingFinalize).toBe(false);
-
-		const resumePromise = command?.handler("resume resume-loop", context.ctx);
-		await waitFor(() => piHarness.sentUserMessages.length === 2);
+		expect(Option.getOrUndefined(afterFirstIteration.activeIterationSessionFile)).toBe(
+			context.getSessionFile(),
+		);
 
 		const doneResult = (await doneTool?.execute(
 			"call-1",
@@ -427,21 +429,53 @@ describe("ralph service behavior freeze", () => {
 			context.ctx,
 		)) as ToolExecutionResult;
 
-		expect(doneResult.content[0]?.text).toContain("Iteration 2 complete. Finalize recorded.");
+		expect(doneResult.content[0]?.text).toContain("Iteration 1 complete. Finalize recorded.");
 
-		const afterDone = readLoopState(cwd, "resume-loop");
+		const afterDone = readLoopState(cwd, "handled-error-loop");
+		expect(afterDone.status).toBe("active");
 		expect(afterDone.awaitingFinalize).toBe(true);
 		expect(Option.isSome(afterDone.advanceRequestedAt)).toBe(true);
+		expect(Option.getOrUndefined(afterDone.activeIterationSessionFile)).toBe(
+			context.getSessionFile(),
+		);
 
-		await piHarness.fire("agent_end", agentEndPayload("continue"), context.ctx);
-		await resumePromise;
+		await piHarness.fire("agent_end", agentEndPayload("patched successfully"), context.ctx);
+		await startPromise;
 
-		const finalState = readLoopState(cwd, "resume-loop");
-		expect(finalState.status).toBe("paused");
-		expect(finalState.iteration).toBe(2);
+		const finalState = readLoopState(cwd, "handled-error-loop");
+		expect(finalState.status).toBe("completed");
+		expect(finalState.iteration).toBe(1);
 		expect(finalState.awaitingFinalize).toBe(false);
-		expect(context.newSessionCalls).toHaveLength(3);
-		expect(context.notifications.some((entry) => entry.message.includes("Resuming: resume-loop"))).toBe(true);
+		expect(context.newSessionCalls).toHaveLength(1);
+	});
+
+	it("pauses the loop when the owned iteration session shuts down before ralph_done", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const piHarness = makePiHarness();
+		const ralphRuntime = makeRalphRuntime(false);
+		runtimes.push(ralphRuntime);
+		initRalph(piHarness.pi, ralphRuntime.run);
+
+		const command = piHarness.commands.get("ralph");
+		expect(command).toBeDefined();
+		if (!command) {
+			throw new Error("missing ralph command");
+		}
+
+		const context = makeContext(cwd, [{ cancelled: false }]);
+		const startPromise = command.handler("start shutdown-loop", context.ctx);
+		await waitFor(() => piHarness.sentUserMessages.length === 1);
+
+		await piHarness.fire("session_shutdown", { type: "session_shutdown" }, context.ctx);
+		await startPromise;
+
+		const state = readLoopState(cwd, "shutdown-loop");
+		expect(state.status).toBe("paused");
+		expect(state.iteration).toBe(1);
+		expect(state.awaitingFinalize).toBe(false);
+		expect(Option.isNone(state.activeIterationSessionFile)).toBe(true);
 	});
 
 	it("pauses /ralph start when subagents are active before creating the next iteration", async () => {
