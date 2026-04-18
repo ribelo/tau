@@ -90,9 +90,7 @@ function getLastAssistantMessage(messages: readonly unknown[]): AssistantLikeMes
 	}
 
 	const candidate = last as Partial<AssistantLikeMessage> & { role?: unknown };
-	return candidate.role === "assistant"
-		? (candidate as AssistantLikeMessage)
-		: undefined;
+	return candidate.role === "assistant" ? (candidate as AssistantLikeMessage) : undefined;
 }
 
 function syncExecutionProfileToSession(
@@ -254,9 +252,7 @@ function wrapPayloadOverrides(
 	overrides: Readonly<Record<string, unknown>>,
 ): NonNullable<SimpleStreamOptions["onPayload"]> {
 	return async (payload, currentModel) => {
-		const nextPayload = existing
-			? await existing(payload, currentModel)
-			: undefined;
+		const nextPayload = existing ? await existing(payload, currentModel) : undefined;
 		return mergePayloadOverrides(nextPayload === undefined ? payload : nextPayload, overrides);
 	};
 }
@@ -294,21 +290,33 @@ export const toolOnlyStreamFn: StreamFn = (
 
 	switch (api) {
 		case "anthropic-messages":
-			return stream(model as Model<"anthropic-messages">, context, buildToolOnlyOptions(model, options, {
-				thinkingEnabled: false,
-				toolChoice: "any",
-			}));
+			return stream(
+				model as Model<"anthropic-messages">,
+				context,
+				buildToolOnlyOptions(model, options, {
+					thinkingEnabled: false,
+					toolChoice: "any",
+				}),
+			);
 		case "openai-completions":
-			return stream(model as Model<"openai-completions">, context, buildToolOnlyOptions(model, options, {
-				toolChoice: "required",
-			}));
+			return stream(
+				model as Model<"openai-completions">,
+				context,
+				buildToolOnlyOptions(model, options, {
+					toolChoice: "required",
+				}),
+			);
 		case "google-generative-ai":
 		case "google-vertex":
 		case "google-gemini-cli":
-			return stream(model as Model<"google-generative-ai">, context, buildToolOnlyOptions(model, options, {
-				toolChoice: "any",
-				thinking: { enabled: false },
-			}));
+			return stream(
+				model as Model<"google-generative-ai">,
+				context,
+				buildToolOnlyOptions(model, options, {
+					toolChoice: "any",
+					thinking: { enabled: false },
+				}),
+			);
 		case "bedrock-converse-stream":
 		case "amazon-bedrock":
 			return stream(
@@ -331,10 +339,10 @@ export const toolOnlyStreamFn: StreamFn = (
 				buildToolOnlyOptions(
 					model,
 					options,
-					api === "mistral-conversations"
-						? { toolChoice: "required" }
-						: {},
-					api === "openai-responses" || api === "openai-codex-responses" || api === "azure-openai-responses"
+					api === "mistral-conversations" ? { toolChoice: "required" } : {},
+					api === "openai-responses" ||
+						api === "openai-codex-responses" ||
+						api === "azure-openai-responses"
 						? { tool_choice: "required" }
 						: undefined,
 				) as SimpleStreamOptions,
@@ -462,7 +470,7 @@ export class AgentWorker implements Agent {
 		private readonly executionState: ExecutionSessionState,
 		private readonly executionProfile: ExecutionProfile,
 		private readonly agentContext: {
-			parentSessionId: string;
+			parentSessionFile: string | undefined;
 			parentAgentId?: AgentId | undefined;
 			parentModel: Model<Api> | undefined;
 			parentExecutionState: ExecutionSessionState;
@@ -538,14 +546,10 @@ export class AgentWorker implements Agent {
 					source: "extension",
 					streamingBehavior: "steer",
 				}),
-			catch: (error) =>
-				new Error(
-					error instanceof Error ? error.message : String(error),
-				),
+			catch: (error) => new Error(error instanceof Error ? error.message : String(error)),
 		}).pipe(
 			Effect.catch((error) => {
-				const reason =
-					error instanceof Error ? error.message : String(error);
+				const reason = error instanceof Error ? error.message : String(error);
 				return Effect.sync(() => {
 					this.publishFailed(reason);
 				});
@@ -557,7 +561,7 @@ export class AgentWorker implements Agent {
 		definition: AgentDefinition;
 		depth: number;
 		cwd: string;
-		parentSessionId: string;
+		parentSessionFile: string | undefined;
 		executionState: ExecutionSessionState;
 		executionProfile: ExecutionProfile;
 		parentSandboxConfig: ResolvedSandboxConfig;
@@ -588,7 +592,7 @@ export class AgentWorker implements Agent {
 
 			// Mutable context for nested agent tool
 			const agentContext = {
-				parentSessionId: opts.parentSessionId,
+				parentSessionFile: opts.parentSessionFile,
 				parentAgentId: agentId,
 				parentModel: opts.parentModel,
 				parentExecutionState: opts.executionState,
@@ -605,16 +609,20 @@ export class AgentWorker implements Agent {
 			const agentTool = createWorkerAgentTool(
 				opts.runPromise,
 				agentContext,
-					opts.agentSummaries
-						? buildToolDescription(
-								{ list: () => opts.agentSummaries ?? [] },
-								opts.definition.spawns,
-								(name) => isAgentDisabledForSession(opts.cwd, opts.parentSessionId, name),
-							)
+				opts.agentSummaries
+					? buildToolDescription(
+							{ list: () => opts.agentSummaries ?? [] },
+							opts.definition.spawns,
+							(name) =>
+								isAgentDisabledForSession(opts.cwd, opts.parentSessionFile, name),
+						)
 					: "Manage non-blocking agent tasks. Actions: spawn, send, wait, close, list.",
 			);
 
-			const customTools = createWorkerCustomTools(agentTool as ToolDefinition, opts.runPromise);
+			const customTools = createWorkerCustomTools(
+				agentTool as ToolDefinition,
+				opts.runPromise,
+			);
 
 			// submit_result tool placeholder - needs agent reference, set after construction
 			let agent: AgentWorker;
@@ -687,19 +695,13 @@ export class AgentWorker implements Agent {
 				modelRegistry,
 			);
 
-			agentContext.parentSessionId = session.sessionId;
 			agentContext.parentExecutionProfile = syncExecutionProfileToSession(
 				agentContext.parentExecutionProfile,
 				session,
 			);
 
 			// Wire sandbox and approval broker for the session
-			wireSession(
-				session,
-				sandboxConfig,
-				opts.approvalBroker,
-				opts.executionState,
-			);
+			wireSession(session, sandboxConfig, opts.approvalBroker, opts.executionState);
 
 			if (opts.resultSchema) {
 				session.agent.streamFn = toolOnlyStreamFn;
@@ -817,9 +819,7 @@ export class AgentWorker implements Agent {
 				) {
 					if (agent.submitResultRetries < MAX_SUBMIT_RESULT_RETRIES) {
 						agent.submitResultRetries += 1;
-						Effect.runFork(
-							agent.repromptForSubmitResult(agent.submitResultRetries),
-						);
+						Effect.runFork(agent.repromptForSubmitResult(agent.submitResultRetries));
 					} else {
 						agent.publishFailed(
 							`Agent did not call submit_result after ${MAX_SUBMIT_RESULT_RETRIES} retries`,
@@ -835,9 +835,7 @@ export class AgentWorker implements Agent {
 		});
 	}
 
-	private switchToModel(
-		spec: ModelSpec,
-	): Effect.Effect<void, string> {
+	private switchToModel(spec: ModelSpec): Effect.Effect<void, string> {
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const worker = this;
 		return Effect.gen(function* () {
@@ -853,14 +851,9 @@ export class AgentWorker implements Agent {
 				spec,
 				worker.parentModel,
 				worker.infra.modelRegistry,
-			).pipe(
-				Effect.mapError((err) =>
-					err instanceof Error ? err.message : String(err),
-				),
-			);
+			).pipe(Effect.mapError((err) => (err instanceof Error ? err.message : String(err))));
 
 			worker.session = newSession;
-			worker.agentContext.parentSessionId = newSession.sessionId;
 			worker.agentContext.parentExecutionProfile = syncExecutionProfileToSession(
 				worker.agentContext.parentExecutionProfile,
 				newSession,
@@ -878,10 +871,7 @@ export class AgentWorker implements Agent {
 		});
 	}
 
-	private promptSession(
-		message: string,
-		modelLabel: string,
-	): Effect.Effect<void, string> {
+	private promptSession(message: string, modelLabel: string): Effect.Effect<void, string> {
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const worker = this;
 		return Effect.gen(function* () {

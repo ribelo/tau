@@ -44,6 +44,7 @@ import { AgentWorker, toolOnlyStreamFn } from "../src/agent/worker.js";
 type FakeSessionManager = {
 	getEntries: () => unknown[];
 	appendCustomEntry: (customType: string, data: unknown) => void;
+	getSessionFile: () => string;
 };
 
 class FakeAgentSession {
@@ -60,11 +61,13 @@ class FakeAgentSession {
 	constructor(id: string, streamFn: AgentSession["agent"]["streamFn"], model: Model<Api>) {
 		this.sessionId = id;
 		this.model = model;
+		const sessionFile = `/tmp/${id}.jsonl`;
 		this.sessionManager = {
 			getEntries: () => [],
 			appendCustomEntry: (customType, data) => {
 				this.customEntries.push({ customType, data });
 			},
+			getSessionFile: () => sessionFile,
 		};
 		this.agent = {
 			streamFn,
@@ -183,7 +186,7 @@ describe("AgentWorker structured-output wiring", () => {
 				definition: TEST_DEFINITION,
 				depth: 0,
 				cwd: process.cwd(),
-				parentSessionId: "parent-session",
+				parentSessionFile: "parent-session",
 				executionState: TEST_EXECUTION_STATE,
 				executionProfile: TEST_EXECUTION_PROFILE,
 				parentSandboxConfig: PARENT_SANDBOX_CONFIG,
@@ -208,7 +211,7 @@ describe("AgentWorker structured-output wiring", () => {
 				definition: TEST_DEFINITION,
 				depth: 0,
 				cwd: process.cwd(),
-				parentSessionId: "parent-session",
+				parentSessionFile: "parent-session",
 				executionState: TEST_EXECUTION_STATE,
 				executionProfile: TEST_EXECUTION_PROFILE,
 				parentSandboxConfig: PARENT_SANDBOX_CONFIG,
@@ -223,9 +226,11 @@ describe("AgentWorker structured-output wiring", () => {
 		);
 
 		await Effect.runPromise(
-			(worker as unknown as {
-				switchToModel: (spec: { model: string }) => Effect.Effect<void, string>;
-			}).switchToModel({ model: "openai-codex/gpt-5.4" }),
+			(
+				worker as unknown as {
+					switchToModel: (spec: { model: string }) => Effect.Effect<void, string>;
+				}
+			).switchToModel({ model: "openai-codex/gpt-5.4" }),
 		);
 
 		expect(createdSessions).toHaveLength(2);
@@ -246,7 +251,7 @@ describe("AgentWorker structured-output wiring", () => {
 				definition: TEST_DEFINITION,
 				depth: 0,
 				cwd: process.cwd(),
-				parentSessionId: "parent-session",
+				parentSessionFile: "parent-session",
 				executionState: TEST_EXECUTION_STATE,
 				executionProfile: TEST_EXECUTION_PROFILE,
 				parentSandboxConfig: PARENT_SANDBOX_CONFIG,
@@ -261,24 +266,105 @@ describe("AgentWorker structured-output wiring", () => {
 		);
 
 		await Effect.runPromise(
-			(worker as unknown as {
-				switchToModel: (spec: { model: string; thinking?: "high" }) => Effect.Effect<void, string>;
-			}).switchToModel({ model: "anthropic/claude-opus-4-5", thinking: "high" }),
+			(
+				worker as unknown as {
+					switchToModel: (spec: {
+						model: string;
+						thinking?: "high";
+					}) => Effect.Effect<void, string>;
+				}
+			).switchToModel({ model: "anthropic/claude-opus-4-5", thinking: "high" }),
 		);
 
-		const parentExecutionProfile = (worker as unknown as {
-			agentContext: {
-				parentExecutionProfile: {
-					promptProfile: {
-						model: string;
-						thinking: string;
+		const parentExecutionProfile = (
+			worker as unknown as {
+				agentContext: {
+					parentExecutionProfile: {
+						promptProfile: {
+							model: string;
+							thinking: string;
+						};
 					};
 				};
-			};
-		}).agentContext.parentExecutionProfile;
+			}
+		).agentContext.parentExecutionProfile;
 
 		expect(parentExecutionProfile.promptProfile.model).toBe("anthropic/claude-opus-4-5");
 		expect(parentExecutionProfile.promptProfile.thinking).toBe("high");
+	});
+
+	it("preserves the inherited session file for nested agent gating", async () => {
+		const parentSessionFile = "/tmp/parent-session.jsonl";
+		const worker = await Effect.runPromise(
+			AgentWorker.make({
+				definition: TEST_DEFINITION,
+				depth: 0,
+				cwd: process.cwd(),
+				parentSessionFile,
+				executionState: TEST_EXECUTION_STATE,
+				executionProfile: TEST_EXECUTION_PROFILE,
+				parentSandboxConfig: PARENT_SANDBOX_CONFIG,
+				parentModel: TEST_MODEL,
+				approvalBroker: undefined,
+				modelRegistry: makeModelRegistry() as never,
+				resultSchema: undefined,
+				runPromise: async () => {
+					throw new Error("unused");
+				},
+			}),
+		);
+
+		const agentContext = (
+			worker as unknown as {
+				agentContext: {
+					parentSessionFile: string | undefined;
+				};
+			}
+		).agentContext;
+
+		expect(agentContext.parentSessionFile).toBe(parentSessionFile);
+	});
+
+	it("preserves the inherited session file after worker model fallback", async () => {
+		const parentSessionFile = "/tmp/parent-session.jsonl";
+		const worker = await Effect.runPromise(
+			AgentWorker.make({
+				definition: TEST_DEFINITION,
+				depth: 0,
+				cwd: process.cwd(),
+				parentSessionFile,
+				executionState: TEST_EXECUTION_STATE,
+				executionProfile: TEST_EXECUTION_PROFILE,
+				parentSandboxConfig: PARENT_SANDBOX_CONFIG,
+				parentModel: TEST_MODEL,
+				approvalBroker: undefined,
+				modelRegistry: makeModelRegistry() as never,
+				resultSchema: undefined,
+				runPromise: async () => {
+					throw new Error("unused");
+				},
+			}),
+		);
+
+		await Effect.runPromise(
+			(
+				worker as unknown as {
+					switchToModel: (spec: { model: string }) => Effect.Effect<void, string>;
+				}
+			).switchToModel({ model: "openai-codex/gpt-5.4" }),
+		);
+
+		const agentContext = (
+			worker as unknown as {
+				agentContext: {
+					parentSessionFile: string | undefined;
+				};
+			}
+		).agentContext;
+
+		expect(createdSessions).toHaveLength(2);
+		expect(createdSessions[1]?.sessionManager.getSessionFile()).not.toBe(parentSessionFile);
+		expect(agentContext.parentSessionFile).toBe(parentSessionFile);
 	});
 
 	it("persists resolved execution state into child session state", async () => {
@@ -287,7 +373,7 @@ describe("AgentWorker structured-output wiring", () => {
 				definition: TEST_DEFINITION,
 				depth: 0,
 				cwd: process.cwd(),
-				parentSessionId: "parent-session",
+				parentSessionFile: "parent-session",
 				executionState: TEST_EXECUTION_STATE,
 				executionProfile: TEST_EXECUTION_PROFILE,
 				parentSandboxConfig: PARENT_SANDBOX_CONFIG,

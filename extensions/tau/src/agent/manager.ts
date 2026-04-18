@@ -204,7 +204,7 @@ export const AgentManagerLive = Layer.effect(
 							definition: opts.definition,
 							depth: depth,
 							cwd: opts.cwd,
-							parentSessionId: opts.parentSessionId,
+							parentSessionFile: opts.parentSessionFile,
 							executionState: opts.executionState,
 							executionProfile: opts.executionProfile,
 							parentSandboxConfig: opts.parentSandboxConfig,
@@ -213,7 +213,9 @@ export const AgentManagerLive = Layer.effect(
 							modelRegistry: opts.modelRegistry,
 							resultSchema: opts.resultSchema,
 							runPromise: agentRuntime.runPromise,
-							...(opts.agentSummaries !== undefined ? { agentSummaries: opts.agentSummaries } : {}),
+							...(opts.agentSummaries !== undefined
+								? { agentSummaries: opts.agentSummaries }
+								: {}),
 						});
 
 						const id = agent.id;

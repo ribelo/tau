@@ -120,7 +120,7 @@ export function buildToolDescription(
 }
 
 export interface AgentToolContext {
-	parentSessionId: string;
+	parentSessionFile: string | undefined;
 	parentAgentId?: AgentId | undefined;
 	parentModel: Model<Api> | undefined;
 	resolveParentExecution: () => Promise<ParentExecutionContext>;
@@ -291,10 +291,7 @@ export function createAgentToolDef(
 							try: () => context.resolveParentExecution(),
 							catch: (cause) =>
 								new AgentError({
-									message:
-										cause instanceof Error
-											? cause.message
-											: String(cause),
+									message: cause instanceof Error ? cause.message : String(cause),
 								}),
 						});
 						const id = yield* control.spawn({
@@ -302,7 +299,7 @@ export function createAgentToolDef(
 							message: p.message,
 							result_schema: p.result_schema,
 							approvalBroker: context.approvalBroker,
-							parentSessionId: context.parentSessionId,
+							parentSessionFile: context.parentSessionFile,
 							parentExecution,
 							parentAgentId: context.parentAgentId,
 							parentModel: context.parentModel,

@@ -42,9 +42,7 @@ class FakeAgentSession {
 	sessionManager = {} as AgentSession["sessionManager"];
 	agent = {} as AgentSession["agent"];
 
-	constructor(
-		private readonly onPrompt?: (session: FakeAgentSession) => Promise<void>,
-	) {}
+	constructor(private readonly onPrompt?: (session: FakeAgentSession) => Promise<void>) {}
 
 	subscribe(listener: SessionListener): () => void {
 		this.listeners.push(listener);
@@ -97,23 +95,21 @@ const makeWorker = async (
 		readonly systemPrompt: string;
 	};
 
-	const worker = new (
-		AgentWorker as unknown as {
-			new (
-				id: string,
-				type: string,
-				depth: number,
-				session: AgentSession,
-				statusRef: SubscriptionRef.SubscriptionRef<Status>,
-				infra: unknown,
-				models: readonly ModelSpec[],
-				parentModel: Model<Api> | undefined,
-				executionState: unknown,
-				executionProfile: unknown,
-				agentContext: unknown,
-			): AgentWorker;
-		}
-	)(
+	const worker = new (AgentWorker as unknown as {
+		new (
+			id: string,
+			type: string,
+			depth: number,
+			session: AgentSession,
+			statusRef: SubscriptionRef.SubscriptionRef<Status>,
+			infra: unknown,
+			models: readonly ModelSpec[],
+			parentModel: Model<Api> | undefined,
+			executionState: unknown,
+			executionProfile: unknown,
+			agentContext: unknown,
+		): AgentWorker;
+	})(
 		"agent-1",
 		"deep",
 		1,
@@ -151,7 +147,7 @@ const makeWorker = async (
 			},
 		},
 		{
-			parentSessionId: "parent-session",
+			parentSessionFile: "parent-session",
 			parentModel: undefined,
 			parentExecutionState: {
 				selector: {
@@ -230,11 +226,13 @@ describe("AgentWorker overflow compaction handling", () => {
 		session.emit({ type: "turn_start" } as AgentSessionEvent);
 		session.emit({
 			type: "agent_end",
-			messages: [assistantMessage({
-				text: "overflow",
-				stopReason: "error",
-				errorMessage: "context_length_exceeded",
-			})],
+			messages: [
+				assistantMessage({
+					text: "overflow",
+					stopReason: "error",
+					errorMessage: "context_length_exceeded",
+				}),
+			],
 		} as AgentSessionEvent);
 		session.emit({
 			type: "auto_compaction_start",
@@ -253,10 +251,12 @@ describe("AgentWorker overflow compaction handling", () => {
 		session.emit({ type: "turn_start" } as AgentSessionEvent);
 		session.emit({
 			type: "agent_end",
-			messages: [assistantMessage({
-				text: "done",
-				stopReason: "stop",
-			})],
+			messages: [
+				assistantMessage({
+					text: "done",
+					stopReason: "stop",
+				}),
+			],
 		} as AgentSessionEvent);
 		session.emit({
 			type: "auto_compaction_start",
@@ -317,11 +317,16 @@ describe("AgentWorker overflow compaction handling", () => {
 
 		const { worker } = await makeWorker(session);
 
-	await expect(
+		await expect(
 			Effect.runPromise(
-				(worker as unknown as {
-					promptSession(message: string, modelLabel: string): Effect.Effect<void, string>;
-				}).promptSession("continue", "openai/gpt-5-codex"),
+				(
+					worker as unknown as {
+						promptSession(
+							message: string,
+							modelLabel: string,
+						): Effect.Effect<void, string>;
+					}
+				).promptSession("continue", "openai/gpt-5-codex"),
 			),
 		).resolves.toBeUndefined();
 	});
@@ -338,6 +343,8 @@ describe("AgentWorker overflow compaction handling", () => {
 		(worker as unknown as { structuredOutput?: unknown }).structuredOutput = { stale: true };
 
 		await expect(Effect.runPromise(worker.prompt("next task"))).resolves.toMatch(/^sub-/u);
-		expect((worker as unknown as { structuredOutput?: unknown }).structuredOutput).toBeUndefined();
+		expect(
+			(worker as unknown as { structuredOutput?: unknown }).structuredOutput,
+		).toBeUndefined();
 	});
 });

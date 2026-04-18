@@ -6,10 +6,7 @@ import type { Status } from "./status.js";
 export type { Status };
 import type { ResolvedSandboxConfig } from "../sandbox/config.js";
 import type { ApprovalBroker } from "./approval-broker.js";
-import type {
-	ExecutionProfile,
-	ExecutionSessionState,
-} from "../execution/schema.js";
+import type { ExecutionProfile, ExecutionSessionState } from "../execution/schema.js";
 
 export interface ParentExecutionContext {
 	readonly state: ExecutionSessionState;
@@ -78,7 +75,7 @@ export interface SpawnOptions {
 	readonly message: string;
 	readonly depth: number;
 	readonly cwd: string;
-	readonly parentSessionId: string;
+	readonly parentSessionFile: string | undefined;
 	readonly executionState: ExecutionSessionState;
 	readonly executionProfile: ExecutionProfile;
 	readonly parentAgentId?: AgentId | undefined;
@@ -87,7 +84,10 @@ export interface SpawnOptions {
 	readonly approvalBroker?: ApprovalBroker | undefined;
 	readonly modelRegistry?: ModelRegistry | undefined;
 	readonly resultSchema?: unknown;
-	readonly agentSummaries?: ReadonlyArray<{ readonly name: string; readonly description: string }>;
+	readonly agentSummaries?: ReadonlyArray<{
+		readonly name: string;
+		readonly description: string;
+	}>;
 }
 
 export class AgentManager extends ServiceMap.Service<
@@ -120,7 +120,7 @@ export interface ControlSpawnOptions {
 	readonly message: string;
 	readonly result_schema?: unknown;
 	readonly approvalBroker?: ApprovalBroker | undefined;
-	readonly parentSessionId: string;
+	readonly parentSessionFile: string | undefined;
 	readonly parentExecution: ParentExecutionContext;
 	readonly parentAgentId?: AgentId | undefined;
 	readonly parentModel?: Model<Api> | undefined;

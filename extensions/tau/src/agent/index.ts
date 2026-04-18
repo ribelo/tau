@@ -58,12 +58,16 @@ export default function initAgent(
 							const mode = resolveSessionMode(state);
 							const model = readModelId(ctx.model);
 							if (model === undefined) {
-								throw new Error("Cannot spawn agent: current session has no active model");
+								throw new Error(
+									"Cannot spawn agent: current session has no active model",
+								);
 							}
 
 							const thinking = pi.getThinkingLevel();
 							if (!isPromptModeThinkingLevel(thinking)) {
-								throw new Error("Cannot spawn agent: current session has no supported thinking level");
+								throw new Error(
+									"Cannot spawn agent: current session has no supported thinking level",
+								);
 							}
 
 							return {
@@ -86,7 +90,7 @@ export default function initAgent(
 				const toolDef = createAgentToolDef(
 					(effect) => runtime.runPromise(effect),
 					() => ({
-						parentSessionId: ctx.sessionManager.getSessionId(),
+						parentSessionFile: ctx.sessionManager.getSessionFile(),
 						parentAgentId: undefined,
 						parentModel: ctx.model,
 						resolveParentExecution,

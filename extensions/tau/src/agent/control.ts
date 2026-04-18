@@ -43,8 +43,13 @@ export const AgentControlLive = Layer.effect(
 					const parentExecution = opts.parentExecution;
 					const registry = yield* AgentRegistry.load(opts.cwd);
 
-					if (isAgentDisabledForSession(opts.cwd, opts.parentSessionId, opts.agent)) {
-						const enabled = registry.names().filter((n) => !isAgentDisabledForSession(opts.cwd, opts.parentSessionId, n));
+					if (isAgentDisabledForSession(opts.cwd, opts.parentSessionFile, opts.agent)) {
+						const enabled = registry
+							.names()
+							.filter(
+								(n) =>
+									!isAgentDisabledForSession(opts.cwd, opts.parentSessionFile, n),
+							);
 						return yield* Effect.fail(
 							new AgentError({
 								message: `Agent "${opts.agent}" is disabled for this session. Use /agents to inspect effective availability. Available: ${enabled.join(", ")}`,
@@ -75,7 +80,7 @@ export const AgentControlLive = Layer.effect(
 						message: opts.message,
 						depth: 0, // Depth is handled by manager now
 						cwd: opts.cwd,
-						parentSessionId: opts.parentSessionId,
+						parentSessionFile: opts.parentSessionFile,
 						executionState: resolvedExecution.executionState,
 						executionProfile: resolvedExecution.executionProfile,
 						parentAgentId: opts.parentAgentId,
@@ -205,7 +210,11 @@ export const AgentControlLive = Layer.effect(
 						}),
 					),
 				),
-			waitStream: (ids: AgentId[], timeoutMs = DEFAULT_WAIT_TIMEOUT_MS, pollIntervalMs = 1000) => {
+			waitStream: (
+				ids: AgentId[],
+				timeoutMs = DEFAULT_WAIT_TIMEOUT_MS,
+				pollIntervalMs = 1000,
+			) => {
 				const boundedTimeoutMs = normalizeWaitTimeoutMs(timeoutMs);
 				const pollInterval = Math.max(pollIntervalMs, 250); // Min 250ms
 				const startedAt = Date.now();
