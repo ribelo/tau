@@ -737,15 +737,24 @@ export const RalphLive = (config: RalphLiveConfig) =>
 				}
 
 				const initialState = stateOption.value;
-				if (initialState.status === "completed") {
-					return {
-						status: "completed",
-					} satisfies RalphResumeLoopStateResult;
-				}
-
 				let state = initialState;
 				const requestedMaxIterations = Option.getOrUndefined(input.maxIterations);
-				if (requestedMaxIterations !== undefined) {
+				if (initialState.status === "completed") {
+					if (!isAtIterationLimit(initialState)) {
+						return {
+							status: "completed",
+						} satisfies RalphResumeLoopStateResult;
+					}
+
+					if (requestedMaxIterations === undefined) {
+						return {
+							status: "max_iterations_reached",
+							loopName,
+							iteration: initialState.iteration,
+							maxIterations: initialState.maxIterations,
+						} satisfies RalphResumeLoopStateResult;
+					}
+
 					if (
 						requestedMaxIterations > 0 &&
 						requestedMaxIterations <= initialState.iteration
@@ -758,9 +767,41 @@ export const RalphLive = (config: RalphLiveConfig) =>
 						} satisfies RalphResumeLoopStateResult;
 					}
 
-					if (requestedMaxIterations !== initialState.maxIterations) {
+					const legacyUnstuckState: LoopState = {
+						...initialState,
+						status: "paused",
+						maxIterations: requestedMaxIterations,
+						completedAt: Option.none(),
+						activeIterationSessionFile: Option.none(),
+						awaitingFinalize: false,
+						advanceRequestedAt: Option.none(),
+					};
+					yield* repo.saveState(cwd, legacyUnstuckState);
+					state = legacyUnstuckState;
+				}
+
+				if (state.status === "completed") {
+					return {
+						status: "completed",
+					} satisfies RalphResumeLoopStateResult;
+				}
+
+				if (requestedMaxIterations !== undefined) {
+					if (
+						requestedMaxIterations > 0 &&
+						requestedMaxIterations <= state.iteration
+					) {
+						return {
+							status: "max_iterations_too_low",
+							loopName,
+							iteration: state.iteration,
+							requestedMaxIterations,
+						} satisfies RalphResumeLoopStateResult;
+					}
+
+					if (requestedMaxIterations !== state.maxIterations) {
 						state = {
-							...initialState,
+							...state,
 							maxIterations: requestedMaxIterations,
 						};
 						yield* repo.saveState(cwd, state);

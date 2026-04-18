@@ -479,6 +479,113 @@ describe("ralph store behavior freeze", () => {
 		expect(notifications.some((entry) => entry.message.includes("Resuming: limit-loop"))).toBe(true);
 	});
 
+	it("/ralph resume treats legacy completed-at-cap loops as max-iterations reached", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const notifications: Notifications = [];
+		const { pi, commands } = makePiStub();
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(pi, ralphRuntime.run);
+
+		const command = commands.get("ralph");
+		expect(command).toBeDefined();
+
+		fs.mkdirSync(path.join(cwd, ".pi", "loops", "state"), { recursive: true });
+		fs.writeFileSync(
+			statePath(cwd, "legacy-limit-loop"),
+			encodeStateForStorage(
+				decodeLoopStateSync({
+					name: "legacy-limit-loop",
+					taskFile: path.join(".pi", "loops", "tasks", "legacy-limit-loop.md"),
+					iteration: 12,
+					maxIterations: 12,
+					itemsPerIteration: 0,
+					reflectEvery: 0,
+					reflectInstructions: "reflect",
+					status: "completed",
+					startedAt: "2026-01-01T00:00:00.000Z",
+					completedAt: "2026-01-01T02:00:00.000Z",
+					lastReflectionAt: 0,
+					controllerSessionFile: path.join(cwd, ".pi", "sessions", "controller.session.json"),
+					activeIterationSessionFile: null,
+					advanceRequestedAt: null,
+					awaitingFinalize: false,
+					executionProfile: makeExecutionProfile(),
+				}),
+			),
+			"utf-8",
+		);
+
+		const context = makeContext(cwd, notifications);
+		await command?.handler("resume legacy-limit-loop", context);
+
+		const state = readState(cwd, "legacy-limit-loop");
+		expect(state.status).toBe("completed");
+		expect(state.maxIterations).toBe(12);
+		expect(
+			notifications.some((entry) =>
+				entry.message.includes(
+					'Loop "legacy-limit-loop" reached max iterations (12/12). Resume with /ralph resume legacy-limit-loop --max-iterations 13 (or higher).',
+				),
+			),
+		).toBe(true);
+		expect(
+			notifications.some((entry) => entry.message.includes('Loop "legacy-limit-loop" is completed.')),
+		).toBe(false);
+	});
+
+	it("/ralph resume --max-iterations reopens legacy completed-at-cap loops without iteration reset", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const notifications: Notifications = [];
+		const { pi, commands } = makePiStub();
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(pi, ralphRuntime.run);
+
+		const command = commands.get("ralph");
+		expect(command).toBeDefined();
+
+		fs.mkdirSync(path.join(cwd, ".pi", "loops", "state"), { recursive: true });
+		fs.writeFileSync(
+			statePath(cwd, "legacy-limit-loop"),
+			encodeStateForStorage(
+				decodeLoopStateSync({
+					name: "legacy-limit-loop",
+					taskFile: path.join(".pi", "loops", "tasks", "legacy-limit-loop.md"),
+					iteration: 12,
+					maxIterations: 12,
+					itemsPerIteration: 0,
+					reflectEvery: 0,
+					reflectInstructions: "reflect",
+					status: "completed",
+					startedAt: "2026-01-01T00:00:00.000Z",
+					completedAt: "2026-01-01T02:00:00.000Z",
+					lastReflectionAt: 0,
+					controllerSessionFile: path.join(cwd, ".pi", "sessions", "controller.session.json"),
+					activeIterationSessionFile: null,
+					advanceRequestedAt: null,
+					awaitingFinalize: false,
+					executionProfile: makeExecutionProfile(),
+				}),
+			),
+			"utf-8",
+		);
+
+		const context = makeContext(cwd, notifications);
+		await command?.handler("resume legacy-limit-loop --max-iterations 24", context);
+
+		const state = readState(cwd, "legacy-limit-loop");
+		expect(state.status).toBe("paused");
+		expect(state.iteration).toBe(12);
+		expect(state.maxIterations).toBe(24);
+		expect(Option.isNone(state.completedAt)).toBe(true);
+		expect(notifications.some((entry) => entry.message.includes("Resuming: legacy-limit-loop"))).toBe(true);
+	});
+
 	it("/ralph status distinguishes max-iterations stop from completed loops", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
