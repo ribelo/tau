@@ -21,11 +21,7 @@ import {
 } from "../services/ralph.js";
 import { RalphContractValidationError } from "./errors.js";
 import { RALPH_TASKS_DIR } from "./paths.js";
-import {
-	sanitizeLoopName,
-	type LoopState,
-	type LoopStatus,
-} from "./schema.js";
+import { sanitizeLoopName, type LoopState, type LoopStatus } from "./schema.js";
 
 const INVALID_STATE_HINT =
 	"Ralph state is invalid and could not be decoded. Repair or remove invalid files under .pi/loops (or reset with /ralph nuke --yes).";
@@ -66,13 +62,18 @@ const STATUS_ICONS: Record<LoopStatus, string> = {
 	completed: "✓",
 };
 
-function isMaxIterationsReached(loop: Pick<LoopState, "status" | "iteration" | "maxIterations">): boolean {
-	return loop.status === "paused" && loop.maxIterations > 0 && loop.iteration >= loop.maxIterations;
+function isMaxIterationsReached(
+	loop: Pick<LoopState, "status" | "iteration" | "maxIterations">,
+): boolean {
+	return (
+		loop.status === "paused" && loop.maxIterations > 0 && loop.iteration >= loop.maxIterations
+	);
 }
 
-function describeLoopStatus(
-	loop: Pick<LoopState, "status" | "iteration" | "maxIterations">,
-): { readonly icon: string; readonly label: string } {
+function describeLoopStatus(loop: Pick<LoopState, "status" | "iteration" | "maxIterations">): {
+	readonly icon: string;
+	readonly label: string;
+} {
 	if (isMaxIterationsReached(loop)) {
 		return {
 			icon: "⚠",
@@ -107,13 +108,18 @@ function handlePersistedStateFailure(
 		return Option.none();
 	}
 	const message =
-		error.entity === "ralph.legacy_layout"
-			? error.reason
-			: persistedStateFailureMessage(error);
+		error.entity === "ralph.legacy_layout" ? error.reason : persistedStateFailureMessage(error);
 	if (ctx.hasUI) {
 		ctx.ui.notify(message, "error");
 	}
 	return Option.some(message);
+}
+
+function isManagedRuntimeDisposedError(error: unknown): boolean {
+	if (error instanceof Error) {
+		return error.message.includes("ManagedRuntime disposed");
+	}
+	return String(error).includes("ManagedRuntime disposed");
 }
 
 function sessionFileFromContext(ctx: Pick<ExtensionContext, "sessionManager">): string | undefined {
@@ -124,7 +130,8 @@ function sessionFileFromContext(ctx: Pick<ExtensionContext, "sessionManager">): 
 
 function formatLoop(loop: LoopState): string {
 	const status = describeLoopStatus(loop);
-	const iter = loop.maxIterations > 0 ? `${loop.iteration}/${loop.maxIterations}` : `${loop.iteration}`;
+	const iter =
+		loop.maxIterations > 0 ? `${loop.iteration}/${loop.maxIterations}` : `${loop.iteration}`;
 	return `${loop.name}: ${status.icon} ${status.label} (iteration ${iter})`;
 }
 
@@ -160,7 +167,10 @@ type RalphResumeArgsParseResult =
 	  }
 	| ArgsParseFailure;
 
-function parseNonNegativeIntegerOption(option: string, rawValue: string): ArgsParseFailure | number {
+function parseNonNegativeIntegerOption(
+	option: string,
+	rawValue: string,
+): ArgsParseFailure | number {
 	const value = Number.parseInt(rawValue, 10);
 	if (!Number.isInteger(value) || value < 0) {
 		return {
@@ -352,9 +362,7 @@ type CreateTarget =
 function resolveLoopTarget(target: string): ResolvedLoopTarget {
 	const trimmed = stripSurroundingQuotes(target.trim());
 	const isPath = trimmed.includes("/") || trimmed.includes("\\") || trimmed.endsWith(".md");
-	const sourceLoopName = isPath
-		? path.basename(trimmed, path.extname(trimmed))
-		: trimmed;
+	const sourceLoopName = isPath ? path.basename(trimmed, path.extname(trimmed)) : trimmed;
 	const loopName = sanitizeLoopName(sourceLoopName);
 	const taskStem = sourceLoopName.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/_+/g, "_");
 	const taskFile = isPath ? trimmed : path.join(RALPH_TASKS_DIR, `${taskStem}.md`);
@@ -508,17 +516,19 @@ export default function initRalph(
 		applyExecutionProfile: (profile) =>
 			Effect.promise(() =>
 				withPromptModes((promptModes) =>
-					promptModes.applyExecutionProfile(profile, ctx, {
-						notifyOnSuccess: false,
-						persist: false,
-						ephemeral: true,
-					}).pipe(
-						Effect.map((result) =>
-							result.applied
-								? { applied: true as const }
-								: { applied: false as const, reason: result.reason },
+					promptModes
+						.applyExecutionProfile(profile, ctx, {
+							notifyOnSuccess: false,
+							persist: false,
+							ephemeral: true,
+						})
+						.pipe(
+							Effect.map((result) =>
+								result.applied
+									? { applied: true as const }
+									: { applied: false as const, reason: result.reason },
+							),
 						),
-					),
 				),
 			),
 		sendFollowUp: (prompt) =>
@@ -560,7 +570,10 @@ export default function initRalph(
 		const maxStr = state.maxIterations > 0 ? `/${state.maxIterations}` : "";
 		const status = describeLoopStatus(state);
 
-		ctx.ui.setStatus("ralph", theme.fg("accent", `🔄 ${state.name} (${state.iteration}${maxStr})`));
+		ctx.ui.setStatus(
+			"ralph",
+			theme.fg("accent", `🔄 ${state.name} (${state.iteration}${maxStr})`),
+		);
 
 		const lines = [
 			theme.fg("accent", theme.bold("Ralph Wiggum")),
@@ -587,12 +600,24 @@ export default function initRalph(
 			ralph.runLoop(commandBoundaryFromContext(ctx), loopName),
 		);
 		if (Option.isSome(result.message) && ctx.hasUI) {
-			ctx.ui.notify(result.message.value, "info");
+			try {
+				ctx.ui.notify(result.message.value, "info");
+			} catch (error) {
+				if (!isManagedRuntimeDisposedError(error)) {
+					throw error;
+				}
+			}
 		}
 		if (Option.isSome(result.banner)) {
 			pi.sendUserMessage(result.banner.value);
 		}
-		await updateUI(ctx.cwd, ctx);
+		try {
+			await updateUI(ctx.cwd, ctx);
+		} catch (error) {
+			if (!isManagedRuntimeDisposedError(error)) {
+				throw error;
+			}
+		}
 	};
 
 	pi.registerCommand("ralph", {
@@ -602,26 +627,32 @@ export default function initRalph(
 				const [cmd] = args.trim().split(/\s+/);
 				const rest = cmd ? args.slice(args.indexOf(cmd) + cmd.length).trim() : "";
 
-					switch (cmd) {
-						case "create": {
-							const target = stripSurroundingQuotes(rest.trim());
-							if (!target) {
-								ctx.ui.notify("Usage: /ralph create <request|path|backlog-id>", "warning");
-								return;
-							}
-
-							const createTarget = classifyCreateTarget(target);
-							pi.sendUserMessage(buildCreatePrompt(target));
-							if (createTarget.kind === "request") {
-								ctx.ui.notify(
-									"Asked the current model to draft a Ralph task file and choose a short name",
-									"info",
-								);
-								return;
-							}
-							ctx.ui.notify(`Asked the current model to draft ${createTarget.resolved.taskFile}`, "info");
+				switch (cmd) {
+					case "create": {
+						const target = stripSurroundingQuotes(rest.trim());
+						if (!target) {
+							ctx.ui.notify(
+								"Usage: /ralph create <request|path|backlog-id>",
+								"warning",
+							);
 							return;
 						}
+
+						const createTarget = classifyCreateTarget(target);
+						pi.sendUserMessage(buildCreatePrompt(target));
+						if (createTarget.kind === "request") {
+							ctx.ui.notify(
+								"Asked the current model to draft a Ralph task file and choose a short name",
+								"info",
+							);
+							return;
+						}
+						ctx.ui.notify(
+							`Asked the current model to draft ${createTarget.resolved.taskFile}`,
+							"info",
+						);
+						return;
+					}
 
 					case "start": {
 						const parsed = parseArgs(rest);
@@ -643,20 +674,23 @@ export default function initRalph(
 						const resolved = resolveLoopTarget(parsed.value.name);
 						const loopName = resolved.loopName;
 						const taskFile = resolved.taskFile;
-					const executionProfile = await captureCurrentExecutionProfile(ctx);
-					if (executionProfile === null) {
-						ctx.ui.notify("Could not capture the current execution profile for this Ralph loop.", "error");
-						return;
-					}
+						const executionProfile = await captureCurrentExecutionProfile(ctx);
+						if (executionProfile === null) {
+							ctx.ui.notify(
+								"Could not capture the current execution profile for this Ralph loop.",
+								"error",
+							);
+							return;
+						}
 
 						const controllerSessionFile = sessionFileFromContext(ctx);
 						const start = await withRalph((ralph) =>
 							ralph.startLoopState(ctx.cwd, {
-							loopName,
-							taskFile,
-							executionProfile,
-							maxIterations: parsed.value.maxIterations,
-							itemsPerIteration: parsed.value.itemsPerIteration,
+								loopName,
+								taskFile,
+								executionProfile,
+								maxIterations: parsed.value.maxIterations,
+								itemsPerIteration: parsed.value.itemsPerIteration,
 								reflectEvery: parsed.value.reflectEvery,
 								reflectInstructions: parsed.value.reflectInstructions,
 								controllerSessionFile:
@@ -676,7 +710,10 @@ export default function initRalph(
 						}
 
 						if (start.status === "missing_controller_session") {
-							ctx.ui.notify("Loop requires a persisted session file (interactive session).", "error");
+							ctx.ui.notify(
+								"Loop requires a persisted session file (interactive session).",
+								"error",
+							);
 							return;
 						}
 
@@ -684,7 +721,10 @@ export default function initRalph(
 							ctx.ui.notify(`Created task file: ${start.taskFile}`, "info");
 						}
 						await updateUI(ctx.cwd, ctx);
-						ctx.ui.notify(`Started loop "${start.loopName}" (max ${start.maxIterations} iterations)`, "info");
+						ctx.ui.notify(
+							`Started loop "${start.loopName}" (max ${start.maxIterations} iterations)`,
+							"info",
+						);
 						await runLoop(ctx, start.loopName);
 						return;
 					}
@@ -707,7 +747,10 @@ export default function initRalph(
 
 					case "stop": {
 						if (!ctx.isIdle()) {
-							ctx.ui.notify("Agent is busy. Press ESC to interrupt, then run /ralph stop.", "warning");
+							ctx.ui.notify(
+								"Agent is busy. Press ESC to interrupt, then run /ralph stop.",
+								"warning",
+							);
 							return;
 						}
 
@@ -728,9 +771,12 @@ export default function initRalph(
 
 						let stopped: RalphStopLoopResult;
 						if (scopedLoop?.status === "paused") {
-							await withRalph((ralph) => ralph.syncCurrentLoopFromSession(ctx.cwd, sessionFile));
+							await withRalph((ralph) =>
+								ralph.syncCurrentLoopFromSession(ctx.cwd, sessionFile),
+							);
 							const resumeMaxIterations =
-								scopedLoop.maxIterations > 0 && scopedLoop.iteration >= scopedLoop.maxIterations
+								scopedLoop.maxIterations > 0 &&
+								scopedLoop.iteration >= scopedLoop.maxIterations
 									? Option.some(scopedLoop.iteration + 1)
 									: Option.none<number>();
 							const resumed = await withRalph((ralph) =>
@@ -739,11 +785,14 @@ export default function initRalph(
 									maxIterations: resumeMaxIterations,
 								}),
 							);
-							stopped = resumed.status === "resumed"
-								? await withRalph((ralph) => ralph.stopActiveLoop(ctx.cwd))
-								: { status: "no_active_loop" as const };
+							stopped =
+								resumed.status === "resumed"
+									? await withRalph((ralph) => ralph.stopActiveLoop(ctx.cwd))
+									: { status: "no_active_loop" as const };
 						} else if (scopedLoop?.status === "active") {
-							await withRalph((ralph) => ralph.syncCurrentLoopFromSession(ctx.cwd, sessionFile));
+							await withRalph((ralph) =>
+								ralph.syncCurrentLoopFromSession(ctx.cwd, sessionFile),
+							);
 							stopped = await withRalph((ralph) => ralph.stopActiveLoop(ctx.cwd));
 						} else {
 							stopped = await withRalph((ralph) => ralph.stopActiveLoop(ctx.cwd));
@@ -770,10 +819,16 @@ export default function initRalph(
 						const parsed = parseResumeArgs(rest);
 						if (!parsed.ok) {
 							if (parsed.error === "missing loop name") {
-								ctx.ui.notify("Usage: /ralph resume <name> [--max-iterations N]", "warning");
+								ctx.ui.notify(
+									"Usage: /ralph resume <name> [--max-iterations N]",
+									"warning",
+								);
 								return;
 							}
-							ctx.ui.notify(`Invalid Ralph resume arguments: ${parsed.error}`, "warning");
+							ctx.ui.notify(
+								`Invalid Ralph resume arguments: ${parsed.error}`,
+								"warning",
+							);
 							return;
 						}
 
@@ -823,7 +878,10 @@ export default function initRalph(
 							ctx.ui.notify("No Ralph loops found.", "info");
 							return;
 						}
-						ctx.ui.notify(`Ralph loops:\n${loops.map((loop) => formatLoop(loop)).join("\n")}`, "info");
+						ctx.ui.notify(
+							`Ralph loops:\n${loops.map((loop) => formatLoop(loop)).join("\n")}`,
+							"info",
+						);
 						return;
 					}
 
@@ -833,7 +891,9 @@ export default function initRalph(
 							ctx.ui.notify("Usage: /ralph cancel <name>", "warning");
 							return;
 						}
-						const cancelled = await withRalph((ralph) => ralph.cancelLoop(ctx.cwd, loopName));
+						const cancelled = await withRalph((ralph) =>
+							ralph.cancelLoop(ctx.cwd, loopName),
+						);
 						if (cancelled.status === "not_found") {
 							ctx.ui.notify(`Loop "${loopName}" not found`, "error");
 							return;
@@ -850,13 +910,18 @@ export default function initRalph(
 							return;
 						}
 
-						const archived = await withRalph((ralph) => ralph.archiveLoopByName(ctx.cwd, loopName));
+						const archived = await withRalph((ralph) =>
+							ralph.archiveLoopByName(ctx.cwd, loopName),
+						);
 						if (archived.status === "not_found") {
 							ctx.ui.notify(`Loop "${loopName}" not found`, "error");
 							return;
 						}
 						if (archived.status === "active_loop") {
-							ctx.ui.notify("Cannot archive active loop. Pause or stop it first.", "warning");
+							ctx.ui.notify(
+								"Cannot archive active loop. Pause or stop it first.",
+								"warning",
+							);
 							return;
 						}
 
@@ -867,7 +932,9 @@ export default function initRalph(
 
 					case "clean": {
 						const all = rest.trim() === "--all";
-						const cleaned = await withRalph((ralph) => ralph.cleanCompletedLoops(ctx.cwd, all));
+						const cleaned = await withRalph((ralph) =>
+							ralph.cleanCompletedLoops(ctx.cwd, all),
+						);
 						if (cleaned.cleanedLoops.length === 0) {
 							ctx.ui.notify("No completed loops to clean", "info");
 							return;
@@ -895,7 +962,10 @@ export default function initRalph(
 							return;
 						}
 						const label = archived ? "Archived loops" : "Ralph loops";
-						ctx.ui.notify(`${label}:\n${loops.map((loop) => formatLoop(loop)).join("\n")}`, "info");
+						ctx.ui.notify(
+							`${label}:\n${loops.map((loop) => formatLoop(loop)).join("\n")}`,
+							"info",
+						);
 						return;
 					}
 
@@ -908,7 +978,10 @@ export default function initRalph(
 							const result = await withRalph((ralph) => ralph.nukeLoops(ctx.cwd));
 							if (!result.removed) {
 								if (ctx.hasUI) {
-									ctx.ui.notify("No Ralph loop data found under .pi/loops.", "info");
+									ctx.ui.notify(
+										"No Ralph loop data found under .pi/loops.",
+										"info",
+									);
 								}
 								return;
 							}
@@ -921,13 +994,18 @@ export default function initRalph(
 
 						if (!force) {
 							if (ctx.hasUI) {
-								void ctx.ui.confirm("Delete all Ralph loop files?", warning).then((confirmed) => {
-									if (confirmed) {
-										void runNuke();
-									}
-								});
+								void ctx.ui
+									.confirm("Delete all Ralph loop files?", warning)
+									.then((confirmed) => {
+										if (confirmed) {
+											void runNuke();
+										}
+									});
 							} else {
-								ctx.ui.notify(`Run /ralph nuke --yes to confirm. ${warning}`, "warning");
+								ctx.ui.notify(
+									`Run /ralph nuke --yes to confirm. ${warning}`,
+									"warning",
+								);
 							}
 							return;
 						}
@@ -1137,7 +1215,9 @@ export default function initRalph(
 
 	pi.on("session_start", async (_event, ctx) => {
 		try {
-			await withRalph((ralph) => ralph.syncCurrentLoopFromSession(ctx.cwd, sessionFileFromContext(ctx)));
+			await withRalph((ralph) =>
+				ralph.syncCurrentLoopFromSession(ctx.cwd, sessionFileFromContext(ctx)),
+			);
 			const active = (await listLoops(ctx.cwd)).filter((loop) => loop.status === "active");
 			if (active.length > 0 && ctx.hasUI) {
 				const lines = active.map(
@@ -1160,7 +1240,9 @@ export default function initRalph(
 
 	pi.on("session_switch", async (_event, ctx) => {
 		try {
-			await withRalph((ralph) => ralph.syncCurrentLoopFromSession(ctx.cwd, sessionFileFromContext(ctx)));
+			await withRalph((ralph) =>
+				ralph.syncCurrentLoopFromSession(ctx.cwd, sessionFileFromContext(ctx)),
+			);
 			await updateUI(ctx.cwd, ctx);
 		} catch (error) {
 			if (Option.isSome(handlePersistedStateFailure(error, ctx))) {

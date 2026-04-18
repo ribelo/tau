@@ -56,6 +56,7 @@ type ContextHarness = {
 	readonly notifications: Notifications;
 	readonly newSessionCalls: ReadonlyArray<unknown>;
 	readonly switchSessionCalls: readonly string[];
+	readonly disposeCommandContext: () => void;
 	readonly setSessionFile: (next: string) => void;
 	readonly getSessionFile: () => string;
 };
@@ -99,7 +100,9 @@ function loopStatePath(cwd: string, loopName: string): string {
 	return path.join(cwd, ".pi", "loops", "state", `${loopName}.json`);
 }
 
-function lifecycleToStatus(lifecycle: "draft" | "active" | "paused" | "completed" | "archived"): LoopStatus {
+function lifecycleToStatus(
+	lifecycle: "draft" | "active" | "paused" | "completed" | "archived",
+): LoopStatus {
 	switch (lifecycle) {
 		case "active":
 			return "active";
@@ -131,7 +134,10 @@ function readLoopState(cwd: string, loopName: string) {
 		startedAt: Option.getOrElse(state.startedAt, () => state.createdAt),
 		completedAt: state.completedAt,
 		lastReflectionAt: state.ralph.lastReflectionAt,
-		controllerSessionFile: Option.map(state.ownership.controller, (controller) => controller.sessionFile),
+		controllerSessionFile: Option.map(
+			state.ownership.controller,
+			(controller) => controller.sessionFile,
+		),
 		activeIterationSessionFile: Option.map(state.ownership.child, (child) => child.sessionFile),
 		advanceRequestedAt: state.ralph.advanceRequestedAt,
 		awaitingFinalize: state.ralph.awaitingFinalize,
@@ -153,12 +159,7 @@ function writeLoopState(
 	const filePath = loopStatePath(cwd, loopName);
 	fs.mkdirSync(path.dirname(filePath), { recursive: true });
 	const status = input.status ?? "active";
-	const lifecycle =
-		status === "active"
-			? "active"
-			: status === "paused"
-				? "paused"
-				: "completed";
+	const lifecycle = status === "active" ? "active" : status === "paused" ? "paused" : "completed";
 	const taskFile = path.join(".pi", "loops", "tasks", `${loopName}.md`);
 	fs.mkdirSync(path.join(cwd, path.dirname(taskFile)), { recursive: true });
 	fs.writeFileSync(path.join(cwd, taskFile), "# Task\n", "utf-8");
@@ -173,7 +174,8 @@ function writeLoopState(
 			createdAt: "2026-01-01T00:00:00.000Z",
 			updatedAt: "2026-01-01T00:00:00.000Z",
 			startedAt: Option.some("2026-01-01T00:00:00.000Z"),
-			completedAt: status === "completed" ? Option.some("2026-01-01T01:00:00.000Z") : Option.none(),
+			completedAt:
+				status === "completed" ? Option.some("2026-01-01T01:00:00.000Z") : Option.none(),
 			archivedAt: Option.none(),
 			ownership: {
 				controller: Option.some({
@@ -184,9 +186,9 @@ function writeLoopState(
 					input.activeIterationSessionFile === undefined
 						? Option.none()
 						: Option.some({
-							sessionId: input.activeIterationSessionFile,
-							sessionFile: input.activeIterationSessionFile,
-						}),
+								sessionId: input.activeIterationSessionFile,
+								sessionFile: input.activeIterationSessionFile,
+							}),
 			},
 			ralph: {
 				iteration: input.iteration ?? 1,
@@ -213,6 +215,13 @@ function makeContext(
 	const switchSessionCalls: string[] = [];
 	let sessionFile = path.join(cwd, ".pi", "sessions", "controller.session.json");
 	let sessionCounter = 0;
+	let disposed = false;
+
+	const throwIfDisposed = (): void => {
+		if (disposed) {
+			throw new Error("ManagedRuntime disposed");
+		}
+	};
 
 	const ctx = {
 		cwd,
@@ -229,11 +238,21 @@ function makeContext(
 			getSessionFile: () => sessionFile,
 		},
 		ui: {
-			setStatus: () => undefined,
-			setWidget: () => undefined,
-			setFooter: () => () => undefined,
-			setEditorComponent: () => undefined,
+			setStatus: () => {
+				throwIfDisposed();
+			},
+			setWidget: () => {
+				throwIfDisposed();
+			},
+			setFooter: () => {
+				throwIfDisposed();
+				return () => undefined;
+			},
+			setEditorComponent: () => {
+				throwIfDisposed();
+			},
 			notify: (message: string, level: string) => {
+				throwIfDisposed();
 				notifications.push({ message, level });
 			},
 			confirm: async () => true,
@@ -277,6 +296,9 @@ function makeContext(
 		notifications,
 		newSessionCalls,
 		switchSessionCalls,
+		disposeCommandContext: () => {
+			disposed = true;
+		},
 		setSessionFile: (next) => {
 			sessionFile = next;
 		},
@@ -479,6 +501,39 @@ describe("ralph service behavior freeze", () => {
 		expect(Option.isNone(state.activeIterationSessionFile)).toBe(true);
 	});
 
+	it("exits cleanly when the iteration session shuts down after the command context is disposed", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const piHarness = makePiHarness();
+		const ralphRuntime = makeRalphRuntime(false);
+		runtimes.push(ralphRuntime);
+		initRalph(piHarness.pi, ralphRuntime.run);
+
+		const command = piHarness.commands.get("ralph");
+		expect(command).toBeDefined();
+		if (!command) {
+			throw new Error("missing ralph command");
+		}
+
+		const context = makeContext(cwd, [{ cancelled: false }]);
+		const startPromise = Promise.resolve(
+			command.handler("start disposed-shutdown-loop", context.ctx),
+		);
+		await waitFor(() => piHarness.sentUserMessages.length === 1);
+
+		context.disposeCommandContext();
+		await piHarness.fire("session_shutdown", { type: "session_shutdown" }, context.ctx);
+
+		await expect(startPromise).resolves.toBeUndefined();
+
+		const state = readLoopState(cwd, "disposed-shutdown-loop");
+		expect(state.status).toBe("paused");
+		expect(state.iteration).toBe(1);
+		expect(state.awaitingFinalize).toBe(false);
+		expect(Option.isNone(state.activeIterationSessionFile)).toBe(true);
+	});
+
 	it("pauses /ralph start when subagents are active before creating the next iteration", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
@@ -499,7 +554,11 @@ describe("ralph service behavior freeze", () => {
 		expect(state.iteration).toBe(0);
 		expect(state.awaitingFinalize).toBe(true);
 		expect(context.newSessionCalls).toHaveLength(0);
-		expect(context.notifications.some((entry) => entry.message.includes("subagents became active"))).toBe(true);
+		expect(
+			context.notifications.some((entry) =>
+				entry.message.includes("subagents became active"),
+			),
+		).toBe(true);
 	});
 
 	it("pauses /ralph resume when finalize is pending and subagents are still active", async () => {
@@ -507,7 +566,12 @@ describe("ralph service behavior freeze", () => {
 		tempDirs.push(cwd);
 
 		const context = makeContext(cwd, [{ cancelled: false }]);
-		const staleIterationSession = path.join(cwd, ".pi", "sessions", "stale-iteration.session.json");
+		const staleIterationSession = path.join(
+			cwd,
+			".pi",
+			"sessions",
+			"stale-iteration.session.json",
+		);
 		writeLoopState(cwd, "blocked-on-resume", {
 			controllerSessionFile: context.getSessionFile(),
 			activeIterationSessionFile: staleIterationSession,
@@ -533,7 +597,11 @@ describe("ralph service behavior freeze", () => {
 		expect(Option.isNone(state.activeIterationSessionFile)).toBe(true);
 		expect(context.newSessionCalls).toHaveLength(0);
 		expect(context.switchSessionCalls).toHaveLength(0);
-		expect(context.notifications.some((entry) => entry.message.includes("subagents are still active"))).toBe(true);
+		expect(
+			context.notifications.some((entry) =>
+				entry.message.includes("subagents are still active"),
+			),
+		).toBe(true);
 	});
 
 	it("blocks ralph_done advancement while subagents are active", async () => {
