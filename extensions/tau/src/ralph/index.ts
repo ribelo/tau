@@ -66,6 +66,25 @@ const STATUS_ICONS: Record<LoopStatus, string> = {
 	completed: "✓",
 };
 
+function isMaxIterationsReached(loop: Pick<LoopState, "status" | "iteration" | "maxIterations">): boolean {
+	return loop.status === "paused" && loop.maxIterations > 0 && loop.iteration >= loop.maxIterations;
+}
+
+function describeLoopStatus(
+	loop: Pick<LoopState, "status" | "iteration" | "maxIterations">,
+): { readonly icon: string; readonly label: string } {
+	if (isMaxIterationsReached(loop)) {
+		return {
+			icon: "⚠",
+			label: "max iterations reached",
+		};
+	}
+	return {
+		icon: STATUS_ICONS[loop.status],
+		label: loop.status,
+	};
+}
+
 function persistedStateFailureMessage(error: RalphContractValidationError): string {
 	return `${INVALID_STATE_HINT} (${error.entity})\nProblem: ${error.reason}`;
 }
@@ -104,10 +123,15 @@ function sessionFileFromContext(ctx: Pick<ExtensionContext, "sessionManager">): 
 }
 
 function formatLoop(loop: LoopState): string {
-	const status = `${STATUS_ICONS[loop.status]} ${loop.status}`;
+	const status = describeLoopStatus(loop);
 	const iter = loop.maxIterations > 0 ? `${loop.iteration}/${loop.maxIterations}` : `${loop.iteration}`;
-	return `${loop.name}: ${status} (iteration ${iter})`;
+	return `${loop.name}: ${status.icon} ${status.label} (iteration ${iter})`;
 }
+
+type ArgsParseFailure = {
+	readonly ok: false;
+	readonly error: string;
+};
 
 type RalphStartArgs = {
 	readonly name: string;
@@ -122,12 +146,21 @@ type RalphStartArgsParseResult =
 			readonly ok: true;
 			readonly value: RalphStartArgs;
 	  }
-	| {
-			readonly ok: false;
-			readonly error: string;
-	  };
+	| ArgsParseFailure;
 
-function parseNonNegativeIntegerOption(option: string, rawValue: string): RalphStartArgsParseResult | number {
+type RalphResumeArgs = {
+	readonly name: string;
+	readonly maxIterations: Option.Option<number>;
+};
+
+type RalphResumeArgsParseResult =
+	| {
+			readonly ok: true;
+			readonly value: RalphResumeArgs;
+	  }
+	| ArgsParseFailure;
+
+function parseNonNegativeIntegerOption(option: string, rawValue: string): ArgsParseFailure | number {
 	const value = Number.parseInt(rawValue, 10);
 	if (!Number.isInteger(value) || value < 0) {
 		return {
@@ -205,6 +238,74 @@ function parseArgs(argsStr: string): RalphStartArgsParseResult {
 				error: `unexpected extra argument "${positional}"`,
 			};
 		}
+	}
+
+	return {
+		ok: true,
+		value: result,
+	};
+}
+
+function parseResumeArgs(argsStr: string): RalphResumeArgsParseResult {
+	const tokens = argsStr.match(/(?:[^\s"]+|"[^"]*")+/g) ?? [];
+	const result: {
+		name: string;
+		maxIterations: Option.Option<number>;
+	} = {
+		name: "",
+		maxIterations: Option.none(),
+	};
+
+	for (let i = 0; i < tokens.length; i++) {
+		const token = tokens[i]!;
+		if (token.startsWith("--")) {
+			const equalsIndex = token.indexOf("=");
+			const option = equalsIndex === -1 ? token : token.slice(0, equalsIndex);
+			const inlineValue = equalsIndex === -1 ? undefined : token.slice(equalsIndex + 1);
+			const next = tokens[i + 1];
+			const rawValue = inlineValue ?? next;
+			if (rawValue === undefined) {
+				return {
+					ok: false,
+					error: `missing value for ${option}`,
+				};
+			}
+
+			if (option !== "--max-iterations") {
+				return {
+					ok: false,
+					error: `unknown option "${option}"`,
+				};
+			}
+
+			const parsed = parseNonNegativeIntegerOption(option, rawValue);
+			if (typeof parsed !== "number") {
+				return parsed;
+			}
+			result.maxIterations = Option.some(parsed);
+
+			if (inlineValue === undefined) {
+				i++;
+			}
+			continue;
+		}
+
+		const positional = token.replace(/^"|"$/g, "");
+		if (!result.name) {
+			result.name = positional;
+		} else {
+			return {
+				ok: false,
+				error: `unexpected extra argument "${positional}"`,
+			};
+		}
+	}
+
+	if (!result.name) {
+		return {
+			ok: false,
+			error: "missing loop name",
+		};
 	}
 
 	return {
@@ -336,7 +437,7 @@ Commands:
   /ralph start <name|path> [options]  Start a new loop
   /ralph pause                        Pause current loop
   /ralph stop                         End active loop (idle only)
-  /ralph resume <name>                Resume a paused loop
+  /ralph resume <name> [options]      Resume a paused loop
   /ralph status                       Show all loops
   /ralph cancel <name>                Delete loop state
   /ralph archive <name>               Move loop to archive
@@ -347,7 +448,7 @@ Commands:
 Options:
   --items-per-iteration N  Suggest N items per turn (prompt hint)
   --reflect-every N        Reflect every N iterations
-  --max-iterations N       Stop after N iterations (default 50)
+  --max-iterations N       Stop after N iterations (default 50). On resume, raise the cap in place.
 
 To pause: press ESC or run /ralph pause
 To stop: press ESC to interrupt, then run /ralph stop when idle
@@ -356,7 +457,8 @@ Examples:
   /ralph create "refactor auth retry flow"
   /ralph create foo-31z
   /ralph start my-feature
-  /ralph start review --items-per-iteration 5 --reflect-every 10`;
+  /ralph start review --items-per-iteration 5 --reflect-every 10
+  /ralph resume review --max-iterations 100`;
 
 type RalphUiContext = Pick<ExtensionContext, "hasUI" | "ui" | "sessionManager">;
 
@@ -456,13 +558,14 @@ export default function initRalph(
 
 		const { theme } = ctx.ui;
 		const maxStr = state.maxIterations > 0 ? `/${state.maxIterations}` : "";
+		const status = describeLoopStatus(state);
 
 		ctx.ui.setStatus("ralph", theme.fg("accent", `🔄 ${state.name} (${state.iteration}${maxStr})`));
 
 		const lines = [
 			theme.fg("accent", theme.bold("Ralph Wiggum")),
 			theme.fg("muted", `Loop: ${state.name}`),
-			theme.fg("dim", `Status: ${STATUS_ICONS[state.status]} ${state.status}`),
+			theme.fg("dim", `Status: ${status.icon} ${status.label}`),
 			theme.fg("dim", `Iteration: ${state.iteration}${maxStr}`),
 			theme.fg("dim", `Task: ${state.taskFile}`),
 		];
@@ -626,8 +729,15 @@ export default function initRalph(
 						let stopped: RalphStopLoopResult;
 						if (scopedLoop?.status === "paused") {
 							await withRalph((ralph) => ralph.syncCurrentLoopFromSession(ctx.cwd, sessionFile));
+							const resumeMaxIterations =
+								scopedLoop.maxIterations > 0 && scopedLoop.iteration >= scopedLoop.maxIterations
+									? Option.some(scopedLoop.iteration + 1)
+									: Option.none<number>();
 							const resumed = await withRalph((ralph) =>
-								ralph.resumeLoopState(ctx.cwd, scopedLoop.name),
+								ralph.resumeLoopState(ctx.cwd, {
+									loopName: scopedLoop.name,
+									maxIterations: resumeMaxIterations,
+								}),
 							);
 							stopped = resumed.status === "resumed"
 								? await withRalph((ralph) => ralph.stopActiveLoop(ctx.cwd))
@@ -657,14 +767,22 @@ export default function initRalph(
 					}
 
 					case "resume": {
-						const loopName = rest.trim();
-						if (!loopName) {
-							ctx.ui.notify("Usage: /ralph resume <name>", "warning");
+						const parsed = parseResumeArgs(rest);
+						if (!parsed.ok) {
+							if (parsed.error === "missing loop name") {
+								ctx.ui.notify("Usage: /ralph resume <name> [--max-iterations N]", "warning");
+								return;
+							}
+							ctx.ui.notify(`Invalid Ralph resume arguments: ${parsed.error}`, "warning");
 							return;
 						}
 
+						const loopName = parsed.value.name;
 						const resumed = await withRalph((ralph) =>
-							ralph.resumeLoopState(ctx.cwd, loopName),
+							ralph.resumeLoopState(ctx.cwd, {
+								loopName,
+								maxIterations: parsed.value.maxIterations,
+							}),
 						);
 						if (resumed.status === "not_found") {
 							ctx.ui.notify(`Loop "${loopName}" not found`, "error");
@@ -675,6 +793,21 @@ export default function initRalph(
 								`Loop "${loopName}" is completed. Use /ralph start ${loopName} to restart`,
 								"warning",
 							);
+							return;
+						}
+						if (resumed.status === "max_iterations_too_low") {
+							ctx.ui.notify(
+								`Loop "${loopName}" is at iteration ${resumed.iteration}. --max-iterations must be greater than ${resumed.iteration} (got ${resumed.requestedMaxIterations}).`,
+								"warning",
+							);
+							return;
+						}
+						if (resumed.status === "max_iterations_reached") {
+							ctx.ui.notify(
+								`Loop "${loopName}" reached max iterations (${resumed.iteration}/${resumed.maxIterations}). Resume with /ralph resume ${loopName} --max-iterations ${resumed.iteration + 1} (or higher).`,
+								"warning",
+							);
+							await updateUI(ctx.cwd, ctx);
 							return;
 						}
 

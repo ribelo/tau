@@ -375,6 +375,183 @@ describe("ralph store behavior freeze", () => {
 		).toBe(true);
 	});
 
+	it("/ralph resume warns when the loop is paused at the max-iterations cap", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const notifications: Notifications = [];
+		const { pi, commands } = makePiStub();
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(pi, ralphRuntime.run);
+
+		const command = commands.get("ralph");
+		expect(command).toBeDefined();
+
+		fs.mkdirSync(path.join(cwd, ".pi", "loops", "state"), { recursive: true });
+		fs.writeFileSync(
+			statePath(cwd, "limit-loop"),
+			encodeStateForStorage(
+				decodeLoopStateSync({
+					name: "limit-loop",
+					taskFile: path.join(".pi", "loops", "tasks", "limit-loop.md"),
+					iteration: 12,
+					maxIterations: 12,
+					itemsPerIteration: 0,
+					reflectEvery: 0,
+					reflectInstructions: "reflect",
+					status: "paused",
+					startedAt: "2026-01-01T00:00:00.000Z",
+					completedAt: null,
+					lastReflectionAt: 0,
+					controllerSessionFile: path.join(cwd, ".pi", "sessions", "controller.session.json"),
+					activeIterationSessionFile: null,
+					advanceRequestedAt: null,
+					awaitingFinalize: false,
+					executionProfile: makeExecutionProfile(),
+				}),
+			),
+			"utf-8",
+		);
+
+		const context = makeContext(cwd, notifications);
+		await command?.handler("resume limit-loop", context);
+
+		const state = readState(cwd, "limit-loop");
+		expect(state.status).toBe("paused");
+		expect(state.iteration).toBe(12);
+		expect(state.maxIterations).toBe(12);
+		expect(
+			notifications.some((entry) =>
+				entry.message.includes(
+					'Loop "limit-loop" reached max iterations (12/12). Resume with /ralph resume limit-loop --max-iterations 13 (or higher).',
+				),
+			),
+		).toBe(true);
+	});
+
+	it("/ralph resume --max-iterations raises the cap in place without resetting iteration", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const notifications: Notifications = [];
+		const { pi, commands } = makePiStub();
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(pi, ralphRuntime.run);
+
+		const command = commands.get("ralph");
+		expect(command).toBeDefined();
+
+		fs.mkdirSync(path.join(cwd, ".pi", "loops", "state"), { recursive: true });
+		fs.writeFileSync(
+			statePath(cwd, "limit-loop"),
+			encodeStateForStorage(
+				decodeLoopStateSync({
+					name: "limit-loop",
+					taskFile: path.join(".pi", "loops", "tasks", "limit-loop.md"),
+					iteration: 12,
+					maxIterations: 12,
+					itemsPerIteration: 0,
+					reflectEvery: 0,
+					reflectInstructions: "reflect",
+					status: "paused",
+					startedAt: "2026-01-01T00:00:00.000Z",
+					completedAt: null,
+					lastReflectionAt: 0,
+					controllerSessionFile: path.join(cwd, ".pi", "sessions", "controller.session.json"),
+					activeIterationSessionFile: null,
+					advanceRequestedAt: null,
+					awaitingFinalize: false,
+					executionProfile: makeExecutionProfile(),
+				}),
+			),
+			"utf-8",
+		);
+
+		const context = makeContext(cwd, notifications);
+		await command?.handler("resume limit-loop --max-iterations 24", context);
+
+		const state = readState(cwd, "limit-loop");
+		expect(state.status).toBe("paused");
+		expect(state.iteration).toBe(12);
+		expect(state.maxIterations).toBe(24);
+		expect(notifications.some((entry) => entry.message.includes("Resuming: limit-loop"))).toBe(true);
+	});
+
+	it("/ralph status distinguishes max-iterations stop from completed loops", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const notifications: Notifications = [];
+		const { pi, commands } = makePiStub();
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(pi, ralphRuntime.run);
+
+		const command = commands.get("ralph");
+		expect(command).toBeDefined();
+
+		fs.mkdirSync(path.join(cwd, ".pi", "loops", "state"), { recursive: true });
+		fs.writeFileSync(
+			statePath(cwd, "limit-loop"),
+			encodeStateForStorage(
+				decodeLoopStateSync({
+					name: "limit-loop",
+					taskFile: path.join(".pi", "loops", "tasks", "limit-loop.md"),
+					iteration: 12,
+					maxIterations: 12,
+					itemsPerIteration: 0,
+					reflectEvery: 0,
+					reflectInstructions: "reflect",
+					status: "paused",
+					startedAt: "2026-01-01T00:00:00.000Z",
+					completedAt: null,
+					lastReflectionAt: 0,
+					controllerSessionFile: path.join(cwd, ".pi", "sessions", "controller.session.json"),
+					activeIterationSessionFile: null,
+					advanceRequestedAt: null,
+					awaitingFinalize: false,
+					executionProfile: makeExecutionProfile(),
+				}),
+			),
+			"utf-8",
+		);
+
+		fs.writeFileSync(
+			statePath(cwd, "done-loop"),
+			encodeStateForStorage(
+				decodeLoopStateSync({
+					name: "done-loop",
+					taskFile: path.join(".pi", "loops", "tasks", "done-loop.md"),
+					iteration: 9,
+					maxIterations: 12,
+					itemsPerIteration: 0,
+					reflectEvery: 0,
+					reflectInstructions: "reflect",
+					status: "completed",
+					startedAt: "2026-01-01T00:00:00.000Z",
+					completedAt: "2026-01-01T02:00:00.000Z",
+					lastReflectionAt: 0,
+					controllerSessionFile: path.join(cwd, ".pi", "sessions", "controller.session.json"),
+					activeIterationSessionFile: null,
+					advanceRequestedAt: null,
+					awaitingFinalize: false,
+					executionProfile: makeExecutionProfile(),
+				}),
+			),
+			"utf-8",
+		);
+
+		const context = makeContext(cwd, notifications);
+		await command?.handler("status", context);
+
+		const statusMessage =
+			notifications.find((entry) => entry.message.startsWith("Ralph loops:\n"))?.message ?? "";
+		expect(statusMessage).toContain("limit-loop: ⚠ max iterations reached (iteration 12/12)");
+		expect(statusMessage).toContain("done-loop: ✓ completed (iteration 9/12)");
+	});
+
 	it("/ralph create asks the current model to draft a backlog-based task file", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
@@ -603,7 +780,10 @@ describe("ralph store behavior freeze", () => {
 		await ralphRuntime.run(
 			Effect.gen(function* () {
 				const ralph = yield* Ralph;
-				yield* ralph.resumeLoopState(cwd, "pausable-loop");
+				yield* ralph.resumeLoopState(cwd, {
+					loopName: "pausable-loop",
+					maxIterations: Option.none(),
+				});
 			})
 		);
 		await command?.handler("stop", context);

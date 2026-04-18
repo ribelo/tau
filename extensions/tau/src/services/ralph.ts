@@ -133,7 +133,24 @@ export type RalphResumeLoopStateResult =
 	  }
 	| {
 			readonly status: "completed";
+	  }
+	| {
+			readonly status: "max_iterations_reached";
+			readonly loopName: string;
+			readonly iteration: number;
+			readonly maxIterations: number;
+	  }
+	| {
+			readonly status: "max_iterations_too_low";
+			readonly loopName: string;
+			readonly iteration: number;
+			readonly requestedMaxIterations: number;
 	  };
+
+export type RalphResumeLoopInput = {
+	readonly loopName: string;
+	readonly maxIterations: Option.Option<number>;
+};
 
 export type RalphCancelLoopResult =
 	| {
@@ -332,7 +349,7 @@ export interface RalphService {
 	) => Effect.Effect<RalphStopLoopResult, RalphContractValidationError, never>;
 	readonly resumeLoopState: (
 		cwd: string,
-		loopName: string,
+		input: RalphResumeLoopInput,
 	) => Effect.Effect<RalphResumeLoopStateResult, RalphContractValidationError, never>;
 	readonly cancelLoop: (
 		cwd: string,
@@ -394,6 +411,9 @@ const stoppedWithoutMessage: LoopStepResult = {
 
 const hasCompletionMarker = (event: AgentEndEvent): boolean =>
 	extractLastAssistantText(event).includes(COMPLETE_MARKER);
+
+const isAtIterationLimit = (state: LoopState): boolean =>
+	state.maxIterations > 0 && state.iteration >= state.maxIterations;
 
 export const RalphLive = (config: RalphLiveConfig) =>
 	Layer.effect(
@@ -707,7 +727,8 @@ export const RalphLive = (config: RalphLiveConfig) =>
 
 			const resumeLoopState: RalphService["resumeLoopState"] = Effect.fn(
 				"Ralph.resumeLoopState",
-			)(function* (cwd, loopName) {
+			)(function* (cwd, input) {
+				const loopName = input.loopName;
 				const stateOption = yield* repo.loadState(cwd, loopName);
 				if (Option.isNone(stateOption)) {
 					return {
@@ -715,12 +736,46 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					} satisfies RalphResumeLoopStateResult;
 				}
 
-				const state = stateOption.value;
-				if (state.status === "completed") {
+				const initialState = stateOption.value;
+				if (initialState.status === "completed") {
 					return {
 						status: "completed",
 					} satisfies RalphResumeLoopStateResult;
 				}
+
+				let state = initialState;
+				const requestedMaxIterations = Option.getOrUndefined(input.maxIterations);
+				if (requestedMaxIterations !== undefined) {
+					if (
+						requestedMaxIterations > 0 &&
+						requestedMaxIterations <= initialState.iteration
+					) {
+						return {
+							status: "max_iterations_too_low",
+							loopName,
+							iteration: initialState.iteration,
+							requestedMaxIterations,
+						} satisfies RalphResumeLoopStateResult;
+					}
+
+					if (requestedMaxIterations !== initialState.maxIterations) {
+						state = {
+							...initialState,
+							maxIterations: requestedMaxIterations,
+						};
+						yield* repo.saveState(cwd, state);
+					}
+				}
+
+				if (isAtIterationLimit(state)) {
+					return {
+						status: "max_iterations_reached",
+						loopName,
+						iteration: state.iteration,
+						maxIterations: state.maxIterations,
+					} satisfies RalphResumeLoopStateResult;
+				}
+
 				const controllerSessionFile = Option.getOrUndefined(state.controllerSessionFile);
 				if (controllerSessionFile === undefined) {
 					return yield* Effect.fail(
@@ -931,12 +986,15 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					}
 
 					const state = stateOption.value;
-					if (state.maxIterations > 0 && state.iteration >= state.maxIterations) {
-						return yield* completeLoop(
-							boundary.cwd,
-							state,
-							`───────────────────────────────────────────────────────────────────────\n⚠️ RALPH LOOP STOPPED: ${state.name} | Max iterations (${state.maxIterations}) reached\n───────────────────────────────────────────────────────────────────────`,
-						);
+					if (isAtIterationLimit(state)) {
+						yield* markLoopPaused(boundary.cwd, state);
+						return {
+							_tag: "stopped",
+							message: Option.none(),
+							banner: Option.some(
+								`───────────────────────────────────────────────────────────────────────\n⚠️ RALPH LOOP STOPPED: ${state.name} | Max iterations (${state.maxIterations}) reached\n───────────────────────────────────────────────────────────────────────`,
+							),
+						} satisfies LoopStepResult;
 					}
 
 					const controllerSession = Option.getOrUndefined(state.controllerSessionFile);

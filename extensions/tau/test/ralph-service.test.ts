@@ -443,9 +443,10 @@ describe("ralph service behavior freeze", () => {
 		await startPromise;
 
 		const finalState = readLoopState(cwd, "handled-error-loop");
-		expect(finalState.status).toBe("completed");
+		expect(finalState.status).toBe("paused");
 		expect(finalState.iteration).toBe(1);
 		expect(finalState.awaitingFinalize).toBe(false);
+		expect(Option.isNone(finalState.completedAt)).toBe(true);
 		expect(context.newSessionCalls).toHaveLength(1);
 	});
 

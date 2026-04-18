@@ -360,7 +360,10 @@ describe("ralph core service", () => {
 
 				const paused = yield* ralph.pauseCurrentLoop(cwd);
 				const pausedState = yield* repo.loadState(cwd, "current-loop");
-				const resumed = yield* ralph.resumeLoopState(cwd, "current-loop");
+				const resumed = yield* ralph.resumeLoopState(cwd, {
+					loopName: "current-loop",
+					maxIterations: Option.none(),
+				});
 				const stopped = yield* ralph.stopActiveLoop(cwd);
 				const stoppedState = yield* repo.loadState(cwd, "current-loop");
 
