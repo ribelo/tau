@@ -175,4 +175,51 @@ describe("memory renderer", () => {
 		expect(rendered).toContain(`id      : ${entry.id}`);
 		expect(rendered).toContain("scope   : user");
 	});
+
+	it("shows the full stored content for successful writes instead of only a preview", () => {
+		const entry = createMemoryEntry("User wants exact answers.\nNo approximations.", {
+			scope: "user",
+			type: "fact",
+			summary: "User wants exact answers.",
+		});
+		const rendered = renderToolResult({
+			content: [
+				{
+					type: "text",
+					text: [
+						"Added entry to user memory.",
+						"",
+						`id: ${entry.id}`,
+						`scope: ${entry.scope}`,
+						`type: ${entry.type}`,
+						`summary: ${entry.summary}`,
+						`chars: ${entry.content.length}`,
+						"content:",
+						entry.content,
+					].join("\n"),
+				},
+			],
+			details: {
+				success: true,
+				action: "add",
+				scope: "user",
+				entry,
+				bucket: {
+					bucket: "user",
+					path: "/home/test/.pi/agent/tau/memories/USER.jsonl",
+					entries: [entry],
+					chars: entry.content.length,
+					limitChars: 25000,
+					usagePercent: 1,
+				},
+			},
+		});
+
+		expect(rendered).toContain("memory add");
+		expect(rendered).toContain("summary : User wants exact answers.");
+		expect(rendered).toContain("content:");
+		expect(rendered).toContain("User wants exact answers.");
+		expect(rendered).toContain("No approximations.");
+		expect(rendered).not.toContain("preview :");
+	});
 });

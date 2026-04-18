@@ -46,7 +46,7 @@ function previewContent(value: string, maxChars = 96): string {
 	return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
 }
 
-function renderCallContent(value: string, theme: Theme): string {
+function renderContentBlock(value: string, theme: Theme): string {
 	const lines = value.replace(/\r\n?/gu, "\n").split("\n");
 	return [`${theme.fg("muted", "content:")}`, ...lines.map((line) => `  ${theme.fg("toolOutput", line)}`)].join("\n");
 }
@@ -186,12 +186,12 @@ function renderSuccess(details: MemoryToolDetails, message: string, theme: Theme
 	if (entry) {
 		out.push(`\n  ${theme.fg("muted", "id".padEnd(8))}: ${theme.fg("accent", entry.id)}`);
 		out.push(`\n  ${theme.fg("muted", "scope".padEnd(8))}: ${scopeText(resolvedScope, theme)}`);
+		out.push(`\n  ${theme.fg("muted", "type".padEnd(8))}: ${theme.fg("toolOutput", entry.type)}`);
+		out.push(`\n  ${theme.fg("muted", "summary".padEnd(8))}: ${theme.fg("toolOutput", entry.summary)}`);
 		out.push(
 			`\n  ${theme.fg("muted", "size".padEnd(8))}: ${theme.fg("toolOutput", `${entry.content.length} chars`)}`,
 		);
-		out.push(
-			`\n  ${theme.fg("muted", "preview".padEnd(8))}: ${theme.fg("toolOutput", previewContent(entry.content))}`,
-		);
+		out.push(`\n${renderContentBlock(entry.content, theme)}`);
 	}
 
 	if (bucket) {
@@ -221,7 +221,7 @@ function renderFailure(details: MemoryToolDetails, message: string, theme: Theme
 	}
 	if (details.submittedContent) {
 		out += `\n  ${theme.fg("muted", "chars".padEnd(8))}: ${theme.fg("toolOutput", `${details.submittedContent.length}`)}`;
-		out += `\n${renderCallContent(details.submittedContent, theme)}`;
+		out += `\n${renderContentBlock(details.submittedContent, theme)}`;
 	}
 	out += `\n${theme.fg("error", message || "Memory operation failed")}`;
 	return new Text(out, 0, 0);
