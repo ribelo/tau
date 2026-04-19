@@ -9,11 +9,13 @@ import {
 	truncateHead,
 } from "@mariozechner/pi-coding-agent";
 import type { AutocompleteProvider } from "@mariozechner/pi-tui";
-import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { SkillMarkerAutocompleteProvider, type SkillCandidate } from "./autocomplete.js";
+import { findNearestWorkspaceRoot } from "../shared/discovery.js";
 
 // Re-export for use by editor
 export { shouldAutoTriggerSkillAutocomplete } from "./autocomplete.js";
@@ -120,6 +122,50 @@ export function createSkillMarkerRuntime(): SkillMarkerRuntime {
 	return { registry: new SkillRegistry() };
 }
 
+function pushUniquePath(paths: string[], candidate: string): void {
+	const normalized = resolve(candidate);
+	if (!paths.includes(normalized)) {
+		paths.push(normalized);
+	}
+}
+
+function getAncestorAgentsSkillDirs(cwd: string, stopAt: string): ReadonlyArray<string> {
+	const roots: string[] = [];
+	const resolvedStopAt = resolve(stopAt);
+	let current = resolve(cwd);
+	for (;;) {
+		pushUniquePath(roots, join(current, ".agents", "skills"));
+		if (current === resolvedStopAt) {
+			break;
+		}
+		const parent = dirname(current);
+		if (parent === current) {
+			break;
+		}
+		current = parent;
+	}
+	return roots;
+}
+
+function getExtraSkillPaths(cwd: string, agentDir: string): ReadonlyArray<string> {
+	const paths: string[] = [];
+	const resolvedCwd = resolve(cwd);
+	const workspaceRoot = findNearestWorkspaceRoot(resolvedCwd);
+
+	pushUniquePath(paths, join(resolvedCwd, ".pi", "skills"));
+	pushUniquePath(paths, join(workspaceRoot, ".pi", "skills"));
+	pushUniquePath(paths, join(resolvedCwd, "skills"));
+	pushUniquePath(paths, join(workspaceRoot, "skills"));
+	for (const root of getAncestorAgentsSkillDirs(resolvedCwd, workspaceRoot)) {
+		pushUniquePath(paths, root);
+	}
+	pushUniquePath(paths, TAU_SKILLS_DIR);
+	pushUniquePath(paths, join(agentDir, "skills"));
+	pushUniquePath(paths, join(homedir(), ".agents", "skills"));
+
+	return paths;
+}
+
 function collectMentionedSkills(prompt: string): string[] {
 	const out: string[] = [];
 	const seen = new Set<string>();
@@ -150,7 +196,12 @@ function refreshFromActiveCommands(pi: ExtensionAPI, runtime: SkillMarkerRuntime
 
 export async function reloadSkills(runtime: SkillMarkerRuntime, cwd: string) {
 	const agentDir = getAgentDir();
-	const { skills } = loadSkills({ cwd, agentDir, skillPaths: [TAU_SKILLS_DIR] });
+	const { skills } = loadSkills({
+		cwd,
+		agentDir,
+		includeDefaults: false,
+		skillPaths: [...getExtraSkillPaths(cwd, agentDir)],
+	});
 	runtime.registry.refresh(
 		skills.map((skill) => ({
 			name: skill.name,
@@ -171,7 +222,9 @@ export function wrapAutocompleteProvider(
 	provider: AutocompleteProvider,
 ): AutocompleteProvider {
 	if (!runtime.wrapper) {
-		runtime.wrapper = new SkillMarkerAutocompleteProvider(provider, () => runtime.registry.getCandidates());
+		runtime.wrapper = new SkillMarkerAutocompleteProvider(provider, () =>
+			runtime.registry.getCandidates(),
+		);
 	} else {
 		runtime.wrapper.setBase(provider);
 	}

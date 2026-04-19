@@ -9,10 +9,7 @@ import { Footer, FooterLive } from "./services/footer.js";
 import { PromptModes, PromptModesLive } from "./services/prompt-modes.js";
 import { Persistence, PersistenceLive } from "./services/persistence.js";
 import { ExecutionState, ExecutionStateLive } from "./services/execution-state.js";
-import {
-	ExecutionRuntime,
-	ExecutionRuntimeLive,
-} from "./services/execution-runtime.js";
+import { ExecutionRuntime, ExecutionRuntimeLive } from "./services/execution-runtime.js";
 import { CuratedMemory, CuratedMemoryLive } from "./services/curated-memory.js";
 import { Ralph, RalphLive } from "./services/ralph.js";
 import { SkillManager, SkillManagerLive } from "./services/skill-manager.js";
@@ -39,10 +36,7 @@ import { isAgentDisabledForCwd } from "./agents-menu/index.js";
 import { AgentConfig, AgentControl } from "./agent/services.js";
 import { AgentControlLive } from "./agent/control.js";
 import { AgentManagerLive } from "./agent/manager.js";
-import {
-	AgentRuntimeBridgeLive,
-	type AgentRuntimeBridgeService,
-} from "./agent/runtime.js";
+import { AgentRuntimeBridgeLive, type AgentRuntimeBridgeService } from "./agent/runtime.js";
 import { AgentRegistry } from "./agent/agent-registry.js";
 import { buildToolDescription } from "./agent/tool.js";
 import { createSkillMarkerRuntime } from "./skill-marker/index.js";
@@ -72,17 +66,13 @@ const FooterLayer = FooterLive.pipe(
 	Layer.provide(SandboxLayer),
 );
 const ExecutionStateLayer = ExecutionStateLive.pipe(Layer.provide(PersistenceLayer));
-const ExecutionRuntimeLayer = ExecutionRuntimeLive.pipe(
-	Layer.provide(ExecutionStateLayer),
-);
-const PromptModesLayer = PromptModesLive.pipe(
-	Layer.provide(ExecutionRuntimeLayer),
-);
+const ExecutionRuntimeLayer = ExecutionRuntimeLive.pipe(Layer.provide(ExecutionStateLayer));
+const PromptModesLayer = PromptModesLive.pipe(Layer.provide(ExecutionRuntimeLayer));
 const CuratedMemoryLayer = CuratedMemoryLive;
 const DreamSchedulerLayer = DreamSchedulerLive({ loadConfig: loadDreamConfig });
-const skillMutationCallback: { current: () => void } = { current: () => {} };
+const skillMutationCallback: { current: (cwd: string) => void } = { current: () => {} };
 const SkillManagerLayer = SkillManagerLive({
-	onSkillMutated: () => skillMutationCallback.current(),
+	onSkillMutated: (cwd) => skillMutationCallback.current(cwd),
 });
 const AgentConfigLive = Layer.succeed(
 	AgentConfig,
@@ -185,12 +175,14 @@ export const startTau = (pi: ExtensionAPI) => {
 			return runtime.runPromise(effect);
 		},
 		closeAll: () =>
-			agentRuntimeBridge.runPromise(
-				Effect.gen(function* () {
-					const control = yield* AgentControl;
-					yield* control.closeAll;
-				}),
-			).then(() => undefined),
+			agentRuntimeBridge
+				.runPromise(
+					Effect.gen(function* () {
+						const control = yield* AgentControl;
+						yield* control.closeAll;
+					}),
+				)
+				.then(() => undefined),
 	};
 
 	const layer = createMainLayer(agentRuntimeBridge).pipe(Layer.provide(PiAPILive(pi)));
@@ -211,8 +203,7 @@ export const startTau = (pi: ExtensionAPI) => {
 		currentRuntime.runPromise(effect);
 	const runAutoresearch = <A, E>(
 		effect: Effect.Effect<A, E, LoopEngine | Sandbox | PromptModes>,
-	) =>
-		currentRuntime.runPromise(effect);
+	) => currentRuntime.runPromise(effect);
 
 	const startup = Effect.gen(function* () {
 		const { default: initBacklog } = yield* Effect.promise(() => import("./backlog/tool.js"));
@@ -222,14 +213,14 @@ export const startTau = (pi: ExtensionAPI) => {
 		const sandbox = yield* Sandbox;
 		const footer = yield* Footer;
 		const curatedMemory = yield* CuratedMemory;
-			const skillMarker = createSkillMarkerRuntime();
-			skillMutationCallback.current = () => {
-				void reloadSkills(skillMarker, process.cwd());
-			};
-			const persistedAccess = {
-				getSnapshot: persistence.getSnapshot,
-				update: persistence.update,
-			};
+		const skillMarker = createSkillMarkerRuntime();
+		skillMutationCallback.current = (cwd) => {
+			void reloadSkills(skillMarker, cwd);
+		};
+		const persistedAccess = {
+			getSnapshot: persistence.getSnapshot,
+			update: persistence.update,
+		};
 
 		yield* persistence.setup;
 		yield* executionState.setup;
@@ -237,46 +228,44 @@ export const startTau = (pi: ExtensionAPI) => {
 		yield* sandbox.setup;
 		yield* footer.setup;
 		yield* curatedMemory.setup;
-			yield* Effect.sync(() => {
-				initBacklog(pi);
-				initExa(pi);
-				initTerminalPrompt(pi, persistedAccess);
-				initWorkedFor(pi, persistedAccess);
-				initStatus(pi, persistedAccess);
-				initCommit(pi);
-				initEditor(pi, {
-					getSnapshot: persistence.getSnapshot,
-					skillMarker,
-				});
-				initSkillMarker(pi, skillMarker);
-				initMemory(pi, runCuratedMemory);
-				initDream(pi, runDream);
-				initSkillManage(pi, runSkillManager);
-				initNudge(pi);
-				initRequestUserInput(pi);
-				initRalph(pi, runRalph);
-				initAutoresearch(pi, runAutoresearch);
-				initForge(pi);
-				initThreadTools(pi);
+		yield* Effect.sync(() => {
+			initBacklog(pi);
+			initExa(pi);
+			initTerminalPrompt(pi, persistedAccess);
+			initWorkedFor(pi, persistedAccess);
+			initStatus(pi, persistedAccess);
+			initCommit(pi);
+			initEditor(pi, {
+				getSnapshot: persistence.getSnapshot,
+				skillMarker,
 			});
+			initSkillMarker(pi, skillMarker);
+			initMemory(pi, runCuratedMemory);
+			initDream(pi, runDream);
+			initSkillManage(pi, runSkillManager);
+			initNudge(pi);
+			initRequestUserInput(pi);
+			initRalph(pi, runRalph);
+			initAutoresearch(pi, runAutoresearch);
+			initForge(pi);
+			initThreadTools(pi);
+		});
 
-			const agentRegistry = yield* AgentRegistry.load(process.cwd());
-			const agentToolDescription = buildToolDescription(
-				agentRegistry,
-				undefined,
-				(name) => isAgentDisabledForCwd(process.cwd(), name),
-			);
-			yield* Effect.sync(() => {
-				const agentToolHandle = initAgent(pi, agentRuntimeBridge, agentToolDescription);
-				initAgentsMenu(pi, agentToolHandle);
-				pi.on("session_shutdown", async () => {
-					if (disposed) return;
-					disposed = true;
-					await Effect.runPromise(Fiber.interrupt(rootFiber));
-					await currentRuntime.dispose();
-					runtime = undefined;
-				});
+		const agentRegistry = yield* AgentRegistry.load(process.cwd());
+		const agentToolDescription = buildToolDescription(agentRegistry, undefined, (name) =>
+			isAgentDisabledForCwd(process.cwd(), name),
+		);
+		yield* Effect.sync(() => {
+			const agentToolHandle = initAgent(pi, agentRuntimeBridge, agentToolDescription);
+			initAgentsMenu(pi, agentToolHandle);
+			pi.on("session_shutdown", async () => {
+				if (disposed) return;
+				disposed = true;
+				await Effect.runPromise(Fiber.interrupt(rootFiber));
+				await currentRuntime.dispose();
+				runtime = undefined;
 			});
+		});
 	});
 
 	const program = Effect.scoped(

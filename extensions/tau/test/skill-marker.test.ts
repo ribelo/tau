@@ -9,13 +9,19 @@ import initSkillMarker, { createSkillMarkerRuntime } from "../src/skill-marker/i
 
 type EventHandler = (event: unknown, ctx: unknown) => unknown;
 
-function makePiStub(skillCommands: Array<{
-	readonly name: string;
-	readonly description: string;
-	readonly path: string;
-}>): {
+function makePiStub(
+	skillCommands: Array<{
+		readonly name: string;
+		readonly description: string;
+		readonly path: string;
+	}>,
+): {
 	readonly pi: ExtensionAPI;
-	readonly emit: (event: string, payload: unknown) => Promise<readonly unknown[]>;
+	readonly emit: (
+		event: string,
+		payload: unknown,
+		ctxOverrides?: { readonly cwd?: string },
+	) => Promise<readonly unknown[]>;
 } {
 	const eventHandlers = new Map<string, EventHandler[]>();
 
@@ -67,12 +73,12 @@ function makePiStub(skillCommands: Array<{
 
 	return {
 		pi,
-		emit: async (event, payload) => {
+		emit: async (event, payload, ctxOverrides) => {
 			const handlers = eventHandlers.get(event) ?? [];
 			return Promise.all(
 				handlers.map((handler) =>
 					handler(payload, {
-						cwd: process.cwd(),
+						cwd: ctxOverrides?.cwd ?? process.cwd(),
 						hasUI: false,
 					}),
 				),
@@ -86,7 +92,9 @@ describe("skill-marker", () => {
 
 	afterEach(async () => {
 		vi.unstubAllEnvs();
-		await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
+		await Promise.all(
+			tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })),
+		);
 	});
 
 	it("loads extension-discovered skills from the active skill command set", async () => {
@@ -155,6 +163,116 @@ describe("skill-marker", () => {
 			message: expect.objectContaining({
 				customType: "skill-marker",
 				content: expect.stringContaining("G0DM0D3 Jailbreaking Skill"),
+			}),
+		});
+	});
+
+	it("falls back to cwd/skills before skill commands are populated", async () => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "tau-skill-marker-project-"));
+		tempDirs.push(tempDir);
+
+		const workspace = path.join(tempDir, "workspace");
+		const skillDir = path.join(workspace, "skills", "wirkung");
+		const skillPath = path.join(skillDir, "SKILL.md");
+		await fs.mkdir(skillDir, { recursive: true });
+		await fs.writeFile(
+			skillPath,
+			[
+				"---",
+				"name: wirkung",
+				"description: local project skill",
+				"---",
+				"",
+				"# Wirkung",
+				"",
+				"local workspace instructions",
+			].join("\n"),
+			"utf8",
+		);
+
+		const tempHome = path.join(tempDir, "home");
+		await fs.mkdir(path.join(tempHome, ".pi", "agent", "skills"), { recursive: true });
+		vi.stubEnv("HOME", tempHome);
+
+		const { pi, emit } = makePiStub([]);
+		const runtime = createSkillMarkerRuntime();
+		initSkillMarker(pi, runtime);
+
+		const [result] = await emit(
+			"before_agent_start",
+			{ prompt: "please use $wirkung now" },
+			{ cwd: workspace },
+		);
+
+		expect(result).toEqual({
+			message: expect.objectContaining({
+				customType: "skill-marker",
+				content: expect.stringContaining("local workspace instructions"),
+			}),
+		});
+	});
+
+	it("prefers cwd/skills over global skills with the same name during fallback discovery", async () => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "tau-skill-marker-precedence-"));
+		tempDirs.push(tempDir);
+
+		const workspace = path.join(tempDir, "workspace");
+		const localSkillDir = path.join(workspace, "skills", "wirkung");
+		const localSkillPath = path.join(localSkillDir, "SKILL.md");
+		await fs.mkdir(localSkillDir, { recursive: true });
+		await fs.writeFile(
+			localSkillPath,
+			[
+				"---",
+				"name: wirkung",
+				"description: local project skill",
+				"---",
+				"",
+				"# Wirkung",
+				"",
+				"local workspace instructions",
+			].join("\n"),
+			"utf8",
+		);
+
+		const tempHome = path.join(tempDir, "home");
+		const globalSkillDir = path.join(tempHome, ".pi", "agent", "skills", "wirkung");
+		await fs.mkdir(globalSkillDir, { recursive: true });
+		await fs.writeFile(
+			path.join(globalSkillDir, "SKILL.md"),
+			[
+				"---",
+				"name: wirkung",
+				"description: global skill",
+				"---",
+				"",
+				"# Wirkung",
+				"",
+				"global instructions",
+			].join("\n"),
+			"utf8",
+		);
+		vi.stubEnv("HOME", tempHome);
+
+		const { pi, emit } = makePiStub([]);
+		const runtime = createSkillMarkerRuntime();
+		initSkillMarker(pi, runtime);
+
+		const [result] = await emit(
+			"before_agent_start",
+			{ prompt: "please use $wirkung now" },
+			{ cwd: workspace },
+		);
+
+		expect(result).toEqual({
+			message: expect.objectContaining({
+				customType: "skill-marker",
+				content: expect.stringContaining("local workspace instructions"),
+			}),
+		});
+		expect(result).toEqual({
+			message: expect.objectContaining({
+				content: expect.not.stringContaining("global instructions"),
 			}),
 		});
 	});
