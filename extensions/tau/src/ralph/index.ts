@@ -22,6 +22,7 @@ import {
 import { RalphContractValidationError } from "./errors.js";
 import { RALPH_TASKS_DIR } from "./paths.js";
 import { sanitizeLoopName, type LoopState, type LoopStatus } from "./schema.js";
+import { setToolEnabled } from "../shared/tool-activation.js";
 
 const INVALID_STATE_HINT =
 	"Ralph state is invalid and could not be decoded. Repair or remove invalid files under .pi/loops (or reset with /ralph nuke --yes).";
@@ -468,6 +469,8 @@ Examples:
   /ralph start review --items-per-iteration 5 --reflect-every 10
   /ralph resume review --max-iterations 100`;
 
+const RALPH_DONE_TOOL_NAME = "ralph_done";
+
 type RalphUiContext = Pick<ExtensionContext, "hasUI" | "ui" | "sessionManager">;
 
 export default function initRalph(
@@ -538,6 +541,44 @@ export default function initRalph(
 				});
 			}),
 	});
+
+	const syncRalphDoneTool = async (
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): Promise<void> => {
+		const sessionFile = sessionFileFromContext(ctx);
+		if (sessionFile === undefined) {
+			setToolEnabled(pi, RALPH_DONE_TOOL_NAME, false);
+			return;
+		}
+
+		const state = await withRalph((ralph) =>
+			ralph
+				.findLoopBySessionFile(ctx.cwd, sessionFile)
+				.pipe(Effect.map(Option.getOrUndefined)),
+		);
+
+		const enabled =
+			state !== undefined &&
+			state.status === "active" &&
+			Option.getOrUndefined(state.activeIterationSessionFile) === sessionFile;
+		setToolEnabled(pi, RALPH_DONE_TOOL_NAME, enabled);
+	};
+
+	const syncRalphDoneToolSafely = async (
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager" | "hasUI" | "ui">,
+	): Promise<void> => {
+		try {
+			await syncRalphDoneTool(ctx);
+		} catch (error) {
+			if (Option.isSome(handlePersistedStateFailure(error, ctx))) {
+				return;
+			}
+			if (isManagedRuntimeDisposedError(error)) {
+				return;
+			}
+			throw error;
+		}
+	};
 
 	const updateUI = async (cwd: string, ctx: RalphUiContext): Promise<void> => {
 		if (!ctx.hasUI) {
@@ -1027,6 +1068,8 @@ export default function initRalph(
 					return;
 				}
 				throw error;
+			} finally {
+				await syncRalphDoneToolSafely(ctx);
 			}
 		},
 	});
@@ -1131,6 +1174,7 @@ export default function initRalph(
 					ralph.recordIterationDone(ctx.cwd, sessionFileFromContext(ctx)),
 				);
 				await updateUI(ctx.cwd, ctx);
+				await syncRalphDoneToolSafely(ctx);
 				return {
 					content: [{ type: "text", text: result.text }],
 					details: {},
@@ -1167,10 +1211,13 @@ export default function initRalph(
 					.findLoopBySessionFile(ctx.cwd, sessionFile)
 					.pipe(Effect.map(Option.getOrUndefined)),
 			);
-			if (!state || state.status !== "active") {
-				return;
-			}
-			if (Option.getOrUndefined(state.activeIterationSessionFile) !== sessionFile) {
+			const inActiveIteration =
+				state !== undefined &&
+				state.status === "active" &&
+				Option.getOrUndefined(state.activeIterationSessionFile) === sessionFile;
+			setToolEnabled(pi, RALPH_DONE_TOOL_NAME, inActiveIteration);
+
+			if (!inActiveIteration || state === undefined) {
 				return;
 			}
 
@@ -1205,6 +1252,7 @@ export default function initRalph(
 				pi.sendUserMessage(result.banner.value);
 				await updateUI(ctx.cwd, ctx);
 			}
+			await syncRalphDoneToolSafely(ctx);
 		} catch (error) {
 			if (Option.isSome(handlePersistedStateFailure(error, ctx))) {
 				return;
@@ -1230,6 +1278,7 @@ export default function initRalph(
 				);
 			}
 			await updateUI(ctx.cwd, ctx);
+			await syncRalphDoneToolSafely(ctx);
 		} catch (error) {
 			if (Option.isSome(handlePersistedStateFailure(error, ctx))) {
 				return;
@@ -1244,6 +1293,22 @@ export default function initRalph(
 				ralph.syncCurrentLoopFromSession(ctx.cwd, sessionFileFromContext(ctx)),
 			);
 			await updateUI(ctx.cwd, ctx);
+			await syncRalphDoneToolSafely(ctx);
+		} catch (error) {
+			if (Option.isSome(handlePersistedStateFailure(error, ctx))) {
+				return;
+			}
+			throw error;
+		}
+	});
+
+	pi.on("session_fork", async (_event, ctx) => {
+		try {
+			await withRalph((ralph) =>
+				ralph.syncCurrentLoopFromSession(ctx.cwd, sessionFileFromContext(ctx)),
+			);
+			await updateUI(ctx.cwd, ctx);
+			await syncRalphDoneToolSafely(ctx);
 		} catch (error) {
 			if (Option.isSome(handlePersistedStateFailure(error, ctx))) {
 				return;
@@ -1257,6 +1322,7 @@ export default function initRalph(
 			await withRalph((ralph) =>
 				ralph.persistOwnedLoopOnShutdown(ctx.cwd, sessionFileFromContext(ctx)),
 			);
+			setToolEnabled(pi, RALPH_DONE_TOOL_NAME, false);
 		} catch (error) {
 			if (Option.isSome(handlePersistedStateFailure(error, ctx))) {
 				return;

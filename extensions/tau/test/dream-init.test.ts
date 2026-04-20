@@ -38,10 +38,12 @@ function makePiHarness(): {
 	readonly commands: Map<string, RegisteredCommand>;
 	readonly handlers: Map<string, EventHandler[]>;
 	readonly userMessages: string[];
+	readonly getActiveTools: () => ReadonlyArray<string>;
 } {
 	const commands = new Map<string, RegisteredCommand>();
 	const handlers = new Map<string, EventHandler[]>();
 	const userMessages: string[] = [];
+	let activeTools: string[] = [];
 
 	const pi = {
 		on: (event: string, handler: EventHandler) => {
@@ -52,13 +54,27 @@ function makePiHarness(): {
 		registerCommand: (name: string, options: RegisteredCommand) => {
 			commands.set(name, options);
 		},
-		registerTool: () => undefined,
+		registerTool: (tool: { readonly name: string }) => {
+			if (!activeTools.includes(tool.name)) {
+				activeTools = [...activeTools, tool.name];
+			}
+		},
+		getActiveTools: () => [...activeTools],
+		setActiveTools: (nextTools: ReadonlyArray<string>) => {
+			activeTools = [...nextTools];
+		},
 		sendUserMessage: (message: string) => {
 			userMessages.push(message);
 		},
 	} as unknown as ExtensionAPI;
 
-	return { pi, commands, handlers, userMessages };
+	return {
+		pi,
+		commands,
+		handlers,
+		userMessages,
+		getActiveTools: () => [...activeTools],
+	};
 }
 
 function makeCommandContext(): {
@@ -166,9 +182,43 @@ describe("initDream", () => {
 
 		expect(commands.has("dream")).toBe(true);
 		expect(handlers.get("session_start")).toHaveLength(1);
+		expect(handlers.get("before_agent_start")).toHaveLength(1);
 		expect(handlers.get("agent_end")).toHaveLength(1);
+		expect(handlers.get("session_fork")).toHaveLength(1);
 		expect(handlers.get("session_switch")).toHaveLength(1);
 		expect(handlers.get("session_shutdown")).toHaveLength(1);
+	});
+
+	it("keeps dream-scoped tools inactive when no foreground run is active", async () => {
+		const { pi, handlers, getActiveTools } = makePiHarness();
+		const { ctx } = makeCommandContext();
+		const runEffect = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+			Effect.runPromise(effect as Effect.Effect<A, E, never>);
+
+		initDream(pi, runEffect, {
+			pollMs: 1,
+			maxPolls: 1,
+			sleep: () => Promise.resolve(),
+			runner: {
+				spawnManual: () => Effect.die("unused"),
+				maybeSpawnAuto: () => Effect.succeed(Option.none()),
+				runOnce: () => Effect.die("unused"),
+			},
+			registry: {
+				create: () => Effect.die("unused"),
+				attach: () => Effect.die("unused"),
+				report: () => Effect.die("unused"),
+				complete: () => Effect.die("unused"),
+				fail: () => Effect.die("unused"),
+				cancel: () => Effect.die("unused"),
+				get: () => Effect.die("unused"),
+				watch: () => Effect.die("unused") as never,
+			},
+		});
+
+		expect(getActiveTools()).toContain("dream_finish");
+		await handlers.get("session_start")?.[0]?.({ type: "session_start" }, ctx);
+		expect(getActiveTools()).not.toContain("dream_finish");
 	});
 
 	it("starts a manual dream run and tracks progress in the UI", async () => {

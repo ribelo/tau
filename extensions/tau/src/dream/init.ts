@@ -34,6 +34,7 @@ import type { MemoryEntriesSnapshot } from "../memory/format.js";
 import { DreamTaskRegistry, type DreamTaskRegistryApi } from "./task-registry.js";
 import type { DreamSubagent } from "./subagent.js";
 import { buildDreamPrompt } from "./prompt.js";
+import { setToolsEnabled } from "../shared/tool-activation.js";
 
 type DreamRuntimeServices =
 	| CuratedMemory
@@ -54,6 +55,7 @@ type DreamInitOptions = {
 
 const DEFAULT_POLL_MS = 2_000;
 const DEFAULT_MAX_POLLS = 300;
+const DREAM_SCOPED_TOOLS = ["dream_finish", "find_thread", "read_thread"] as const;
 
 // ---------------------------------------------------------------------------
 // dream_finish tool params (foreground mode)
@@ -98,6 +100,15 @@ export default function initDream(
 	const maxPolls = options?.maxPolls ?? DEFAULT_MAX_POLLS;
 	const sleep = options?.sleep ?? defaultSleep;
 	const activeForegroundRuns = new Map<string, ForegroundDreamRun>();
+
+	const syncDreamScopedToolAvailability = (
+		ctx: ExtensionContext | ExtensionCommandContext,
+	): void => {
+		const sessionId = currentSessionIdOf(ctx);
+		const run = sessionId === undefined ? undefined : activeForegroundRuns.get(sessionId);
+		const enabled = run !== undefined && !run.cancelled && !run.finished;
+		setToolsEnabled(pi, DREAM_SCOPED_TOOLS, enabled);
+	};
 
 	const withRunner = <A, E>(
 		ctx: ExtensionContext | ExtensionCommandContext,
@@ -161,6 +172,7 @@ export default function initDream(
 	const dreamFinishTool = createDreamFinishTool({
 		runEffect,
 		activeForegroundRuns,
+		syncDreamScopedToolAvailability,
 	});
 	pi.registerTool(dreamFinishTool);
 
@@ -190,6 +202,7 @@ export default function initDream(
 				// overlapping runs. The model may continue executing tool calls
 				// until the agent turn ends, but dream_finish will reject.
 				active.cancelled = true;
+				syncDreamScopedToolAvailability(ctx);
 				clearTaskStatus(ctx);
 				if (ctx.hasUI) {
 					ctx.ui.notify(
@@ -294,6 +307,7 @@ export default function initDream(
 				};
 
 				activeForegroundRuns.set(sessionId, run);
+				syncDreamScopedToolAvailability(ctx);
 				if (ctx.hasUI) {
 					ctx.ui.setStatus("dream", `dream: foreground run ${run.runId}`);
 					ctx.ui.notify(`Dream started (run ${run.runId}).`, "info");
@@ -320,6 +334,7 @@ export default function initDream(
 
 	// ── Auto-dream event handlers ──────────────────────────────────
 	const autoSpawnHandler = async (_event: unknown, ctx: ExtensionContext): Promise<void> => {
+		syncDreamScopedToolAvailability(ctx);
 		await tryAutoSpawn(ctx, { awaitCompletion: false });
 	};
 
@@ -327,10 +342,30 @@ export default function initDream(
 		_event: unknown,
 		ctx: ExtensionContext,
 	): Promise<void> => {
+		const sessionId = currentSessionIdOf(ctx);
+		if (sessionId !== undefined) {
+			const run = activeForegroundRuns.get(sessionId);
+			if (run !== undefined) {
+				await releaseForegroundRun(runEffect, activeForegroundRuns, sessionId);
+				clearTaskStatus(ctx);
+
+				if (!run.cancelled && !run.finished && ctx.hasUI) {
+					ctx.ui.notify(
+						`Dream aborted: run ${run.runId} ended during session shutdown before dream_finish.`,
+						"warning",
+					);
+				}
+			}
+		}
+
+		syncDreamScopedToolAvailability(ctx);
 		await tryAutoSpawn(ctx, { awaitCompletion: true });
 	};
 
 	pi.on("session_start", autoSpawnHandler);
+	pi.on("before_agent_start", async (_event, ctx) => {
+		syncDreamScopedToolAvailability(ctx);
+	});
 	pi.on("agent_end", async (_event, ctx) => {
 		const sessionId = currentSessionIdOf(ctx);
 		if (sessionId !== undefined) {
@@ -351,7 +386,11 @@ export default function initDream(
 				}
 			}
 		}
+		syncDreamScopedToolAvailability(ctx);
 		await autoSpawnHandler(_event, ctx);
+	});
+	pi.on("session_fork", async (_event, ctx) => {
+		syncDreamScopedToolAvailability(ctx);
 	});
 	pi.on("session_switch", autoSpawnHandler);
 	pi.on("session_shutdown", shutdownAutoSpawnHandler);
@@ -447,6 +486,9 @@ export default function initDream(
 type DreamFinishToolDeps = {
 	readonly runEffect: RunDream;
 	readonly activeForegroundRuns: Map<string, ForegroundDreamRun>;
+	readonly syncDreamScopedToolAvailability: (
+		ctx: ExtensionContext | ExtensionCommandContext,
+	) => void;
 };
 
 function createDreamFinishTool(
@@ -506,6 +548,7 @@ function createDreamFinishTool(
 				// calls in the same turn see the flag via the cancelled/finished
 				// check above (dream_finish rejects double-calls).
 				run.finished = true;
+				deps.syncDreamScopedToolAvailability(ctx);
 
 				// Mark scheduler complete and reload frozen snapshot
 				await deps.runEffect(
@@ -547,6 +590,7 @@ function createDreamFinishTool(
 			} catch (error) {
 				// Revert finished flag so agent_end reports failure correctly
 				run.finished = false;
+				deps.syncDreamScopedToolAvailability(ctx);
 				return {
 					isError: true,
 					content: [{ type: "text", text: `dream_finish failed: ${describeError(error)}` }],

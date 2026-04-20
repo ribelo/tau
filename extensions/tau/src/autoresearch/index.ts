@@ -76,6 +76,9 @@ import { renderWidget, renderExpandedHeader, renderDashboardLines, renderOverlay
 import { shouldCloseAutoresearchOverlay } from "./overlay-input.js";
 import type { ExperimentResult } from "./schema.js";
 import { computeConfidence, findBestResult } from "./state.js";
+import { setToolEnabled } from "../shared/tool-activation.js";
+
+const AUTORESEARCH_DONE_TOOL_NAME = "autoresearch_done";
 
 // ------------------------------------------------------------------------------
 // Helpers
@@ -1239,6 +1242,26 @@ export default function initAutoresearch(
 		};
 	};
 
+	const syncAutoresearchDoneTool = async (ctx: ExtensionContext): Promise<void> => {
+		try {
+			await resolveActiveAutoresearchChildContext(ctx);
+			setToolEnabled(pi, AUTORESEARCH_DONE_TOOL_NAME, true);
+		} catch (error) {
+			if (
+				error instanceof AutoresearchValidationError ||
+				error instanceof LoopContractValidationError ||
+				error instanceof LoopTaskNotFoundError ||
+				error instanceof LoopAmbiguousOwnershipError ||
+				error instanceof LoopLifecycleConflictError ||
+				error instanceof LoopOwnershipValidationError
+			) {
+				setToolEnabled(pi, AUTORESEARCH_DONE_TOOL_NAME, false);
+				return;
+			}
+			throw error;
+		}
+	};
+
 	const makeRunId = (runNumber: number): string =>
 		`run-${String(runNumber).padStart(4, "0")}-${Date.now()}`;
 
@@ -1508,6 +1531,8 @@ export default function initAutoresearch(
 	};
 
 	const updateAutoresearchUI = async (cwd: string, ctx: ExtensionContext): Promise<void> => {
+		await syncAutoresearchDoneTool(ctx);
+
 		if (!ctx.hasUI) {
 			return;
 		}
@@ -2419,5 +2444,46 @@ export default function initAutoresearch(
 			}
 			throw error;
 		}
+	});
+
+	pi.on("before_agent_start", async (_event, ctx) => {
+		await syncAutoresearchDoneTool(ctx);
+	});
+
+	pi.on("session_shutdown", async (event, ctx) => {
+		const sessionFile = ctx.sessionManager.getSessionFile?.();
+		if (sessionFile !== undefined) {
+			const resolve = waitingAutoresearchAgentEnds.get(sessionFile);
+			if (resolve) {
+				waitingAutoresearchAgentEnds.delete(sessionFile);
+				resolve(event);
+			}
+
+			const loops = await withLoopEngine((engine) => engine.listLoops(ctx.cwd, false));
+			for (const loop of loops) {
+				if (loop.kind !== "autoresearch") {
+					continue;
+				}
+				if (loop.lifecycle !== "active") {
+					continue;
+				}
+				const child = Option.getOrUndefined(loop.ownership.child);
+				if (child === undefined || child.sessionFile !== sessionFile) {
+					continue;
+				}
+
+				const nextState: AutoresearchLoopPersistedState = {
+					...loop,
+					updatedAt: new Date().toISOString(),
+					ownership: {
+						controller: loop.ownership.controller,
+						child: Option.none(),
+					},
+				};
+				writeCanonicalLoopState(ctx.cwd, nextState);
+			}
+		}
+
+		setToolEnabled(pi, AUTORESEARCH_DONE_TOOL_NAME, false);
 	});
 }
