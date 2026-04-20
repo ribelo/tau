@@ -394,7 +394,7 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 
 function agentEndPayload(
 	text: string,
-	stopReason: "stop" | "length" | "toolUse" | "error" | "aborted" = "stop",
+	stopReason: "stop" | "length" | "toolUse" | "error" | "aborted" | undefined = "stop",
 ) {
 	return {
 		type: "agent_end",
@@ -402,7 +402,19 @@ function agentEndPayload(
 			{
 				role: "assistant",
 				content: [{ type: "text", text }],
-				stopReason,
+				...(stopReason === undefined ? {} : { stopReason }),
+			},
+		],
+	};
+}
+
+function agentEndPayloadWithoutAssistant() {
+	return {
+		type: "agent_end",
+		messages: [
+			{
+				role: "user",
+				content: [{ type: "text", text: "no assistant reply arrived" }],
 			},
 		],
 	};
@@ -743,6 +755,88 @@ describe("ralph service behavior freeze", () => {
 		expect(
 			context.notifications.some((entry) =>
 				entry.message.includes("ended twice without calling") ||
+				entry.message.includes("Ralph paused"),
+			),
+		).toBe(true);
+	});
+
+	it("nudges when stopReason is missing before pausing on a repeated missed Ralph decision", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const piHarness = makePiHarness();
+		const ralphRuntime = makeRalphRuntime(false);
+		runtimes.push(ralphRuntime);
+		initRalph(piHarness.pi, ralphRuntime.run);
+
+		const command = piHarness.commands.get("ralph");
+		expect(command).toBeDefined();
+		if (!command) {
+			throw new Error("missing ralph command");
+		}
+
+		const context = makeContext(cwd, [{ cancelled: false }]);
+		let startResolved = false;
+		const startPromise = Promise.resolve(
+			command.handler("start missing-stop-reason --max-iterations 1", context.ctx),
+		).then(() => {
+			startResolved = true;
+		});
+		await waitFor(() => piHarness.sentUserMessages.length === 1);
+
+		await piHarness.fire("agent_end", agentEndPayload("stopped without tool", undefined), context.ctx);
+		await waitFor(() => piHarness.sentUserMessages.length === 2);
+		expect(startResolved).toBe(false);
+
+		await piHarness.fire("agent_end", agentEndPayload("missed again", undefined), context.ctx);
+		await startPromise;
+
+		const state = readLoopState(cwd, "missing-stop-reason");
+		expect(state.status).toBe("paused");
+		expect(Option.isNone(state.pendingDecision)).toBe(true);
+		expect(
+			context.notifications.some((entry) =>
+				entry.message.includes("ended twice without calling") ||
+				entry.message.includes("Ralph paused"),
+			),
+		).toBe(true);
+	});
+
+	it("pauses immediately when agent_end has no usable assistant message", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const piHarness = makePiHarness();
+		const ralphRuntime = makeRalphRuntime(false);
+		runtimes.push(ralphRuntime);
+		initRalph(piHarness.pi, ralphRuntime.run);
+
+		const command = piHarness.commands.get("ralph");
+		expect(command).toBeDefined();
+		if (!command) {
+			throw new Error("missing ralph command");
+		}
+
+		const context = makeContext(cwd, [{ cancelled: false }]);
+		let startResolved = false;
+		const startPromise = Promise.resolve(
+			command.handler("start malformed-agent-end --max-iterations 1", context.ctx),
+		).then(() => {
+			startResolved = true;
+		});
+		await waitFor(() => piHarness.sentUserMessages.length === 1);
+
+		await piHarness.fire("agent_end", agentEndPayloadWithoutAssistant(), context.ctx);
+		await startPromise;
+
+		const state = readLoopState(cwd, "malformed-agent-end");
+		expect(startResolved).toBe(true);
+		expect(piHarness.sentUserMessages).toHaveLength(1);
+		expect(state.status).toBe("paused");
+		expect(Option.isNone(state.pendingDecision)).toBe(true);
+		expect(
+			context.notifications.some((entry) =>
+				entry.message.includes("without a usable Ralph decision") ||
 				entry.message.includes("Ralph paused"),
 			),
 		).toBe(true);

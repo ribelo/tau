@@ -216,6 +216,7 @@ type AssistantStopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
 type AssistantSummary = {
 	readonly text: string;
 	readonly stopReason: Option.Option<AssistantStopReason>;
+	readonly hasUsableAssistantMessage: boolean;
 };
 
 function isAssistantStopReason(value: unknown): value is AssistantStopReason {
@@ -236,6 +237,7 @@ const extractLastAssistantSummary = (event: AgentEndEvent): AssistantSummary => 
 		return {
 			text: "",
 			stopReason: Option.none(),
+			hasUsableAssistantMessage: false,
 		};
 	}
 	const text = lastAssistant.content
@@ -245,7 +247,11 @@ const extractLastAssistantSummary = (event: AgentEndEvent): AssistantSummary => 
 	const stopReason = "stopReason" in lastAssistant && isAssistantStopReason(lastAssistant.stopReason)
 		? Option.some(lastAssistant.stopReason)
 		: Option.none<AssistantStopReason>();
-	return { text, stopReason };
+	return {
+		text,
+		stopReason,
+		hasUsableAssistantMessage: true,
+	};
 };
 
 const optionContains = (option: Option.Option<string>, value: string | undefined): boolean => {
@@ -1220,7 +1226,10 @@ export const RalphLive = (config: RalphLiveConfig) =>
 							);
 						}
 
-						if (stopReason === "stop" || stopReason === "length") {
+						if (
+							assistant.hasUsableAssistantMessage &&
+							(stopReason === undefined || stopReason === "stop" || stopReason === "length")
+						) {
 							if (missingDecisionNudged) {
 								return yield* pauseLoop(
 									boundary.cwd,

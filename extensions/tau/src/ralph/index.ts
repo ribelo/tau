@@ -122,6 +122,23 @@ function isManagedRuntimeDisposedError(error: unknown): boolean {
 	return String(error).includes("ManagedRuntime disposed");
 }
 
+function notifySafely(
+	ctx: Pick<ExtensionContext, "hasUI" | "ui">,
+	message: string,
+	level: "error" | "info" | "warning" | undefined,
+): void {
+	if (!ctx.hasUI) {
+		return;
+	}
+	try {
+		ctx.ui.notify(message, level);
+	} catch (error) {
+		if (!isManagedRuntimeDisposedError(error)) {
+			throw error;
+		}
+	}
+}
+
 function sessionFileFromContext(ctx: Pick<ExtensionContext, "sessionManager">): string | undefined {
 	return typeof ctx.sessionManager.getSessionFile === "function"
 		? ctx.sessionManager.getSessionFile()
@@ -652,7 +669,7 @@ export default function initRalph(
 			}
 		}
 		if (Option.isSome(result.banner)) {
-			ctx.ui.notify(result.banner.value, "info");
+			notifySafely(ctx, result.banner.value, "info");
 		}
 		try {
 			await updateUI(ctx.cwd, ctx);
@@ -1298,8 +1315,14 @@ export default function initRalph(
 				ralph.handleAgentEnd(ctx.cwd, sessionFileFromContext(ctx), event),
 			);
 			if (Option.isSome(result.banner)) {
-				ctx.ui.notify(result.banner.value, "info");
-				await updateUI(ctx.cwd, ctx);
+				notifySafely(ctx, result.banner.value, "info");
+				try {
+					await updateUI(ctx.cwd, ctx);
+				} catch (error) {
+					if (!isManagedRuntimeDisposedError(error)) {
+						throw error;
+					}
+				}
 			}
 			await syncRalphHandshakeToolsSafely(ctx);
 		} catch (error) {

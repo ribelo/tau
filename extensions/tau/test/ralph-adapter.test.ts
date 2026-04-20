@@ -360,7 +360,7 @@ function makePiHarness(): PiHarness {
 
 function agentEndPayload(
 	text: string,
-	stopReason: "stop" | "length" | "toolUse" | "error" | "aborted" = "stop",
+	stopReason: "stop" | "length" | "toolUse" | "error" | "aborted" | undefined = "stop",
 ) {
 	return {
 		type: "agent_end",
@@ -368,7 +368,7 @@ function agentEndPayload(
 			{
 				role: "assistant",
 				content: [{ type: "text", text }],
-				stopReason,
+				...(stopReason === undefined ? {} : { stopReason }),
 			},
 		],
 	};
@@ -471,6 +471,48 @@ describe("ralph adapter boundary freeze", () => {
 		await piHarness.fire("agent_end", agentEndPayload("final response"), context.ctx);
 
 		const state = readLoopState(cwd, "close-loop");
+		expect(state.status).toBe("completed");
+		expect(Option.isSome(state.completedAt)).toBe(true);
+	});
+
+	it("completes cleanly without UI when a finish banner is emitted on agent_end", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const context = makeContext(cwd, [{ cancelled: false }]);
+		context.ctx.hasUI = false;
+		context.ctx.ui.notify = () => {
+			throw new Error("notify should not be called without UI");
+		};
+		const iterationSession = path.join(cwd, ".pi", "sessions", "iteration-headless.session.json");
+		context.setSessionFile(iterationSession);
+
+		writeLoopState(cwd, "headless-finish-loop", {
+			controllerSessionFile: path.join(cwd, ".pi", "sessions", "controller-headless.session.json"),
+			activeIterationSessionFile: iterationSession,
+			iteration: 2,
+			status: "active",
+		});
+
+		const piHarness = makePiHarness();
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(piHarness.pi, ralphRuntime.run);
+		const finishTool = piHarness.tools.get("ralph_finish");
+		expect(finishTool).toBeDefined();
+		await finishTool?.execute(
+			"call-finish-headless",
+			{ message: "Finished without UI." },
+			undefined,
+			undefined,
+			context.ctx,
+		);
+
+		await expect(
+			piHarness.fire("agent_end", agentEndPayload("final response"), context.ctx),
+		).resolves.toBeDefined();
+
+		const state = readLoopState(cwd, "headless-finish-loop");
 		expect(state.status).toBe("completed");
 		expect(Option.isSome(state.completedAt)).toBe(true);
 	});
