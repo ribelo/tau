@@ -28,16 +28,14 @@ describe("ralph fresh-session helpers", () => {
 			lastReflectionAt: 0,
 			controllerSessionFile: null,
 			activeIterationSessionFile: null,
-			advanceRequestedAt: null,
-			awaitingFinalize: false,
+			pendingDecision: null,
 			executionProfile: makeExecutionProfile(),
 		});
 
 		expect(Option.isNone(state.completedAt)).toBe(true);
 		expect(Option.isNone(state.controllerSessionFile)).toBe(true);
 		expect(Option.isNone(state.activeIterationSessionFile)).toBe(true);
-		expect(Option.isNone(state.advanceRequestedAt)).toBe(true);
-		expect(state.awaitingFinalize).toBe(false);
+		expect(Option.isNone(state.pendingDecision)).toBe(true);
 	});
 
 	it("fails fast when persisted state contains legacy Option objects", () => {
@@ -60,8 +58,7 @@ describe("ralph fresh-session helpers", () => {
 					value: "/tmp/controller.session",
 				},
 				activeIterationSessionFile: null,
-				advanceRequestedAt: null,
-				awaitingFinalize: true,
+				pendingDecision: null,
 				executionProfile: makeExecutionProfile(),
 			}),
 		).toThrow(RalphContractValidationError);
@@ -82,8 +79,7 @@ describe("ralph fresh-session helpers", () => {
 			lastReflectionAt: 0,
 			controllerSessionFile: "/tmp/controller.session",
 			activeIterationSessionFile: "/tmp/iteration.session",
-			advanceRequestedAt: null,
-			awaitingFinalize: false,
+			pendingDecision: null,
 			executionProfile: makeExecutionProfile(),
 		});
 
@@ -101,8 +97,7 @@ describe("ralph fresh-session helpers", () => {
 			lastReflectionAt: 0,
 			controllerSessionFile: "/tmp/controller.session",
 			activeIterationSessionFile: "/tmp/iteration.session",
-			advanceRequestedAt: null,
-			awaitingFinalize: false,
+			pendingDecision: null,
 			promptProfile: makePromptProfile({ mode: "deep" }),
 		});
 

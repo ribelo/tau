@@ -50,8 +50,7 @@ function makeLoopState(taskId: string): LoopPersistedState {
 			reflectEvery: 5,
 			reflectInstructions: "reflect",
 			lastReflectionAt: 0,
-			advanceRequestedAt: Option.none(),
-			awaitingFinalize: false,
+			pendingDecision: Option.none(),
 			pinnedExecutionProfile: makeExecutionProfile(),
 		},
 	};

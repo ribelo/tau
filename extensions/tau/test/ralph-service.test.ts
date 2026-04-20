@@ -139,8 +139,7 @@ function readLoopState(cwd: string, loopName: string) {
 			(controller) => controller.sessionFile,
 		),
 		activeIterationSessionFile: Option.map(state.ownership.child, (child) => child.sessionFile),
-		advanceRequestedAt: state.ralph.advanceRequestedAt,
-		awaitingFinalize: state.ralph.awaitingFinalize,
+		pendingDecision: state.ralph.pendingDecision,
 		executionProfile: state.ralph.pinnedExecutionProfile,
 	};
 }
@@ -153,7 +152,16 @@ function writeLoopState(
 		readonly iteration?: number;
 		readonly controllerSessionFile: string;
 		readonly activeIterationSessionFile?: string;
-		readonly awaitingFinalize?: boolean;
+		readonly pendingDecision?:
+			| {
+					readonly kind: "continue";
+					readonly requestedAt: string;
+				}
+			| {
+					readonly kind: "finish";
+					readonly requestedAt: string;
+					readonly message: string;
+				};
 	},
 ): void {
 	const filePath = loopStatePath(cwd, loopName);
@@ -197,8 +205,10 @@ function writeLoopState(
 				reflectEvery: 0,
 				reflectInstructions: "reflect",
 				lastReflectionAt: 0,
-				advanceRequestedAt: Option.none(),
-				awaitingFinalize: input.awaitingFinalize ?? false,
+				pendingDecision:
+					input.pendingDecision === undefined
+						? Option.none()
+						: Option.some(input.pendingDecision),
 				pinnedExecutionProfile: makeExecutionProfile(),
 			},
 		}),
@@ -382,13 +392,17 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 	throw new Error("timed out waiting for condition");
 }
 
-function agentEndPayload(text: string) {
+function agentEndPayload(
+	text: string,
+	stopReason: "stop" | "length" | "toolUse" | "error" | "aborted" = "stop",
+) {
 	return {
 		type: "agent_end",
 		messages: [
 			{
 				role: "assistant",
 				content: [{ type: "text", text }],
+				stopReason,
 			},
 		],
 	};
@@ -407,7 +421,7 @@ describe("ralph service behavior freeze", () => {
 		}
 	});
 
-	it("keeps iteration ownership across handled child-session ends until ralph_done", async () => {
+	it("keeps iteration ownership across handled child-session ends until ralph_continue", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 
@@ -417,7 +431,7 @@ describe("ralph service behavior freeze", () => {
 		initRalph(piHarness.pi, ralphRuntime.run);
 
 		const command = piHarness.commands.get("ralph");
-		const doneTool = piHarness.tools.get("ralph_done");
+		const doneTool = piHarness.tools.get("ralph_continue");
 		expect(command).toBeDefined();
 		expect(doneTool).toBeDefined();
 
@@ -438,7 +452,7 @@ describe("ralph service behavior freeze", () => {
 		const afterFirstIteration = readLoopState(cwd, "handled-error-loop");
 		expect(afterFirstIteration.status).toBe("active");
 		expect(afterFirstIteration.iteration).toBe(1);
-		expect(afterFirstIteration.awaitingFinalize).toBe(false);
+		expect(Option.isNone(afterFirstIteration.pendingDecision)).toBe(true);
 		expect(Option.getOrUndefined(afterFirstIteration.activeIterationSessionFile)).toBe(
 			context.getSessionFile(),
 		);
@@ -451,12 +465,14 @@ describe("ralph service behavior freeze", () => {
 			context.ctx,
 		)) as ToolExecutionResult;
 
-		expect(doneResult.content[0]?.text).toContain("Iteration 1 complete. Finalize recorded.");
+		expect(doneResult.content[0]?.text).toContain("Iteration 1 complete. Continue recorded.");
 
 		const afterDone = readLoopState(cwd, "handled-error-loop");
 		expect(afterDone.status).toBe("active");
-		expect(afterDone.awaitingFinalize).toBe(true);
-		expect(Option.isSome(afterDone.advanceRequestedAt)).toBe(true);
+		expect(Option.isSome(afterDone.pendingDecision)).toBe(true);
+		if (Option.isSome(afterDone.pendingDecision)) {
+			expect(afterDone.pendingDecision.value.kind).toBe("continue");
+		}
 		expect(Option.getOrUndefined(afterDone.activeIterationSessionFile)).toBe(
 			context.getSessionFile(),
 		);
@@ -467,12 +483,12 @@ describe("ralph service behavior freeze", () => {
 		const finalState = readLoopState(cwd, "handled-error-loop");
 		expect(finalState.status).toBe("paused");
 		expect(finalState.iteration).toBe(1);
-		expect(finalState.awaitingFinalize).toBe(false);
+		expect(Option.isNone(finalState.pendingDecision)).toBe(true);
 		expect(Option.isNone(finalState.completedAt)).toBe(true);
 		expect(context.newSessionCalls).toHaveLength(1);
 	});
 
-	it("pauses the loop when the owned iteration session shuts down before ralph_done", async () => {
+	it("pauses the loop when the owned iteration session shuts down before a Ralph handshake tool", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 
@@ -497,7 +513,7 @@ describe("ralph service behavior freeze", () => {
 		const state = readLoopState(cwd, "shutdown-loop");
 		expect(state.status).toBe("paused");
 		expect(state.iteration).toBe(1);
-		expect(state.awaitingFinalize).toBe(false);
+		expect(Option.isNone(state.pendingDecision)).toBe(true);
 		expect(Option.isNone(state.activeIterationSessionFile)).toBe(true);
 	});
 
@@ -530,7 +546,7 @@ describe("ralph service behavior freeze", () => {
 		const state = readLoopState(cwd, "disposed-shutdown-loop");
 		expect(state.status).toBe("paused");
 		expect(state.iteration).toBe(1);
-		expect(state.awaitingFinalize).toBe(false);
+		expect(Option.isNone(state.pendingDecision)).toBe(true);
 		expect(Option.isNone(state.activeIterationSessionFile)).toBe(true);
 	});
 
@@ -552,7 +568,7 @@ describe("ralph service behavior freeze", () => {
 		const state = readLoopState(cwd, "blocked-on-start");
 		expect(state.status).toBe("paused");
 		expect(state.iteration).toBe(0);
-		expect(state.awaitingFinalize).toBe(true);
+		expect(Option.isNone(state.pendingDecision)).toBe(true);
 		expect(context.newSessionCalls).toHaveLength(0);
 		expect(
 			context.notifications.some((entry) =>
@@ -561,7 +577,7 @@ describe("ralph service behavior freeze", () => {
 		).toBe(true);
 	});
 
-	it("pauses /ralph resume when finalize is pending and subagents are still active", async () => {
+	it("pauses /ralph resume when a Ralph decision is pending and subagents are still active", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 
@@ -577,7 +593,10 @@ describe("ralph service behavior freeze", () => {
 			activeIterationSessionFile: staleIterationSession,
 			iteration: 6,
 			status: "paused",
-			awaitingFinalize: true,
+			pendingDecision: {
+				kind: "continue",
+				requestedAt: "2026-01-01T00:00:00.000Z",
+			},
 		});
 
 		const piHarness = makePiHarness();
@@ -593,7 +612,7 @@ describe("ralph service behavior freeze", () => {
 		const state = readLoopState(cwd, "blocked-on-resume");
 		expect(state.status).toBe("paused");
 		expect(state.iteration).toBe(6);
-		expect(state.awaitingFinalize).toBe(true);
+		expect(Option.isSome(state.pendingDecision)).toBe(true);
 		expect(Option.isNone(state.activeIterationSessionFile)).toBe(true);
 		expect(context.newSessionCalls).toHaveLength(0);
 		expect(context.switchSessionCalls).toHaveLength(0);
@@ -604,7 +623,7 @@ describe("ralph service behavior freeze", () => {
 		).toBe(true);
 	});
 
-	it("blocks ralph_done advancement while subagents are active", async () => {
+	it("blocks ralph_continue advancement while subagents are active", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 
@@ -621,7 +640,7 @@ describe("ralph service behavior freeze", () => {
 		runtimes.push(ralphRuntime);
 		initRalph(piHarness.pi, ralphRuntime.run);
 
-		const doneTool = piHarness.tools.get("ralph_done");
+		const doneTool = piHarness.tools.get("ralph_continue");
 		expect(doneTool).toBeDefined();
 
 		const result = (await doneTool?.execute(
@@ -636,12 +655,14 @@ describe("ralph service behavior freeze", () => {
 
 		const state = readLoopState(cwd, "blocked-loop");
 		expect(state.status).toBe("paused");
-		expect(state.awaitingFinalize).toBe(true);
-		expect(Option.isSome(state.advanceRequestedAt)).toBe(true);
+		expect(Option.isSome(state.pendingDecision)).toBe(true);
+		if (Option.isSome(state.pendingDecision)) {
+			expect(state.pendingDecision.value.kind).toBe("continue");
+		}
 		expect(Option.isNone(state.activeIterationSessionFile)).toBe(true);
 	});
 
-	it("marks the loop completed when the completion marker appears", async () => {
+	it("marks the loop completed when ralph_finish is called before agent_end", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 
@@ -650,24 +671,80 @@ describe("ralph service behavior freeze", () => {
 		runtimes.push(ralphRuntime);
 		initRalph(piHarness.pi, ralphRuntime.run);
 		const command = piHarness.commands.get("ralph");
+		const finishTool = piHarness.tools.get("ralph_finish");
 		expect(command).toBeDefined();
+		expect(finishTool).toBeDefined();
 
 		const context = makeContext(cwd, [{ cancelled: false }]);
 		const startPromise = command?.handler("start complete-loop", context.ctx);
 		await waitFor(() => piHarness.sentUserMessages.length === 1);
 
-		await piHarness.fire(
-			"agent_end",
-			agentEndPayload("done now <promise>COMPLETE</promise>"),
+		const finishResult = (await finishTool?.execute(
+			"call-finish",
+			{ message: "All checklist items are done." },
+			undefined,
+			undefined,
 			context.ctx,
-		);
+		)) as ToolExecutionResult;
+		expect(finishResult.content[0]?.text).toContain("Finish recorded");
+
+		await piHarness.fire("agent_end", agentEndPayload("done now"), context.ctx);
 		await startPromise;
 
 		const state = readLoopState(cwd, "complete-loop");
 		expect(state.status).toBe("completed");
 		expect(Option.isSome(state.completedAt)).toBe(true);
-		expect(piHarness.sentUserMessages).toHaveLength(2);
-		const banner = piHarness.sentUserMessages[1]?.content;
-		expect(typeof banner === "string" ? banner : "").toContain("RALPH LOOP COMPLETE");
+		expect(
+			context.notifications.some((entry) =>
+				entry.message.includes("RALPH LOOP COMPLETE") &&
+				entry.message.includes("All checklist items are done."),
+			),
+		).toBe(true);
+	});
+
+	it("nudges once when an iteration ends without a Ralph handshake tool, then pauses on the second miss", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const piHarness = makePiHarness();
+		const ralphRuntime = makeRalphRuntime(false);
+		runtimes.push(ralphRuntime);
+		initRalph(piHarness.pi, ralphRuntime.run);
+
+		const command = piHarness.commands.get("ralph");
+		expect(command).toBeDefined();
+		if (!command) {
+			throw new Error("missing ralph command");
+		}
+
+		const context = makeContext(cwd, [{ cancelled: false }]);
+		let startResolved = false;
+		const startPromise = Promise.resolve(command.handler("start nudge-loop --max-iterations 1", context.ctx)).then(
+			() => {
+				startResolved = true;
+			},
+		);
+		await waitFor(() => piHarness.sentUserMessages.length === 1);
+
+		await piHarness.fire("agent_end", agentEndPayload("stopped without tool"), context.ctx);
+		await waitFor(() => piHarness.sentUserMessages.length === 2);
+		expect(startResolved).toBe(false);
+		const nudge = piHarness.sentUserMessages[1];
+		expect(typeof nudge?.content === "string" ? nudge.content : "").toContain(
+			"ended without a Ralph loop tool",
+		);
+
+		await piHarness.fire("agent_end", agentEndPayload("missed again"), context.ctx);
+		await startPromise;
+
+		const state = readLoopState(cwd, "nudge-loop");
+		expect(state.status).toBe("paused");
+		expect(Option.isNone(state.pendingDecision)).toBe(true);
+		expect(
+			context.notifications.some((entry) =>
+				entry.message.includes("ended twice without calling") ||
+				entry.message.includes("Ralph paused"),
+			),
+		).toBe(true);
 	});
 });

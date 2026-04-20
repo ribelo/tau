@@ -11,6 +11,25 @@ import { RalphContractValidationError } from "./errors.js";
 const NonNegativeIntSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 const OptionalStringSchema = Schema.OptionFromNullOr(Schema.String);
 
+const RalphContinueDecisionSchema = Schema.Struct({
+	kind: Schema.Literal("continue"),
+	requestedAt: Schema.String,
+});
+
+const RalphFinishDecisionSchema = Schema.Struct({
+	kind: Schema.Literal("finish"),
+	requestedAt: Schema.String,
+	message: Schema.NonEmptyString,
+});
+
+export const RalphPendingDecisionSchema = Schema.Union([
+	RalphContinueDecisionSchema,
+	RalphFinishDecisionSchema,
+]);
+export type RalphPendingDecision = Schema.Schema.Type<typeof RalphPendingDecisionSchema>;
+
+const OptionalRalphPendingDecisionSchema = Schema.OptionFromNullOr(RalphPendingDecisionSchema);
+
 export function sanitizeLoopName(name: string): string {
 	return name.replace(/[^a-zA-Z0-9_.-]/g, "_").replace(/_+/g, "_");
 }
@@ -47,8 +66,7 @@ const LoopStateSharedFields = {
 	lastReflectionAt: Schema.mutableKey(NonNegativeIntSchema),
 	controllerSessionFile: Schema.mutableKey(OptionalStringSchema),
 	activeIterationSessionFile: Schema.mutableKey(OptionalStringSchema),
-	advanceRequestedAt: Schema.mutableKey(OptionalStringSchema),
-	awaitingFinalize: Schema.mutableKey(Schema.Boolean),
+	pendingDecision: Schema.mutableKey(OptionalRalphPendingDecisionSchema),
 } as const;
 
 export const LoopStateSchema = Schema.Struct({

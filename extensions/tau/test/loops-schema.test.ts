@@ -43,8 +43,7 @@ const encodedRalphState: EncodedLoopPersistedState = {
 		reflectEvery: 10,
 		reflectInstructions: "reflect",
 		lastReflectionAt: 0,
-		advanceRequestedAt: null,
-		awaitingFinalize: false,
+		pendingDecision: null,
 		pinnedExecutionProfile: makeExecutionProfile(),
 	},
 };

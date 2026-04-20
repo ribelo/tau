@@ -148,8 +148,7 @@ function toLoopState(state: RalphLoopPersistedState): LoopState {
 		completedAt: state.completedAt,
 		controllerSessionFile: ownershipFile(state.ownership.controller),
 		activeIterationSessionFile: ownershipFile(state.ownership.child),
-		advanceRequestedAt: state.ralph.advanceRequestedAt,
-		awaitingFinalize: state.ralph.awaitingFinalize,
+		pendingDecision: state.ralph.pendingDecision,
 	};
 }
 
@@ -257,8 +256,7 @@ function toPersistedState(
 			reflectEvery: state.reflectEvery,
 			reflectInstructions: state.reflectInstructions,
 			lastReflectionAt: state.lastReflectionAt,
-			advanceRequestedAt: state.advanceRequestedAt,
-			awaitingFinalize: state.awaitingFinalize,
+			pendingDecision: state.pendingDecision,
 			pinnedExecutionProfile: state.executionProfile,
 		},
 	};
@@ -466,8 +464,7 @@ const RalphRepoBase = Layer.effect(
 					},
 					ralph: {
 						...persisted.value.ralph,
-						awaitingFinalize: false,
-						advanceRequestedAt: Option.none(),
+						pendingDecision: Option.none(),
 					},
 				};
 

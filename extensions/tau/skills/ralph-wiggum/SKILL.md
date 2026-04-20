@@ -23,8 +23,8 @@ ralph_create({
 2. Start the fresh-session loop with `/ralph start <name>`.
 3. Work on the task and update the file each iteration.
 4. Record verification evidence (commands run, file paths, outputs) in the task file.
-5. Call `ralph_done` to proceed to the next iteration.
-6. Output `<promise>COMPLETE</promise>` when finished.
+5. Call `ralph_continue` to proceed to the next iteration.
+6. Call `ralph_finish` with a short completion message when finished.
 7. Stop when complete or when max iterations is reached (default 50).
 
 ## User Commands
@@ -76,4 +76,4 @@ Brief description.
 2. Update checklist and notes as you go.
 3. Capture verification evidence for completed items.
 4. Reflect when stuck to reassess approach.
-5. Output the completion marker only when truly done.
+5. End each iteration with exactly one Ralph loop tool.

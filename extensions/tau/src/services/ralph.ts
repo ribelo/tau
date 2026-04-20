@@ -17,10 +17,8 @@ import type { LoopSessionRef } from "../loops/schema.js";
 import { RalphRepo } from "../ralph/repo.js";
 import { RALPH_TASKS_DIR } from "../ralph/paths.js";
 import { RalphContractValidationError } from "../ralph/errors.js";
-import type { LoopState } from "../ralph/schema.js";
+import type { LoopState, RalphPendingDecision } from "../ralph/schema.js";
 import { LoopEngine } from "./loop-engine.js";
-
-export const COMPLETE_MARKER = "<promise>COMPLETE</promise>";
 
 type LoopStepResult =
 	| {
@@ -44,7 +42,11 @@ export type RalphRunLoopResult = {
 	readonly banner: Option.Option<string>;
 };
 
-export type RalphDoneResult = {
+export type RalphContinueResult = {
+	readonly text: string;
+};
+
+export type RalphFinishResult = {
 	readonly text: string;
 };
 
@@ -209,17 +211,41 @@ type IterationSignal =
 			readonly _tag: "session_shutdown";
 	  };
 
-const extractLastAssistantText = (event: AgentEndEvent): string => {
+type AssistantStopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
+
+type AssistantSummary = {
+	readonly text: string;
+	readonly stopReason: Option.Option<AssistantStopReason>;
+};
+
+function isAssistantStopReason(value: unknown): value is AssistantStopReason {
+	return (
+		value === "stop" ||
+		value === "length" ||
+		value === "toolUse" ||
+		value === "error" ||
+		value === "aborted"
+	);
+}
+
+const extractLastAssistantSummary = (event: AgentEndEvent): AssistantSummary => {
 	const lastAssistant = [...event.messages]
 		.reverse()
 		.find((message) => message.role === "assistant");
 	if (!lastAssistant || !Array.isArray(lastAssistant.content)) {
-		return "";
+		return {
+			text: "",
+			stopReason: Option.none(),
+		};
 	}
-	return lastAssistant.content
+	const text = lastAssistant.content
 		.filter((content): content is { type: "text"; text: string } => content.type === "text")
 		.map((content) => content.text)
 		.join("\n");
+	const stopReason = "stopReason" in lastAssistant && isAssistantStopReason(lastAssistant.stopReason)
+		? Option.some(lastAssistant.stopReason)
+		: Option.none<AssistantStopReason>();
+	return { text, stopReason };
 };
 
 const optionContains = (option: Option.Option<string>, value: string | undefined): boolean => {
@@ -303,7 +329,7 @@ function buildPrompt(state: LoopState, taskContent: string, isReflection: boolea
 
 	if (state.itemsPerIteration > 0) {
 		parts.push(
-			`**THIS ITERATION: Process approximately ${state.itemsPerIteration} items, then call ralph_done.**\n`,
+			`**THIS ITERATION: Process approximately ${state.itemsPerIteration} items, then end with exactly one Ralph loop tool.**\n`,
 		);
 		parts.push(`1. Work on the next ~${state.itemsPerIteration} items from your checklist`);
 	} else {
@@ -311,8 +337,9 @@ function buildPrompt(state: LoopState, taskContent: string, isReflection: boolea
 	}
 
 	parts.push(`2. Update the task file (${state.taskFile}) with your progress`);
-	parts.push(`3. When FULLY COMPLETE, respond with: ${COMPLETE_MARKER}`);
-	parts.push(`4. Otherwise, call the ralph_done tool to proceed to next iteration`);
+	parts.push(`3. If the overall Ralph loop is complete, call ralph_finish with a short completion message`);
+	parts.push(`4. If this iteration is done and Ralph should continue, call ralph_continue`);
+	parts.push(`5. Do not end this iteration with free text alone. End with exactly one Ralph loop tool.`);
 
 	return parts.join("\n");
 }
@@ -376,10 +403,15 @@ export interface RalphService {
 		boundary: RalphCommandBoundary,
 		loopName: string,
 	) => Effect.Effect<RalphRunLoopResult, RalphContractValidationError, never>;
-	readonly recordIterationDone: (
+	readonly recordContinue: (
 		cwd: string,
 		sessionFile: string | undefined,
-	) => Effect.Effect<RalphDoneResult, RalphContractValidationError, never>;
+	) => Effect.Effect<RalphContinueResult, RalphContractValidationError, never>;
+	readonly recordFinish: (
+		cwd: string,
+		sessionFile: string | undefined,
+		message: string,
+	) => Effect.Effect<RalphFinishResult, RalphContractValidationError, never>;
 	readonly handleAgentEnd: (
 		cwd: string,
 		sessionFile: string | undefined,
@@ -406,8 +438,16 @@ const stoppedWithoutMessage: LoopStepResult = {
 	banner: Option.none(),
 };
 
-const hasCompletionMarker = (event: AgentEndEvent): boolean =>
-	extractLastAssistantText(event).includes(COMPLETE_MARKER);
+const finishBanner = (state: LoopState, message: string): string =>
+	`───────────────────────────────────────────────────────────────────────\n✅ RALPH LOOP COMPLETE: ${state.name} | ${state.iteration} iterations\n───────────────────────────────────────────────────────────────────────\n${message}`;
+
+const setPendingDecision = (state: LoopState, decision: RalphPendingDecision): void => {
+	state.pendingDecision = Option.some(decision);
+};
+
+const clearPendingDecision = (state: LoopState): void => {
+	state.pendingDecision = Option.none();
+};
 
 const isAtIterationLimit = (state: LoopState): boolean =>
 	state.maxIterations > 0 && state.iteration >= state.maxIterations;
@@ -488,8 +528,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					const nextState: LoopState = {
 						...state,
 						completedAt,
-						awaitingFinalize: false,
-						advanceRequestedAt: Option.none(),
+						pendingDecision: Option.none(),
 						activeIterationSessionFile: Option.none(),
 					};
 					if (nextState.status === "active" || nextState.status === "paused") {
@@ -553,8 +592,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 						executionProfile: input.executionProfile,
 						lastReflectionAt: 0,
 						activeIterationSessionFile: Option.none(),
-						advanceRequestedAt: Option.none(),
-						awaitingFinalize: false,
+						pendingDecision: Option.none(),
 					};
 					yield* repo.saveState(cwd, preparedState);
 				}
@@ -756,8 +794,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 						maxIterations: requestedMaxIterations ?? initialState.maxIterations,
 						completedAt: Option.none(),
 						activeIterationSessionFile: Option.none(),
-						awaitingFinalize: false,
-						advanceRequestedAt: Option.none(),
+						pendingDecision: Option.none(),
 					};
 
 					if (isAtIterationLimit(reopenedState)) {
@@ -948,7 +985,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					} satisfies LoopStepResult;
 				});
 
-			const finalizePendingIteration = (
+			const applyPendingDecision = (
 				boundary: RalphCommandBoundary,
 				loopName: string,
 			): Effect.Effect<LoopStepResult, RalphContractValidationError, never> =>
@@ -959,7 +996,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					}
 
 					const state = stateOption.value;
-					if (!state.awaitingFinalize) {
+					if (Option.isNone(state.pendingDecision)) {
 						return continueLoop;
 					}
 
@@ -973,12 +1010,28 @@ export const RalphLive = (config: RalphLiveConfig) =>
 						);
 					}
 
-					state.awaitingFinalize = false;
-					state.advanceRequestedAt = Option.none();
+					const decision = state.pendingDecision.value;
+					clearPendingDecision(state);
 					state.activeIterationSessionFile = Option.none();
-					yield* repo.saveState(boundary.cwd, state);
-					return continueLoop;
+					if (decision.kind === "continue") {
+						yield* repo.saveState(boundary.cwd, state);
+						return continueLoop;
+					}
+
+					return yield* completeLoop(
+						boundary.cwd,
+						state,
+						finishBanner(state, decision.message),
+					);
 				});
+
+			const buildMissingDecisionNudge = (): string =>
+				[
+					"This Ralph iteration ended without a Ralph loop tool.",
+					"- Call ralph_finish if the Ralph loop is complete.",
+					"- Call ralph_continue if this iteration is done and Ralph should start the next one.",
+					"- If more work is needed in this iteration, continue working now and end with exactly one Ralph loop tool.",
+				].join("\n");
 
 			const waitForIterationSignal = Effect.fn("Ralph.waitForIterationSignal")(
 				function* (iterationSessionFile: string) {
@@ -1048,7 +1101,6 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					}
 
 					if (yield* config.hasActiveSubagents()) {
-						state.awaitingFinalize = true;
 						state.activeIterationSessionFile = Option.none();
 						return yield* pauseLoop(
 							boundary.cwd,
@@ -1085,8 +1137,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 						);
 					}
 					afterSession.activeIterationSessionFile = Option.none();
-					afterSession.awaitingFinalize = false;
-					afterSession.advanceRequestedAt = Option.none();
+					clearPendingDecision(afterSession);
 					const executionProfileApplied = yield* boundary.applyExecutionProfile(afterSession.executionProfile);
 					if (!executionProfileApplied.applied) {
 						return yield* pauseLoop(
@@ -1121,6 +1172,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 						afterSession.iteration > 1 &&
 						(afterSession.iteration - 1) % afterSession.reflectEvery === 0;
 
+					let missingDecisionNudged = false;
 					let pendingSignal = yield* waitForIterationSignal(iterationSessionFile);
 					yield* boundary.sendFollowUp(buildPrompt(afterSession, taskContent.value, needsReflection));
 
@@ -1134,30 +1186,61 @@ export const RalphLive = (config: RalphLiveConfig) =>
 
 						const afterTurn = afterTurnOption.value;
 						if (signal._tag === "session_shutdown") {
-							if (afterTurn.awaitingFinalize) {
+							if (Option.isSome(afterTurn.pendingDecision)) {
 								return continueLoop;
 							}
 							return yield* pauseLoop(
 								boundary.cwd,
 								afterTurn,
-								`Iteration ${afterTurn.iteration} session shut down before ralph_done. Ralph paused. Use /ralph resume ${loopName} to continue.`,
+								`Iteration ${afterTurn.iteration} session shut down before calling ralph_continue or ralph_finish. Ralph paused. Use /ralph resume ${loopName} to continue.`,
 								"stopped",
 							);
 						}
 
-						if (hasCompletionMarker(signal.event)) {
+						if (Option.isSome(afterTurn.pendingDecision)) {
+							const decision = afterTurn.pendingDecision.value;
+							if (decision.kind === "continue") {
+								return continueLoop;
+							}
 							return yield* completeLoop(
 								boundary.cwd,
 								afterTurn,
-								`───────────────────────────────────────────────────────────────────────\n✅ RALPH LOOP COMPLETE: ${afterTurn.name} | ${afterTurn.iteration} iterations\n───────────────────────────────────────────────────────────────────────`,
+								finishBanner(afterTurn, decision.message),
 							);
 						}
 
-						if (afterTurn.awaitingFinalize) {
-							return continueLoop;
+						const assistant = extractLastAssistantSummary(signal.event);
+						const stopReason = Option.getOrUndefined(assistant.stopReason);
+						if (stopReason === "error" || stopReason === "aborted") {
+							return yield* pauseLoop(
+								boundary.cwd,
+								afterTurn,
+								`Iteration ${afterTurn.iteration} ended with stop reason ${stopReason}. Ralph paused. Use /ralph resume ${loopName} to continue.`,
+								"stopped",
+							);
 						}
 
-						pendingSignal = yield* waitForIterationSignal(iterationSessionFile);
+						if (stopReason === "stop" || stopReason === "length") {
+							if (missingDecisionNudged) {
+								return yield* pauseLoop(
+									boundary.cwd,
+									afterTurn,
+									`Iteration ${afterTurn.iteration} ended twice without calling ralph_continue or ralph_finish. Ralph paused. Use /ralph resume ${loopName} to continue.`,
+									"stopped",
+								);
+							}
+							missingDecisionNudged = true;
+							pendingSignal = yield* waitForIterationSignal(iterationSessionFile);
+							yield* boundary.sendFollowUp(buildMissingDecisionNudge());
+							continue;
+						}
+
+						return yield* pauseLoop(
+							boundary.cwd,
+							afterTurn,
+							`Iteration ${afterTurn.iteration} ended without a usable Ralph decision (stop reason: ${stopReason ?? "unknown"}). Ralph paused. Use /ralph resume ${loopName} to continue.`,
+							"stopped",
+						);
 					}
 				});
 
@@ -1175,7 +1258,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 
 						yield* setCurrentLoop(Option.some(loopName));
 
-						const finalize = yield* finalizePendingIteration(boundary, loopName);
+						const finalize = yield* applyPendingDecision(boundary, loopName);
 						if (finalize._tag === "blocked") {
 							return {
 								status: "blocked",
@@ -1211,39 +1294,91 @@ export const RalphLive = (config: RalphLiveConfig) =>
 				},
 			);
 
-			const recordIterationDone: RalphService["recordIterationDone"] = Effect.fn(
-				"Ralph.recordIterationDone",
+			const recordContinue: RalphService["recordContinue"] = Effect.fn(
+				"Ralph.recordContinue",
 			)(function* (cwd, sessionFile) {
 				const stateOption = yield* repo.findLoopBySessionFile(cwd, sessionFile);
 				if (Option.isNone(stateOption)) {
-					return { text: "No active Ralph loop." } satisfies RalphDoneResult;
+					return { text: "No active Ralph loop." } satisfies RalphContinueResult;
 				}
 
 				const state = stateOption.value;
 				if (state.status !== "active") {
-					return { text: "Ralph loop is not active." } satisfies RalphDoneResult;
+					return { text: "Ralph loop is not active." } satisfies RalphContinueResult;
 				}
 				if (!optionContains(state.activeIterationSessionFile, sessionFile)) {
-					return { text: "No active Ralph loop." } satisfies RalphDoneResult;
+					return { text: "No active Ralph loop." } satisfies RalphContinueResult;
+				}
+				if (Option.isSome(state.pendingDecision)) {
+					return {
+						text: "A Ralph decision is already recorded for this iteration.",
+					} satisfies RalphContinueResult;
 				}
 				const timestamp = yield* nowIso;
+				setPendingDecision(state, {
+					kind: "continue",
+					requestedAt: timestamp,
+				});
 				if (yield* config.hasActiveSubagents()) {
-					state.awaitingFinalize = true;
-					state.advanceRequestedAt = Option.some(timestamp);
 					state.activeIterationSessionFile = Option.none();
 					yield* markLoopPaused(cwd, state);
 					return {
 						text: "Ralph iteration recorded. Subagents are still active, so advancement is blocked until they finish. Run /ralph resume when they are done.",
-					} satisfies RalphDoneResult;
+					} satisfies RalphContinueResult;
 				}
 
-				state.advanceRequestedAt = Option.some(timestamp);
-				state.awaitingFinalize = true;
 				yield* repo.saveState(cwd, state);
 				yield* setCurrentLoop(Option.some(state.name));
 				return {
-					text: `Iteration ${state.iteration} complete. Finalize recorded.`,
-				} satisfies RalphDoneResult;
+					text: `Iteration ${state.iteration} complete. Continue recorded.`,
+				} satisfies RalphContinueResult;
+			});
+
+			const recordFinish: RalphService["recordFinish"] = Effect.fn(
+				"Ralph.recordFinish",
+			)(function* (cwd, sessionFile, message) {
+				const trimmedMessage = message.trim();
+				if (trimmedMessage.length === 0) {
+					return { text: "Finish message must not be empty." } satisfies RalphFinishResult;
+				}
+
+				const stateOption = yield* repo.findLoopBySessionFile(cwd, sessionFile);
+				if (Option.isNone(stateOption)) {
+					return { text: "No active Ralph loop." } satisfies RalphFinishResult;
+				}
+
+				const state = stateOption.value;
+				if (state.status !== "active") {
+					return { text: "Ralph loop is not active." } satisfies RalphFinishResult;
+				}
+				if (!optionContains(state.activeIterationSessionFile, sessionFile)) {
+					return { text: "No active Ralph loop." } satisfies RalphFinishResult;
+				}
+				if (Option.isSome(state.pendingDecision)) {
+					return {
+						text: "A Ralph decision is already recorded for this iteration.",
+					} satisfies RalphFinishResult;
+				}
+
+				const timestamp = yield* nowIso;
+				setPendingDecision(state, {
+					kind: "finish",
+					requestedAt: timestamp,
+					message: trimmedMessage,
+				});
+				if (yield* config.hasActiveSubagents()) {
+					state.activeIterationSessionFile = Option.none();
+					yield* markLoopPaused(cwd, state);
+					return {
+						text: "Finish recorded. Subagents are still active, so completion is blocked until they finish. Run /ralph resume when they are done.",
+					} satisfies RalphFinishResult;
+				}
+
+				yield* repo.saveState(cwd, state);
+				yield* setCurrentLoop(Option.some(state.name));
+				return {
+					text: `Finish recorded for iteration ${state.iteration}.`,
+				} satisfies RalphFinishResult;
 			});
 
 			const handleAgentEnd: RalphService["handleAgentEnd"] = Effect.fn(
@@ -1281,24 +1416,20 @@ export const RalphLive = (config: RalphLiveConfig) =>
 				}
 
 				const state = ownedActiveState.value;
-
-				if (!hasCompletionMarker(event)) {
+				if (Option.isSome(state.pendingDecision) && state.pendingDecision.value.kind === "finish") {
+					const message = state.pendingDecision.value.message;
+					clearPendingDecision(state);
+					state.activeIterationSessionFile = Option.none();
+					yield* markLoopCompleted(cwd, state);
 					return {
 						consumedByWaitingLoop: false,
-						banner: Option.none(),
+						banner: Option.some(finishBanner(state, message)),
 					} satisfies RalphAgentEndResult;
 				}
 
-				state.awaitingFinalize = false;
-				state.advanceRequestedAt = Option.none();
-				state.activeIterationSessionFile = Option.none();
-				yield* markLoopCompleted(cwd, state);
-
 				return {
 					consumedByWaitingLoop: false,
-					banner: Option.some(
-						`───────────────────────────────────────────────────────────────────────\n✅ RALPH LOOP COMPLETE: ${state.name} | ${state.iteration} iterations\n───────────────────────────────────────────────────────────────────────`,
-					),
+					banner: Option.none(),
 				} satisfies RalphAgentEndResult;
 			});
 
@@ -1319,7 +1450,8 @@ export const RalphLive = (config: RalphLiveConfig) =>
 				syncCurrentLoopFromSession,
 				persistOwnedLoopOnShutdown,
 				runLoop,
-				recordIterationDone,
+				recordContinue,
+				recordFinish,
 				handleAgentEnd,
 			});
 		}),

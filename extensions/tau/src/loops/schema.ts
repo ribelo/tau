@@ -10,6 +10,25 @@ import {
 const NonNegativeIntSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 const OptionalStringSchema = Schema.OptionFromNullOr(Schema.String);
 
+const RalphContinueDecisionSchema = Schema.Struct({
+	kind: Schema.Literal("continue"),
+	requestedAt: Schema.String,
+});
+
+const RalphFinishDecisionSchema = Schema.Struct({
+	kind: Schema.Literal("finish"),
+	requestedAt: Schema.String,
+	message: Schema.NonEmptyString,
+});
+
+export const RalphPendingDecisionSchema = Schema.Union([
+	RalphContinueDecisionSchema,
+	RalphFinishDecisionSchema,
+]);
+export type RalphPendingDecision = Schema.Schema.Type<typeof RalphPendingDecisionSchema>;
+
+const OptionalRalphPendingDecisionSchema = Schema.OptionFromNullOr(RalphPendingDecisionSchema);
+
 function toContractValidationError(entity: string, error: unknown): LoopContractValidationError {
 	return new LoopContractValidationError({
 		reason: String(error),
@@ -107,8 +126,7 @@ const RalphLoopStateDetailsSchema = Schema.Struct({
 	reflectEvery: NonNegativeIntSchema,
 	reflectInstructions: Schema.String,
 	lastReflectionAt: NonNegativeIntSchema,
-	advanceRequestedAt: OptionalStringSchema,
-	awaitingFinalize: Schema.Boolean,
+	pendingDecision: OptionalRalphPendingDecisionSchema,
 	pinnedExecutionProfile: ExecutionProfileSchema,
 });
 export type RalphLoopStateDetails = Schema.Schema.Type<typeof RalphLoopStateDetailsSchema>;

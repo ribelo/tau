@@ -31,8 +31,7 @@ function makeLoopState(loopName: string): LoopState {
 		lastReflectionAt: 0,
 		controllerSessionFile: Option.some(`/tmp/${loopName}-controller.session.json`),
 		activeIterationSessionFile: Option.some(`/tmp/${loopName}-iteration.session.json`),
-		advanceRequestedAt: Option.none(),
-		awaitingFinalize: false,
+		pendingDecision: Option.none(),
 		executionProfile: makeExecutionProfile(),
 	};
 }

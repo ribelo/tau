@@ -441,13 +441,12 @@ export const LoopEngineLive = Layer.effect(
 								iteration: 0,
 								maxIterations: input.maxIterations,
 								itemsPerIteration: input.itemsPerIteration,
-								reflectEvery: input.reflectEvery,
-								reflectInstructions: input.reflectInstructions,
-								lastReflectionAt: 0,
-								advanceRequestedAt: Option.none<string>(),
-								awaitingFinalize: false,
-								pinnedExecutionProfile: input.executionProfile,
-							},
+							reflectEvery: input.reflectEvery,
+							reflectInstructions: input.reflectInstructions,
+							lastReflectionAt: 0,
+							pendingDecision: Option.none(),
+							pinnedExecutionProfile: input.executionProfile,
+						},
 						}
 						: {
 							...shared,
@@ -528,8 +527,7 @@ export const LoopEngineLive = Layer.effect(
 							ralph: {
 								...state.ralph,
 								iteration: restarted ? 0 : state.ralph.iteration,
-								advanceRequestedAt: Option.none(),
-								awaitingFinalize: false,
+								pendingDecision: Option.none(),
 							},
 						}
 						: {
@@ -606,7 +604,6 @@ export const LoopEngineLive = Layer.effect(
 							},
 							ralph: {
 								...state.ralph,
-								advanceRequestedAt: Option.none(),
 							},
 						}
 						: {
@@ -680,8 +677,7 @@ export const LoopEngineLive = Layer.effect(
 							},
 							ralph: {
 								...state.ralph,
-								awaitingFinalize: false,
-								advanceRequestedAt: Option.none(),
+								pendingDecision: Option.none(),
 							},
 						}
 						: {
@@ -908,8 +904,7 @@ export const LoopEngineLive = Layer.effect(
 								},
 								ralph: {
 									...state.ralph,
-									awaitingFinalize: false,
-									advanceRequestedAt: Option.none(),
+									pendingDecision: Option.none(),
 								},
 							}
 							: {

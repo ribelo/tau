@@ -61,8 +61,7 @@ function makeInvalidState(taskId: string, child: LoopSessionRef): LoopPersistedS
 			reflectEvery: 5,
 			reflectInstructions: "reflect",
 			lastReflectionAt: 0,
-			advanceRequestedAt: Option.none(),
-			awaitingFinalize: false,
+			pendingDecision: Option.none(),
 			pinnedExecutionProfile: makeExecutionProfile(),
 		},
 	};

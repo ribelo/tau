@@ -26,8 +26,7 @@ const encodedLoopState: EncodedLoopState = {
 	lastReflectionAt: 0,
 	controllerSessionFile: "/tmp/controller.session.json",
 	activeIterationSessionFile: null,
-	advanceRequestedAt: null,
-	awaitingFinalize: false,
+	pendingDecision: null,
 	executionProfile: makeExecutionProfile(),
 };
 
@@ -97,8 +96,7 @@ describe("ralph schema", () => {
 			lastReflectionAt: encodedLoopState.lastReflectionAt,
 			controllerSessionFile: encodedLoopState.controllerSessionFile,
 			activeIterationSessionFile: encodedLoopState.activeIterationSessionFile,
-			advanceRequestedAt: encodedLoopState.advanceRequestedAt,
-			awaitingFinalize: encodedLoopState.awaitingFinalize,
+			pendingDecision: encodedLoopState.pendingDecision,
 			promptProfile: {
 				mode: "smart",
 				model: "anthropic/claude-opus-4-5",

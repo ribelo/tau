@@ -13,7 +13,6 @@ import { Effect, Option } from "effect";
 import type { ExecutionProfile } from "../execution/schema.js";
 import { PromptModes } from "../services/prompt-modes.js";
 import {
-	COMPLETE_MARKER,
 	Ralph,
 	type RalphCommandBoundary,
 	type RalphStopLoopResult,
@@ -469,7 +468,8 @@ Examples:
   /ralph start review --items-per-iteration 5 --reflect-every 10
   /ralph resume review --max-iterations 100`;
 
-const RALPH_DONE_TOOL_NAME = "ralph_done";
+const RALPH_CONTINUE_TOOL_NAME = "ralph_continue";
+const RALPH_FINISH_TOOL_NAME = "ralph_finish";
 
 type RalphUiContext = Pick<ExtensionContext, "hasUI" | "ui" | "sessionManager">;
 
@@ -542,12 +542,13 @@ export default function initRalph(
 			}),
 	});
 
-	const syncRalphDoneTool = async (
+	const syncRalphHandshakeTools = async (
 		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
 	): Promise<void> => {
 		const sessionFile = sessionFileFromContext(ctx);
 		if (sessionFile === undefined) {
-			setToolEnabled(pi, RALPH_DONE_TOOL_NAME, false);
+			setToolEnabled(pi, RALPH_CONTINUE_TOOL_NAME, false);
+			setToolEnabled(pi, RALPH_FINISH_TOOL_NAME, false);
 			return;
 		}
 
@@ -561,14 +562,15 @@ export default function initRalph(
 			state !== undefined &&
 			state.status === "active" &&
 			Option.getOrUndefined(state.activeIterationSessionFile) === sessionFile;
-		setToolEnabled(pi, RALPH_DONE_TOOL_NAME, enabled);
+		setToolEnabled(pi, RALPH_CONTINUE_TOOL_NAME, enabled);
+		setToolEnabled(pi, RALPH_FINISH_TOOL_NAME, enabled);
 	};
 
-	const syncRalphDoneToolSafely = async (
+	const syncRalphHandshakeToolsSafely = async (
 		ctx: Pick<ExtensionContext, "cwd" | "sessionManager" | "hasUI" | "ui">,
 	): Promise<void> => {
 		try {
-			await syncRalphDoneTool(ctx);
+			await syncRalphHandshakeTools(ctx);
 		} catch (error) {
 			if (Option.isSome(handlePersistedStateFailure(error, ctx))) {
 				return;
@@ -650,7 +652,7 @@ export default function initRalph(
 			}
 		}
 		if (Option.isSome(result.banner)) {
-			pi.sendUserMessage(result.banner.value);
+			ctx.ui.notify(result.banner.value, "info");
 		}
 		try {
 			await updateUI(ctx.cwd, ctx);
@@ -1062,7 +1064,7 @@ export default function initRalph(
 				}
 				throw error;
 			} finally {
-				await syncRalphDoneToolSafely(ctx);
+				await syncRalphHandshakeToolsSafely(ctx);
 			}
 		},
 	});
@@ -1150,24 +1152,24 @@ export default function initRalph(
 	});
 
 	pi.registerTool({
-		name: "ralph_done",
-		label: "Ralph Iteration Done",
+		name: "ralph_continue",
+		label: "Ralph Continue",
 		description:
-			"Signal that you've completed this iteration of the Ralph loop. Call this after making progress to get the next iteration prompt. Do NOT call this if you've output the completion marker.",
+			"Signal that this Ralph iteration is complete and Ralph should continue to the next iteration.",
 		promptSnippet: "Advance an active Ralph loop after completing the current iteration.",
 		promptGuidelines: [
 			"Call this after making real iteration progress so Ralph can queue the next prompt.",
-			"Do not call this if there is no active loop, if pending messages are already queued, or if the completion marker has already been emitted.",
+			"Do not call this if there is no active loop or if a Ralph decision was already recorded for this iteration.",
 		],
 		parameters: Type.Object({}),
 
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			try {
 				const result = await withRalph((ralph) =>
-					ralph.recordIterationDone(ctx.cwd, sessionFileFromContext(ctx)),
+					ralph.recordContinue(ctx.cwd, sessionFileFromContext(ctx)),
 				);
 				await updateUI(ctx.cwd, ctx);
-				await syncRalphDoneToolSafely(ctx);
+				await syncRalphHandshakeToolsSafely(ctx);
 				return {
 					content: [{ type: "text", text: result.text }],
 					details: {},
@@ -1186,7 +1188,59 @@ export default function initRalph(
 		},
 
 		renderCall(_args, theme) {
-			return new Text(theme.fg("toolTitle", theme.bold("ralph_done")), 0, 0);
+			return new Text(theme.fg("toolTitle", theme.bold("ralph_continue")), 0, 0);
+		},
+
+		renderResult(result, _options, theme) {
+			const msg = result.content[0];
+			const text = msg?.type === "text" ? msg.text : "";
+			return new Text(theme.fg("muted", text), 0, 0);
+		},
+	});
+
+	pi.registerTool({
+		name: "ralph_finish",
+		label: "Ralph Finish",
+		description:
+			"Signal that the overall Ralph loop is complete. Provide a short completion message.",
+		promptSnippet: "Finish an active Ralph loop with a short completion message.",
+		promptGuidelines: [
+			"Call this only when the overall Ralph loop is complete.",
+			"Provide a short concrete completion message.",
+			"Do not call this if there is no active loop or if a Ralph decision was already recorded for this iteration.",
+		],
+		parameters: Type.Object({
+			message: Type.String({ description: "Short completion message for the finished Ralph loop" }),
+		}),
+
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			try {
+				const result = await withRalph((ralph) =>
+					ralph.recordFinish(ctx.cwd, sessionFileFromContext(ctx), params.message),
+				);
+				await updateUI(ctx.cwd, ctx);
+				await syncRalphHandshakeToolsSafely(ctx);
+				return {
+					content: [{ type: "text", text: result.text }],
+					details: {},
+				};
+			} catch (error) {
+				const message = handlePersistedStateFailure(error, ctx);
+				if (Option.isSome(message)) {
+					return {
+						content: [{ type: "text", text: message.value }],
+						details: {},
+						isError: true,
+					};
+				}
+				throw error;
+			}
+		},
+
+		renderCall(args, theme) {
+			let text = theme.fg("toolTitle", theme.bold("ralph_finish "));
+			text += theme.fg("accent", String(args.message ?? ""));
+			return new Text(text, 0, 0);
 		},
 
 		renderResult(result, _options, theme) {
@@ -1208,7 +1262,8 @@ export default function initRalph(
 				state !== undefined &&
 				state.status === "active" &&
 				Option.getOrUndefined(state.activeIterationSessionFile) === sessionFile;
-			setToolEnabled(pi, RALPH_DONE_TOOL_NAME, inActiveIteration);
+			setToolEnabled(pi, RALPH_CONTINUE_TOOL_NAME, inActiveIteration);
+			setToolEnabled(pi, RALPH_FINISH_TOOL_NAME, inActiveIteration);
 
 			if (!inActiveIteration || state === undefined) {
 				return;
@@ -1220,8 +1275,9 @@ export default function initRalph(
 				instructions += `- Work on ~${state.itemsPerIteration} items this iteration\n`;
 			}
 			instructions += "- Update the task file as you progress\n";
-			instructions += `- When FULLY COMPLETE: ${COMPLETE_MARKER}\n`;
-			instructions += "- Otherwise, call ralph_done tool to proceed to next iteration";
+			instructions += "- If the Ralph loop is complete, call ralph_finish with a short message\n";
+			instructions += "- If this iteration is done and Ralph should continue, call ralph_continue\n";
+			instructions += "- Do not end the iteration with free text alone; end with exactly one Ralph loop tool";
 
 			return {
 				systemPrompt:
@@ -1242,10 +1298,10 @@ export default function initRalph(
 				ralph.handleAgentEnd(ctx.cwd, sessionFileFromContext(ctx), event),
 			);
 			if (Option.isSome(result.banner)) {
-				pi.sendUserMessage(result.banner.value);
+				ctx.ui.notify(result.banner.value, "info");
 				await updateUI(ctx.cwd, ctx);
 			}
-			await syncRalphDoneToolSafely(ctx);
+			await syncRalphHandshakeToolsSafely(ctx);
 		} catch (error) {
 			if (Option.isSome(handlePersistedStateFailure(error, ctx))) {
 				return;
@@ -1271,7 +1327,7 @@ export default function initRalph(
 				);
 			}
 			await updateUI(ctx.cwd, ctx);
-			await syncRalphDoneToolSafely(ctx);
+			await syncRalphHandshakeToolsSafely(ctx);
 		} catch (error) {
 			if (Option.isSome(handlePersistedStateFailure(error, ctx))) {
 				return;
@@ -1286,7 +1342,7 @@ export default function initRalph(
 				ralph.syncCurrentLoopFromSession(ctx.cwd, sessionFileFromContext(ctx)),
 			);
 			await updateUI(ctx.cwd, ctx);
-			await syncRalphDoneToolSafely(ctx);
+			await syncRalphHandshakeToolsSafely(ctx);
 		} catch (error) {
 			if (Option.isSome(handlePersistedStateFailure(error, ctx))) {
 				return;
@@ -1301,7 +1357,7 @@ export default function initRalph(
 				ralph.syncCurrentLoopFromSession(ctx.cwd, sessionFileFromContext(ctx)),
 			);
 			await updateUI(ctx.cwd, ctx);
-			await syncRalphDoneToolSafely(ctx);
+			await syncRalphHandshakeToolsSafely(ctx);
 		} catch (error) {
 			if (Option.isSome(handlePersistedStateFailure(error, ctx))) {
 				return;
@@ -1315,7 +1371,8 @@ export default function initRalph(
 			await withRalph((ralph) =>
 				ralph.persistOwnedLoopOnShutdown(ctx.cwd, sessionFileFromContext(ctx)),
 			);
-			setToolEnabled(pi, RALPH_DONE_TOOL_NAME, false);
+			setToolEnabled(pi, RALPH_CONTINUE_TOOL_NAME, false);
+			setToolEnabled(pi, RALPH_FINISH_TOOL_NAME, false);
 		} catch (error) {
 			if (Option.isSome(handlePersistedStateFailure(error, ctx))) {
 				return;

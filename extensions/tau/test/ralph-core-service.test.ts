@@ -16,7 +16,7 @@ import {
 	RalphLive,
 	type RalphCommandBoundary,
 } from "../src/services/ralph.js";
-import type { LoopState } from "../src/ralph/schema.js";
+import type { LoopState, RalphPendingDecision } from "../src/ralph/schema.js";
 import {
 	makeExecutionProfile,
 	makeExecutionProfileForPrompt,
@@ -44,19 +44,22 @@ function makeState(loopName: string, sessionFile: string): LoopState {
 			path.join(path.dirname(sessionFile), `${loopName}-controller.session.json`),
 		),
 		activeIterationSessionFile: Option.some(sessionFile),
-		advanceRequestedAt: Option.none(),
-		awaitingFinalize: false,
+		pendingDecision: Option.none<RalphPendingDecision>(),
 		executionProfile: makeExecutionProfile(),
 	};
 }
 
-function makeAgentEndEvent(text: string): AgentEndEvent {
+function makeAgentEndEvent(
+	text: string,
+	stopReason: "stop" | "length" | "toolUse" | "error" | "aborted" = "stop",
+): AgentEndEvent {
 	const event: unknown = {
 		type: "agent_end",
 		messages: [
 			{
 				role: "assistant",
 				content: [{ type: "text", text }],
+				stopReason,
 			},
 		],
 	};
@@ -80,7 +83,7 @@ describe("ralph core service", () => {
 		}
 	});
 
-	it("records iteration completion through service state machine", async () => {
+	it("records iteration continuation through service state machine", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 		const sessionFile = path.join(cwd, ".pi", "sessions", "owned.session.json");
@@ -90,21 +93,49 @@ describe("ralph core service", () => {
 				const repo = yield* RalphRepo;
 				const ralph = yield* Ralph;
 				yield* repo.saveState(cwd, makeState("service-loop", sessionFile));
-				const done = yield* ralph.recordIterationDone(cwd, sessionFile);
+				const done = yield* ralph.recordContinue(cwd, sessionFile);
 				const saved = yield* repo.loadState(cwd, "service-loop");
 				return { done, saved };
 			}).pipe(Effect.provide(ralphLayer)),
 		);
 
-		expect(result.done.text).toContain("Iteration 3 complete. Finalize recorded.");
+		expect(result.done.text).toContain("Iteration 3 complete. Continue recorded.");
 		expect(Option.isSome(result.saved)).toBe(true);
 		if (Option.isSome(result.saved)) {
-			expect(result.saved.value.awaitingFinalize).toBe(true);
-			expect(Option.isSome(result.saved.value.advanceRequestedAt)).toBe(true);
+			expect(Option.isSome(result.saved.value.pendingDecision)).toBe(true);
+			if (Option.isSome(result.saved.value.pendingDecision)) {
+				expect(result.saved.value.pendingDecision.value.kind).toBe("continue");
+			}
 		}
 	});
 
-	it("requires iteration-session ownership for ralph_done and does not fallback to current-loop memory", async () => {
+	it("records finish with a required message", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+		const sessionFile = path.join(cwd, ".pi", "sessions", "owned.session.json");
+
+		const result = await Effect.runPromise(
+			Effect.gen(function* () {
+				const repo = yield* RalphRepo;
+				const ralph = yield* Ralph;
+				yield* repo.saveState(cwd, makeState("finish-loop", sessionFile));
+				const finish = yield* ralph.recordFinish(cwd, sessionFile, "Task fully complete.");
+				const saved = yield* repo.loadState(cwd, "finish-loop");
+				return { finish, saved };
+			}).pipe(Effect.provide(ralphLayer)),
+		);
+
+		expect(result.finish.text).toContain("Finish recorded");
+		expect(Option.isSome(result.saved)).toBe(true);
+		if (Option.isSome(result.saved) && Option.isSome(result.saved.value.pendingDecision)) {
+			expect(result.saved.value.pendingDecision.value.kind).toBe("finish");
+			if (result.saved.value.pendingDecision.value.kind === "finish") {
+				expect(result.saved.value.pendingDecision.value.message).toBe("Task fully complete.");
+			}
+		}
+	});
+
+	it("requires iteration-session ownership for ralph_continue and does not fallback to current-loop memory", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 		const ownedSessionFile = path.join(cwd, ".pi", "sessions", "owned.session.json");
@@ -116,7 +147,7 @@ describe("ralph core service", () => {
 				const ralph = yield* Ralph;
 				yield* repo.saveState(cwd, makeState("strict-loop", ownedSessionFile));
 				yield* ralph.syncCurrentLoopFromSession(cwd, ownedSessionFile);
-				const done = yield* ralph.recordIterationDone(cwd, unrelatedSessionFile);
+				const done = yield* ralph.recordContinue(cwd, unrelatedSessionFile);
 				const saved = yield* repo.loadState(cwd, "strict-loop");
 				return { done, saved };
 			}).pipe(Effect.provide(ralphLayer)),
@@ -125,8 +156,7 @@ describe("ralph core service", () => {
 		expect(result.done.text).toBe("No active Ralph loop.");
 		expect(Option.isSome(result.saved)).toBe(true);
 		if (Option.isSome(result.saved)) {
-			expect(result.saved.value.awaitingFinalize).toBe(false);
-			expect(Option.isNone(result.saved.value.advanceRequestedAt)).toBe(true);
+			expect(Option.isNone(result.saved.value.pendingDecision)).toBe(true);
 		}
 	});
 
@@ -162,7 +192,7 @@ describe("ralph core service", () => {
 		}
 	});
 
-	it("keeps iteration ownership after a handled child-session end so ralph_done still works", async () => {
+	it("keeps iteration ownership after a handled child-session end so ralph_continue still works", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 		const loopName = "handshake-loop";
@@ -226,7 +256,7 @@ describe("ralph core service", () => {
 				yield* Effect.sleep("10 millis");
 
 				const afterHandledEnd = yield* repo.loadState(cwd, loopName);
-				const done = yield* ralph.recordIterationDone(cwd, iterationSessionFile);
+				const done = yield* ralph.recordContinue(cwd, iterationSessionFile);
 				const afterDone = yield* repo.loadState(cwd, loopName);
 
 				yield* Fiber.interrupt(runFiber);
@@ -240,16 +270,19 @@ describe("ralph core service", () => {
 		expect(Option.isSome(result.afterHandledEnd)).toBe(true);
 		if (Option.isSome(result.afterHandledEnd)) {
 			expect(result.afterHandledEnd.value.status).toBe("active");
-			expect(result.afterHandledEnd.value.awaitingFinalize).toBe(false);
+			expect(Option.isNone(result.afterHandledEnd.value.pendingDecision)).toBe(true);
 			expect(Option.getOrUndefined(result.afterHandledEnd.value.activeIterationSessionFile)).toBe(
 				iterationSessionFile,
 			);
 		}
-		expect(result.done.text).toContain("Iteration 1 complete. Finalize recorded.");
+		expect(result.done.text).toContain("Iteration 1 complete. Continue recorded.");
 		expect(Option.isSome(result.afterDone)).toBe(true);
 		if (Option.isSome(result.afterDone)) {
 			expect(result.afterDone.value.status).toBe("active");
-			expect(result.afterDone.value.awaitingFinalize).toBe(true);
+			expect(Option.isSome(result.afterDone.value.pendingDecision)).toBe(true);
+			if (Option.isSome(result.afterDone.value.pendingDecision)) {
+				expect(result.afterDone.value.pendingDecision.value.kind).toBe("continue");
+			}
 			expect(Option.getOrUndefined(result.afterDone.value.activeIterationSessionFile)).toBe(
 				iterationSessionFile,
 			);
@@ -330,11 +363,11 @@ describe("ralph core service", () => {
 
 				const runFiber = yield* Effect.forkDetach(ralph.runLoop(boundary, loopName));
 				yield* Deferred.await(startedA);
-				yield* ralph.recordIterationDone(cwd, iterationSessionFileA);
+				yield* ralph.recordContinue(cwd, iterationSessionFileA);
 				yield* ralph.handleAgentEnd(cwd, iterationSessionFileA, makeAgentEndEvent("worked"));
 				yield* Deferred.succeed(releaseA, undefined);
 				yield* Deferred.await(startedB);
-				yield* ralph.recordIterationDone(cwd, iterationSessionFileB);
+				yield* ralph.recordContinue(cwd, iterationSessionFileB);
 				yield* ralph.handleAgentEnd(cwd, iterationSessionFileB, makeAgentEndEvent("worked again"));
 				yield* Deferred.succeed(releaseB, undefined);
 				yield* Fiber.join(runFiber);

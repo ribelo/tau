@@ -118,8 +118,7 @@ function readLoopState(cwd: string, loopName: string) {
 		lastReflectionAt: state.ralph.lastReflectionAt,
 		controllerSessionFile: Option.map(state.ownership.controller, (controller) => controller.sessionFile),
 		activeIterationSessionFile: Option.map(state.ownership.child, (child) => child.sessionFile),
-		advanceRequestedAt: state.ralph.advanceRequestedAt,
-		awaitingFinalize: state.ralph.awaitingFinalize,
+		pendingDecision: state.ralph.pendingDecision,
 		executionProfile: state.ralph.pinnedExecutionProfile,
 	};
 }
@@ -179,8 +178,7 @@ function writeLoopState(
 				reflectEvery: 0,
 				reflectInstructions: "reflect",
 				lastReflectionAt: 0,
-				advanceRequestedAt: Option.none(),
-				awaitingFinalize: false,
+				pendingDecision: Option.none(),
 				pinnedExecutionProfile: makeExecutionProfile(),
 			},
 		}),
@@ -360,13 +358,17 @@ function makePiHarness(): PiHarness {
 	};
 }
 
-function agentEndPayload(text: string) {
+function agentEndPayload(
+	text: string,
+	stopReason: "stop" | "length" | "toolUse" | "error" | "aborted" = "stop",
+) {
 	return {
 		type: "agent_end",
 		messages: [
 			{
 				role: "assistant",
 				content: [{ type: "text", text }],
+				stopReason,
 			},
 		],
 	};
@@ -385,7 +387,7 @@ describe("ralph adapter boundary freeze", () => {
 		}
 	});
 
-	it("resolves loop ownership from session file for before_agent_start and ralph_done", async () => {
+	it("resolves loop ownership from session file for before_agent_start and ralph_continue", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 
@@ -419,7 +421,7 @@ describe("ralph adapter boundary freeze", () => {
 			systemPrompt: expect.stringContaining("[RALPH LOOP - owned-loop - Iteration 3/50]"),
 		});
 
-		const doneTool = piHarness.tools.get("ralph_done");
+		const doneTool = piHarness.tools.get("ralph_continue");
 		expect(doneTool).toBeDefined();
 		const doneResult = (await doneTool?.execute(
 			"call-owned",
@@ -429,13 +431,15 @@ describe("ralph adapter boundary freeze", () => {
 			context.ctx,
 		)) as ToolExecutionResult;
 
-		expect(doneResult.content[0]?.text).toContain("Iteration 3 complete. Finalize recorded.");
+		expect(doneResult.content[0]?.text).toContain("Iteration 3 complete. Continue recorded.");
 		const state = readLoopState(cwd, "owned-loop");
-		expect(state.awaitingFinalize).toBe(true);
-		expect(Option.isSome(state.advanceRequestedAt)).toBe(true);
+		expect(Option.isSome(state.pendingDecision)).toBe(true);
+		if (Option.isSome(state.pendingDecision)) {
+			expect(state.pendingDecision.value.kind).toBe("continue");
+		}
 	});
 
-	it("closes an active owned loop when completion marker appears in agent_end", async () => {
+	it("closes an active owned loop when ralph_finish was called before agent_end", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 
@@ -454,19 +458,21 @@ describe("ralph adapter boundary freeze", () => {
 		const ralphRuntime = makeRalphRuntime();
 		runtimes.push(ralphRuntime);
 		initRalph(piHarness.pi, ralphRuntime.run);
-
-		await piHarness.fire(
-			"agent_end",
-			agentEndPayload("final response <promise>COMPLETE</promise>"),
+		const finishTool = piHarness.tools.get("ralph_finish");
+		expect(finishTool).toBeDefined();
+		await finishTool?.execute(
+			"call-finish",
+			{ message: "All done." },
+			undefined,
+			undefined,
 			context.ctx,
 		);
+
+		await piHarness.fire("agent_end", agentEndPayload("final response"), context.ctx);
 
 		const state = readLoopState(cwd, "close-loop");
 		expect(state.status).toBe("completed");
 		expect(Option.isSome(state.completedAt)).toBe(true);
-		expect(piHarness.sentUserMessages).toHaveLength(1);
-		const banner = piHarness.sentUserMessages[0]?.content;
-		expect(typeof banner === "string" ? banner : "").toContain("RALPH LOOP COMPLETE");
 	});
 
 	it("reports persisted-state decode failures during session events instead of throwing", async () => {
@@ -493,8 +499,7 @@ describe("ralph adapter boundary freeze", () => {
 					lastReflectionAt: 0,
 					controllerSessionFile: null,
 					activeIterationSessionFile: null,
-					advanceRequestedAt: null,
-					awaitingFinalize: false,
+					pendingDecision: null,
 					executionProfile: makeExecutionProfile(),
 				},
 				null,
@@ -572,7 +577,7 @@ describe("ralph adapter boundary freeze", () => {
 		initRalph(piHarness.pi, ralphRuntime.run);
 
 		const startTool = piHarness.tools.get("ralph_create");
-		const doneTool = piHarness.tools.get("ralph_done");
+		const doneTool = piHarness.tools.get("ralph_continue");
 		const command = piHarness.commands.get("ralph");
 		expect(startTool).toBeDefined();
 		expect(doneTool).toBeDefined();
@@ -604,12 +609,14 @@ describe("ralph adapter boundary freeze", () => {
 			undefined,
 			context.ctx,
 		)) as ToolExecutionResult;
-		expect(doneResult.content[0]?.text).toContain("Iteration 7 complete. Finalize recorded.");
+		expect(doneResult.content[0]?.text).toContain("Iteration 7 complete. Continue recorded.");
 
 		const activeDoneState = readLoopState(cwd, "tool-owned-loop");
 		expect(activeDoneState.status).toBe("active");
-		expect(activeDoneState.awaitingFinalize).toBe(true);
-		expect(Option.isSome(activeDoneState.advanceRequestedAt)).toBe(true);
+		expect(Option.isSome(activeDoneState.pendingDecision)).toBe(true);
+		if (Option.isSome(activeDoneState.pendingDecision)) {
+			expect(activeDoneState.pendingDecision.value.kind).toBe("continue");
+		}
 
 		await piHarness.fire(
 			"before_agent_start",
