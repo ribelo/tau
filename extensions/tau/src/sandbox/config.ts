@@ -19,6 +19,7 @@ export type SandboxConfig = {
 	preset?: SandboxPreset;
 	/** If true, agent is running in subagent mode (blocks git, restricted operations) */
 	subagent?: boolean;
+	approvalTimeoutSeconds?: number;
 };
 
 /** Fully resolved internal config - all fields expanded from preset */
@@ -71,6 +72,9 @@ function decodeSandboxConfigOrThrow(
 	}
 
 	if (decoded.value.subagent !== undefined) normalized.subagent = decoded.value.subagent;
+	if (decoded.value.approvalTimeoutSeconds !== undefined) {
+		normalized.approvalTimeoutSeconds = decoded.value.approvalTimeoutSeconds;
+	}
 	return normalized;
 }
 
@@ -82,7 +86,7 @@ function applyDefaults(cfg: SandboxConfig | undefined): ResolvedSandboxConfig {
 		filesystemMode: resolved.filesystemMode,
 		networkMode: resolved.networkMode,
 		approvalPolicy: resolved.approvalPolicy,
-		approvalTimeoutSeconds: DEFAULT_SANDBOX_CONFIG.approvalTimeoutSeconds,
+		approvalTimeoutSeconds: cfg?.approvalTimeoutSeconds ?? DEFAULT_SANDBOX_CONFIG.approvalTimeoutSeconds,
 		subagent: cfg?.subagent ?? DEFAULT_SANDBOX_CONFIG.subagent,
 	};
 }
@@ -108,6 +112,9 @@ function readSettingsFileOrThrow(settingsPath: string): AnyRecord {
 		return readJsonObjectFileOrThrow(settingsPath);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
+		if (message.includes("Missing JSON file")) {
+			return {};
+		}
 		throw new Error(message.replace(/^Invalid JSON at /, "Invalid settings JSON at "));
 	}
 }
@@ -159,8 +166,13 @@ export function computeEffectiveConfig(opts: {
 		opts.sessionOverride?.preset ?? projectSandbox.preset ?? userSandbox.preset;
 	const mergedSubagent =
 		opts.sessionOverride?.subagent ?? projectSandbox.subagent ?? userSandbox.subagent;
+	const mergedApprovalTimeout =
+		opts.sessionOverride?.approvalTimeoutSeconds ??
+		projectSandbox.approvalTimeoutSeconds ??
+		userSandbox.approvalTimeoutSeconds;
 	if (mergedPreset !== undefined) merged.preset = mergedPreset;
 	if (mergedSubagent !== undefined) merged.subagent = mergedSubagent;
+	if (mergedApprovalTimeout !== undefined) merged.approvalTimeoutSeconds = mergedApprovalTimeout;
 
 	return applyDefaults(merged);
 }

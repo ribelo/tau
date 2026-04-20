@@ -39,6 +39,7 @@ describe("checkWriteAllowed symlink hardening", () => {
 
 		const result = checkWriteAllowed({
 			targetPath: path.join(escapeLink, "nested", "file.txt"),
+			cwd: workspaceRoot,
 			workspaceRoot,
 			filesystemMode: "workspace-write",
 		});
@@ -55,6 +56,7 @@ describe("checkWriteAllowed symlink hardening", () => {
 
 		const result = checkWriteAllowed({
 			targetPath: path.join(safeLink, "new-file.txt"),
+			cwd: workspaceRoot,
 			workspaceRoot,
 			filesystemMode: "workspace-write",
 		});
@@ -71,6 +73,7 @@ describe("checkWriteAllowed symlink hardening", () => {
 
 		const result = checkWriteAllowed({
 			targetPath: path.join(escapeLink, "file.txt"),
+			cwd: workspaceRoot,
 			workspaceRoot,
 			filesystemMode: "read-only",
 		});
@@ -87,6 +90,7 @@ describe("checkWriteAllowed symlink hardening", () => {
 
 		const result = checkWriteAllowed({
 			targetPath: path.join(gitLink, "objects", "new-object"),
+			cwd: workspaceRoot,
 			workspaceRoot,
 			filesystemMode: "workspace-write",
 		});
@@ -100,6 +104,7 @@ describe("checkWriteAllowed symlink hardening", () => {
 
 		const result = checkWriteAllowed({
 			targetPath: path.join(tempRoot, "regular-file.txt"),
+			cwd: workspaceRoot,
 			workspaceRoot,
 			filesystemMode: "read-only",
 		});
@@ -116,6 +121,7 @@ describe("checkWriteAllowed workspace protected path policy", () => {
 
 		const result = checkWriteAllowed({
 			targetPath: path.join(tasksDir, "loop.md"),
+			cwd: workspaceRoot,
 			workspaceRoot,
 			filesystemMode: "workspace-write",
 		});
@@ -130,6 +136,7 @@ describe("checkWriteAllowed workspace protected path policy", () => {
 
 		const result = checkWriteAllowed({
 			targetPath: path.join(stateDir, "loop.state.json"),
+			cwd: workspaceRoot,
 			workspaceRoot,
 			filesystemMode: "workspace-write",
 		});
@@ -144,6 +151,7 @@ describe("checkWriteAllowed workspace protected path policy", () => {
 
 		const result = checkWriteAllowed({
 			targetPath: path.join(backlogDir, "events", "issue.json"),
+			cwd: workspaceRoot,
 			workspaceRoot,
 			filesystemMode: "workspace-write",
 		});
@@ -158,6 +166,7 @@ describe("checkWriteAllowed workspace protected path policy", () => {
 
 		const result = checkWriteAllowed({
 			targetPath: path.join(piDir, "settings.json"),
+			cwd: workspaceRoot,
 			workspaceRoot,
 			filesystemMode: "workspace-write",
 		});
@@ -177,6 +186,7 @@ describe("checkWriteAllowed workspace protected path policy", () => {
 
 		const result = checkWriteAllowed({
 			targetPath: path.join(escapeLink, "loop.state.json"),
+			cwd: workspaceRoot,
 			workspaceRoot,
 			filesystemMode: "workspace-write",
 		});

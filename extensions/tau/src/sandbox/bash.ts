@@ -3,6 +3,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { execSync } from "node:child_process";
 
+import { platform } from "node:process";
+
 import type { FilesystemMode, NetworkMode } from "./config.js";
 import { collectTempRoots, safeRealpath } from "../shared/fs.js";
 import { WORKSPACE_PROTECTED_RULES } from "./workspace-path-policy.js";
@@ -38,42 +40,8 @@ function exists(p: string): boolean {
 	}
 }
 
-/**
- * ASRT/bwrap may leave 0-byte artifacts in the workspace if interrupted.
- * Clean up these known artifacts.
- */
-function cleanupWorkspaceArtifacts(workspaceRoot: string): void {
-	const artifacts = [
-		".bash_profile",
-		".bashrc",
-		".claude",
-		".gitconfig",
-		".gitmodules",
-		".idea",
-		".mcp.json",
-		".profile",
-		".ripgreprc",
-		".vscode",
-		".zprofile",
-		".zshrc",
-	];
-
-	for (const artifact of artifacts) {
-		const p = path.join(workspaceRoot, artifact);
-		try {
-			const stat = fs.lstatSync(p);
-			// Only delete if it's a regular file and exactly 0 bytes (classic bwrap artifact)
-			if (stat.isFile() && stat.size === 0) {
-				fs.unlinkSync(p);
-			}
-		} catch {
-			// Doesn't exist or no permission - skip
-		}
-	}
-}
-
 type WrapCommandResult =
-	| { success: true; wrappedCommand: string; home: string }
+	| { success: true; file: string; args: string[]; home: string }
 	| { success: false; error: string };
 
 /**
@@ -89,11 +57,22 @@ export async function wrapCommandWithSandbox(opts: {
 }): Promise<WrapCommandResult> {
 	const { command, workspaceRoot, filesystemMode, networkMode } = opts;
 
+	// Sandboxed execution is Linux-only. bubblewrap (bwrap) requires Linux
+	// namespaces; sandbox-exec on macOS is not implemented.
+	if (platform === "darwin") {
+		return {
+			success: false,
+			error:
+				"Sandboxed execution is not supported on macOS (Darwin). Use Linux or run with --no-sandbox.",
+		};
+	}
+
 	// Optimization: If full access is requested, skip sandbox entirely
 	if (filesystemMode === "danger-full-access" && networkMode === "allow-all") {
 		return {
 			success: true,
-			wrappedCommand: command,
+			file: "bash",
+			args: ["-lc", command],
 			home: os.homedir(),
 		};
 	}
@@ -101,8 +80,6 @@ export async function wrapCommandWithSandbox(opts: {
 	if (!(await isAsrtAvailable())) {
 		return { success: false, error: getAsrtLoadError()! };
 	}
-
-	cleanupWorkspaceArtifacts(workspaceRoot);
 
 	const resolvedWorkspace = safeRealpath(workspaceRoot);
 	const args: string[] = ["bwrap", "--new-session", "--die-with-parent"];
@@ -233,13 +210,13 @@ export async function wrapCommandWithSandbox(opts: {
 	// Keep HOME as real home directory (read-only in sandbox)
 	// Tools that try to write to ~/.config, ~/.cache will fail - that's intended
 
-	// Final command assembly. Use single quotes to prevent host expansion of $vars.
-	const escapedCommand = command.replace(/'/g, "'\\''");
-	const wrapped = `${args.join(" ")} -- bash -c '${escapedCommand}'`;
+	// Final command assembly passed as argv to spawn (no shell string).
+	args.push("--", "bash", "-lc", command);
 
 	return {
 		success: true,
-		wrappedCommand: wrapped,
+		file: "bwrap",
+		args,
 		home: resolvedHome,
 	};
 }

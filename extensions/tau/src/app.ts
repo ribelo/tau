@@ -29,7 +29,6 @@ import initAgent from "./agent/index.js";
 import initRequestUserInput from "./request-user-input/index.js";
 import initRalph from "./ralph/index.js";
 import initAutoresearch from "./autoresearch/index.js";
-import initForge from "./forge/index.js";
 import initAgentsMenu from "./agents-menu/index.js";
 import initThreadTools from "./thread/index.js";
 import { isAgentDisabledForCwd } from "./agents-menu/index.js";
@@ -38,6 +37,7 @@ import { AgentControlLive } from "./agent/control.js";
 import { AgentManagerLive } from "./agent/manager.js";
 import { AgentRuntimeBridgeLive, type AgentRuntimeBridgeService } from "./agent/runtime.js";
 import { AgentRegistry } from "./agent/agent-registry.js";
+import { validateResolvedAgentConfiguration } from "./agent/startup-validation.js";
 import { buildToolDescription } from "./agent/tool.js";
 import { createSkillMarkerRuntime } from "./skill-marker/index.js";
 import { installSqliteExperimentalWarningFilter } from "./shared/sqlite-warning.js";
@@ -247,11 +247,11 @@ export const startTau = (pi: ExtensionAPI) => {
 			initRequestUserInput(pi);
 			initRalph(pi, runRalph);
 			initAutoresearch(pi, runAutoresearch);
-			initForge(pi);
 			initThreadTools(pi);
 		});
 
 		const agentRegistry = yield* AgentRegistry.load(process.cwd());
+		yield* validateResolvedAgentConfiguration(agentRegistry);
 		const agentToolDescription = buildToolDescription(agentRegistry, undefined, (name) =>
 			isAgentDisabledForCwd(process.cwd(), name),
 		);

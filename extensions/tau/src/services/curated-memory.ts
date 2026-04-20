@@ -175,14 +175,14 @@ function processExists(pid: number): boolean {
 
 async function shouldReclaimLock(lockPath: string): Promise<boolean> {
 	try {
-		const stats = await fs.stat(lockPath);
-		const stale = Date.now() - stats.mtimeMs > LOCK_STALE_MS;
 		const raw = await fs.readFile(lockPath, "utf8");
 		const metadata = parseLockMetadata(raw);
 		if (!metadata) {
-			return stale;
+			// Corrupt lock: reclaim only if stale by mtime
+			const stats = await fs.stat(lockPath);
+			return Date.now() - stats.mtimeMs > LOCK_STALE_MS;
 		}
-		return stale || !processExists(metadata.pid);
+		return !processExists(metadata.pid);
 	} catch (err: unknown) {
 		if (isNodeError(err, "ENOENT")) {
 			return false;
@@ -374,9 +374,13 @@ async function withFileLock<T>(scope: MemoryScope, cwd: string, fn: () => Promis
 	} finally {
 		await fd.close();
 		try {
-			await fs.unlink(targetLockPath);
+			const currentRaw = await fs.readFile(targetLockPath, "utf8");
+			const current = parseLockMetadata(currentRaw);
+			if (current && current.token === token && current.pid === process.pid) {
+				await fs.unlink(targetLockPath);
+			}
 		} catch {
-			// ignore cleanup errors
+			// ignore cleanup errors (e.g., lock already reclaimed by another process)
 		}
 	}
 }
@@ -546,19 +550,55 @@ export const CuratedMemoryLive = Layer.effect(
 		): Effect.Effect<MutationResult, MemoryMutationError> =>
 			mutex.withPermits(1)(
 				Effect.tryPromise({
-					try: () => readScope(scope, cwd),
-					catch: (err) => new MemoryFileError({ reason: String(err) }),
+					try: () =>
+						withFileLock(scope, cwd, async () => {
+							let entries: MemoryEntry[];
+							try {
+								const jsonl = await readJsonlScope(scope, cwd);
+								entries = jsonl.entries;
+								if (jsonl.migrated) {
+									await atomicWrite(scope, cwd, entries);
+								}
+							} catch (err: unknown) {
+								if (!isNodeError(err, "ENOENT")) {
+									throw err;
+								}
+								try {
+									entries = await migrateLegacyScope(scope, cwd);
+								} catch (err2: unknown) {
+									if (isNodeError(err2, "ENOENT")) {
+										entries = [];
+									} else {
+										throw err2;
+									}
+								}
+							}
+
+							const { nextEntries, entry } = await Effect.runPromise(fn(entries));
+							await atomicWrite(scope, cwd, nextEntries);
+							return entry;
+						}),
+					catch: (err) => {
+						if (
+							typeof err === "object" &&
+							err !== null &&
+							"_tag" in err &&
+							typeof (err as { _tag: unknown })._tag === "string" &&
+							[
+								"MemoryEmptyContent",
+								"MemoryEmptySummary",
+								"MemoryEntryTooLarge",
+								"MemoryNoMatch",
+								"MemoryDuplicateEntry",
+								"MemoryDuplicateSummary",
+								"MemorySummaryMatchesContent",
+							].includes((err as { _tag: string })._tag)
+						) {
+							return err as MemoryMutationError;
+						}
+						return new MemoryFileError({ reason: String(err) });
+					},
 				}).pipe(
-					Effect.flatMap(fn),
-					Effect.flatMap(({ nextEntries, entry }) =>
-						Effect.tryPromise({
-							try: () =>
-								withFileLock(scope, cwd, async () => {
-									await atomicWrite(scope, cwd, nextEntries);
-								}),
-							catch: (err) => new MemoryFileError({ reason: String(err) }),
-						}).pipe(Effect.as(entry)),
-					),
 					Effect.map((entry) => ({
 						changedScope: scope,
 						entry,

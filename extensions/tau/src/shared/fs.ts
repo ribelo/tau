@@ -93,7 +93,9 @@ export function readJsonObjectFileEffect(
 
 export function readJsonObjectFileOrThrow(filePath: string): AnyRecord {
 	const result = readJsonFileDetailed(filePath);
-	if (result._tag === "missing") return {};
+	if (result._tag === "missing") {
+		throw new Error(`Missing JSON file at ${filePath}`);
+	}
 	if (result._tag === "ok") return result.data;
 	throw new Error(`Invalid JSON at ${filePath}: ${result.reason}`);
 }

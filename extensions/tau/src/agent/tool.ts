@@ -162,10 +162,11 @@ async function executeWaitWithUpdates(
 			const stream = control.waitStream(ids, p.timeout_ms, 1000);
 
 			// Create abort effect that completes when signal triggers
-			const abortEffect = abortSignalEffect(signal);
+			const abortEffect = abortSignalEffect(signal).pipe(
+				Effect.as({ _tag: "aborted" as const }),
+			);
 
-			// Run the stream with interruption handling
-			const streamRun = stream.pipe(
+			const streamEffect = stream.pipe(
 				Stream.tap((result) =>
 					Effect.sync(() => {
 						latestResult = result;
@@ -178,11 +179,16 @@ async function executeWaitWithUpdates(
 					}),
 				),
 				Stream.runDrain,
-				// Interrupt when abort signal triggers
-				Effect.race(abortEffect),
+				Effect.as({ _tag: "completed" as const }),
 			);
 
-			yield* streamRun;
+			const outcome = yield* Effect.race(streamEffect, abortEffect);
+
+			if (outcome._tag === "aborted") {
+				return latestResult
+					? { ...latestResult, interrupted: true }
+					: { status: {}, timedOut: false, interrupted: true };
+			}
 
 			return latestResult ?? { status: {}, timedOut: false };
 		});

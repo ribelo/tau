@@ -501,28 +501,12 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 					});
 				}
 
-				// Git commands need unsandboxed access for signing (~/.gnupg) and config (~/.gitconfig).
-				// Only bypass sandbox for commands that are *purely* git — no chains, pipes, or subshells
-				// that could smuggle arbitrary commands outside the sandbox.
-				const trimmedCmd = command.trim();
-				const hasChaining =
-					/[;&|]/.test(trimmedCmd) ||
-					/\$\(/.test(trimmedCmd) ||
-					/`/.test(trimmedCmd);
-				const isGitOnly = !hasChaining && /^git\s/.test(trimmedCmd);
-				if (isGitOnly) {
-					// Subagent mode: git commands are blocked (orchestrator owns git)
-					if (effectiveConfig.subagent) {
-						const errorMsg =
-							"[sandbox] Git commands are blocked in subagent mode. The orchestrator handles all git operations.\n";
-						onData(Buffer.from(errorMsg));
-						return { exitCode: 1 };
-					}
-					return runCommandDirect(command, cwd, process.env as Record<string, string>, {
-						onData,
-						signal,
-						timeout,
-					});
+				// Subagent mode: git commands are blocked (orchestrator owns git)
+				if (effectiveConfig.subagent && /^git\s/.test(command.trim())) {
+					const errorMsg =
+						"[sandbox] Git commands are blocked in subagent mode. The orchestrator handles all git operations.\n";
+					onData(Buffer.from(errorMsg));
+					return { exitCode: 1 };
 				}
 
 				const currentConfig = effectiveConfig;
@@ -638,13 +622,13 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 					});
 				}
 
-				const finalCommand = wrapResult.wrappedCommand;
 				const env = { ...process.env, HOME: wrapResult.home };
 				const usingSandbox = true;
 
 				// Run the command (sandboxed)
 				const result = await runCommandCapture(
-					finalCommand,
+					wrapResult.file,
+					wrapResult.args,
 					cwd,
 					env as Record<string, string>,
 					{ onData, signal, timeout },
@@ -751,8 +735,13 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 	});
 
 	// Run command and capture output for policy violation detection
+	type SpawnedCommandResult =
+		| { readonly exitCode: number; readonly timedOut: false; readonly output?: string }
+		| { readonly exitCode: null; readonly timedOut: true; readonly output?: string };
+
 	function runSpawnedCommand(
-		cmd: string,
+		file: string,
+		args: string[],
 		cwd: string,
 		env: Record<string, string>,
 		options: { readonly captureOutput: boolean },
@@ -761,7 +750,7 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 			signal?: AbortSignal | undefined;
 			timeout?: number | undefined;
 		},
-	): Promise<{ exitCode: number | null; output?: string | undefined }> {
+	): Promise<SpawnedCommandResult> {
 		return new Promise((resolve, reject) => {
 			if (!existsSync(cwd)) {
 				reject(new Error(`Working directory does not exist: ${cwd}`));
@@ -771,7 +760,7 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 			let outputBuffer = "";
 			const { onData, signal, timeout } = opts;
 
-			const child = spawn("bash", ["-lc", cmd], {
+			const child = spawn(file, args, {
 				cwd,
 				env,
 				detached: true,
@@ -825,19 +814,29 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 			child.on("close", (code) => {
 				if (timeoutHandle) clearTimeout(timeoutHandle);
 				if (signal) signal.removeEventListener("abort", onAbort);
-				const exitCode = timedOut ? null : code;
 
+				if (timedOut) {
+					resolve(
+						options.captureOutput
+							? { exitCode: null, timedOut: true, output: outputBuffer }
+							: { exitCode: null, timedOut: true },
+					);
+					return;
+				}
+
+				const exitCode = code ?? 1;
 				resolve(
 					options.captureOutput
-						? { exitCode, output: outputBuffer }
-						: { exitCode },
+						? { exitCode, timedOut: false, output: outputBuffer }
+						: { exitCode, timedOut: false },
 				);
 			});
 		});
 	}
 
 	function runCommandCapture(
-		cmd: string,
+		file: string,
+		args: string[],
 		cwd: string,
 		env: Record<string, string>,
 		opts: {
@@ -845,11 +844,18 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 			signal?: AbortSignal | undefined;
 			timeout?: number | undefined;
 		},
-	): Promise<{ exitCode: number | null; output: string }> {
-		return runSpawnedCommand(cmd, cwd, env, { captureOutput: true }, opts).then((result) => ({
-			exitCode: result.exitCode,
-			output: result.output ?? "",
-		}));
+	): Promise<{ exitCode: number; output: string }> {
+		return runSpawnedCommand(file, args, cwd, env, { captureOutput: true }, opts).then(
+			(result) => {
+				if (result.timedOut) {
+					opts.onData(
+						Buffer.from(`[sandbox] Command timed out after ${opts.timeout ?? "?"}s\n`),
+					);
+					return { exitCode: 124, output: result.output ?? "" };
+				}
+				return { exitCode: result.exitCode, output: result.output ?? "" };
+			},
+		);
 	}
 
 	// Run command directly without output capture (for approved/retry runs)
@@ -862,9 +868,17 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 			signal?: AbortSignal | undefined;
 			timeout?: number | undefined;
 		},
-	): Promise<{ exitCode: number | null }> {
-		return runSpawnedCommand(cmd, cwd, env, { captureOutput: false }, opts).then(
-			(result) => ({ exitCode: result.exitCode }),
+	): Promise<{ exitCode: number }> {
+		return runSpawnedCommand("bash", ["-lc", cmd], cwd, env, { captureOutput: false }, opts).then(
+			(result) => {
+				if (result.timedOut) {
+					opts.onData(
+						Buffer.from(`[sandbox] Command timed out after ${opts.timeout ?? "?"}s\n`),
+					);
+					return { exitCode: 124 };
+				}
+				return { exitCode: result.exitCode };
+			},
 		);
 	}
 	pi.registerTool({
@@ -931,6 +945,7 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 			if (targetPath) {
 				const check = checkWriteAllowed({
 					targetPath,
+					cwd: ctx.cwd,
 					workspaceRoot,
 					filesystemMode: effectiveConfig.filesystemMode,
 				});
@@ -976,6 +991,7 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 			if (targetPath) {
 				const check = checkWriteAllowed({
 					targetPath,
+					cwd: ctx.cwd,
 					workspaceRoot,
 					filesystemMode: effectiveConfig.filesystemMode,
 				});

@@ -3,7 +3,6 @@ import { Effect } from "effect";
 import { renderAgentCall, renderAgentResult } from "./render.js";
 import { createUiApprovalBroker } from "./approval-broker.js";
 import type { AgentRuntimeBridgeService } from "./runtime.js";
-import { installAgentProcessGuards } from "./process-guards.js";
 import { AgentParams, createAgentToolDef } from "./tool.js";
 import { ExecutionState } from "../services/execution-state.js";
 import { resolveSessionMode } from "../services/execution-resolver.js";
@@ -21,9 +20,6 @@ export default function initAgent(
 	runtime: AgentRuntimeBridgeService,
 	description: string,
 ): AgentToolHandle {
-	// Guard against unhandled errors inside background agent loops (e.g., auth expiration)
-	installAgentProcessGuards(pi, runtime.closeAll);
-
 	// Close all agents when session switches (e.g., /new command)
 	pi.on("session_switch", async () => {
 		await runtime.closeAll();

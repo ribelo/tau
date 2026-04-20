@@ -193,18 +193,13 @@ async function readLockSnapshot(lockPath: string): Promise<LockSnapshot | null> 
 }
 
 function isReclaimable(snapshot: LockSnapshot): boolean {
-	const now = Date.now();
-	const staleByMtime = now - snapshot.mtimeMs > LOCK_STALE_MS;
-
 	if (snapshot.parsed._tag === "invalid") {
-		return staleByMtime;
+		const now = Date.now();
+		return now - snapshot.mtimeMs > LOCK_STALE_MS;
 	}
 
 	const metadata = snapshot.parsed.metadata;
-	const staleByAcquireTime = now - metadata.acquiredAtMs > LOCK_STALE_MS;
-	const holderDead = !processExists(metadata.pid);
-
-	return staleByMtime || staleByAcquireTime || holderDead;
+	return !processExists(metadata.pid);
 }
 
 async function reclaimLockIfUnchanged(lockPath: string, expectedRaw: string): Promise<boolean> {

@@ -32,7 +32,7 @@ export type ApprovalTimeoutSeconds = Schema.Schema.Type<typeof ApprovalTimeoutSe
 export const SandboxConfig = Schema.Struct({
 	preset: Schema.optional(SandboxPreset),
 	subagent: Schema.optional(Schema.Boolean),
-	// Legacy fields accepted for migration
+	// Legacy migration fields: used to infer preset when no preset is given
 	filesystemMode: Schema.optional(FilesystemMode),
 	networkMode: Schema.optional(NetworkMode),
 	approvalPolicy: Schema.optional(ApprovalPolicy),

@@ -6,7 +6,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { Dirent, Stats } from "node:fs";
 
-import { Clock, Effect, Layer, Option, Scope, ServiceMap } from "effect";
+import { Cause, Clock, Effect, Fiber, Layer, Option, Scope, ServiceMap } from "effect";
 import { nanoid } from "nanoid";
 import { Type, type Static } from "@sinclair/typebox";
 
@@ -288,8 +288,8 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 				return reg.report(taskId, event).pipe(Effect.catch(() => Effect.void));
 			}
 
-			function failTask(taskId: string, err: DreamRunError): Effect.Effect<never> {
-				return reg.fail(taskId, err).pipe(Effect.flatMap(() => Effect.interrupt));
+			function failTask(taskId: string, err: DreamRunError): Effect.Effect<never, DreamRunError> {
+				return reg.fail(taskId, err).pipe(Effect.flatMap(() => Effect.fail(err)));
 			}
 
 			/** Best-effort scheduler checkpoint advance after a failed run that
@@ -384,7 +384,7 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 			function runOnceWithProgress(
 				request: DreamRunRequest,
 				taskId: string,
-			): Effect.Effect<void, never, Scope.Scope> {
+			): Effect.Effect<DreamRunResult, DreamRunError, Scope.Scope> {
 				return Effect.gen(function* () {
 					const startedAt = yield* Clock.currentTimeMillis;
 
@@ -393,8 +393,7 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 					);
 
 					if (!dreamConfig.enabled) {
-						yield* reg.fail(taskId, new DreamDisabled({ mode: request.mode }));
-						return;
+						return yield* failTask(taskId, new DreamDisabled({ mode: request.mode }));
 					}
 
 					// Acquire lock
@@ -492,13 +491,12 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 						if (mutations > 0) {
 							yield* advanceSchedulerOnFailure(request, startedAt, mutations);
 						}
-						yield* failTask(
+						return yield* failTask(
 							taskId,
 							new DreamSubagentNoFinish({
 								reason: "Dream subagent ended without calling dream_finish",
 							}),
 						);
-						return;
 					}
 
 					// Reload frozen snapshot
@@ -524,19 +522,20 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 					);
 
 					yield* reg.complete(taskId, runResult);
+					return runResult;
 				}).pipe(
-					// Catch-all for interruption/defects: mark task failed
-					Effect.catchCause((cause) =>
-						reg
-							.fail(
-								taskId,
-								new DreamLockIoError({
-									path: request.cwd,
-									operation: "runOnceWithProgress",
-									reason: `Unhandled dream failure: ${String(cause)}`,
-								}),
-							)
-							.pipe(Effect.ignore),
+					// Catch defects and convert to typed errors so the registry fiber
+					// type is honest and failures are observable.
+					Effect.catchDefect((defect) =>
+						Effect.gen(function* () {
+							const err = new DreamLockIoError({
+								path: request.cwd,
+								operation: "runOnceWithProgress",
+								reason: `Unhandled dream failure: ${String(defect)}`,
+							});
+							yield* reg.fail(taskId, err).pipe(Effect.ignore);
+							return yield* Effect.fail(err);
+						}),
 					),
 				);
 			}
@@ -562,10 +561,7 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 					const fiber = yield* Effect.forkDetach(
 						Effect.scoped(runOnceWithProgress(request, handle.taskId)),
 					);
-					yield* reg.attach(
-						handle.taskId,
-						fiber as unknown as import("effect").Fiber.Fiber<DreamRunResult, DreamRunError>,
-					);
+					yield* reg.attach(handle.taskId, fiber);
 
 					return handle;
 				},
@@ -595,10 +591,7 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 					const fiber = yield* Effect.forkDetach(
 						Effect.scoped(runOnceWithProgress(request, handle.taskId)),
 					);
-					yield* reg.attach(
-						handle.taskId,
-						fiber as unknown as import("effect").Fiber.Fiber<DreamRunResult, DreamRunError>,
-					);
+					yield* reg.attach(handle.taskId, fiber);
 
 					return Option.some(handle);
 				},

@@ -1,11 +1,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import { Effect, Layer, Option, Stream } from "effect";
-import { describe, expect, it, vi } from "vitest";
-
-vi.mock("../src/agent/process-guards.js", () => ({
-	installAgentProcessGuards: () => undefined,
-}));
+import { describe, expect, it } from "vitest";
 
 import initAgent from "../src/agent/index.js";
 import { AgentControl, type ControlSpawnOptions } from "../src/agent/services.js";

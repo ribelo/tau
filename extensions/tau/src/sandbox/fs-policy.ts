@@ -7,8 +7,8 @@ import { classifyWorkspacePath } from "./workspace-path-policy.js";
 
 type FsCheckResult = { allowed: true } | { allowed: false; reason: string };
 
-function toAbsolutePath(targetPath: string): string {
-	const absolute = path.isAbsolute(targetPath) ? targetPath : path.resolve(targetPath);
+function toAbsolutePath(targetPath: string, cwd: string): string {
+	const absolute = path.isAbsolute(targetPath) ? targetPath : path.resolve(cwd, targetPath);
 	return path.normalize(absolute);
 }
 
@@ -38,8 +38,8 @@ function findContainingRoot(targetPath: string, roots: readonly string[]): strin
 	return sortedRoots.find((root) => isPathInsideRootLexical(targetPath, root));
 }
 
-function findFirstNonExistentComponent(targetPath: string): string | null {
-	const absoluteTargetPath = toAbsolutePath(targetPath);
+function findFirstNonExistentComponent(targetPath: string, cwd: string): string | null {
+	const absoluteTargetPath = toAbsolutePath(targetPath, cwd);
 	const relativeToRoot = path.relative(path.sep, absoluteTargetPath);
 	if (relativeToRoot === "") {
 		return null;
@@ -65,9 +65,9 @@ function findFirstNonExistentComponent(targetPath: string): string | null {
 	return null;
 }
 
-function resolveFromNearestExistingAncestor(targetPath: string): string {
-	const absoluteTargetPath = toAbsolutePath(targetPath);
-	const firstMissingComponent = findFirstNonExistentComponent(absoluteTargetPath);
+function resolveFromNearestExistingAncestor(targetPath: string, cwd: string): string {
+	const absoluteTargetPath = toAbsolutePath(targetPath, cwd);
+	const firstMissingComponent = findFirstNonExistentComponent(absoluteTargetPath, cwd);
 
 	if (!firstMissingComponent) {
 		return safeRealpath(absoluteTargetPath);
@@ -85,9 +85,10 @@ function checkSymlinkBoundary(opts: {
 	walkRoot: string;
 	boundaryRoots: readonly string[];
 	boundaryLabel: string;
+	cwd: string;
 }): FsCheckResult | null {
-	const absoluteTargetPath = toAbsolutePath(opts.targetPath);
-	const absoluteWalkRoot = toAbsolutePath(opts.walkRoot);
+	const absoluteTargetPath = toAbsolutePath(opts.targetPath, opts.cwd);
+	const absoluteWalkRoot = toAbsolutePath(opts.walkRoot, opts.cwd);
 	const relative = path.relative(absoluteWalkRoot, absoluteTargetPath);
 
 	if (
@@ -163,21 +164,22 @@ function isInTempDir(resolvedTargetPath: string, tempRoots: readonly string[]): 
 
 export function checkWriteAllowed(opts: {
 	targetPath: string;
+	cwd: string;
 	workspaceRoot: string;
 	filesystemMode: FilesystemMode;
 }): FsCheckResult {
-	const { targetPath, workspaceRoot, filesystemMode } = opts;
+	const { targetPath, cwd, workspaceRoot, filesystemMode } = opts;
 
 	if (filesystemMode === "danger-full-access") {
 		return { allowed: true };
 	}
 
-	const absoluteTargetPath = toAbsolutePath(targetPath);
-	const absoluteWorkspaceRoot = toAbsolutePath(workspaceRoot);
+	const absoluteTargetPath = toAbsolutePath(targetPath, cwd);
+	const absoluteWorkspaceRoot = toAbsolutePath(workspaceRoot, cwd);
 	const resolvedWorkspaceRoot = safeRealpath(absoluteWorkspaceRoot);
 
 	const tempWalkRoots = uniquePaths(
-		collectTempRoots().map((tempRoot) => toAbsolutePath(tempRoot)),
+		collectTempRoots().map((tempRoot) => toAbsolutePath(tempRoot, cwd)),
 	);
 	const resolvedTempRoots = uniquePaths(
 		tempWalkRoots.map((tempRoot) => safeRealpath(tempRoot)),
@@ -191,6 +193,7 @@ export function checkWriteAllowed(opts: {
 			walkRoot: workspaceWalkRoot,
 			boundaryRoots: [resolvedWorkspaceRoot],
 			boundaryLabel: `workspace root (${resolvedWorkspaceRoot})`,
+			cwd,
 		});
 		if (workspaceSymlinkCheck) {
 			return workspaceSymlinkCheck;
@@ -207,6 +210,7 @@ export function checkWriteAllowed(opts: {
 				walkRoot: tempWalkRoot,
 				boundaryRoots,
 				boundaryLabel: "allowed writable roots",
+				cwd,
 			});
 			if (tempSymlinkCheck) {
 				return tempSymlinkCheck;
@@ -214,7 +218,7 @@ export function checkWriteAllowed(opts: {
 		}
 	}
 
-	const resolvedTargetPath = resolveFromNearestExistingAncestor(absoluteTargetPath);
+	const resolvedTargetPath = resolveFromNearestExistingAncestor(absoluteTargetPath, cwd);
 
 	const classification = classifyWorkspacePath(resolvedTargetPath, resolvedWorkspaceRoot);
 	if (classification.kind === "protected") {

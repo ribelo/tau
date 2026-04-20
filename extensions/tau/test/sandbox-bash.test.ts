@@ -25,7 +25,7 @@ describe("wrapCommandWithSandbox mount order", () => {
 		expect(result.success).toBe(true);
 		if (!result.success) return;
 
-		const parts = result.wrappedCommand.split(" ");
+		const parts = result.args;
 		const settingsPath = path.join(workspaceRoot, ".pi", "settings.json");
 		const tasksPath = path.join(workspaceRoot, ".pi", "loops", "tasks");
 
@@ -70,7 +70,7 @@ describe("wrapCommandWithSandbox mount order", () => {
 		expect(result.success).toBe(true);
 		if (!result.success) return;
 
-		const parts = result.wrappedCommand.split(" ");
+		const parts = result.args;
 		const tasksPath = path.join(workspaceRoot, ".pi", "loops", "tasks");
 		const piPath = path.join(workspaceRoot, ".pi");
 		const tasksBindIndex = parts.indexOf(tasksPath);

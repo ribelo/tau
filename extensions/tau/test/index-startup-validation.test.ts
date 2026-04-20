@@ -45,22 +45,14 @@ describe("tau startup validation ordering", () => {
 		vi.resetModules();
 	});
 
-	it("starts the runtime before startup validation settles", async () => {
+	it("awaits ready and returns when startup succeeds", async () => {
 		const startTau = vi.fn((pi: ExtensionAPI) => ({
 			fiber: Symbol("fiber"),
 			ready: Promise.resolve(),
 			pi,
 		}));
-		let resolveValidation: (() => void) | undefined;
-		const validation = new Promise<void>((resolve) => {
-			resolveValidation = resolve;
-		});
-		const validateAgentDefinitionsAtStartup = vi.fn(() => validation);
 
 		vi.doMock("../src/app.js", () => ({ startTau, runTau: vi.fn() }));
-		vi.doMock("../src/agent/startup-validation.js", () => ({
-			validateAgentDefinitionsAtStartup,
-		}));
 
 		const { default: tau } = await import("../src/index.js");
 		const pi = makePiStub();
@@ -69,39 +61,24 @@ describe("tau startup validation ordering", () => {
 		await result;
 
 		expect(result).toBeInstanceOf(Promise);
-		expect(validateAgentDefinitionsAtStartup).toHaveBeenCalledTimes(1);
-		expect(validateAgentDefinitionsAtStartup).toHaveBeenCalledWith(process.cwd());
 		expect(startTau).toHaveBeenCalledTimes(1);
 		expect(startTau.mock.calls[0]?.[0]).toBe(pi);
-
-		await result;
-
-		resolveValidation?.();
-		await validation;
 	});
 
-	it("does not pass a notify handler into startup validation", async () => {
+	it("rejects when ready rejects", async () => {
 		const startTau = vi.fn((pi: ExtensionAPI) => ({
 			fiber: Symbol("fiber"),
-			ready: Promise.resolve(),
+			ready: Promise.reject(new Error("startup failed")),
 			pi,
 		}));
-		const validateAgentDefinitionsAtStartup = vi.fn(async () => undefined);
 
 		vi.doMock("../src/app.js", () => ({ startTau, runTau: vi.fn() }));
-		vi.doMock("../src/agent/startup-validation.js", () => ({
-			validateAgentDefinitionsAtStartup,
-		}));
 
 		const { default: tau } = await import("../src/index.js");
 		const pi = makePiStub();
 
-		await tau(pi);
-
+		await expect(tau(pi)).rejects.toThrow("startup failed");
 		expect(startTau).toHaveBeenCalledTimes(1);
-		expect(validateAgentDefinitionsAtStartup).toHaveBeenCalledWith(process.cwd());
-		expect(validateAgentDefinitionsAtStartup.mock.calls[0]).toHaveLength(1);
-		expect(pi.sendMessage).not.toHaveBeenCalled();
 	});
 
 	it("suppresses only the node:sqlite experimental warning", async () => {
@@ -110,12 +87,8 @@ describe("tau startup validation ordering", () => {
 			ready: Promise.resolve(),
 			pi,
 		}));
-		const validateAgentDefinitionsAtStartup = vi.fn(async () => undefined);
 
 		vi.doMock("../src/app.js", () => ({ startTau, runTau: vi.fn() }));
-		vi.doMock("../src/agent/startup-validation.js", () => ({
-			validateAgentDefinitionsAtStartup,
-		}));
 
 		const original = process.emitWarning;
 		const forwarded: Array<{ warning: string | Error; args: unknown[] }> = [];

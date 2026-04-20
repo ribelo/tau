@@ -296,5 +296,17 @@ Test prompt`,
 			const def = await Effect.runPromise(loadAgentDefinition("non-existent", tempDir));
 			expect(def).toBeNull();
 		});
+
+		it("should reject invalid agent names", async () => {
+			await expect(Effect.runPromise(loadAgentDefinition("../etc/passwd", tempDir))).rejects.toThrow(
+				/Invalid agent name/,
+			);
+			await expect(Effect.runPromise(loadAgentDefinition("foo/bar", tempDir))).rejects.toThrow(
+				/Invalid agent name/,
+			);
+			await expect(Effect.runPromise(loadAgentDefinition("-starts-with-dash", tempDir))).rejects.toThrow(
+				/Invalid agent name/,
+			);
+		});
 	});
 });

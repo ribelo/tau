@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 
 import type { ExtensionContext, ToolDefinition } from "@mariozechner/pi-coding-agent";
@@ -653,6 +653,7 @@ async function ensureFilesystemAccess(
 	for (const targetPath of paths) {
 		const check = checkWriteAllowed({
 			targetPath,
+			cwd: ctx.cwd,
 			workspaceRoot: sandboxContext.workspaceRoot,
 			filesystemMode: sandboxContext.effectiveConfig.filesystemMode,
 		});
@@ -690,6 +691,89 @@ async function withMutationQueues<A>(
 	return run(0);
 }
 
+type ValidatedOperation =
+	| { type: "add"; absolutePath: string; contents: string; relPath: string }
+	| { type: "delete"; absolutePath: string; oldContents: string; relPath: string }
+	| {
+			type: "update";
+			absolutePath: string;
+			oldContents: string;
+			nextContents: string;
+			relPath: string;
+			movePath?: string;
+	  };
+
+async function validateAndPlanOperations(
+	operations: readonly ResolvedPatchOperation[],
+	cwd: string,
+): Promise<readonly ValidatedOperation[]> {
+	const planned: ValidatedOperation[] = [];
+
+	for (const operation of operations) {
+		if (operation.type === "add") {
+			const exists = await access(operation.absolutePath).then(() => true, () => false);
+			if (exists) {
+				throw new Error(
+					`Cannot add file ${path.relative(cwd, operation.absolutePath) || path.basename(operation.absolutePath)}: file already exists`,
+				);
+			}
+			planned.push({
+				type: "add",
+				absolutePath: operation.absolutePath,
+				contents: operation.contents,
+				relPath: path.relative(cwd, operation.absolutePath) || path.basename(operation.absolutePath),
+			});
+			continue;
+		}
+
+		if (operation.type === "delete") {
+			const oldContents = await readFile(operation.absolutePath, "utf8").catch(() => "");
+			planned.push({
+				type: "delete",
+				absolutePath: operation.absolutePath,
+				oldContents,
+				relPath: path.relative(cwd, operation.absolutePath) || path.basename(operation.absolutePath),
+			});
+			continue;
+		}
+
+		const oldContents = await readFile(operation.absolutePath, "utf8");
+		const nextContents = await deriveUpdatedFileContents(operation.absolutePath, operation.chunks);
+
+		if (operation.movePath !== undefined) {
+			const moveExists = await access(operation.movePath).then(() => true, () => false);
+			if (moveExists) {
+				throw new Error(
+					`Cannot move to ${path.relative(cwd, operation.movePath) || path.basename(operation.movePath)}: file already exists`,
+				);
+			}
+			planned.push({
+				type: "update",
+				absolutePath: operation.absolutePath,
+				oldContents,
+				nextContents,
+				relPath: path.relative(cwd, operation.movePath) || path.basename(operation.movePath),
+				movePath: operation.movePath,
+			});
+			continue;
+		}
+
+		planned.push({
+			type: "update",
+			absolutePath: operation.absolutePath,
+			oldContents,
+			nextContents,
+			relPath: path.relative(cwd, operation.absolutePath) || path.basename(operation.absolutePath),
+		});
+	}
+
+	return planned;
+}
+
+function makeTempPath(targetPath: string): string {
+	return `${targetPath}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 async function applyResolvedPatch(
 	operations: readonly ResolvedPatchOperation[],
 	cwd: string,
@@ -698,53 +782,84 @@ async function applyResolvedPatch(
 		throw new Error("No files were modified.");
 	}
 
+	// Phase 1: validate and plan every operation before mutating anything.
+	const planned = await validateAndPlanOperations(operations, cwd);
+
 	const added: string[] = [];
 	const modified: string[] = [];
 	const deleted: string[] = [];
 	const diffs: FileDiff[] = [];
 
+	// Phase 2: apply all mutations atomically (temp + rename for writes).
 	await withMutationQueues(collectMutationPaths(operations), async () => {
-		for (const operation of operations) {
-			if (operation.type === "add") {
-				const exists = await access(operation.absolutePath).then(() => true, () => false);
-				if (exists) {
-					throw new Error(
-						`Cannot add file ${path.relative(cwd, operation.absolutePath) || path.basename(operation.absolutePath)}: file already exists`,
-					);
+		const temps: Array<{ temp: string; final: string }> = [];
+
+		try {
+			for (const op of planned) {
+				if (op.type === "add") {
+					await mkdir(path.dirname(op.absolutePath), { recursive: true });
+					const temp = makeTempPath(op.absolutePath);
+					await writeFile(temp, op.contents, "utf8");
+					temps.push({ temp, final: op.absolutePath });
+					continue;
 				}
-				await mkdir(path.dirname(operation.absolutePath), { recursive: true });
-				await writeFile(operation.absolutePath, operation.contents, "utf8");
-				const relPath = path.relative(cwd, operation.absolutePath) || path.basename(operation.absolutePath);
-				added.push(relPath);
-				diffs.push({ filePath: relPath, diff: generateDiffString("", operation.contents) });
-				continue;
+
+				if (op.type === "delete") {
+					await rm(op.absolutePath);
+					deleted.push(op.relPath);
+					diffs.push({ filePath: op.relPath, diff: generateDiffString(op.oldContents, "") });
+					continue;
+				}
+
+				// update
+				if (op.movePath !== undefined) {
+					await mkdir(path.dirname(op.movePath), { recursive: true });
+					const temp = makeTempPath(op.movePath);
+					await writeFile(temp, op.nextContents, "utf8");
+					temps.push({ temp, final: op.movePath });
+					// defer deletion of source until after renames succeed
+					continue;
+				}
+
+				const temp = makeTempPath(op.absolutePath);
+				await writeFile(temp, op.nextContents, "utf8");
+				temps.push({ temp, final: op.absolutePath });
 			}
 
-			if (operation.type === "delete") {
-				const oldContents = await readFile(operation.absolutePath, "utf8").catch(() => "");
-				await rm(operation.absolutePath);
-				const relPath = path.relative(cwd, operation.absolutePath) || path.basename(operation.absolutePath);
-				deleted.push(relPath);
-				diffs.push({ filePath: relPath, diff: generateDiffString(oldContents, "") });
-				continue;
+			// Commit all temp files via rename (atomic on POSIX).
+			for (const { temp, final } of temps) {
+				await rename(temp, final);
 			}
 
-			const oldContents = await readFile(operation.absolutePath, "utf8");
-			const nextContents = await deriveUpdatedFileContents(operation.absolutePath, operation.chunks);
-			if (operation.movePath !== undefined) {
-				await mkdir(path.dirname(operation.movePath), { recursive: true });
-				await writeFile(operation.movePath, nextContents, "utf8");
-				await rm(operation.absolutePath);
-				const relPath = path.relative(cwd, operation.movePath) || path.basename(operation.movePath);
-				modified.push(relPath);
-				diffs.push({ filePath: relPath, diff: generateDiffString(oldContents, nextContents) });
-				continue;
-			}
+			// Collect diffs and classifications after successful renames.
+			for (const op of planned) {
+				if (op.type === "add") {
+					added.push(op.relPath);
+					diffs.push({ filePath: op.relPath, diff: generateDiffString("", op.contents) });
+					continue;
+				}
 
-			await writeFile(operation.absolutePath, nextContents, "utf8");
-			const relPath = path.relative(cwd, operation.absolutePath) || path.basename(operation.absolutePath);
-			modified.push(relPath);
-			diffs.push({ filePath: relPath, diff: generateDiffString(oldContents, nextContents) });
+				if (op.type === "delete") {
+					// already recorded above
+					continue;
+				}
+
+				if (op.movePath !== undefined) {
+					await rm(op.absolutePath);
+					modified.push(op.relPath);
+					diffs.push({ filePath: op.relPath, diff: generateDiffString(op.oldContents, op.nextContents) });
+					continue;
+				}
+
+				modified.push(op.relPath);
+				diffs.push({ filePath: op.relPath, diff: generateDiffString(op.oldContents, op.nextContents) });
+			}
+		} catch (error) {
+			// Best-effort cleanup of temp files on failure.
+			for (const { temp } of temps) {
+				await rm(temp).catch(() => {});
+			}
+			throw error;
 		}
 	});
 

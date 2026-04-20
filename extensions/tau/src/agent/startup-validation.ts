@@ -1,11 +1,5 @@
-import { Cause, Effect, Exit } from "effect";
+import { Effect } from "effect";
 import { AgentRegistry, AgentRegistryConfigError } from "./agent-registry.js";
-
-interface StartupValidationHandlers {
-	readonly notify: (message: string) => void | Promise<void>;
-	readonly log: (message: string) => void;
-	readonly exit: (code: number) => never;
-}
 
 const WORKER_AVAILABLE_TOOL_NAMES = [
 	"agent",
@@ -30,7 +24,7 @@ function formatList(values: readonly string[]): string {
 	return [...values].sort().join(", ");
 }
 
-function validateResolvedAgentConfiguration(
+export function validateResolvedAgentConfiguration(
 	registry: AgentRegistry,
 ): Effect.Effect<void, AgentRegistryConfigError> {
 	const availableTools = new Set<string>(WORKER_AVAILABLE_TOOL_NAMES);
@@ -73,31 +67,4 @@ function validateResolvedAgentConfiguration(
 			}
 		}),
 	).pipe(Effect.asVoid);
-}
-
-function formatStartupValidationError(error: unknown): string {
-	const details =
-		error instanceof AgentRegistryConfigError
-			? error.message
-			: error instanceof Error
-				? error.message
-				: String(error);
-
-	return `pi failed to start: invalid agent configuration detected.\n${details}`;
-}
-
-export async function validateAgentDefinitionsAtStartup(
-	cwd: string,
-	handlers?: Partial<StartupValidationHandlers>,
-): Promise<void> {
-	const exit = await Effect.runPromiseExit(
-		AgentRegistry.load(cwd).pipe(Effect.flatMap(validateResolvedAgentConfiguration)),
-	);
-	if (Exit.isFailure(exit)) {
-		const error = Cause.squash(exit.cause);
-		const message = formatStartupValidationError(error);
-		await handlers?.notify?.(message);
-		(handlers?.log ?? console.error)(message);
-		(handlers?.exit ?? ((code: number): never => process.exit(code)))(1);
-	}
 }

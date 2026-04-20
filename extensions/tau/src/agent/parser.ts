@@ -140,6 +140,9 @@ export function parseAgentDefinition(
 								parsedFrontmatter.sandbox === undefined
 									? {}
 									: { preset: parsedFrontmatter.sandbox };
+							if (parsedFrontmatter.approval_timeout !== undefined) {
+								sandbox.approvalTimeoutSeconds = parsedFrontmatter.approval_timeout;
+							}
 
 							return {
 								name: parsedFrontmatter.name,
@@ -184,31 +187,52 @@ function isFile(filePath: string): Effect.Effect<boolean, AgentDefinitionError> 
 	);
 }
 
+const VALID_AGENT_NAME_RE = /^[a-z0-9][a-z0-9_-]*$/;
+
+function isPathWithinParent(parent: string, candidate: string): boolean {
+	const rel = path.relative(parent, candidate);
+	return !rel.startsWith("..") && rel !== "";
+}
+
 export function loadAgentDefinition(
 	name: string,
 	cwd: string,
 ): Effect.Effect<AgentDefinition | null, AgentDefinitionError> {
+	if (!VALID_AGENT_NAME_RE.test(name)) {
+		return Effect.fail(
+			new AgentDefinitionError({
+				message: `Invalid agent name: "${name}". Names must match /^[a-z0-9][a-z0-9_-]*$/.`,
+			}),
+		);
+	}
+
 	return findNearestProjectPiDirEffect(cwd).pipe(
 		Effect.flatMap((projectPi) => {
-			const candidates: string[] = [];
+			const candidates: Array<{ readonly path: string; readonly root: string }> = [];
 			if (projectPi) {
-				candidates.push(path.join(projectPi, "agents", `${name}.md`));
+				const root = path.join(projectPi, "agents");
+				candidates.push({ path: path.join(root, `${name}.md`), root });
 			}
-			candidates.push(path.join(getUserAgentsDir(), `${name}.md`));
-			candidates.push(path.join(EXTENSION_AGENTS_DIR, `${name}.md`));
+			const userRoot = getUserAgentsDir();
+			candidates.push({ path: path.join(userRoot, `${name}.md`), root: userRoot });
+			candidates.push({ path: path.join(EXTENSION_AGENTS_DIR, `${name}.md`), root: EXTENSION_AGENTS_DIR });
 
 			return Effect.gen(function* () {
-				for (const filePath of candidates) {
-					const exists = yield* isFile(filePath);
+				for (const candidate of candidates) {
+					if (!isPathWithinParent(candidate.root, candidate.path)) {
+						continue;
+					}
+
+					const exists = yield* isFile(candidate.path);
 					if (!exists) {
 						continue;
 					}
 
 					const contents = yield* Effect.tryPromise({
-						try: () => fs.readFile(filePath, "utf-8"),
+						try: () => fs.readFile(candidate.path, "utf-8"),
 						catch: (cause) =>
 							new AgentDefinitionError({
-								message: `Failed to read agent definition ${filePath}`,
+								message: `Failed to read agent definition ${candidate.path}`,
 								cause,
 							}),
 					});

@@ -3,8 +3,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Effect } from "effect";
 
-import { validateAgentDefinitionsAtStartup } from "../src/agent/startup-validation.js";
+import { AgentRegistry } from "../src/agent/agent-registry.js";
+import { validateResolvedAgentConfiguration } from "../src/agent/startup-validation.js";
 
 function mkdtemp(prefix: string): string {
 	return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -30,6 +32,12 @@ You are ${name}.
 `;
 }
 
+function runValidation(cwd: string) {
+	return Effect.runPromise(
+		AgentRegistry.load(cwd).pipe(Effect.flatMap(validateResolvedAgentConfiguration)),
+	);
+}
+
 describe("agent startup validation", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
@@ -47,21 +55,13 @@ describe("agent startup validation", () => {
 
 		vi.stubEnv("HOME", tempHome);
 
-		const log = vi.fn<(message: string) => void>();
-		const exit = vi.fn((code: number): never => {
-			throw new Error(`EXIT:${code}`);
-		});
-
-		await validateAgentDefinitionsAtStartup(tempProject, { log, exit });
-
-		expect(log).not.toHaveBeenCalled();
-		expect(exit).not.toHaveBeenCalled();
+		await expect(runValidation(tempProject)).resolves.toBeUndefined();
 
 		fs.rmSync(tempHome, { recursive: true, force: true });
 		fs.rmSync(tempProject, { recursive: true, force: true });
 	});
 
-	it("exits startup with corrupted file paths when markdown is invalid", async () => {
+	it("fails startup with corrupted file paths when markdown is invalid", async () => {
 		const tempHome = mkdtemp("tau-home-");
 		const tempProject = mkdtemp("tau-project-");
 
@@ -76,28 +76,13 @@ describe("agent startup validation", () => {
 
 		vi.stubEnv("HOME", tempHome);
 
-		let logged = "";
-		const log = (message: string) => {
-			logged = message;
-		};
-		const exit = vi.fn((code: number): never => {
-			throw new Error(`EXIT:${code}`);
-		});
-
-		await expect(validateAgentDefinitionsAtStartup(tempProject, { log, exit })).rejects.toThrow(
-			"EXIT:1",
-		);
-
-		expect(exit).toHaveBeenCalledWith(1);
-		expect(logged).toContain("pi failed to start: invalid agent configuration detected.");
-		expect(logged).toContain("broken-one.md");
-		expect(logged).toContain("broken-two.md");
+		await expect(runValidation(tempProject)).rejects.toThrow("broken-one.md");
 
 		fs.rmSync(tempHome, { recursive: true, force: true });
 		fs.rmSync(tempProject, { recursive: true, force: true });
 	});
 
-	it("exits startup when a resolved mode agent references unavailable tools", async () => {
+	it("fails startup when a resolved mode agent references unavailable tools", async () => {
 		const tempHome = mkdtemp("tau-home-");
 		const tempProject = mkdtemp("tau-project-");
 
@@ -118,27 +103,9 @@ describe("agent startup validation", () => {
 
 		vi.stubEnv("HOME", tempHome);
 
-		let logged = "";
-		let notified = "";
-		const log = (message: string) => {
-			logged = message;
-		};
-		const notify = (message: string) => {
-			notified = message;
-		};
-		const exit = vi.fn((code: number): never => {
-			throw new Error(`EXIT:${code}`);
-		});
-
-		await expect(
-			validateAgentDefinitionsAtStartup(tempProject, { log, notify, exit }),
-		).rejects.toThrow("EXIT:1");
-
-		expect(exit).toHaveBeenCalledWith(1);
-		expect(logged).toContain("pi failed to start: invalid agent configuration detected.");
-		expect(logged).toContain('Invalid tools for agent "deep": imaginary_tool');
-		expect(logged).toContain("Available tools:");
-		expect(notified).toBe(logged);
+		await expect(runValidation(tempProject)).rejects.toThrow(
+			'Invalid tools for agent "deep": imaginary_tool',
+		);
 
 		fs.rmSync(tempHome, { recursive: true, force: true });
 		fs.rmSync(tempProject, { recursive: true, force: true });
@@ -165,15 +132,7 @@ describe("agent startup validation", () => {
 
 		vi.stubEnv("HOME", tempHome);
 
-		const log = vi.fn<(message: string) => void>();
-		const exit = vi.fn((code: number): never => {
-			throw new Error(`EXIT:${code}`);
-		});
-
-		await validateAgentDefinitionsAtStartup(tempProject, { log, exit });
-
-		expect(log).not.toHaveBeenCalled();
-		expect(exit).not.toHaveBeenCalled();
+		await expect(runValidation(tempProject)).resolves.toBeUndefined();
 
 		fs.rmSync(tempHome, { recursive: true, force: true });
 		fs.rmSync(tempProject, { recursive: true, force: true });

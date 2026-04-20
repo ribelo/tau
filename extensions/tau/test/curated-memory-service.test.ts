@@ -527,10 +527,10 @@ describe("CuratedMemory service", () => {
 		}
 	});
 
-	it("reclaims stale lock files even when the recorded pid is still alive", async () => {
+	it("reclaims stale lock files when the recorded pid is dead", async () => {
 		await fs.mkdir(globalMemoryDir(tempHome), { recursive: true });
 		const lockPath = path.join(globalMemoryDir(tempHome), ".lock");
-		await fs.writeFile(lockPath, JSON.stringify({ pid: process.pid, token: "stale-live-pid" }), "utf8");
+		await fs.writeFile(lockPath, JSON.stringify({ pid: 999_999, token: "stale-dead-pid" }), "utf8");
 		const staleAt = new Date(Date.now() - 10_000);
 		await fs.utimes(lockPath, staleAt, staleAt);
 

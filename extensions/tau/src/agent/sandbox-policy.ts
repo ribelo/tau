@@ -39,7 +39,8 @@ export function computeClampedWorkerSandboxConfig(options: {
 		filesystemMode: resolved.filesystemMode,
 		networkMode: resolved.networkMode,
 		approvalPolicy: resolved.approvalPolicy,
-		approvalTimeoutSeconds: options.parent.approvalTimeoutSeconds,
+		approvalTimeoutSeconds:
+			options.requested?.approvalTimeoutSeconds ?? options.parent.approvalTimeoutSeconds,
 		subagent,
 	};
 }

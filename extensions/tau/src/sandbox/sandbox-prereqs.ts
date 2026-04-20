@@ -30,10 +30,10 @@ export function detectMissingSandboxDeps(opts: {
 	}
 
 	if (opts.platform === "darwin") {
-		// sandbox-exec is shipped with macOS, but can be missing on unusual setups.
-		if (!commandExists("sandbox-exec")) missingRequired.push("sandbox-exec");
-		// ripgrep is optional but helps with some tooling and troubleshooting.
-		if (!commandExists("rg")) missingOptional.push("rg");
+		// Sandboxed execution is not implemented for macOS. bubblewrap (bwrap)
+		// is Linux-only, and sandbox-exec wrapping is not implemented.
+		// Report Darwin as unsupported so callers fall back to unsandboxed.
+		missingRequired.push("sandboxed execution is not supported on macOS");
 	}
 
 	return { missingRequired, missingOptional };

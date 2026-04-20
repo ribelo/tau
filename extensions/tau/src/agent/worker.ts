@@ -12,7 +12,7 @@ import type { StreamFn } from "@mariozechner/pi-agent-core";
 import type { Model, Api, ThinkingLevel, Context, SimpleStreamOptions } from "@mariozechner/pi-ai";
 import { stream, streamSimple } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
-import { Effect, SubscriptionRef, Stream } from "effect";
+import { Effect, Fiber, SubscriptionRef, Stream } from "effect";
 import { nanoid } from "nanoid";
 import { type Status } from "./status.js";
 import type { AgentId, AgentDefinition, ModelSpec } from "./types.js";
@@ -119,9 +119,10 @@ function syncExecutionProfileToSession(
 
 function waitForSessionSettlement(
 	session: AgentSession,
-): Promise<{ ok: true } | { ok: false; reason: string }> {
-	return new Promise((resolve) => {
+): Effect.Effect<{ ok: true } | { ok: false; reason: string }> {
+	return Effect.callback<{ ok: true } | { ok: false; reason: string }>((resume) => {
 		let pendingFailureTimer: ReturnType<typeof setTimeout> | undefined = undefined;
+		let settled = false;
 
 		const clearPendingFailureTimer = (): void => {
 			if (pendingFailureTimer !== undefined) {
@@ -131,9 +132,11 @@ function waitForSessionSettlement(
 		};
 
 		const finish = (result: { ok: true } | { ok: false; reason: string }): void => {
+			if (settled) return;
+			settled = true;
 			clearPendingFailureTimer();
 			unsubscribe();
-			resolve(result);
+			resume(Effect.succeed(result));
 		};
 
 		const settleFromCurrentState = (): void => {
@@ -194,6 +197,11 @@ function waitForSessionSettlement(
 		});
 
 		settleFromCurrentState();
+
+		return Effect.sync(() => {
+			clearPendingFailureTimer();
+			unsubscribe();
+		});
 	});
 }
 
@@ -457,6 +465,7 @@ export class AgentWorker implements Agent {
 	private tools: ToolRecord[] = [];
 	private pendingTools: Map<string, ToolRecord> = new Map();
 	private sessionUnsubscribe: (() => void) | undefined = undefined;
+	private activeFiber: Fiber.Fiber<void, never> | undefined = undefined;
 
 	constructor(
 		readonly id: AgentId,
@@ -736,6 +745,10 @@ export class AgentWorker implements Agent {
 		const agent = this;
 
 		this.sessionUnsubscribe = session.subscribe((event) => {
+			if (agent.terminalState === "shutdown") {
+				return;
+			}
+
 			if (event.type === "turn_start") {
 				agent.terminalState = undefined;
 				agent.turns++;
@@ -819,7 +832,9 @@ export class AgentWorker implements Agent {
 				) {
 					if (agent.submitResultRetries < MAX_SUBMIT_RESULT_RETRIES) {
 						agent.submitResultRetries += 1;
-						Effect.runFork(agent.repromptForSubmitResult(agent.submitResultRetries));
+						agent.activeFiber = Effect.runFork(
+							agent.repromptForSubmitResult(agent.submitResultRetries),
+						);
 					} else {
 						agent.publishFailed(
 							`Agent did not call submit_result after ${MAX_SUBMIT_RESULT_RETRIES} retries`,
@@ -898,11 +913,7 @@ export class AgentWorker implements Agent {
 					`${modelLabel}: ${err instanceof Error ? err.message : String(err)}`,
 			});
 
-			const settled = yield* Effect.tryPromise({
-				try: () => waitForSessionSettlement(worker.session),
-				catch: (err) =>
-					`${modelLabel}: ${err instanceof Error ? err.message : String(err)}`,
-			});
+			const settled = yield* waitForSessionSettlement(worker.session);
 
 			if (!settled.ok) {
 				return yield* Effect.fail(`${modelLabel}: ${settled.reason}`);
@@ -971,9 +982,14 @@ export class AgentWorker implements Agent {
 			worker.structuredOutput = undefined;
 			worker.terminalState = undefined;
 
+			if (worker.activeFiber) {
+				yield* Fiber.interrupt(worker.activeFiber);
+				worker.activeFiber = undefined;
+			}
+
 			yield* SubscriptionRef.set(worker.statusRef, worker.currentRunningStatus());
 
-			Effect.runFork(
+			worker.activeFiber = Effect.runFork(
 				worker.runWithModelFallback(message).pipe(
 					Effect.catch((err: unknown) => {
 						const reason = err instanceof Error ? err.message : String(err);
@@ -1001,13 +1017,17 @@ export class AgentWorker implements Agent {
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const worker = this;
 		return Effect.gen(function* () {
+			worker.terminalState = "shutdown";
+			if (worker.activeFiber) {
+				yield* Fiber.interrupt(worker.activeFiber);
+				worker.activeFiber = undefined;
+			}
 			yield* Effect.promise(() => worker.session.abort());
 			if (worker.sessionUnsubscribe) {
 				worker.sessionUnsubscribe();
 				worker.sessionUnsubscribe = undefined;
 			}
 			setWorkerApprovalBroker(worker.session.sessionId, undefined);
-			worker.terminalState = "shutdown";
 			yield* SubscriptionRef.set(worker.statusRef, { state: "shutdown" });
 		});
 	}
