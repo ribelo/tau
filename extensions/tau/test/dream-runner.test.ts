@@ -58,6 +58,7 @@ function makeEntry(id: string, scope: "project" | "global" | "user", content: st
 	return createMemoryEntry(content, {
 		id,
 		scope,
+		summary: `${scope} hook ${id}`,
 		now: DateTime.makeUnsafe("2025-01-01T00:00:00Z"),
 	});
 }

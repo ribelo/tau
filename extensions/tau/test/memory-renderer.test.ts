@@ -29,13 +29,17 @@ function renderToolResult(result: {
 	return rendered.render(400).join("\n");
 }
 
+function makeEntry(summary: string, content = `${summary} body`) {
+	return createMemoryEntry(content, { summary });
+}
+
 describe("memory renderer", () => {
 	it("renders all scopes with id, size, scope, and preview columns", () => {
 		const snapshot: MemoryEntriesSnapshot = {
 			project: {
 				bucket: "project",
 				path: "/workspace/.pi/tau/memories/PROJECT.jsonl",
-				entries: [createMemoryEntry("project memory preview")],
+				entries: [makeEntry("project memory preview", "project memory details")],
 				chars: 22,
 				limitChars: 25000,
 				usagePercent: 2,
@@ -43,7 +47,7 @@ describe("memory renderer", () => {
 			global: {
 				bucket: "global",
 				path: "/home/test/.pi/agent/tau/memories/MEMORY.jsonl",
-				entries: [createMemoryEntry("global memory preview")],
+				entries: [makeEntry("global memory preview", "global memory details")],
 				chars: 21,
 				limitChars: 25000,
 				usagePercent: 2,
@@ -51,7 +55,7 @@ describe("memory renderer", () => {
 			user: {
 				bucket: "user",
 				path: "/home/test/.pi/agent/tau/memories/USER.jsonl",
-				entries: [createMemoryEntry("user memory preview")],
+				entries: [makeEntry("user memory preview", "user memory details")],
 				chars: 19,
 				limitChars: 25000,
 				usagePercent: 3,
@@ -79,7 +83,7 @@ describe("memory renderer", () => {
 			project: {
 				bucket: "project",
 				path: "/workspace/.pi/tau/memories/PROJECT.jsonl",
-				entries: Array.from({ length: 7 }, (_, index) => createMemoryEntry(`project-${index}`)),
+				entries: Array.from({ length: 7 }, (_, index) => makeEntry(`project-${index}`, `project body ${index}`)),
 				chars: 1275,
 				limitChars: 25000,
 				usagePercent: 62,
@@ -87,7 +91,7 @@ describe("memory renderer", () => {
 			global: {
 				bucket: "global",
 				path: "/home/test/.pi/agent/tau/memories/MEMORY.jsonl",
-				entries: Array.from({ length: 11 }, (_, index) => createMemoryEntry(`global-${index}`)),
+				entries: Array.from({ length: 11 }, (_, index) => makeEntry(`global-${index}`, `global body ${index}`)),
 				chars: 1107,
 				limitChars: 25000,
 				usagePercent: 54,
@@ -95,7 +99,7 @@ describe("memory renderer", () => {
 			user: {
 				bucket: "user",
 				path: "/home/test/.pi/agent/tau/memories/USER.jsonl",
-				entries: Array.from({ length: 9 }, (_, index) => createMemoryEntry(`user-${index}`)),
+				entries: Array.from({ length: 9 }, (_, index) => makeEntry(`user-${index}`, `user body ${index}`)),
 				chars: 1452,
 				limitChars: 25000,
 				usagePercent: 141,
@@ -131,12 +135,14 @@ describe("memory renderer", () => {
 				success: false,
 				action: "add",
 				scope: "project",
+				submittedSummary: "short hook",
 				submittedContent: "remember this exact\nmulti-line memory",
 			},
 		});
 
 		expect(result).toContain("memory add");
 		expect(result).toContain("scope   : project");
+		expect(result).toContain("summary : short hook");
 		expect(result).toContain("chars   : 37");
 		expect(result).toContain("content:");
 		expect(result).toContain("remember this exact");
@@ -151,6 +157,7 @@ describe("memory renderer", () => {
 				success: false,
 				action: "add",
 				scope: "project",
+				submittedSummary: "alpha beta hook",
 				submittedContent: "alpha\r\nbeta",
 			},
 		});
@@ -161,7 +168,10 @@ describe("memory renderer", () => {
 	});
 
 	it("renders the stored scope for successful read results", () => {
-		const entry = createMemoryEntry("boring durable fact", { scope: "user" });
+		const entry = createMemoryEntry("boring durable fact body", {
+			scope: "user",
+			summary: "boring durable fact",
+		});
 		const rendered = renderToolResult({
 			content: [{ type: "text", text: `id: ${entry.id}\nscope: ${entry.scope}` }],
 			details: {
@@ -221,5 +231,57 @@ describe("memory renderer", () => {
 		expect(rendered).toContain("User wants exact answers.");
 		expect(rendered).toContain("No approximations.");
 		expect(rendered).not.toContain("preview :");
+	});
+
+	it("surfaces entries that need summary repair in /memories", () => {
+		const invalid = { ...makeEntry("repair hook", "repair body"), summary: "repair body" };
+		const snapshot: MemoryEntriesSnapshot = {
+			project: {
+				bucket: "project",
+				path: "/workspace/.pi/tau/memories/PROJECT.jsonl",
+				entries: [invalid],
+				chars: invalid.content.length,
+				limitChars: 25000,
+				usagePercent: 1,
+			},
+			global: {
+				bucket: "global",
+				path: "/home/test/.pi/agent/tau/memories/MEMORY.jsonl",
+				entries: [],
+				chars: 0,
+				limitChars: 25000,
+				usagePercent: 0,
+			},
+			user: {
+				bucket: "user",
+				path: "/home/test/.pi/agent/tau/memories/USER.jsonl",
+				entries: [],
+				chars: 0,
+				limitChars: 25000,
+				usagePercent: 0,
+			},
+		};
+
+		const rendered = renderMemoriesMessage(
+			{
+				snapshot,
+				issues: [
+					{
+						id: invalid.id,
+						scope: invalid.scope,
+						summary: invalid.summary,
+						content: invalid.content,
+						reason: "summary_matches_content",
+					},
+				],
+			},
+			plainTheme,
+		)
+			.render(400)
+			.join("\n");
+
+		expect(rendered).toContain("repair");
+		expect(rendered).toContain(invalid.id);
+		expect(rendered).toContain("summary duplicates content");
 	});
 });

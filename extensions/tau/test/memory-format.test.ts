@@ -6,8 +6,10 @@ import {
 	MemoryEntry,
 	charCount,
 	createMemoryEntry,
+	findMemoryRepairIssues,
 	joinEntries,
 	makeMemoryIndex,
+	memorySummaryMatchesContent,
 	migrateLegacyEntries,
 	migrateLegacyMarkdownToJsonl,
 	normalizeMemoryContent,
@@ -69,6 +71,7 @@ describe("memory format helpers", () => {
 			id: "123456789012",
 			scope: "project",
 			type: "preference",
+			summary: "alpha beta hook",
 			createdAt,
 			updatedAt,
 		});
@@ -77,7 +80,7 @@ describe("memory format helpers", () => {
 		expect(entry.id).toBe("123456789012");
 		expect(entry.scope).toBe("project");
 		expect(entry.type).toBe("preference");
-		expect(entry.summary).toBe("alpha beta");
+		expect(entry.summary).toBe("alpha beta hook");
 		expect(entry.content).toBe("alpha\nbeta");
 		expect(DateTime.formatIso(entry.createdAt)).toBe("2024-01-02T03:04:05.000Z");
 		expect(DateTime.formatIso(entry.updatedAt)).toBe("2024-01-03T04:05:06.000Z");
@@ -88,6 +91,7 @@ describe("memory format helpers", () => {
 			id: "123456789012",
 			scope: "project",
 			type: "fact",
+			summary: "alpha hook",
 			createdAt: parseTimestamp("2024-01-02T03:04:05.000Z"),
 			updatedAt: parseTimestamp("2024-01-02T03:04:05.000Z"),
 		});
@@ -95,6 +99,7 @@ describe("memory format helpers", () => {
 			id: "abcdefghijAB",
 			scope: "global",
 			type: "constraint",
+			summary: "beta hook",
 			createdAt: parseTimestamp("2024-01-04T03:04:05.000Z"),
 			updatedAt: parseTimestamp("2024-01-05T03:04:05.000Z"),
 		});
@@ -106,7 +111,7 @@ describe("memory format helpers", () => {
 					id: "123456789012",
 					scope: "project",
 					type: "fact",
-					summary: "alpha",
+					summary: "alpha hook",
 					content: "alpha",
 					createdAt: "2024-01-02T03:04:05.000Z",
 					updatedAt: "2024-01-02T03:04:05.000Z",
@@ -115,7 +120,7 @@ describe("memory format helpers", () => {
 					id: "abcdefghijAB",
 					scope: "global",
 					type: "constraint",
-					summary: "beta",
+					summary: "beta hook",
 					content: "beta",
 					createdAt: "2024-01-04T03:04:05.000Z",
 					updatedAt: "2024-01-05T03:04:05.000Z",
@@ -131,7 +136,7 @@ describe("memory format helpers", () => {
 		]);
 		expect(parsed.map((entry) => entry.scope)).toEqual(["project", "global"]);
 		expect(parsed.map((entry) => entry.type)).toEqual(["fact", "constraint"]);
-		expect(parsed.map((entry) => entry.summary)).toEqual(["alpha", "beta"]);
+		expect(parsed.map((entry) => entry.summary)).toEqual(["alpha hook", "beta hook"]);
 		expect(parsed.map((entry) => entry.content)).toEqual(["alpha", "beta"]);
 		expect(parsed.map((entry) => DateTime.formatIso(entry.createdAt))).toEqual([
 			"2024-01-02T03:04:05.000Z",
@@ -235,6 +240,19 @@ describe("memory format helpers", () => {
 	it("derives compact summaries from full content", () => {
 		expect(normalizeMemorySummary("  alpha\n\n beta\n gamma  ")).toBe("alpha beta gamma");
 		expect(normalizeMemorySummary("x".repeat(180))).toHaveLength(140);
+	});
+
+	it("detects when a summary duplicates the full content body", () => {
+		expect(memorySummaryMatchesContent("alpha beta", "alpha\n beta")).toBe(true);
+		expect(memorySummaryMatchesContent("alpha hook", "alpha\n beta")).toBe(false);
+	});
+
+	it("rejects new entries whose summary duplicates content", () => {
+		expect(() =>
+			createMemoryEntry("alpha\nbeta", {
+				summary: "alpha beta",
+			}),
+		).toThrow("memory summary must not duplicate full content");
 	});
 
 	it("parses trimmed entries and removes empty segments", () => {
@@ -366,6 +384,7 @@ describe("memory index rendering", () => {
 						id: "proj12345678",
 						scope: "project",
 						type: "fact",
+						summary: "project alpha hook",
 						createdAt,
 						updatedAt,
 					}),
@@ -382,6 +401,7 @@ describe("memory index rendering", () => {
 						id: "glob12345678",
 						scope: "global",
 						type: "preference",
+						summary: "global beta hook",
 						createdAt,
 						updatedAt,
 					}),
@@ -398,6 +418,7 @@ describe("memory index rendering", () => {
 						id: "user12345678",
 						scope: "user",
 						type: "context",
+						summary: "user gamma hook",
 						createdAt,
 						updatedAt,
 					}),
@@ -418,7 +439,7 @@ describe("memory index rendering", () => {
 			id: "proj12345678",
 			scope: "project",
 			type: "fact",
-			summary: "project content alpha",
+			summary: "project alpha hook",
 		});
 
 		expect(index.global).toHaveLength(1);
@@ -426,7 +447,7 @@ describe("memory index rendering", () => {
 			id: "glob12345678",
 			scope: "global",
 			type: "preference",
-			summary: "global preference beta",
+			summary: "global beta hook",
 		});
 
 		expect(index.user).toHaveLength(1);
@@ -434,7 +455,7 @@ describe("memory index rendering", () => {
 			id: "user12345678",
 			scope: "user",
 			type: "context",
-			summary: "user context gamma",
+			summary: "user gamma hook",
 		});
 	});
 
@@ -465,9 +486,9 @@ describe("memory index rendering", () => {
 		expect(rendered).toContain('</user_memory>');
 
 		// Check entry format
-		expect(rendered).toContain('<entry id="proj12345678" scope="project" type="fact">project content alpha</entry>');
-		expect(rendered).toContain('<entry id="glob12345678" scope="global" type="preference">global preference beta</entry>');
-		expect(rendered).toContain('<entry id="user12345678" scope="user" type="context">user context gamma</entry>');
+		expect(rendered).toContain('<entry id="proj12345678" scope="project" type="fact">project alpha hook</entry>');
+		expect(rendered).toContain('<entry id="glob12345678" scope="global" type="preference">global beta hook</entry>');
+		expect(rendered).toContain('<entry id="user12345678" scope="user" type="context">user gamma hook</entry>');
 	});
 
 	it("escapes special XML characters in index entries", () => {
@@ -482,6 +503,7 @@ describe("memory index rendering", () => {
 						id: "test12345678",
 						scope: "project",
 						type: "fact",
+						summary: "summary with <special> & \"chars\"",
 						createdAt,
 						updatedAt,
 					}),
@@ -516,6 +538,7 @@ describe("memory index rendering", () => {
 						id: "glob12345678",
 						scope: "global",
 						type: "fact",
+						summary: "global entry hook",
 						createdAt,
 						updatedAt,
 					}),
@@ -534,5 +557,46 @@ describe("memory index rendering", () => {
 		expect(rendered).toContain('<global_memory>');
 		expect(rendered).not.toContain('<project_memory>');
 		expect(rendered).not.toContain('<user_memory>');
+	});
+
+	it("finds persisted entries that need summary repair", () => {
+		const invalid = {
+			...createMemoryEntry("valid content", {
+				summary: "valid hook",
+			}),
+			summary: "valid content",
+		};
+		const issues = findMemoryRepairIssues({
+			project: { bucket: "project", path: "", entries: [invalid], chars: invalid.content.length, limitChars: 25000, usagePercent: 1 },
+			global: { bucket: "global", path: "", entries: [], chars: 0, limitChars: 25000, usagePercent: 0 },
+			user: { bucket: "user", path: "", entries: [], chars: 0, limitChars: 25000, usagePercent: 0 },
+		});
+
+		expect(issues).toEqual([
+			{
+				id: invalid.id,
+				scope: "global",
+				summary: "valid content",
+				content: "valid content",
+				reason: "summary_matches_content",
+			},
+		]);
+	});
+
+	it("omits repair-needed entries from the prompt memory index", () => {
+		const invalid = {
+			...createMemoryEntry("valid content", {
+				summary: "valid hook",
+			}),
+			summary: "valid content",
+		};
+		const index = makeMemoryIndex({
+			project: { bucket: "project", path: "", entries: [invalid], chars: invalid.content.length, limitChars: 25000, usagePercent: 1 },
+			global: { bucket: "global", path: "", entries: [], chars: 0, limitChars: 25000, usagePercent: 0 },
+			user: { bucket: "user", path: "", entries: [], chars: 0, limitChars: 25000, usagePercent: 0 },
+		});
+
+		expect(index.project).toEqual([]);
+		expect(renderMemoryIndexXml(index)).toBe("");
 	});
 });

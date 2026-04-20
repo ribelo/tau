@@ -6,6 +6,7 @@ import type {
 	MemoryBucketSnapshot,
 	MemoryEntriesSnapshot,
 	MemoryEntry,
+	MemoryRepairIssue,
 	MemoryScope,
 } from "./format.js";
 
@@ -18,11 +19,13 @@ export type MemoryToolDetails = {
 	readonly entry?: MemoryEntry;
 	readonly bucket?: MemoryBucketSnapshot;
 	readonly requestedId?: string;
+	readonly submittedSummary?: string;
 	readonly submittedContent?: string;
 };
 
 export type MemoriesMessageDetails = {
 	readonly snapshot: MemoryEntriesSnapshot;
+	readonly issues?: readonly MemoryRepairIssue[];
 };
 
 type MemoryToolResult = {
@@ -152,6 +155,20 @@ export function renderMemoriesMessage(details: MemoriesMessageDetails, theme: Th
 		out.push(`\n${renderBucketSummary(bucket, summaryWidths, theme)}`);
 	}
 
+	if ((details.issues?.length ?? 0) > 0) {
+		out.push(
+			`\n\n  ${theme.fg("warning", "repair".padEnd(8))}: ${theme.fg(
+				"toolOutput",
+				`${details.issues!.length} entries have summary equal to content. Use memory read + memory update to give each one a distinct summary hook.`,
+			)}`,
+		);
+		for (const issue of details.issues ?? []) {
+			out.push(
+				`\n  ${theme.fg("warning", issue.id)}  ${scopeColumn(issue.scope, theme)}  ${theme.fg("dim", "summary duplicates content")}`,
+			);
+		}
+	}
+
 	out.push(
 		`\n\n  ${theme.fg("dim", "id".padEnd(21))}  ${theme.fg("dim", "size".padStart(9))}  ${theme.fg("dim", "scope".padEnd(7))}  ${theme.fg("dim", "type".padEnd(10))}  ${theme.fg("dim", "summary")}`,
 	);
@@ -218,6 +235,9 @@ function renderFailure(details: MemoryToolDetails, message: string, theme: Theme
 	}
 	if (details.requestedId) {
 		out += `\n  ${theme.fg("muted", "id".padEnd(8))}: ${theme.fg("accent", details.requestedId)}`;
+	}
+	if (details.submittedSummary) {
+		out += `\n  ${theme.fg("muted", "summary".padEnd(8))}: ${theme.fg("toolOutput", previewContent(details.submittedSummary, 120))}`;
 	}
 	if (details.submittedContent) {
 		out += `\n  ${theme.fg("muted", "chars".padEnd(8))}: ${theme.fg("toolOutput", `${details.submittedContent.length}`)}`;

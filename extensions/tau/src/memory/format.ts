@@ -62,6 +62,16 @@ export interface CreateMemoryEntryOptions {
 	readonly id?: string;
 	readonly scope?: MemoryScope;
 	readonly type?: string;
+	readonly summary: string;
+	readonly now?: MemoryTimestamp;
+	readonly createdAt?: MemoryTimestamp;
+	readonly updatedAt?: MemoryTimestamp;
+}
+
+interface LegacyCreateMemoryEntryOptions {
+	readonly id?: string;
+	readonly scope?: MemoryScope;
+	readonly type?: string;
 	readonly summary?: string;
 	readonly now?: MemoryTimestamp;
 	readonly createdAt?: MemoryTimestamp;
@@ -122,6 +132,14 @@ export interface MemoryIndexEntry {
 	readonly summary: string;
 }
 
+export interface MemoryRepairIssue {
+	readonly id: MemoryEntryId;
+	readonly scope: MemoryScope;
+	readonly summary: string;
+	readonly content: string;
+	readonly reason: "summary_matches_content";
+}
+
 export interface MemoryIndex {
 	readonly project: readonly MemoryIndexEntry[];
 	readonly global: readonly MemoryIndexEntry[];
@@ -157,6 +175,10 @@ export function normalizeMemorySummary(value: string): string {
 
 function summarizeMemoryContent(content: string): string {
 	return normalizeMemorySummary(content);
+}
+
+export function memorySummaryMatchesContent(summary: string, content: string): boolean {
+	return normalizeMemorySummary(summary) === summarizeMemoryContent(content);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -229,24 +251,59 @@ function formatTimestamp(value: MemoryTimestamp): string {
 	return DateTime.formatIso(value);
 }
 
-export function createMemoryEntry(
+function buildMemoryEntryCandidate(
 	content: string,
-	options: CreateMemoryEntryOptions = {},
-): MemoryEntry {
+	options: LegacyCreateMemoryEntryOptions,
+	deriveSummary: boolean,
+): MemoryEntryJson {
 	const createdAt = options.createdAt ?? options.now ?? DateTime.nowUnsafe();
 	const updatedAt = options.updatedAt ?? createdAt;
 	const normalizedContent = normalizeMemoryContent(content);
 	const normalizedType = normalizeMemoryType(options.type ?? DEFAULT_TYPE);
-	const normalizedSummary = normalizeMemorySummary(options.summary ?? summarizeMemoryContent(normalizedContent));
+	const resolvedSummary = deriveSummary
+		? options.summary ?? summarizeMemoryContent(normalizedContent)
+		: options.summary;
 
-	return decodeMemoryEntry({
+	if (resolvedSummary === undefined) {
+		throw new Error("memory summary is required");
+	}
+
+	return {
 		id: options.id ?? nanoid(ID_SIZE),
 		scope: options.scope ?? DEFAULT_SCOPE,
 		type: normalizedType,
-		summary: normalizedSummary,
+		summary: normalizeMemorySummary(resolvedSummary),
 		content: normalizedContent,
 		createdAt: formatTimestamp(createdAt),
 		updatedAt: formatTimestamp(updatedAt),
+	};
+}
+
+export function createMemoryEntry(
+	content: string,
+	options: CreateMemoryEntryOptions,
+): MemoryEntry {
+	const candidate = buildMemoryEntryCandidate(content, options, false);
+	if (memorySummaryMatchesContent(candidate.summary, candidate.content)) {
+		throw new Error("memory summary must not duplicate full content");
+	}
+	return decodeMemoryEntry(candidate);
+}
+
+function createLegacyMemoryEntry(
+	content: string,
+	options: LegacyCreateMemoryEntryOptions = {},
+): MemoryEntry {
+	return decodeMemoryEntry(buildMemoryEntryCandidate(content, options, true));
+}
+
+export function cloneMemoryEntry(
+	entry: MemoryEntry,
+	overrides: Partial<MemoryEntryJson> = {},
+): MemoryEntry {
+	return decodeMemoryEntry({
+		...encodeMemoryEntry(entry),
+		...overrides,
 	});
 }
 
@@ -316,7 +373,7 @@ export function migrateLegacyEntries(
 	const timestamp = options.now ?? DateTime.nowUnsafe();
 
 	return parseEntries(raw).map((content) =>
-		createMemoryEntry(content, {
+		createLegacyMemoryEntry(content, {
 			createdAt: timestamp,
 			updatedAt: timestamp,
 			...(options.scope !== undefined ? { scope: options.scope } : {}),
@@ -423,25 +480,43 @@ export function renderMemoryIndexXml(index: MemoryIndex): string {
 	return ["<memory_index>", ...parts, "</memory_index>"].join("\n");
 }
 
+function indexEntries(entries: readonly MemoryEntry[]): readonly MemoryIndexEntry[] {
+	return entries.flatMap((entry) =>
+		memorySummaryMatchesContent(entry.summary, entry.content)
+			? []
+			: [
+				{
+					id: entry.id,
+					scope: entry.scope,
+					type: entry.type,
+					summary: entry.summary,
+				},
+			],
+	);
+}
+
 export function makeMemoryIndex(snapshot: MemoryEntriesSnapshot): MemoryIndex {
 	return {
-		project: snapshot.project.entries.map((entry) => ({
-			id: entry.id,
-			scope: entry.scope,
-			type: entry.type,
-			summary: entry.summary,
-		})),
-		global: snapshot.global.entries.map((entry) => ({
-			id: entry.id,
-			scope: entry.scope,
-			type: entry.type,
-			summary: entry.summary,
-		})),
-		user: snapshot.user.entries.map((entry) => ({
-			id: entry.id,
-			scope: entry.scope,
-			type: entry.type,
-			summary: entry.summary,
-		})),
+		project: indexEntries(snapshot.project.entries),
+		global: indexEntries(snapshot.global.entries),
+		user: indexEntries(snapshot.user.entries),
 	};
+}
+
+export function findMemoryRepairIssues(snapshot: MemoryEntriesSnapshot): readonly MemoryRepairIssue[] {
+	return [snapshot.project, snapshot.global, snapshot.user].flatMap((bucket) =>
+		bucket.entries.flatMap((entry) =>
+			memorySummaryMatchesContent(entry.summary, entry.content)
+				? [
+					{
+						id: entry.id,
+						scope: entry.scope,
+						summary: entry.summary,
+						content: entry.content,
+						reason: "summary_matches_content" as const,
+					},
+				]
+				: [],
+		),
+	);
 }

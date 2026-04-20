@@ -7,6 +7,11 @@ export class MemoryEmptyContent extends Schema.TaggedErrorClass<MemoryEmptyConte
 	{},
 ) {}
 
+export class MemoryEmptySummary extends Schema.TaggedErrorClass<MemoryEmptySummary>()(
+	"MemoryEmptySummary",
+	{},
+) {}
+
 export class MemoryEntryTooLarge extends Schema.TaggedErrorClass<MemoryEntryTooLarge>()(
 	"MemoryEntryTooLarge",
 	{
@@ -30,6 +35,19 @@ export class MemoryDuplicateEntry extends Schema.TaggedErrorClass<MemoryDuplicat
 	},
 ) {}
 
+export class MemoryDuplicateSummary extends Schema.TaggedErrorClass<MemoryDuplicateSummary>()(
+	"MemoryDuplicateSummary",
+	{
+		scope: Schema.Union([Schema.Literal("project"), Schema.Literal("global"), Schema.Literal("user")]),
+		entry: MemoryEntry,
+	},
+) {}
+
+export class MemorySummaryMatchesContent extends Schema.TaggedErrorClass<MemorySummaryMatchesContent>()(
+	"MemorySummaryMatchesContent",
+	{},
+) {}
+
 export class MemoryFileError extends Schema.TaggedErrorClass<MemoryFileError>()(
 	"MemoryFileError",
 	{ reason: Schema.String },
@@ -37,7 +55,10 @@ export class MemoryFileError extends Schema.TaggedErrorClass<MemoryFileError>()(
 
 export type MemoryMutationError =
 	| MemoryEmptyContent
+	| MemoryEmptySummary
 	| MemoryEntryTooLarge
 	| MemoryNoMatch
 	| MemoryDuplicateEntry
+	| MemoryDuplicateSummary
+	| MemorySummaryMatchesContent
 	| MemoryFileError;

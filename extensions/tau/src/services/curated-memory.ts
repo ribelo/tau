@@ -18,10 +18,13 @@ import {
 	type MemoryScope,
 	type MemoryIndex,
 	charCount,
+	cloneMemoryEntry,
 	createMemoryEntry,
 	makeMemoryIndex,
+	memorySummaryMatchesContent,
 	migrateLegacyMarkdownToJsonl,
 	normalizeMemoryContent,
+	normalizeMemorySummary,
 	parseMemoryEntries,
 	parseMemoryEntriesWithMigration,
 	renderMemoryIndexXml,
@@ -29,10 +32,13 @@ import {
 } from "../memory/format.js";
 import {
 	MemoryDuplicateEntry,
+	MemoryDuplicateSummary,
 	MemoryEntryTooLarge,
 	MemoryEmptyContent,
+	MemoryEmptySummary,
 	MemoryFileError,
 	MemoryNoMatch,
+	MemorySummaryMatchesContent,
 	type MemoryMutationError,
 } from "../memory/errors.js";
 import { getProjectTauMemoryDir, getTauMemoryDir } from "../shared/discovery.js";
@@ -97,6 +103,22 @@ function legacyFileNameForScope(scope: MemoryScope): string {
 
 function normalizeEntryText(text: string): string {
 	return normalizeMemoryContent(text);
+}
+
+function normalizeSummaryText(text: string): string {
+	return normalizeMemorySummary(text);
+}
+
+interface MemoryDraft {
+	readonly summary: string;
+	readonly content: string;
+}
+
+function normalizeMemoryDraft(summary: string, content: string): MemoryDraft {
+	return {
+		summary: normalizeSummaryText(summary),
+		content: normalizeEntryText(content),
+	};
 }
 
 function directoryForScope(scope: MemoryScope, cwd: string): string {
@@ -198,14 +220,7 @@ function migrateLegacyLongIds(entries: readonly MemoryEntry[]): ReadJsonlScopeRe
 		}
 		usedIds.add(nextId);
 
-		return createMemoryEntry(entry.content, {
-			scope: entry.scope,
-			type: entry.type,
-			summary: entry.summary,
-			id: nextId,
-			createdAt: entry.createdAt,
-			updatedAt: entry.updatedAt,
-		});
+		return cloneMemoryEntry(entry, { id: nextId });
 	});
 
 	return {
@@ -462,10 +477,16 @@ export class CuratedMemory extends ServiceMap.Service<
 		readonly getEntriesSnapshot: (cwd: string) => Effect.Effect<MemoryEntriesSnapshot, MemoryFileError>;
 		readonly reloadFrozenSnapshot: (cwd: string) => Effect.Effect<void, MemoryFileError>;
 		readonly getFrozenPromptBlock: () => string;
-		readonly add: (scope: MemoryScope, text: string, cwd: string) => Effect.Effect<MutationResult, MemoryMutationError>;
+		readonly add: (
+			scope: MemoryScope,
+			summary: string,
+			content: string,
+			cwd: string,
+		) => Effect.Effect<MutationResult, MemoryMutationError>;
 		readonly update: (
 			scope: MemoryScope,
 			id: MemoryEntryId | string,
+			summary: string,
 			newText: string,
 			cwd: string,
 		) => Effect.Effect<MutationResult, MemoryMutationError>;
@@ -547,22 +568,34 @@ export const CuratedMemoryLive = Layer.effect(
 
 		const add = (
 			scope: MemoryScope,
-			text: string,
+			summary: string,
+			content: string,
 			cwd: string,
 		): Effect.Effect<MutationResult, MemoryMutationError> => {
-			const trimmed = normalizeEntryText(text);
-			if (!trimmed) {
+			const draft = normalizeMemoryDraft(summary, content);
+			if (!draft.summary) {
+				return Effect.fail(new MemoryEmptySummary());
+			}
+			if (!draft.content) {
 				return Effect.fail(new MemoryEmptyContent());
+			}
+			if (memorySummaryMatchesContent(draft.summary, draft.content)) {
+				return Effect.fail(new MemorySummaryMatchesContent());
 			}
 
 			return mutate(scope, cwd, (entries) => {
-				const existingEntry = entries.find((entry) => entry.content === trimmed);
+				const existingEntry = entries.find((entry) => entry.content === draft.content);
 				if (existingEntry) {
 					return Effect.fail(new MemoryDuplicateEntry({ scope, entry: existingEntry }));
 				}
 
+				const existingSummary = entries.find((entry) => entry.summary === draft.summary);
+				if (existingSummary) {
+					return Effect.fail(new MemoryDuplicateSummary({ scope, entry: existingSummary }));
+				}
+
 				const currentChars = charCount(entryContents(entries));
-				const entry = createMemoryEntry(trimmed, { scope });
+				const entry = createMemoryEntry(draft.content, { scope, summary: draft.summary });
 				const nextEntries = [...entries, entry];
 				const nextChars = charCount(entryContents(nextEntries));
 				const limit = scopeLimitForScope(scope);
@@ -583,13 +616,23 @@ export const CuratedMemoryLive = Layer.effect(
 		const update = (
 			scope: MemoryScope,
 			id: MemoryEntryId | string,
+			summary: string,
 			newText: string,
 			cwd: string,
 		): Effect.Effect<MutationResult, MemoryMutationError> => {
 			const trimmedId = id.trim();
-			const newTrimmed = normalizeEntryText(newText);
-			if (!trimmedId || !newTrimmed) {
+			const draft = normalizeMemoryDraft(summary, newText);
+			if (!trimmedId) {
 				return Effect.fail(new MemoryEmptyContent());
+			}
+			if (!draft.summary) {
+				return Effect.fail(new MemoryEmptySummary());
+			}
+			if (!draft.content) {
+				return Effect.fail(new MemoryEmptyContent());
+			}
+			if (memorySummaryMatchesContent(draft.summary, draft.content)) {
+				return Effect.fail(new MemorySummaryMatchesContent());
 			}
 
 			return mutate(scope, cwd, (entries) => {
@@ -598,20 +641,29 @@ export const CuratedMemoryLive = Layer.effect(
 					return Effect.fail(new MemoryNoMatch({ id: trimmedId }));
 				}
 
-				if (entries.some((entry, entryIndex) => entryIndex !== index && entry.content === newTrimmed)) {
-					const existingEntry = entries.find((entry, entryIndex) => entryIndex !== index && entry.content === newTrimmed);
+				if (entries.some((entry, entryIndex) => entryIndex !== index && entry.content === draft.content)) {
+					const existingEntry = entries.find((entry, entryIndex) => entryIndex !== index && entry.content === draft.content);
 					if (!existingEntry) {
 						return Effect.die(new Error("Expected duplicate memory entry to exist"));
 					}
 					return Effect.fail(new MemoryDuplicateEntry({ scope, entry: existingEntry }));
 				}
 
+				if (entries.some((entry, entryIndex) => entryIndex !== index && entry.summary === draft.summary)) {
+					const existingSummary = entries.find((entry, entryIndex) => entryIndex !== index && entry.summary === draft.summary);
+					if (!existingSummary) {
+						return Effect.die(new Error("Expected duplicate memory summary to exist"));
+					}
+					return Effect.fail(new MemoryDuplicateSummary({ scope, entry: existingSummary }));
+				}
+
 				const candidate = [...entries];
 				const currentChars = charCount(entryContents(entries));
 				const currentEntry = candidate[index]!;
-				const entry = createMemoryEntry(newTrimmed, {
+				const entry = createMemoryEntry(draft.content, {
 					scope,
 					type: currentEntry.type,
+					summary: draft.summary,
 					id: currentEntry.id,
 					createdAt: currentEntry.createdAt,
 					updatedAt: DateTime.nowUnsafe(),
@@ -694,8 +746,8 @@ export const CuratedMemoryLive = Layer.effect(
 			setup: Effect.gen(function* () {
 				yield* reloadFrozenSnapshot(process.cwd()).pipe(Effect.orElseSucceed(() => undefined));
 				yield* Effect.sync(() => {
-					const reload = (_event: unknown, ctx: ExtensionContext) => {
-						void Effect.runPromise(reloadFrozenSnapshot(ctx.cwd).pipe(Effect.orElseSucceed(() => undefined)));
+					const reload = async (_event: unknown, ctx: ExtensionContext) => {
+						await Effect.runPromise(reloadFrozenSnapshot(ctx.cwd).pipe(Effect.orElseSucceed(() => undefined)));
 					};
 					pi.on("session_start", reload);
 					pi.on("session_switch", reload);

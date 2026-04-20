@@ -55,6 +55,10 @@ interface SentMessage {
 	readonly display?: boolean;
 }
 
+function hook(label: string): string {
+	return `${label} hook`;
+}
+
 async function waitFor<T>(load: () => Promise<T>, ready: (value: T) => boolean): Promise<T> {
 	for (let attempt = 0; attempt < 20; attempt++) {
 		const value = await load();
@@ -279,6 +283,7 @@ describe("memory tool runtime", () => {
 					{
 						action: "add",
 						target: "global",
+						summary: hook("tau-memory-runtime-hang-repro"),
 						content: "tau-memory-runtime-hang-repro",
 					},
 					undefined,
@@ -310,7 +315,12 @@ describe("memory tool runtime", () => {
 							type: "tool_result",
 							toolName: "memory",
 							toolCallId: "call-1",
-							input: { action: "add", target: "global", content: "tau-memory-runtime-hang-repro" },
+							input: {
+								action: "add",
+								target: "global",
+								summary: hook("tau-memory-runtime-hang-repro"),
+								content: "tau-memory-runtime-hang-repro",
+							},
 							content: result.content,
 							details: result.details,
 							isError: false,
@@ -353,6 +363,7 @@ describe("memory tool runtime", () => {
 				{
 					action: "add",
 					target: "global",
+					summary: hook("id-addressed-entry"),
 					content: "id-addressed-entry",
 				},
 				undefined,
@@ -371,6 +382,7 @@ describe("memory tool runtime", () => {
 					action: "update",
 					target: "global",
 					id: entryId,
+					summary: hook("updated entry"),
 					content: "updated entry",
 				},
 				undefined,
@@ -396,6 +408,61 @@ describe("memory tool runtime", () => {
 			expect(removed.details.entry?.id).toBe(entryId);
 			expect(removed.content[0]).toEqual({ type: "text", text: expect.stringContaining("Removed entry from global memory.") });
 			expect(parseMemoryEntries(await fs.readFile(globalMemoryPath(tempHome), "utf8"))).toEqual([]);
+		} finally {
+			await runtime.dispose();
+		}
+	});
+
+	it("requires summary hooks and rejects summary/content duplication through the tool interface", async () => {
+		const { pi, tools } = makePiStub();
+		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
+		const runEffect = <A, E>(effect: Effect.Effect<A, E, CuratedMemory>) => runtime.runPromise(effect);
+		const cwd = path.join(tempHome, "workspace-tool-contract");
+		await fs.mkdir(cwd, { recursive: true });
+		await fs.mkdir(path.join(cwd, ".pi"), { recursive: true });
+		await fs.writeFile(path.join(cwd, ".pi", "settings.json"), "{}", "utf8");
+
+		try {
+			const memory = await runEffect(Effect.gen(function* () {
+				return yield* CuratedMemory;
+			}));
+			await runtime.runPromise(Effect.scoped(memory.setup));
+
+			initMemory(pi, runEffect);
+
+			const memoryTool = tools.find((tool) => tool.name === "memory");
+			expect(memoryTool).toBeDefined();
+
+			const missingSummary = (await memoryTool!.execute(
+				"call-missing-summary",
+				{ action: "add", target: "global", content: "alpha" },
+				undefined,
+				undefined,
+				makeContext(cwd),
+			)) as MemoryToolExecutionResult;
+
+			expect(missingSummary.content[0]).toEqual({
+				type: "text",
+				text: "summary is required for 'add' action.",
+			});
+
+			const duplicated = (await memoryTool!.execute(
+				"call-duplicated-summary",
+				{
+					action: "add",
+					target: "global",
+					summary: "alpha beta",
+					content: "alpha\nbeta",
+				},
+				undefined,
+				undefined,
+				makeContext(cwd),
+			)) as MemoryToolExecutionResult;
+
+			expect(duplicated.content[0]).toEqual({
+				type: "text",
+				text: "Summary must be a short hook distinct from the full content body.",
+			});
 		} finally {
 			await runtime.dispose();
 		}
@@ -435,11 +502,13 @@ describe("memory tool runtime", () => {
 			);
 			expect(firstStart[0]).toEqual({ systemPrompt: "base" });
 
+			const summary = "next agent memory hook";
 			await memoryTool!.execute(
 				"call-3",
 				{
 					action: "add",
 					target: "project",
+					summary,
 					content: "tau-project-memory-next-agent-start",
 				},
 				undefined,
@@ -481,12 +550,13 @@ describe("memory tool runtime", () => {
 						first !== null &&
 						"systemPrompt" in first &&
 						typeof first.systemPrompt === "string" &&
-						first.systemPrompt.includes("tau-project-memory-next-agent-start")
+						first.systemPrompt.includes(summary)
 					);
 				},
 			);
 
-			expect(reloadedStart[0]).toEqual({ systemPrompt: expect.stringContaining("tau-project-memory-next-agent-start") });
+			expect(reloadedStart[0]).toEqual({ systemPrompt: expect.stringContaining(summary) });
+			expect(reloadedStart[0]).toEqual({ systemPrompt: expect.not.stringContaining("tau-project-memory-next-agent-start") });
 			// Memory index format now includes entry summaries with scope/type, not file paths
 			expect(reloadedStart[0]).toEqual({ systemPrompt: expect.stringContaining('scope="project"') });
 			// Prompt guidance tells the model to use read action
@@ -529,6 +599,7 @@ describe("memory tool runtime", () => {
 					{
 						action: "add",
 						target: "global",
+						summary: hook("tau-memory-full-runtime-repro"),
 						content: "tau-memory-full-runtime-repro",
 					},
 					undefined,
@@ -547,7 +618,12 @@ describe("memory tool runtime", () => {
 						type: "tool_result",
 						toolName: "memory",
 						toolCallId: "call-2",
-						input: { action: "add", target: "global", content: "tau-memory-full-runtime-repro" },
+						input: {
+							action: "add",
+							target: "global",
+							summary: hook("tau-memory-full-runtime-repro"),
+							content: "tau-memory-full-runtime-repro",
+						},
 						content: result.content,
 						details: result.details,
 						isError: false,
@@ -599,9 +675,9 @@ describe("memory tool runtime", () => {
 				return yield* CuratedMemory;
 			}));
 			await runtime.runPromise(Effect.scoped(memory.setup));
-			await runEffect(memory.add("project", "project memory preview", cwd));
-			await runEffect(memory.add("global", "global memory preview", cwd));
-			await runEffect(memory.add("user", "user memory preview", cwd));
+			await runEffect(memory.add("project", hook("project memory preview"), "project memory preview", cwd));
+			await runEffect(memory.add("global", hook("global memory preview"), "global memory preview", cwd));
+			await runEffect(memory.add("user", hook("user memory preview"), "user memory preview", cwd));
 
 			initMemory(pi, runEffect);
 
@@ -625,6 +701,57 @@ describe("memory tool runtime", () => {
 				"user memory preview",
 			]);
 			expect(details?.snapshot.project.entries[0]?.id).toHaveLength(12);
+		} finally {
+			await runtime.dispose();
+		}
+	});
+
+	it("surfaces persisted entries that still need summary repair in /memories payload", async () => {
+		const { pi, commands, sentMessages } = makePiStub();
+		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
+		const runEffect = <A, E>(effect: Effect.Effect<A, E, CuratedMemory>) => runtime.runPromise(effect);
+		const cwd = path.join(tempHome, "workspace-memories-repair");
+		await fs.mkdir(cwd, { recursive: true });
+		await fs.mkdir(path.join(cwd, ".pi"), { recursive: true });
+		await fs.writeFile(path.join(cwd, ".pi", "settings.json"), "{}", "utf8");
+		await fs.mkdir(path.dirname(globalMemoryPath(tempHome)), { recursive: true });
+		await fs.writeFile(
+			globalMemoryPath(tempHome),
+			JSON.stringify({
+				id: "repair123456",
+				scope: "global",
+				type: "fact",
+				summary: "needs repair body",
+				content: "needs repair body",
+				createdAt: "2024-01-02T03:04:05.000Z",
+				updatedAt: "2024-01-02T03:04:05.000Z",
+			}),
+			"utf8",
+		);
+
+		try {
+			const memory = await runEffect(Effect.gen(function* () {
+				return yield* CuratedMemory;
+			}));
+			await runtime.runPromise(Effect.scoped(memory.setup));
+
+			initMemory(pi, runEffect);
+
+			const command = commands.get("memories");
+			expect(command).toBeDefined();
+
+			await command!.handler("", makeContext(cwd));
+
+			const details = sentMessages[0]?.details as MemoriesMessageDetails | undefined;
+			expect(details?.issues).toEqual([
+				{
+					id: "repair123456",
+					scope: "global",
+					summary: "needs repair body",
+					content: "needs repair body",
+					reason: "summary_matches_content",
+				},
+			]);
 		} finally {
 			await runtime.dispose();
 		}
@@ -704,7 +831,7 @@ describe("memory tool runtime", () => {
 				return yield* CuratedMemory;
 			}));
 			await runtime.runPromise(Effect.scoped(memory.setup));
-			await runEffect(memory.add("user", "u".repeat(24_000), cwd));
+			await runEffect(memory.add("user", "overflow setup", "u".repeat(24_000), cwd));
 
 			initMemory(pi, runEffect);
 
@@ -716,6 +843,7 @@ describe("memory tool runtime", () => {
 				{
 					action: "add",
 					target: "user",
+					summary: "overflow attempt",
 					content: "v".repeat(2_000),
 				},
 				undefined,

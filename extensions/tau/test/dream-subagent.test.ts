@@ -18,6 +18,7 @@ function makeEntry(id: string, scope: "project" | "global" | "user", content: st
 	return createMemoryEntry(content, {
 		id,
 		scope,
+		summary: `${scope} hook ${id}`,
 		now: DateTime.makeUnsafe("2025-01-01T00:00:00Z"),
 	});
 }
@@ -126,13 +127,14 @@ describe("formatMemorySnapshotForPrompt", () => {
 		expect(text).toContain("### user");
 	});
 
-	it("includes entry ids and content", () => {
+	it("includes entry ids and summary hooks", () => {
 		const entry = makeEntry("abc123456789", "project", "Some durable fact");
 		const text = formatMemorySnapshotForPrompt(
 			makeSnapshot({ project: [entry] }),
 		);
 		expect(text).toContain("[abc123456789]");
-		expect(text).toContain("Some durable fact");
+		expect(text).toContain("project hook abc123456789");
+		expect(text).not.toContain("Some durable fact");
 	});
 
 	it("includes usage stats", () => {

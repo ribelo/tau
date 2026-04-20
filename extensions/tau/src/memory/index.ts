@@ -4,8 +4,17 @@ import type { ExtensionAPI, ToolDefinition } from "@mariozechner/pi-coding-agent
 import { Text } from "@mariozechner/pi-tui";
 
 import { CuratedMemory, type MutationResult } from "../services/curated-memory.js";
-import { type MemoryBucketSnapshot, type MemoryEntry, type MemoryScope } from "./format.js";
-import { MemoryDuplicateEntry, MemoryEmptyContent, MemoryEntryTooLarge, MemoryFileError, MemoryNoMatch } from "./errors.js";
+import { findMemoryRepairIssues, type MemoryBucketSnapshot, type MemoryEntry, type MemoryScope } from "./format.js";
+import {
+	MemoryDuplicateEntry,
+	MemoryDuplicateSummary,
+	MemoryEmptyContent,
+	MemoryEmptySummary,
+	MemoryEntryTooLarge,
+	MemoryFileError,
+	MemoryNoMatch,
+	MemorySummaryMatchesContent,
+} from "./errors.js";
 import {
 	renderMemoriesMessage,
 	renderMemoryCall,
@@ -20,12 +29,21 @@ const StringEnum = <T extends string[]>(values: [...T]) => Type.Unsafe<T[number]
 const MemoryToolParams = Type.Object({
 	action: StringEnum(["add", "update", "remove", "read"]),
 	target: Type.Optional(Type.String({ description: "Target scope. Required for add, update, remove." })),
-	content: Type.Optional(Type.String({ description: "Entry content. Required for add and update." })),
+	summary: Type.Optional(
+		Type.String({
+			description: "Short hook shown in future prompt memory indexes. Required for add and update.",
+		}),
+	),
+	content: Type.Optional(
+		Type.String({
+			description: "Full memory body. Required for add and update. This is not injected into prompts.",
+		}),
+	),
 	id: Type.Optional(Type.String({ description: "Exact memory entry id. Required for update, remove, and read." })),
 });
 type MemoryToolParams = Static<typeof MemoryToolParams>;
 
-const TOOL_DESCRIPTION = "Save and retrieve durable information to persistent memory that survives across sessions. Memory is injected into future sessions as a compact index, so keep it focused on facts that will still matter later.\n\nWHEN TO SAVE (do this proactively, do not wait to be asked):\n- User corrects you or says 'remember this' / 'don't do that again'\n- User shares a preference, habit, or personal detail (name, role, timezone, coding style)\n- You discover something about the environment (OS, installed tools, project structure)\n- You learn a convention, API quirk, or workflow specific to this user's setup\n\nPRIORITY: User preferences and corrections > environment facts > procedural knowledge. The most valuable memory prevents the user from having to repeat themselves.\n\nDo NOT save task progress, session outcomes, completed-work logs, or temporary TODO state.\n\nTHREE TARGETS:\n- 'project': workspace-specific facts. Stored at the nearest workspace root in .pi/tau/memories/PROJECT.jsonl (25000 chars total)\n- 'global': notes that apply across projects. Stored in ~/.pi/agent/tau/memories/MEMORY.jsonl (25000 chars total)\n- 'user': who the user is - name, role, preferences, communication style, pet peeves. Stored in ~/.pi/agent/tau/memories/USER.jsonl (25000 chars total)\n\nACTIONS: add (new entry), update (replace an existing entry by id), remove (delete an existing entry by id), read (fetch full entry by id).\n\nIMPORTANT: The system prompt only shows memory summaries (id, scope, type, summary). Use the read action to fetch the full content when a summary looks relevant.\n\nEvery successful action returns the affected memory entry. Per-scope total limits are enforced independently.\n\nSKIP: trivial/obvious info, things easily re-discovered, raw data dumps, temporary TODO state.";
+const TOOL_DESCRIPTION = "Save and retrieve durable information that survives across sessions. Each memory has a short summary hook and a full content body. Future prompts receive only the summary hook in the memory index, so write summaries that help you decide whether to read the full content.\n\nWHEN TO SAVE (do this proactively, do not wait to be asked):\n- User corrects you or says 'remember this' / 'don't do that again'\n- User shares a preference, habit, or personal detail (name, role, timezone, coding style)\n- You discover something about the environment (OS, installed tools, project structure)\n- You learn a convention, API quirk, or workflow specific to this user's setup\n\nPRIORITY: User preferences and corrections > environment facts > procedural knowledge. The most valuable memory prevents the user from having to repeat themselves.\n\nDo NOT save task progress, session outcomes, completed-work logs, or temporary TODO state.\n\nTHREE TARGETS:\n- 'project': workspace-specific facts. Stored at the nearest workspace root in .pi/tau/memories/PROJECT.jsonl (25000 chars total)\n- 'global': notes that apply across projects. Stored in ~/.pi/agent/tau/memories/MEMORY.jsonl (25000 chars total)\n- 'user': who the user is - name, role, preferences, communication style, pet peeves. Stored in ~/.pi/agent/tau/memories/USER.jsonl (25000 chars total)\n\nACTIONS: add (new entry), update (replace an existing entry by id), remove (delete an entry by id), read (fetch full content by id).\n\nSUMMARY VS CONTENT:\n- summary: short prompt-visible hook, concise and distinct from the full content\n- content: full body returned by read, with the detail that should require explicit retrieval\n- summary must not duplicate the content verbatim\n\nIMPORTANT: The system prompt only shows memory summaries (id, scope, type, summary). Use the read action to fetch full content before relying on details.\n\nEvery successful action returns the affected memory entry. Per-scope total limits are enforced independently.\n\nSKIP: trivial/obvious info, things easily re-discovered, raw data dumps, temporary TODO state.";
 
 type ToolDetails = MemoryToolDetails;
 
@@ -41,9 +59,10 @@ function toolFail(text: string, details: Omit<ToolDetails, "success"> = {}): Too
 	return { content: [{ type: "text", text }], details: { success: false, ...details } };
 }
 
-function requestDetails(id: string | undefined, content: string | undefined) {
+function requestDetails(id: string | undefined, summary: string | undefined, content: string | undefined) {
 	return {
 		...(id ? { requestedId: id } : {}),
+		...(summary ? { submittedSummary: summary } : {}),
 		...(content ? { submittedContent: content } : {}),
 	} satisfies Omit<ToolDetails, "success" | "action" | "scope" | "entry" | "bucket">;
 }
@@ -148,7 +167,7 @@ export default function initMemory(
 						customType: MEMORIES_MESSAGE_TYPE,
 						content: "",
 						display: true,
-						details: { snapshot } satisfies MemoriesMessageDetails,
+						details: { snapshot, issues: findMemoryRepairIssues(snapshot) } satisfies MemoriesMessageDetails,
 					},
 					{ triggerTurn: false },
 				);
@@ -180,26 +199,29 @@ export function createMemoryToolDefinition(
 		async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {
 			const params = rawParams as MemoryToolParams;
 			const target = params.target as MemoryScope;
+			const summary = params.summary?.trim();
 			const content = params.content?.trim();
 			const id = params.id?.trim();
 			const action = params.action as MemoryToolAction;
 
 			const program = Effect.gen(function* () {
 				const memory = yield* CuratedMemory;
-				switch (params.action) {
-					case "add": {
-						if (!content) return "Content is required for 'add' action.";
-						if (!target) return "target is required for 'add' action.";
-						const result = yield* memory.add(target, content, ctx.cwd);
-						return yield* attachBucket(memory, result, `Added entry to ${target} memory.`, ctx.cwd);
-					}
-					case "update": {
-						if (!id) return "id is required for 'update' action.";
-						if (!content) return "content is required for 'update' action.";
-						if (!target) return "target is required for 'update' action.";
-						const result = yield* memory.update(target, id, content, ctx.cwd);
-						return yield* attachBucket(memory, result, `Updated ${target} memory.`, ctx.cwd);
-					}
+					switch (params.action) {
+						case "add": {
+							if (!content) return "Content is required for 'add' action.";
+							if (!summary) return "summary is required for 'add' action.";
+							if (!target) return "target is required for 'add' action.";
+							const result = yield* memory.add(target, summary, content, ctx.cwd);
+							return yield* attachBucket(memory, result, `Added entry to ${target} memory.`, ctx.cwd);
+						}
+						case "update": {
+							if (!id) return "id is required for 'update' action.";
+							if (!summary) return "summary is required for 'update' action.";
+							if (!content) return "content is required for 'update' action.";
+							if (!target) return "target is required for 'update' action.";
+							const result = yield* memory.update(target, id, summary, content, ctx.cwd);
+							return yield* attachBucket(memory, result, `Updated ${target} memory.`, ctx.cwd);
+						}
 					case "remove": {
 						if (!id) return "id is required for 'remove' action.";
 						if (!target) return "target is required for 'remove' action.";
@@ -217,13 +239,13 @@ export function createMemoryToolDefinition(
 			try {
 				const result = await runEffect(program);
 				if (typeof result === "string") {
-					return toolFail(result, { action, scope: target, ...requestDetails(id, content) });
+					return toolFail(result, { action, scope: target, ...requestDetails(id, summary, content) });
 				}
 				if ("isRead" in result) {
 					return toolOk(formatEntry(result.entry), {
 						action,
 						entry: result.entry,
-						...requestDetails(id, content),
+						...requestDetails(id, summary, content),
 					});
 				}
 				return toolOk(result.text, {
@@ -231,21 +253,21 @@ export function createMemoryToolDefinition(
 					scope: target,
 					entry: result.entry,
 					bucket: result.bucket,
-					...requestDetails(id, content),
+					...requestDetails(id, summary, content),
 				});
 			} catch (cause: unknown) {
 				if (cause instanceof MemoryEntryTooLarge) {
 					return toolFail(formatMemoryOverflow(cause), {
 						action,
 						scope: cause.scope,
-						...requestDetails(id, content),
+						...requestDetails(id, summary, content),
 					});
 				}
 				if (cause instanceof MemoryNoMatch) {
 					return toolFail(`No entry matched id '${cause.id}'.`, {
 						action,
 						scope: target,
-						...requestDetails(id, content),
+						...requestDetails(id, summary, content),
 					});
 				}
 				if (cause instanceof MemoryDuplicateEntry) {
@@ -259,28 +281,53 @@ export function createMemoryToolDefinition(
 						action,
 						scope: target,
 						entry: cause.entry,
-						...requestDetails(id, content),
+						...requestDetails(id, summary, content),
 						...(bucket ? { bucket } : {}),
 					});
+				}
+				if (cause instanceof MemoryDuplicateSummary) {
+					return toolFail(
+						`Summary already exists in ${target} memory. Choose a distinct summary hook.\n\n${formatEntry(cause.entry)}`,
+						{
+							action,
+							scope: target,
+							entry: cause.entry,
+							...requestDetails(id, summary, content),
+						},
+					);
 				}
 				if (cause instanceof MemoryEmptyContent) {
 					return toolFail("Content cannot be empty.", {
 						action,
 						scope: target,
-						...requestDetails(id, content),
+						...requestDetails(id, summary, content),
+					});
+				}
+				if (cause instanceof MemoryEmptySummary) {
+					return toolFail("Summary cannot be empty.", {
+						action,
+						scope: target,
+						...requestDetails(id, summary, content),
+					});
+				}
+				if (cause instanceof MemorySummaryMatchesContent) {
+					return toolFail("Summary must be a short hook distinct from the full content body.", {
+						action,
+						scope: target,
+						...requestDetails(id, summary, content),
 					});
 				}
 				if (cause instanceof MemoryFileError) {
 					return toolFail(`Memory file error: ${cause.reason}`, {
 						action,
 						scope: target,
-						...requestDetails(id, content),
+						...requestDetails(id, summary, content),
 					});
 				}
 				return toolFail(cause instanceof Error ? cause.message : String(cause), {
 					action,
 					scope: target,
-					...requestDetails(id, content),
+					...requestDetails(id, summary, content),
 				});
 			}
 		},
