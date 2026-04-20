@@ -479,6 +479,59 @@ describe("ralph store behavior freeze", () => {
 		expect(notifications.some((entry) => entry.message.includes("Resuming: limit-loop"))).toBe(true);
 	});
 
+	it("/ralph resume reopens completed loops without iteration reset", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const notifications: Notifications = [];
+		const { pi, commands } = makePiStub();
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(pi, ralphRuntime.run);
+
+		const command = commands.get("ralph");
+		expect(command).toBeDefined();
+
+		fs.mkdirSync(path.join(cwd, ".pi", "loops", "state"), { recursive: true });
+		fs.writeFileSync(
+			statePath(cwd, "done-loop"),
+			encodeStateForStorage(
+				decodeLoopStateSync({
+					name: "done-loop",
+					taskFile: path.join(".pi", "loops", "tasks", "done-loop.md"),
+					iteration: 9,
+					maxIterations: 12,
+					itemsPerIteration: 0,
+					reflectEvery: 0,
+					reflectInstructions: "reflect",
+					status: "completed",
+					startedAt: "2026-01-01T00:00:00.000Z",
+					completedAt: "2026-01-01T02:00:00.000Z",
+					lastReflectionAt: 0,
+					controllerSessionFile: path.join(cwd, ".pi", "sessions", "controller.session.json"),
+					activeIterationSessionFile: null,
+					advanceRequestedAt: null,
+					awaitingFinalize: false,
+					executionProfile: makeExecutionProfile(),
+				}),
+			),
+			"utf-8",
+		);
+
+		const context = makeContext(cwd, notifications);
+		await command?.handler("resume done-loop", context);
+
+		const state = readState(cwd, "done-loop");
+		expect(state.status).toBe("paused");
+		expect(state.iteration).toBe(9);
+		expect(state.maxIterations).toBe(12);
+		expect(Option.isNone(state.completedAt)).toBe(true);
+		expect(notifications.some((entry) => entry.message.includes("Resuming: done-loop"))).toBe(true);
+		expect(
+			notifications.some((entry) => entry.message.includes('Loop "done-loop" is completed.')),
+		).toBe(false);
+	});
+
 	it("/ralph resume treats legacy completed-at-cap loops as max-iterations reached", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);

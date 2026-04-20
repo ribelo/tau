@@ -446,7 +446,7 @@ Commands:
   /ralph start <name|path> [options]  Start a new loop
   /ralph pause                        Pause current loop
   /ralph stop                         End active loop (idle only)
-  /ralph resume <name> [options]      Resume a paused loop
+  /ralph resume <name> [options]      Resume a paused or completed loop
   /ralph status                       Show all loops
   /ralph cancel <name>                Delete loop state
   /ralph archive <name>               Move loop to archive
@@ -882,13 +882,6 @@ export default function initRalph(
 						);
 						if (resumed.status === "not_found") {
 							ctx.ui.notify(`Loop "${loopName}" not found`, "error");
-							return;
-						}
-						if (resumed.status === "completed") {
-							ctx.ui.notify(
-								`Loop "${loopName}" is completed. Use /ralph start ${loopName} to restart`,
-								"warning",
-							);
 							return;
 						}
 						if (resumed.status === "max_iterations_too_low") {

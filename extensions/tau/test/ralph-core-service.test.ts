@@ -385,6 +385,45 @@ describe("ralph core service", () => {
 		}
 	});
 
+	it("reopens completed loops through resumeLoopState without resetting iteration", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+		const sessionFile = path.join(cwd, ".pi", "sessions", "done-loop.session.json");
+
+		const result = await Effect.runPromise(
+			Effect.gen(function* () {
+				const repo = yield* RalphRepo;
+				const ralph = yield* Ralph;
+				const completedState: LoopState = {
+					...makeState("done-loop", sessionFile),
+					iteration: 9,
+					maxIterations: 12,
+					status: "completed",
+					completedAt: Option.some("2026-01-01T00:00:00.000Z"),
+					activeIterationSessionFile: Option.none(),
+				};
+				yield* repo.saveState(cwd, completedState);
+
+				const resumed = yield* ralph.resumeLoopState(cwd, {
+					loopName: "done-loop",
+					maxIterations: Option.none(),
+				});
+				const resumedState = yield* repo.loadState(cwd, "done-loop");
+
+				return { resumed, resumedState };
+			}).pipe(Effect.provide(ralphLayer)),
+		);
+
+		expect(result.resumed.status).toBe("resumed");
+		expect(Option.isSome(result.resumedState)).toBe(true);
+		if (Option.isSome(result.resumedState)) {
+			expect(result.resumedState.value.status).toBe("active");
+			expect(result.resumedState.value.iteration).toBe(9);
+			expect(result.resumedState.value.maxIterations).toBe(12);
+			expect(Option.isNone(result.resumedState.value.completedAt)).toBe(true);
+		}
+	});
+
 	it("archives, cleans, and nukes through Ralph service command flows", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);

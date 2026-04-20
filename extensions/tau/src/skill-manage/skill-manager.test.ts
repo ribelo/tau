@@ -257,7 +257,13 @@ describe("SkillManager", () => {
 			patchSkillEffect("wirkung", "Before patch.", "After patch.", undefined, undefined, cwd),
 		);
 
-		expect(result).toEqual({ name: "wirkung", replacements: 1 });
+		expect(result).toMatchObject({
+			name: "wirkung",
+			replacements: 1,
+			filePath: "SKILL.md",
+		});
+		expect(result.diff).toMatch(/-\s*8 Before patch\./);
+		expect(result.diff).toMatch(/\+\s*8 After patch\./);
 		expect(await fs.readFile(path.join(projectRoot, "wirkung", "SKILL.md"), "utf8")).toContain(
 			"After patch.",
 		);
@@ -308,7 +314,13 @@ describe("SkillManager", () => {
 			patchSkillEffect("test-skill", "test skill body", "patched skill body"),
 		);
 
-		expect(result).toEqual({ name: "test-skill", replacements: 1 });
+		expect(result).toMatchObject({
+			name: "test-skill",
+			replacements: 1,
+			filePath: "SKILL.md",
+		});
+		expect(result.diff).toMatch(/-\s*8 This is a test skill body\./);
+		expect(result.diff).toMatch(/\+\s*8 This is a patched skill body\./);
 		expect(await fs.readFile(skillFilePath("test-skill"), "utf8")).toContain(
 			"patched skill body",
 		);
@@ -350,7 +362,13 @@ describe("SkillManager", () => {
 			patchSkillEffect("test-skill", "repeat", "updated", undefined, true),
 		);
 
-		expect(result).toEqual({ name: "test-skill", replacements: 3 });
+		expect(result).toMatchObject({
+			name: "test-skill",
+			replacements: 3,
+			filePath: "SKILL.md",
+		});
+		expect(result.diff).toMatch(/-\s*8 repeat/);
+		expect(result.diff).toMatch(/\+\s*8 updated/);
 		expect(await fs.readFile(skillFilePath("test-skill"), "utf8")).toContain(
 			"updated\nupdated\nupdated",
 		);
@@ -372,7 +390,13 @@ describe("SkillManager", () => {
 			),
 		);
 
-		expect(result).toEqual({ name: "test-skill", replacements: 2 });
+		expect(result).toMatchObject({
+			name: "test-skill",
+			replacements: 2,
+			filePath: "references/docs/guide.md",
+		});
+		expect(result.diff).toMatch(/-\s*1 Before patch/);
+		expect(result.diff).toMatch(/\+\s*1 After patch/);
 		expect(
 			await fs.readFile(
 				path.join(skillDirPath("test-skill"), "references", "docs", "guide.md"),

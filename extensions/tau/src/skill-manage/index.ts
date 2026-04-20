@@ -1,6 +1,7 @@
 import { Effect } from "effect";
 import { Type, type Static } from "@sinclair/typebox";
 import type { ExtensionAPI, ToolDefinition } from "@mariozechner/pi-coding-agent";
+import { Text } from "@mariozechner/pi-tui";
 
 import { SkillManager } from "../services/skill-manager.js";
 import {
@@ -62,7 +63,22 @@ type SkillManageParams = Static<typeof SkillManageParams>;
 const TOOL_DESCRIPTION =
 	"Manage skills (create, update, delete). Skills are your procedural memory — reusable approaches for recurring task types. New skills default to ~/.pi/agent/skills/, and edits/patches can target matching skills discovered from the current workspace as well.\n\nActions: create (full SKILL.md + optional category), patch (old_string/new_string — preferred for fixes), edit (full SKILL.md rewrite — major overhauls only), delete, write_file, remove_file.\n\nCreate when: complex task succeeded (5+ tool calls), errors overcome, user-corrected approach worked, non-trivial workflow discovered, or user asks you to remember a procedure.\nUpdate when: instructions stale/wrong, missing steps or pitfalls found during use. If you used a skill and hit issues not covered by it, patch it immediately.\n\nAfter difficult/iterative tasks, offer to save as a skill. Skip for simple one-offs. Confirm with user before creating/deleting.\n\nGood skills: trigger conditions, numbered steps with exact commands, pitfalls section, verification steps.";
 
-type ToolResult = { content: { type: "text"; text: string }[]; details: unknown };
+type SkillManageAction = ValidatedSkillManageParams["action"];
+
+type SkillPatchDetails = {
+	readonly name: string;
+	readonly replacements: number;
+	readonly filePath: string;
+	readonly diff: string;
+};
+
+type ToolDetails = {
+	readonly success: boolean;
+	readonly action?: SkillManageAction;
+	readonly patch?: SkillPatchDetails;
+};
+
+type ToolResult = { content: { type: "text"; text: string }[]; details: ToolDetails };
 
 type ValidatedSkillManageParams =
 	| {
@@ -104,11 +120,16 @@ type ValidationResult =
 	| { ok: true; params: ValidatedSkillManageParams }
 	| { ok: false; result: ToolResult };
 
-function toolOk(text: string): ToolResult {
-	return { content: [{ type: "text", text }], details: { success: true } };
+type ToolSuccessPayload = {
+	readonly text: string;
+	readonly details: Omit<ToolDetails, "success">;
+};
+
+function toolOk(text: string, details: Omit<ToolDetails, "success"> = {}): ToolResult {
+	return { content: [{ type: "text", text }], details: { success: true, ...details } };
 }
-function toolFail(text: string): ToolResult {
-	return { content: [{ type: "text", text }], details: { success: false } };
+function toolFail(text: string, details: Omit<ToolDetails, "success"> = {}): ToolResult {
+	return { content: [{ type: "text", text }], details: { success: false, ...details } };
 }
 
 function getToolCwd(ctx: unknown): string {
@@ -220,9 +241,33 @@ function validateParams(params: SkillManageParams): ValidationResult {
 	}
 }
 
+function renderPatchDiff(
+	diffText: string,
+	theme: {
+		fg: (
+			key: "toolDiffAdded" | "toolDiffRemoved" | "toolDiffContext" | "toolTitle",
+			text: string,
+		) => string;
+	},
+): string {
+	const renderedLines: string[] = [];
+	for (const line of diffText.split("\n")) {
+		if (line.startsWith("+")) {
+			renderedLines.push(theme.fg("toolDiffAdded", line));
+			continue;
+		}
+		if (line.startsWith("-")) {
+			renderedLines.push(theme.fg("toolDiffRemoved", line));
+			continue;
+		}
+		renderedLines.push(theme.fg("toolDiffContext", line));
+	}
+	return renderedLines.join("\n");
+}
+
 export function createSkillManageToolDefinition(
 	runEffect: <A, E>(effect: Effect.Effect<A, E, SkillManager>) => Promise<A>,
-): ToolDefinition<typeof SkillManageParams> {
+): ToolDefinition<typeof SkillManageParams, ToolDetails> {
 	return {
 		name: "skill_manage",
 		label: "skill_manage",
@@ -246,7 +291,10 @@ export function createSkillManageToolDefinition(
 							validation.params.category,
 							cwd,
 						);
-						return `Skill '${result.name}' created at ${result.path}.`;
+						return {
+							text: `Skill '${result.name}' created at ${result.path}.`,
+							details: { action: "create" },
+						} satisfies ToolSuccessPayload;
 					}
 					case "edit": {
 						yield* skillManager.edit(
@@ -254,7 +302,10 @@ export function createSkillManageToolDefinition(
 							validation.params.content,
 							cwd,
 						);
-						return `Skill '${validation.params.name}' updated.`;
+						return {
+							text: `Skill '${validation.params.name}' updated.`,
+							details: { action: "edit" },
+						} satisfies ToolSuccessPayload;
 					}
 					case "patch": {
 						const result = yield* skillManager.patch(
@@ -265,11 +316,25 @@ export function createSkillManageToolDefinition(
 							validation.params.replace_all,
 							cwd,
 						);
-						return `Patched ${result.replacements} replacement(s) in skill '${result.name}'.`;
+						return {
+							text: `Patched ${result.replacements} replacement(s) in skill '${result.name}'.`,
+							details: {
+								action: "patch",
+								patch: {
+									name: result.name,
+									replacements: result.replacements,
+									filePath: result.filePath,
+									diff: result.diff,
+								},
+							},
+						} satisfies ToolSuccessPayload;
 					}
 					case "delete": {
 						yield* skillManager.remove(validation.params.name, cwd);
-						return `Skill '${validation.params.name}' deleted.`;
+						return {
+							text: `Skill '${validation.params.name}' deleted.`,
+							details: { action: "delete" },
+						} satisfies ToolSuccessPayload;
 					}
 					case "write_file": {
 						const result = yield* skillManager.writeFile(
@@ -278,7 +343,10 @@ export function createSkillManageToolDefinition(
 							validation.params.file_content,
 							cwd,
 						);
-						return `File '${result.filePath}' written to skill '${result.name}'.`;
+						return {
+							text: `File '${result.filePath}' written to skill '${result.name}'.`,
+							details: { action: "write_file" },
+						} satisfies ToolSuccessPayload;
 					}
 					case "remove_file": {
 						const result = yield* skillManager.removeFile(
@@ -286,32 +354,65 @@ export function createSkillManageToolDefinition(
 							validation.params.file_path,
 							cwd,
 						);
-						return `File '${result.filePath}' removed from skill '${result.name}'.`;
+						return {
+							text: `File '${result.filePath}' removed from skill '${result.name}'.`,
+							details: { action: "remove_file" },
+						} satisfies ToolSuccessPayload;
 					}
 				}
 			});
 
 			try {
-				return toolOk(await runEffect(program));
+				const result = await runEffect(program);
+				return toolOk(result.text, result.details);
 			} catch (cause: unknown) {
 				if (cause instanceof SkillNotFound)
-					return toolFail(`Skill '${cause.name}' not found.`);
+					return toolFail(`Skill '${cause.name}' not found.`, {
+						action: validation.params.action,
+					});
 				if (cause instanceof SkillAlreadyExists)
-					return toolFail(`Skill '${cause.name}' already exists at ${cause.path}.`);
+					return toolFail(`Skill '${cause.name}' already exists at ${cause.path}.`, {
+						action: validation.params.action,
+					});
 				if (cause instanceof SkillInvalidName)
-					return toolFail(`Invalid skill name '${cause.name}': ${cause.reason}`);
+					return toolFail(`Invalid skill name '${cause.name}': ${cause.reason}`, {
+						action: validation.params.action,
+					});
 				if (cause instanceof SkillInvalidContent)
-					return toolFail(`Invalid skill content: ${cause.reason}`);
+					return toolFail(`Invalid skill content: ${cause.reason}`, {
+						action: validation.params.action,
+					});
 				if (cause instanceof SkillFileError)
-					return toolFail(`Skill file error: ${cause.reason}`);
+					return toolFail(`Skill file error: ${cause.reason}`, {
+						action: validation.params.action,
+					});
 				if (cause instanceof SkillSecurityViolation)
-					return toolFail(`Skill content rejected: ${cause.reason}`);
+					return toolFail(`Skill content rejected: ${cause.reason}`, {
+						action: validation.params.action,
+					});
 				if (cause instanceof SkillPatchFailed)
 					return toolFail(
 						`Patch failed for skill '${validation.params.name}': ${cause.reason}`,
+						{ action: validation.params.action },
 					);
-				return toolFail(cause instanceof Error ? cause.message : String(cause));
+				return toolFail(cause instanceof Error ? cause.message : String(cause), {
+					action: validation.params.action,
+				});
 			}
+		},
+		renderResult(result, _options, theme) {
+			const details = (result as { details?: ToolDetails }).details;
+			if (details?.success !== true || details.action !== "patch" || details.patch === undefined) {
+				return new Text("", 0, 0);
+			}
+
+			if (details.patch.diff.trim().length === 0) {
+				return new Text("", 0, 0);
+			}
+
+			const header = theme.fg("toolTitle", `${details.patch.name}/${details.patch.filePath}`);
+			const renderedDiff = renderPatchDiff(details.patch.diff, theme);
+			return new Text(`\n${header}\n${renderedDiff}`, 0, 0);
 		},
 	};
 }

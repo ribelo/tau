@@ -21,6 +21,17 @@ import { resolveAgentExecutionAtSpawn } from "./execution-profile.js";
 export const DEFAULT_WAIT_TIMEOUT_MS = 20 * 60 * 1000;
 export const MAX_WAIT_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 
+function formatEnabledAgents(enabled: ReadonlyArray<string>): string {
+	return enabled.length > 0 ? enabled.join(", ") : "(none)";
+}
+
+export function buildDisabledAgentMessage(
+	agentName: string,
+	enabledAgents: ReadonlyArray<string>,
+): string {
+	return `Agent "${agentName}" is disabled for this session. Enabled agents: ${formatEnabledAgents(enabledAgents)}. If this agent is required, ask the user to enable it for this session.`;
+}
+
 export function normalizeWaitTimeoutMs(timeoutMs: number | undefined): number {
 	if (timeoutMs === undefined || !Number.isFinite(timeoutMs)) {
 		return DEFAULT_WAIT_TIMEOUT_MS;
@@ -52,7 +63,7 @@ export const AgentControlLive = Layer.effect(
 							);
 						return yield* Effect.fail(
 							new AgentError({
-								message: `Agent "${opts.agent}" is disabled for this session. Use /agents to inspect effective availability. Available: ${enabled.join(", ")}`,
+								message: buildDisabledAgentMessage(opts.agent, enabled),
 							}),
 						);
 					}

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+	buildDisabledAgentMessage,
 	DEFAULT_WAIT_TIMEOUT_MS,
 	MAX_WAIT_TIMEOUT_MS,
 	normalizeWaitTimeoutMs,
@@ -21,5 +22,20 @@ describe("agent wait timeout normalization", () => {
 
 	it("caps requested timeouts at the maximum", () => {
 		expect(normalizeWaitTimeoutMs(MAX_WAIT_TIMEOUT_MS + 1)).toBe(MAX_WAIT_TIMEOUT_MS);
+	});
+});
+
+describe("disabled agent message", () => {
+	it("does not instruct the assistant to use slash commands", () => {
+		const message = buildDisabledAgentMessage("review", ["finder", "librarian"]);
+		expect(message).toContain('Agent "review" is disabled for this session.');
+		expect(message).toContain("Enabled agents: finder, librarian.");
+		expect(message).toContain("ask the user to enable it for this session");
+		expect(message).not.toContain("/agents");
+	});
+
+	it("renders an explicit none state when no agents are enabled", () => {
+		const message = buildDisabledAgentMessage("review", []);
+		expect(message).toContain("Enabled agents: (none).");
 	});
 });

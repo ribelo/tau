@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Effect, Layer, ServiceMap } from "effect";
+import * as Diff from "diff";
 
 import {
 	SkillAlreadyExists,
@@ -36,6 +37,8 @@ export interface SkillEditResult {
 export interface SkillPatchResult {
 	readonly name: string;
 	readonly replacements: number;
+	readonly filePath: string;
+	readonly diff: string;
 }
 
 export interface SkillDeleteResult {
@@ -194,6 +197,90 @@ function countOccurrences(content: string, oldString: string): number {
 		return 0;
 	}
 	return content.split(oldString).length - 1;
+}
+
+function generateDiffString(oldContent: string, newContent: string, contextLines = 4): string {
+	const parts = Diff.diffLines(oldContent, newContent);
+	const output: string[] = [];
+
+	const oldLines = oldContent.split("\n");
+	const newLines = newContent.split("\n");
+	const maxLineNum = Math.max(oldLines.length, newLines.length);
+	const lineNumWidth = String(maxLineNum).length;
+
+	let oldLineNum = 1;
+	let newLineNum = 1;
+	let lastWasChange = false;
+
+	for (let i = 0; i < parts.length; i++) {
+		const part = parts[i];
+		if (part === undefined) {
+			continue;
+		}
+
+		const rawLines = part.value.split("\n");
+		if (rawLines[rawLines.length - 1] === "") {
+			rawLines.pop();
+		}
+
+		if (part.added || part.removed) {
+			for (const line of rawLines) {
+				if (part.added === true) {
+					output.push(`+${String(newLineNum).padStart(lineNumWidth, " ")} ${line}`);
+					newLineNum += 1;
+					continue;
+				}
+				output.push(`-${String(oldLineNum).padStart(lineNumWidth, " ")} ${line}`);
+				oldLineNum += 1;
+			}
+			lastWasChange = true;
+			continue;
+		}
+
+		const nextPart = parts[i + 1];
+		const nextPartIsChange = nextPart?.added === true || nextPart?.removed === true;
+
+		if (lastWasChange || nextPartIsChange) {
+			let linesToShow = rawLines;
+			let skipStart = 0;
+			let skipEnd = 0;
+
+			if (!lastWasChange) {
+				skipStart = Math.max(0, rawLines.length - contextLines);
+				linesToShow = rawLines.slice(skipStart);
+			}
+
+			if (!nextPartIsChange && linesToShow.length > contextLines) {
+				skipEnd = linesToShow.length - contextLines;
+				linesToShow = linesToShow.slice(0, contextLines);
+			}
+
+			if (skipStart > 0) {
+				output.push(` ${"".padStart(lineNumWidth, " ")} ...`);
+				oldLineNum += skipStart;
+				newLineNum += skipStart;
+			}
+
+			for (const line of linesToShow) {
+				output.push(` ${String(oldLineNum).padStart(lineNumWidth, " ")} ${line}`);
+				oldLineNum += 1;
+				newLineNum += 1;
+			}
+
+			if (skipEnd > 0) {
+				output.push(` ${"".padStart(lineNumWidth, " ")} ...`);
+				oldLineNum += skipEnd;
+				newLineNum += skipEnd;
+			}
+		} else {
+			oldLineNum += rawLines.length;
+			newLineNum += rawLines.length;
+		}
+
+		lastWasChange = false;
+	}
+
+	return output.join("\n");
 }
 
 async function findSkillDirs(dir: string): Promise<string[]> {
@@ -519,6 +606,7 @@ export const SkillManagerLive = (config: { onSkillMutated: (cwd: string) => void
 					replaceAll === true
 						? currentContent.split(oldString).join(newString)
 						: currentContent.replace(oldString, newString);
+				const diff = generateDiffString(currentContent, nextContent);
 
 				yield* ensureNoInjectionPatterns(nextContent);
 				if (filePath === undefined) {
@@ -530,6 +618,8 @@ export const SkillManagerLive = (config: { onSkillMutated: (cwd: string) => void
 				return {
 					name,
 					replacements: replaceAll === true ? replacements : 1,
+					filePath: filePath ?? "SKILL.md",
+					diff,
 				} satisfies SkillPatchResult;
 			});
 
