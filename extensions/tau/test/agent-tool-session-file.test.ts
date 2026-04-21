@@ -1,4 +1,4 @@
-import type { ModelRegistry } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext, ModelRegistry } from "@mariozechner/pi-coding-agent";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import { Effect, Layer, Stream } from "effect";
 import { describe, expect, it } from "vitest";
@@ -77,7 +77,7 @@ describe("createAgentToolDef", () => {
 			{ action: "spawn", agent: "review", message: "review this" },
 			undefined,
 			undefined,
-			{},
+			{} as unknown as ExtensionContext,
 		);
 
 		expect(spawnCalls).toHaveLength(1);

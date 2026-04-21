@@ -8,6 +8,7 @@ import {
 import {
 	decodeAutoresearchPhaseSnapshot,
 	decodeLoopPersistedState,
+	decodeLoopPersistedStateWithMigration,
 	encodeAutoresearchPhaseSnapshot,
 	encodeLoopPersistedState,
 	type EncodedLoopPersistedState,
@@ -61,6 +62,27 @@ describe("loops schema", () => {
 
 		const reencoded = await Effect.runPromise(encodeLoopPersistedState(decoded));
 		expect(reencoded).toEqual(encodedRalphState);
+	});
+
+	it("migrates legacy ralph payloads missing pendingDecision", async () => {
+		const { pendingDecision: _pendingDecision, ...legacyRalph } = encodedRalphState.ralph;
+		const legacyState = {
+			...encodedRalphState,
+			ralph: legacyRalph,
+		};
+
+		const decoded = await Effect.runPromise(decodeLoopPersistedStateWithMigration(legacyState));
+		expect(decoded.migrated).toBe(true);
+		expect(decoded.state.kind).toBe("ralph");
+		if (decoded.state.kind === "ralph") {
+			expect(Option.isNone(decoded.state.ralph.pendingDecision)).toBe(true);
+		}
+
+		const reencoded = await Effect.runPromise(encodeLoopPersistedState(decoded.state));
+		expect(reencoded.kind).toBe("ralph");
+		if (reencoded.kind === "ralph") {
+			expect(reencoded.ralph.pendingDecision).toBeNull();
+		}
 	});
 
 	it("roundtrips autoresearch phase snapshots", async () => {

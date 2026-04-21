@@ -53,6 +53,37 @@ const parseJsonUnknown = (
 		catch: (error) => toContractValidationError(entity, error),
 	});
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+interface NormalizeLoopPersistedStateResult {
+	readonly candidate: unknown;
+	readonly migrated: boolean;
+}
+
+function normalizeLoopPersistedState(value: unknown): NormalizeLoopPersistedStateResult {
+	if (!isRecord(value) || value["kind"] !== "ralph") {
+		return { candidate: value, migrated: false };
+	}
+
+	const ralph = value["ralph"];
+	if (!isRecord(ralph) || "pendingDecision" in ralph) {
+		return { candidate: value, migrated: false };
+	}
+
+	return {
+		candidate: {
+			...value,
+			ralph: {
+				...ralph,
+				pendingDecision: null,
+			},
+		},
+		migrated: true,
+	};
+}
+
 export function sanitizeLoopTaskId(value: string): string {
 	return value
 		.trim()
@@ -196,6 +227,11 @@ export const LoopPersistedStateSchema = Schema.Union(
 export type LoopPersistedState = Schema.Schema.Type<typeof LoopPersistedStateSchema>;
 export type EncodedLoopPersistedState = Schema.Codec.Encoded<typeof LoopPersistedStateSchema>;
 
+export interface LoopPersistedStateDecodeResult {
+	readonly state: LoopPersistedState;
+	readonly migrated: boolean;
+}
+
 export const AutoresearchPhaseSnapshotSchema = Schema.Struct({
 	kind: Schema.Literal("autoresearch"),
 	taskId: LoopTaskIdSchema,
@@ -256,8 +292,19 @@ export function decodePhaseIdSync(value: unknown): PhaseId {
 export const decodeLoopPersistedState = (
 	value: unknown,
 ): Effect.Effect<LoopPersistedState, LoopContractValidationError, never> =>
+	decodeLoopPersistedStateWithMigration(value).pipe(Effect.map((result) => result.state));
+
+export const decodeLoopPersistedStateWithMigration = (
+	value: unknown,
+): Effect.Effect<LoopPersistedStateDecodeResult, LoopContractValidationError, never> =>
 	Effect.try({
-		try: () => decodeLoopPersistedStateSchemaSync(value),
+		try: () => {
+			const normalized = normalizeLoopPersistedState(value);
+			return {
+				state: decodeLoopPersistedStateSchemaSync(normalized.candidate),
+				migrated: normalized.migrated,
+			};
+		},
 		catch: (error) => toContractValidationError("loops.state", error),
 	});
 
@@ -275,6 +322,13 @@ export const decodeLoopPersistedStateJson = (
 		Effect.flatMap(decodeLoopPersistedState),
 	);
 
+export const decodeLoopPersistedStateJsonWithMigration = (
+	input: string,
+): Effect.Effect<LoopPersistedStateDecodeResult, LoopContractValidationError, never> =>
+	parseJsonUnknown(input, "loops.state.json").pipe(
+		Effect.flatMap(decodeLoopPersistedStateWithMigration),
+	);
+
 export const encodeLoopPersistedStateJson = (
 	state: LoopPersistedState,
 ): Effect.Effect<string, LoopContractValidationError, never> =>
@@ -284,10 +338,20 @@ export const encodeLoopPersistedStateJson = (
 
 export function decodeLoopPersistedStateSync(value: unknown): LoopPersistedState {
 	try {
-		return decodeLoopPersistedStateSchemaSync(value);
+		return decodeLoopPersistedStateSyncWithMigration(value).state;
 	} catch (error) {
 		throw toContractValidationError("loops.state", error);
 	}
+}
+
+export function decodeLoopPersistedStateSyncWithMigration(
+	value: unknown,
+): LoopPersistedStateDecodeResult {
+	const normalized = normalizeLoopPersistedState(value);
+	return {
+		state: decodeLoopPersistedStateSchemaSync(normalized.candidate),
+		migrated: normalized.migrated,
+	};
 }
 
 export function encodeLoopPersistedStateSync(
@@ -302,6 +366,12 @@ export function encodeLoopPersistedStateSync(
 
 export function decodeLoopPersistedStateJsonSync(input: string): LoopPersistedState {
 	return decodeLoopPersistedStateSync(parseJsonUnknownSync(input));
+}
+
+export function decodeLoopPersistedStateJsonSyncWithMigration(
+	input: string,
+): LoopPersistedStateDecodeResult {
+	return decodeLoopPersistedStateSyncWithMigration(parseJsonUnknownSync(input));
 }
 
 export function encodeLoopPersistedStateJsonSync(state: LoopPersistedState): string {

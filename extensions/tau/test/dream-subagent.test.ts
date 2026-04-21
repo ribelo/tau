@@ -81,7 +81,7 @@ describe("isAssistantMessage", () => {
 // ---------------------------------------------------------------------------
 
 describe("createTurnLimitGuard", () => {
-	it("treats the first dream turn as already started and aborts before the next turn would exceed maxTurns", async () => {
+	it("allows exactly maxTurns turn_start events before aborting", async () => {
 		const listeners: Array<(event: AgentEvent) => void> = [];
 		let aborts = 0;
 		const turnStartEvent = { type: "turn_start" } as unknown as AgentEvent;
@@ -98,7 +98,7 @@ describe("createTurnLimitGuard", () => {
 					aborts += 1;
 				},
 			},
-			2,
+			1,
 		);
 
 		listeners[0]?.(turnStartEvent);
@@ -108,7 +108,7 @@ describe("createTurnLimitGuard", () => {
 
 		await expect(guard.promise).resolves.toEqual({
 			_tag: "turn_limit_exceeded",
-			maxTurns: 2,
+			maxTurns: 1,
 		});
 		expect(aborts).toBe(1);
 	});

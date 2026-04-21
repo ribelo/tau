@@ -31,13 +31,10 @@ import initRalph from "./ralph/index.js";
 import initAutoresearch from "./autoresearch/index.js";
 import initAgentsMenu from "./agents-menu/index.js";
 import initThreadTools from "./thread/index.js";
-import { isAgentDisabledForCwd } from "./agents-menu/index.js";
 import { AgentConfig, AgentControl } from "./agent/services.js";
 import { AgentControlLive } from "./agent/control.js";
 import { AgentManagerLive } from "./agent/manager.js";
 import { AgentRuntimeBridgeLive, type AgentRuntimeBridgeService } from "./agent/runtime.js";
-import { AgentRegistry } from "./agent/agent-registry.js";
-import { validateResolvedAgentConfiguration } from "./agent/startup-validation.js";
 import { buildToolDescription } from "./agent/tool.js";
 import { createSkillMarkerRuntime } from "./skill-marker/index.js";
 import { installSqliteExperimentalWarningFilter } from "./shared/sqlite-warning.js";
@@ -69,7 +66,9 @@ const ExecutionStateLayer = ExecutionStateLive.pipe(Layer.provide(PersistenceLay
 const ExecutionRuntimeLayer = ExecutionRuntimeLive.pipe(Layer.provide(ExecutionStateLayer));
 const PromptModesLayer = PromptModesLive.pipe(Layer.provide(ExecutionRuntimeLayer));
 const CuratedMemoryLayer = CuratedMemoryLive;
-const DreamSchedulerLayer = DreamSchedulerLive({ loadConfig: loadDreamConfig });
+const DreamSchedulerLayer = DreamSchedulerLive({ loadConfig: loadDreamConfig }).pipe(
+	Layer.provide(DreamLockLive),
+);
 const skillMutationCallback: { current: (cwd: string) => void } = { current: () => {} };
 const SkillManagerLayer = SkillManagerLive({
 	onSkillMutated: (cwd) => skillMutationCallback.current(cwd),
@@ -250,11 +249,9 @@ export const startTau = (pi: ExtensionAPI) => {
 			initThreadTools(pi);
 		});
 
-		const agentRegistry = yield* AgentRegistry.load(process.cwd());
-		yield* validateResolvedAgentConfiguration(agentRegistry);
-		const agentToolDescription = buildToolDescription(agentRegistry, undefined, (name) =>
-			isAgentDisabledForCwd(process.cwd(), name),
-		);
+		const agentToolDescription = buildToolDescription({
+			list: () => [],
+		});
 		yield* Effect.sync(() => {
 			const agentToolHandle = initAgent(pi, agentRuntimeBridge, agentToolDescription);
 			initAgentsMenu(pi, agentToolHandle);

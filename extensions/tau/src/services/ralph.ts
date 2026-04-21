@@ -18,6 +18,7 @@ import { RalphRepo } from "../ralph/repo.js";
 import { RALPH_TASKS_DIR } from "../ralph/paths.js";
 import { RalphContractValidationError } from "../ralph/errors.js";
 import type { LoopState, RalphPendingDecision } from "../ralph/schema.js";
+import { StorageError } from "../shared/atomic-write.js";
 import { LoopEngine } from "./loop-engine.js";
 
 type LoopStepResult =
@@ -305,6 +306,18 @@ const mapLoopEngineError = <A>(
 ): Effect.Effect<A, RalphContractValidationError, never> =>
 	effect.pipe(Effect.mapError(loopEngineErrorToContract));
 
+const ralphRepoErrorToContract = (
+	error: RalphContractValidationError | StorageError,
+): RalphContractValidationError =>
+	error instanceof StorageError
+		? toContractError("ralph.storage", `${error.reason} (${error.path})`)
+		: error;
+
+const mapRalphRepoError = <A>(
+	effect: Effect.Effect<A, RalphContractValidationError | StorageError, never>,
+): Effect.Effect<A, RalphContractValidationError, never> =>
+	effect.pipe(Effect.mapError(ralphRepoErrorToContract));
+
 const sessionRefFromFile = (sessionFile: string): LoopSessionRef => ({
 	sessionId: sessionFile,
 	sessionFile,
@@ -400,7 +413,7 @@ export interface RalphService {
 		cwd: string,
 		sessionFile: string | undefined,
 	) => Effect.Effect<void, RalphContractValidationError, never>;
-	readonly existsRalphDirectory: (cwd: string) => Effect.Effect<boolean, never, never>;
+	readonly existsRalphDirectory: (cwd: string) => Effect.Effect<boolean, RalphContractValidationError, never>;
 	readonly persistOwnedLoopOnShutdown: (
 		cwd: string,
 		sessionFile: string | undefined,
@@ -462,7 +475,33 @@ export const RalphLive = (config: RalphLiveConfig) =>
 	Layer.effect(
 		Ralph,
 		Effect.gen(function* () {
-			const repo = yield* RalphRepo;
+			const rawRepo = yield* RalphRepo;
+			const repo = {
+				loadState: (cwd: string, name: string, archived?: boolean) =>
+					mapRalphRepoError(rawRepo.loadState(cwd, name, archived)),
+				saveState: (cwd: string, state: LoopState, archived?: boolean) =>
+					mapRalphRepoError(rawRepo.saveState(cwd, state, archived)),
+				listLoops: (cwd: string, archived?: boolean) =>
+					mapRalphRepoError(rawRepo.listLoops(cwd, archived)),
+				findLoopBySessionFile: (cwd: string, sessionFile: string | undefined) =>
+					mapRalphRepoError(rawRepo.findLoopBySessionFile(cwd, sessionFile)),
+				readTaskFile: (cwd: string, taskFile: string) =>
+					mapRalphRepoError(rawRepo.readTaskFile(cwd, taskFile)),
+				writeTaskFile: (cwd: string, taskFile: string, content: string) =>
+					mapRalphRepoError(rawRepo.writeTaskFile(cwd, taskFile, content)),
+				ensureTaskFile: (cwd: string, taskFile: string, content: string) =>
+					mapRalphRepoError(rawRepo.ensureTaskFile(cwd, taskFile, content)),
+				deleteState: (cwd: string, name: string, archived?: boolean) =>
+					mapRalphRepoError(rawRepo.deleteState(cwd, name, archived)),
+				deleteTaskByLoopName: (cwd: string, name: string, archived?: boolean) =>
+					mapRalphRepoError(rawRepo.deleteTaskByLoopName(cwd, name, archived)),
+				archiveLoop: (cwd: string, state: LoopState) =>
+					mapRalphRepoError(rawRepo.archiveLoop(cwd, state)),
+				existsRalphDirectory: (cwd: string) =>
+					mapRalphRepoError(rawRepo.existsRalphDirectory(cwd)),
+				removeRalphDirectory: (cwd: string) =>
+					mapRalphRepoError(rawRepo.removeRalphDirectory(cwd)),
+			} as const;
 			const loopEngine = yield* LoopEngine;
 			const currentLoopRef = yield* Ref.make<Option.Option<string>>(Option.none());
 			const waitingAgentEndRef = yield* Ref.make<Option.Option<PendingAgentEndWait>>(

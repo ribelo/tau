@@ -1,4 +1,4 @@
-import { Clock, Effect, Fiber, Layer, Option, Ref, ServiceMap, Stream, SubscriptionRef } from "effect";
+import { Clock, Data, Effect, Fiber, Layer, Option, Ref, ServiceMap, Stream, SubscriptionRef } from "effect";
 import { nanoid } from "nanoid";
 
 import type { MemoryFileError, MemoryMutationError } from "../memory/errors.js";
@@ -20,6 +20,10 @@ export type DreamRunError =
 	| MemoryMutationError
 	| MemoryFileError;
 
+export class DreamTaskNotFound extends Data.TaggedError("DreamTaskNotFound")<{
+	readonly taskId: DreamTaskId;
+}> {}
+
 export interface DreamTaskRegistryApi {
 	readonly create: (request: DreamRunRequest) => Effect.Effect<DreamTaskHandle>;
 	readonly attach: (
@@ -30,8 +34,8 @@ export interface DreamTaskRegistryApi {
 	readonly complete: (taskId: DreamTaskId, result: DreamRunResult) => Effect.Effect<void>;
 	readonly fail: (taskId: DreamTaskId, cause: DreamRunError) => Effect.Effect<void>;
 	readonly cancel: (taskId: DreamTaskId) => Effect.Effect<void>;
-	readonly get: (taskId: DreamTaskId) => Effect.Effect<DreamTaskState>;
-	readonly watch: (taskId: DreamTaskId) => Stream.Stream<DreamTaskState>;
+	readonly get: (taskId: DreamTaskId) => Effect.Effect<DreamTaskState, DreamTaskNotFound>;
+	readonly watch: (taskId: DreamTaskId) => Stream.Stream<DreamTaskState, DreamTaskNotFound>;
 }
 
 export class DreamTaskRegistry extends ServiceMap.Service<DreamTaskRegistry, DreamTaskRegistryApi>()(
@@ -45,9 +49,6 @@ interface DreamTaskRecord {
 	readonly fiber: Option.Option<DreamTaskFiber>;
 	readonly updates: SubscriptionRef.SubscriptionRef<DreamTaskState>;
 }
-
-const taskNotFound = (taskId: DreamTaskId): Error =>
-	new Error(`Dream task not found: ${taskId}`);
 
 const isTerminal = (state: DreamTaskState): boolean => state.status !== "running";
 
@@ -96,14 +97,11 @@ export const DreamTaskRegistryLive = Layer.effect(
 	Effect.gen(function* () {
 		const tasksRef = yield* Ref.make(new Map<DreamTaskId, DreamTaskRecord>());
 
-		const getRecord = Effect.fn("DreamTaskRegistry.getRecord")(
+		const getRecordOption = Effect.fn("DreamTaskRegistry.getRecordOption")(
 			function* (taskId: DreamTaskId) {
 				const tasks = yield* Ref.get(tasksRef);
 				const record = tasks.get(taskId);
-				if (record === undefined) {
-					return yield* Effect.die(taskNotFound(taskId));
-				}
-				return record;
+				return record === undefined ? Option.none<DreamTaskRecord>() : Option.some(record);
 			},
 		);
 
@@ -153,7 +151,12 @@ export const DreamTaskRegistryLive = Layer.effect(
 
 		const attach: DreamTaskRegistryApi["attach"] = Effect.fn("DreamTaskRegistry.attach")(
 			function* (taskId, fiber) {
-				const record = yield* getRecord(taskId);
+				const recordOption = yield* getRecordOption(taskId);
+				if (Option.isNone(recordOption)) {
+					return;
+				}
+
+				const record = recordOption.value;
 				yield* setRecord(taskId, {
 					...record,
 					fiber: Option.some(fiber),
@@ -163,7 +166,12 @@ export const DreamTaskRegistryLive = Layer.effect(
 
 		const report: DreamTaskRegistryApi["report"] = Effect.fn("DreamTaskRegistry.report")(
 			function* (taskId, event) {
-				const record = yield* getRecord(taskId);
+				const recordOption = yield* getRecordOption(taskId);
+				if (Option.isNone(recordOption)) {
+					return;
+				}
+
+				const record = recordOption.value;
 				if (isTerminal(record.state)) {
 					return;
 				}
@@ -179,7 +187,12 @@ export const DreamTaskRegistryLive = Layer.effect(
 
 		const complete: DreamTaskRegistryApi["complete"] = Effect.fn("DreamTaskRegistry.complete")(
 			function* (taskId, result) {
-				const record = yield* getRecord(taskId);
+				const recordOption = yield* getRecordOption(taskId);
+				if (Option.isNone(recordOption)) {
+					return;
+				}
+
+				const record = recordOption.value;
 				if (isTerminal(record.state)) {
 					return;
 				}
@@ -207,7 +220,12 @@ export const DreamTaskRegistryLive = Layer.effect(
 		const fail: DreamTaskRegistryApi["fail"] = Effect.fn("DreamTaskRegistry.fail")(
 			function* (taskId, cause) {
 				const finishedAt = yield* Clock.currentTimeMillis;
-				const record = yield* getRecord(taskId);
+				const recordOption = yield* getRecordOption(taskId);
+				if (Option.isNone(recordOption)) {
+					return;
+				}
+
+				const record = recordOption.value;
 				if (isTerminal(record.state)) {
 					return;
 				}
@@ -232,7 +250,12 @@ export const DreamTaskRegistryLive = Layer.effect(
 		const cancel: DreamTaskRegistryApi["cancel"] = Effect.fn("DreamTaskRegistry.cancel")(
 			function* (taskId) {
 				const finishedAt = yield* Clock.currentTimeMillis;
-				const record = yield* getRecord(taskId);
+				const recordOption = yield* getRecordOption(taskId);
+				if (Option.isNone(recordOption)) {
+					return;
+				}
+
+				const record = recordOption.value;
 				if (isTerminal(record.state)) {
 					return;
 				}
@@ -259,13 +282,27 @@ export const DreamTaskRegistryLive = Layer.effect(
 
 		const get: DreamTaskRegistryApi["get"] = Effect.fn("DreamTaskRegistry.get")(
 			function* (taskId) {
-				const record = yield* getRecord(taskId);
-				return record.state;
+				const recordOption = yield* getRecordOption(taskId);
+				if (Option.isNone(recordOption)) {
+					return yield* Effect.fail(new DreamTaskNotFound({ taskId }));
+				}
+
+				return recordOption.value.state;
 			},
 		);
 
 		const watch: DreamTaskRegistryApi["watch"] = (taskId) =>
-			Stream.unwrap(getRecord(taskId).pipe(Effect.map((record) => SubscriptionRef.changes(record.updates))));
+			Stream.unwrap(
+				getRecordOption(taskId).pipe(
+					Effect.flatMap((recordOption: Option.Option<DreamTaskRecord>) =>
+						Option.match(recordOption, {
+							onNone: () => Effect.fail(new DreamTaskNotFound({ taskId })),
+							onSome: (record: DreamTaskRecord) =>
+								Effect.succeed(SubscriptionRef.changes(record.updates)),
+						}),
+					),
+				),
+			);
 
 		return DreamTaskRegistry.of({
 			create,

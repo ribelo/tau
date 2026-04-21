@@ -54,6 +54,7 @@ import {
 	AUTORESEARCH_CHECKS_SH,
 } from "../autoresearch/paths.js";
 import type { ExecutionProfile } from "../execution/schema.js";
+import { StorageError } from "../shared/atomic-write.js";
 
 // ------------------------------------------------------------------------------
 // Execution boundary
@@ -281,7 +282,10 @@ export interface OnAgentEndResult {
 // ------------------------------------------------------------------------------
 
 export interface AutoresearchService {
-	readonly rehydrate: (sessionId: string, workDir: string) => Effect.Effect<void, AutoresearchContractValidationError, never>;
+	readonly rehydrate: (
+		sessionId: string,
+		workDir: string,
+	) => Effect.Effect<void, AutoresearchContractValidationError | AutoresearchValidationError, never>;
 	readonly initExperiment: (
 		sessionId: string,
 		workDir: string,
@@ -305,7 +309,7 @@ export interface AutoresearchService {
 		sessionId: string,
 		workDir: string,
 		boundary: AutoresearchExecutionBoundary,
-	) => Effect.Effect<OnAgentEndResult, never, never>;
+	) => Effect.Effect<OnAgentEndResult, AutoresearchValidationError, never>;
 	readonly setMode: (
 		sessionId: string,
 		enabled: boolean,
@@ -445,7 +449,38 @@ function collectLoggedRunNumbers(results: ExperimentState["results"]): Set<numbe
 	return runNumbers;
 }
 
-function getNextRunNumber(workDir: string, lastRunNumber: number | null, repo: typeof AutoresearchRepo.Service): Effect.Effect<number, never, never> {
+function storageReason(error: StorageError): string {
+	return `${error.reason} (${error.path})`;
+}
+
+function mapStorageValidation<A>(effect: Effect.Effect<A, StorageError, never>): Effect.Effect<A, AutoresearchValidationError, never> {
+	return effect.pipe(
+		Effect.mapError((error) =>
+			new AutoresearchValidationError({
+				reason: storageReason(error),
+			}),
+		),
+	);
+}
+
+type AutoresearchStateRepo = {
+	readonly readJsonl: (workDir: string) => Effect.Effect<Option.Option<string>, AutoresearchValidationError, never>;
+	readonly writeJsonl: (workDir: string, content: string) => Effect.Effect<void, AutoresearchValidationError, never>;
+	readonly appendJsonlLine: (workDir: string, line: string) => Effect.Effect<void, AutoresearchValidationError, never>;
+	readonly readAutoresearchMd: (workDir: string) => Effect.Effect<Option.Option<string>, AutoresearchValidationError, never>;
+	readonly readAutoresearchSh: (workDir: string) => Effect.Effect<Option.Option<string>, AutoresearchValidationError, never>;
+	readonly readAutoresearchChecksSh: (workDir: string) => Effect.Effect<Option.Option<string>, AutoresearchValidationError, never>;
+	readonly readRunJson: (runDirectory: string) => Effect.Effect<Option.Option<string>, AutoresearchValidationError, never>;
+	readonly writeRunJson: (runDirectory: string, content: string) => Effect.Effect<void, AutoresearchValidationError, never>;
+	readonly ensureAutoresearchDir: (workDir: string) => Effect.Effect<void, AutoresearchValidationError, never>;
+	readonly listRunDirectories: (workDir: string) => Effect.Effect<ReadonlyArray<string>, AutoresearchValidationError, never>;
+};
+
+function getNextRunNumber(
+	workDir: string,
+	lastRunNumber: number | null,
+	repo: Pick<AutoresearchStateRepo, "listRunDirectories">,
+): Effect.Effect<number, AutoresearchValidationError, never> {
 	return repo.listRunDirectories(workDir).pipe(
 		Effect.map((directories) => {
 			let maxRunNumber = lastRunNumber ?? 0;
@@ -600,14 +635,14 @@ function clonePendingAsiValue(value: unknown): ASIData[string] | undefined {
 }
 
 function readPendingRunSummary(
-	repo: typeof AutoresearchRepo.Service,
+	repo: Pick<AutoresearchStateRepo, "listRunDirectories" | "readRunJson">,
 	workDir: string,
 	loggedRunNumbers: ReadonlySet<number>,
-): Effect.Effect<PendingRunSummary | null, never, never> {
+): Effect.Effect<PendingRunSummary | null, AutoresearchValidationError, never> {
 	return repo.listRunDirectories(workDir).pipe(
 		Effect.flatMap((directories) => {
 			// directories are already sorted descending
-			function checkNext(index: number): Effect.Effect<PendingRunSummary | null, never, never> {
+			function checkNext(index: number): Effect.Effect<PendingRunSummary | null, AutoresearchValidationError, never> {
 				if (index >= directories.length) {
 					return Effect.succeed(null);
 				}
@@ -645,7 +680,19 @@ function readPendingRunSummary(
 export const AutoresearchLive = Layer.effect(
 	Autoresearch,
 	Effect.gen(function* () {
-		const repo = yield* AutoresearchRepo;
+		const rawRepo = yield* AutoresearchRepo;
+		const repo: AutoresearchStateRepo = {
+			readJsonl: (workDir) => mapStorageValidation(rawRepo.readJsonl(workDir)),
+			writeJsonl: (workDir, content) => mapStorageValidation(rawRepo.writeJsonl(workDir, content)),
+			appendJsonlLine: (workDir, line) => mapStorageValidation(rawRepo.appendJsonlLine(workDir, line)),
+			readAutoresearchMd: (workDir) => mapStorageValidation(rawRepo.readAutoresearchMd(workDir)),
+			readAutoresearchSh: (workDir) => mapStorageValidation(rawRepo.readAutoresearchSh(workDir)),
+			readAutoresearchChecksSh: (workDir) => mapStorageValidation(rawRepo.readAutoresearchChecksSh(workDir)),
+			readRunJson: (runDirectory) => mapStorageValidation(rawRepo.readRunJson(runDirectory)),
+			writeRunJson: (runDirectory, content) => mapStorageValidation(rawRepo.writeRunJson(runDirectory, content)),
+			ensureAutoresearchDir: (workDir) => mapStorageValidation(rawRepo.ensureAutoresearchDir(workDir)),
+			listRunDirectories: (workDir) => mapStorageValidation(rawRepo.listRunDirectories(workDir)),
+		};
 		const sessionsRef = yield* Ref.make<Map<string, SessionRuntime>>(new Map());
 
 		const ensureSession = (sessionId: string): Effect.Effect<SessionRuntime, never, never> =>
@@ -1494,7 +1541,7 @@ function validateObservedStatus(
 function validateKeepPaths(
 	_workDir: string,
 	state: ExperimentState,
-	_repo: typeof AutoresearchRepo.Service,
+	_repo: AutoresearchStateRepo,
 ): Effect.Effect<{ committablePaths: string[] } | string, never, never> {
 	if (state.scopePaths.length === 0) {
 		return Effect.succeed("Files in Scope is empty for the current segment. Re-run init_experiment after fixing autoresearch.md.");

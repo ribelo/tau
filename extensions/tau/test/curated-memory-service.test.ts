@@ -237,7 +237,7 @@ describe("CuratedMemory service", () => {
 		const nestedCwd = path.join(workspaceRoot, "src", "nested");
 		await fs.mkdir(nestedCwd, { recursive: true });
 
-		const { pi } = makePiStub();
+		const { pi, emit } = makePiStub();
 		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
 
 		try {
@@ -254,7 +254,7 @@ describe("CuratedMemory service", () => {
 		await fs.mkdir(globalMemoryDir(tempHome), { recursive: true });
 		await fs.writeFile(legacyGlobalMemoryPath(tempHome), ["alpha", "beta"].join(ENTRY_DELIMITER), "utf8");
 
-		const { pi } = makePiStub();
+		const { pi, emit } = makePiStub();
 		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
 
 		try {
@@ -285,7 +285,7 @@ describe("CuratedMemory service", () => {
 			"utf8",
 		);
 
-		const { pi } = makePiStub();
+		const { pi, emit } = makePiStub();
 		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
 
 		try {
@@ -310,7 +310,7 @@ describe("CuratedMemory service", () => {
 		}
 	});
 
-	it("migrates legacy long ids during setup startup reload", async () => {
+	it("migrates legacy long ids on the first session reload after setup", async () => {
 		await fs.mkdir(globalMemoryDir(tempHome), { recursive: true });
 		const legacyId = "HN855CdkM_Jf2ceFiuvjC";
 		await fs.writeFile(
@@ -326,12 +326,14 @@ describe("CuratedMemory service", () => {
 			"utf8",
 		);
 
-		const { pi } = makePiStub();
+		const { pi, emit } = makePiStub();
 		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
 
 		try {
 			const memory = await runtime.runPromise(getCuratedMemory);
 			await runtime.runPromise(Effect.scoped(memory.setup));
+			await emit("session_start", {}, workspaceRoot);
+			await new Promise((resolve) => setTimeout(resolve, 50));
 
 			const entries = parseMemoryEntries(await fs.readFile(globalMemoryPath(tempHome), "utf8"), {
 				scope: "global",

@@ -1,471 +1,51 @@
 import {
-	createAgentSession,
 	type AgentSession,
-	SessionManager,
 	SettingsManager,
 	AuthStorage,
 	ModelRegistry,
 	DefaultResourceLoader,
 	type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
-import type { StreamFn } from "@mariozechner/pi-agent-core";
-import type { Model, Api, ThinkingLevel, Context, SimpleStreamOptions } from "@mariozechner/pi-ai";
-import { stream, streamSimple } from "@mariozechner/pi-ai";
+import type { Model, Api } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
-import { Effect, Fiber, SubscriptionRef, Stream } from "effect";
+import { Effect, SubscriptionRef, Stream } from "effect";
 import { nanoid } from "nanoid";
 import { type Status } from "./status.js";
 import type { AgentId, AgentDefinition, ModelSpec } from "./types.js";
 import { type Agent, AgentError } from "./services.js";
-import { isPromptModeThinkingLevel } from "./model-spec.js";
 import { computeClampedWorkerSandboxConfig } from "./sandbox-policy.js";
 import type { ResolvedSandboxConfig } from "../sandbox/config.js";
-import type {
-	ExecutionPolicy,
-	ExecutionProfile,
-	ExecutionSessionState,
-} from "../execution/schema.js";
-import { makeExecutionProfile } from "../execution/schema.js";
-import { readModelId } from "../prompt/profile.js";
-import { TAU_PERSISTED_STATE_TYPE, loadPersistedState } from "../shared/state.js";
-import { withWorkerSandboxOverride } from "./worker-sandbox.js";
-import { setWorkerApprovalBroker } from "./approval-broker.js";
-import { createApplyPatchToolDefinition } from "../sandbox/apply-patch.js";
-import { createBacklogToolDefinition } from "../backlog/tool.js";
-import { createExaToolDefinitions } from "../exa/index.js";
-import { createMemoryToolDefinition } from "../memory/index.js";
-import { createThreadToolDefinitions } from "../thread/index.js";
-import { isRecord } from "../shared/json.js";
+import type { ExecutionProfile, ExecutionSessionState } from "../execution/schema.js";
 
 import type { ApprovalBroker } from "./approval-broker.js";
 import { createWorkerAgentTool, type RunAgentControlPromise } from "./runtime.js";
-import { applyAgentToolAllowlist } from "./tool-allowlist.js";
 import { buildToolDescription } from "./tool.js";
+import { buildWorkerAppendPrompts, createWorkerCustomTools } from "./worker/tools.js";
+import {
+	createSessionForModel,
+	type SessionInfra,
+	syncExecutionProfileToSession,
+	wireSession,
+} from "./worker/lifecycle.js";
+import { waitForSessionSettlement } from "./worker/session-events.js";
+import { resolveModelPattern, toolOnlyStreamFn } from "./worker/model-runner.js";
+import {
+	buildCompletedStatus,
+	buildFailedStatus,
+	buildRunningStatus,
+	createWorkerTrackingState,
+} from "./worker/status.js";
+import { WorkerSessionController } from "./worker/session-controller.js";
 import { isAgentDisabledForSession } from "../agents-menu/index.js";
+
+export { WORKER_DELEGATION_PROMPT, createWorkerCustomTools } from "./worker/tools.js";
+export { resolveModelPattern, toolOnlyStreamFn } from "./worker/model-runner.js";
 
 const MAX_SUBMIT_RESULT_RETRIES = 3;
 
-type AssistantTextPart = { type: string; text?: string };
-
-type AssistantLikeMessage = {
-	role: "assistant";
-	content?: ReadonlyArray<AssistantTextPart>;
-	stopReason?: string;
-	errorMessage?: string;
-};
-
-function truncateStr(s: string, max: number): string {
-	if (s.length <= max) return s;
-	return s.slice(0, max - 3) + "...";
-}
-
-function getAssistantText(message: AssistantLikeMessage | undefined): string {
-	if (!message) {
-		return "";
-	}
-
-	return (
-		message.content
-			?.filter(
-				(part): part is { type: "text"; text: string } =>
-					part.type === "text" && typeof part.text === "string",
-			)
-			.map((part) => part.text)
-			.join("\n") ?? ""
-	);
-}
-
-function getAssistantFailureReason(
-	message: AssistantLikeMessage | undefined,
-	fallback: string,
-): string {
-	const text = getAssistantText(message);
-	return message?.errorMessage || text || fallback;
-}
-
-function getLastAssistantMessage(messages: readonly unknown[]): AssistantLikeMessage | undefined {
-	const last = messages[messages.length - 1];
-	if (!last || typeof last !== "object") {
-		return undefined;
-	}
-
-	const candidate = last as Partial<AssistantLikeMessage> & { role?: unknown };
-	return candidate.role === "assistant" ? (candidate as AssistantLikeMessage) : undefined;
-}
-
-function syncExecutionProfileToSession(
-	profile: ExecutionProfile,
-	session: AgentSession,
-): ExecutionProfile {
-	const modelId = readModelId(session.model);
-	if (modelId === undefined) {
-		return profile;
-	}
-
-	const thinking = isPromptModeThinkingLevel(session.thinkingLevel)
-		? session.thinkingLevel
-		: profile.promptProfile.thinking;
-
-	return makeExecutionProfile({
-		selector: profile.selector,
-		promptProfile: {
-			mode: profile.promptProfile.mode,
-			model: modelId,
-			thinking,
-		},
-		policy: profile.policy,
-	});
-}
-
-function waitForSessionSettlement(
-	session: AgentSession,
-): Effect.Effect<{ ok: true } | { ok: false; reason: string }> {
-	return Effect.callback<{ ok: true } | { ok: false; reason: string }>((resume) => {
-		let pendingFailureTimer: ReturnType<typeof setTimeout> | undefined = undefined;
-		let settled = false;
-
-		const clearPendingFailureTimer = (): void => {
-			if (pendingFailureTimer !== undefined) {
-				clearTimeout(pendingFailureTimer);
-				pendingFailureTimer = undefined;
-			}
-		};
-
-		const finish = (result: { ok: true } | { ok: false; reason: string }): void => {
-			if (settled) return;
-			settled = true;
-			clearPendingFailureTimer();
-			unsubscribe();
-			resume(Effect.succeed(result));
-		};
-
-		const settleFromCurrentState = (): void => {
-			if (session.isStreaming || session.isCompacting) {
-				return;
-			}
-
-			const assistant = getLastAssistantMessage(session.messages);
-			if (assistant?.stopReason === "error") {
-				clearPendingFailureTimer();
-				pendingFailureTimer = setTimeout(() => {
-					pendingFailureTimer = undefined;
-					finish({
-						ok: false,
-						reason: getAssistantFailureReason(assistant, "Agent ended with error"),
-					});
-				}, 0);
-				return;
-			}
-
-			finish({ ok: true });
-		};
-
-		const unsubscribe = session.subscribe((event) => {
-			if (event.type === "auto_compaction_start") {
-				clearPendingFailureTimer();
-				return;
-			}
-
-			if (event.type === "auto_compaction_end") {
-				clearPendingFailureTimer();
-				if (event.errorMessage) {
-					finish({ ok: false, reason: event.errorMessage });
-					return;
-				}
-				if (!event.willRetry) {
-					setTimeout(settleFromCurrentState, 0);
-				}
-				return;
-			}
-
-			if (event.type === "agent_end") {
-				const assistant = getLastAssistantMessage(event.messages);
-				if (assistant?.stopReason === "error") {
-					clearPendingFailureTimer();
-					pendingFailureTimer = setTimeout(() => {
-						pendingFailureTimer = undefined;
-						finish({
-							ok: false,
-							reason: getAssistantFailureReason(assistant, "Agent ended with error"),
-						});
-					}, 0);
-					return;
-				}
-
-				finish({ ok: true });
-			}
-		});
-
-		settleFromCurrentState();
-
-		return Effect.sync(() => {
-			clearPendingFailureTimer();
-			unsubscribe();
-		});
-	});
-}
-
-// Extract human-readable args for tool display
-function formatToolArgs(toolName: string, args: unknown): string {
-	if (!args || typeof args !== "object") return "";
-	const a = args as Record<string, unknown>;
-
-	switch (toolName) {
-		case "bash":
-			return typeof a["command"] === "string" ? a["command"] : "";
-		case "backlog":
-			return typeof a["command"] === "string" ? a["command"] : "";
-		case "read":
-			return typeof a["path"] === "string" ? a["path"] : "";
-		case "write":
-			return typeof a["path"] === "string" ? `${a["path"]} (create)` : "";
-		case "edit":
-			return typeof a["path"] === "string" ? `${a["path"]} (edit)` : "";
-		default:
-			// For unknown tools, try to find a meaningful field
-			if (typeof a["path"] === "string") return a["path"];
-			if (typeof a["command"] === "string") return a["command"];
-			if (typeof a["query"] === "string") return a["query"];
-			return "";
-	}
-}
-
-export const WORKER_DELEGATION_PROMPT = `## Worker Agent Instructions
-
-You are a worker agent spawned by an orchestrator. Follow these rules:
-
-1. **Execute only what was requested** - Focus on the specific task in your instructions.
-2. **Read spec from backlog** - If given a task ID, run \`backlog show <id>\` for context.
-3. **Orchestrator owns git** - Do not commit, rebase, push, or change git state.
-4. **Orchestrator owns review** - Do not spawn review agents.
-5. **Orchestrator owns backlog state** - Do not create, close, or update backlog tasks unless explicitly asked. Only read with \`backlog show\` by default.
-6. **Stay on task** - If you discover unrelated bugs, report them in your final message. Do not fix them and do not create follow-up backlog items unless explicitly asked. The orchestrator handles follow-up.
-7. **Other agents may work simultaneously** - Ignore changes you didn't make.
-8. **Only your final message is returned** - Make it a clear summary.
-`;
-
-function mergePayloadOverrides(
-	payload: unknown,
-	overrides: Readonly<Record<string, unknown>>,
-): Record<string, unknown> {
-	const base = isRecord(payload) ? payload : {};
-	return {
-		...base,
-		...overrides,
-	};
-}
-
-function wrapPayloadOverrides(
-	existing: SimpleStreamOptions["onPayload"] | undefined,
-	overrides: Readonly<Record<string, unknown>>,
-): NonNullable<SimpleStreamOptions["onPayload"]> {
-	return async (payload, currentModel) => {
-		const nextPayload = existing ? await existing(payload, currentModel) : undefined;
-		return mergePayloadOverrides(nextPayload === undefined ? payload : nextPayload, overrides);
-	};
-}
-
-function buildToolOnlyOptions(
-	model: Model<Api>,
-	options: SimpleStreamOptions | undefined,
-	providerOverrides: Readonly<Record<string, unknown>>,
-	payloadOverrides?: Readonly<Record<string, unknown>>,
-	omitKeys: ReadonlyArray<keyof SimpleStreamOptions> = [],
-): Record<string, unknown> {
-	const next: Record<string, unknown> = {
-		...options,
-		...providerOverrides,
-		maxTokens: options?.maxTokens ?? Math.min(model.maxTokens, 32000),
-	};
-
-	for (const key of omitKeys) {
-		delete next[key];
-	}
-
-	if (payloadOverrides !== undefined) {
-		next["onPayload"] = wrapPayloadOverrides(options?.onPayload, payloadOverrides);
-	}
-
-	return next;
-}
-
-export const toolOnlyStreamFn: StreamFn = (
-	model: Model<Api>,
-	context: Context,
-	options?: SimpleStreamOptions,
-) => {
-	const api = model.api as string;
-
-	switch (api) {
-		case "anthropic-messages":
-			return stream(
-				model as Model<"anthropic-messages">,
-				context,
-				buildToolOnlyOptions(model, options, {
-					thinkingEnabled: false,
-					toolChoice: "any",
-				}),
-			);
-		case "openai-completions":
-			return stream(
-				model as Model<"openai-completions">,
-				context,
-				buildToolOnlyOptions(model, options, {
-					toolChoice: "required",
-				}),
-			);
-		case "google-generative-ai":
-		case "google-vertex":
-		case "google-gemini-cli":
-			return stream(
-				model as Model<"google-generative-ai">,
-				context,
-				buildToolOnlyOptions(model, options, {
-					toolChoice: "any",
-					thinking: { enabled: false },
-				}),
-			);
-		case "bedrock-converse-stream":
-		case "amazon-bedrock":
-			return stream(
-				model as Model<"bedrock-converse-stream">,
-				context,
-				buildToolOnlyOptions(
-					model,
-					options,
-					{
-						toolChoice: "any",
-					},
-					undefined,
-					["reasoning", "thinkingBudgets"],
-				),
-			);
-		default:
-			return streamSimple(
-				model,
-				context,
-				buildToolOnlyOptions(
-					model,
-					options,
-					api === "mistral-conversations" ? { toolChoice: "required" } : {},
-					api === "openai-responses" ||
-						api === "openai-codex-responses" ||
-						api === "azure-openai-responses"
-						? { tool_choice: "required" }
-						: undefined,
-				) as SimpleStreamOptions,
-			);
-	}
-};
-
-export function createWorkerCustomTools(
-	agentTool: ToolDefinition,
-	runEffect: RunAgentControlPromise,
-): ToolDefinition[] {
-	return [
-		agentTool,
-		createApplyPatchToolDefinition() as unknown as ToolDefinition,
-		createBacklogToolDefinition() as unknown as ToolDefinition,
-		createMemoryToolDefinition(runEffect) as unknown as ToolDefinition,
-		...createExaToolDefinitions().map((tool) => tool as unknown as ToolDefinition),
-		...createThreadToolDefinitions().map((tool) => tool as unknown as ToolDefinition),
-	];
-}
-
-export function resolveModelPattern(pattern: string, models: Model<Api>[]): Model<Api> | undefined {
-	const trimmed = pattern.trim();
-	if (!trimmed) return undefined;
-
-	const slashIndex = trimmed.indexOf("/");
-	if (slashIndex !== -1) {
-		const providerInput = trimmed.slice(0, slashIndex).trim();
-		const modelIdInput = trimmed.slice(slashIndex + 1).trim();
-		if (!providerInput || !modelIdInput) return undefined;
-
-		const provider = providerInput.toLowerCase();
-		const modelId = modelIdInput.toLowerCase();
-		const match = models.find(
-			(m) => m.provider.toLowerCase() === provider && m.id.toLowerCase() === modelId,
-		);
-		if (match) return match;
-
-		const providerTemplate = models.find((m) => m.provider.toLowerCase() === provider);
-		if (providerTemplate) {
-			return {
-				...providerTemplate,
-				id: modelIdInput,
-				name: modelIdInput,
-			};
-		}
-
-		return undefined;
-	}
-
-	const exact = models.find((m) => m.id.toLowerCase() === trimmed.toLowerCase());
-	if (exact) return exact;
-
-	const partial = models.find(
-		(m) =>
-			m.id.toLowerCase().includes(trimmed.toLowerCase()) ||
-			m.name?.toLowerCase().includes(trimmed.toLowerCase()),
-	);
-	return partial;
-}
-
-function buildWorkerAppendPrompts(options: {
-	definition: AgentDefinition;
-	resultSchema?: unknown;
-}): string[] {
-	const prompts: string[] = [];
-
-	// Always add the worker delegation prompt
-	prompts.push(WORKER_DELEGATION_PROMPT);
-
-	// Add agent-specific system prompt if present
-	if (options.definition.systemPrompt) {
-		prompts.push(options.definition.systemPrompt);
-	}
-
-	// Append structured output instructions if schema provided
-	if (options.resultSchema) {
-		prompts.push(
-			`## Structured Output\n- You must call submit_result exactly once with JSON matching the provided schema.\n- Do not respond with free text.\n- Stop immediately after calling submit_result.\n\nSchema:\n\n\`\`\`json\n${JSON.stringify(options.resultSchema, null, 2)}\n\`\`\``,
-		);
-	}
-
-	return prompts;
-}
-
-import type { ToolRecord } from "./status.js";
-
-/** Model-independent session infrastructure prepared once in make(). */
-interface SessionInfra {
-	readonly authStorage: AuthStorage;
-	readonly modelRegistry: ModelRegistry;
-	readonly settingsManager: SettingsManager;
-	readonly resourceLoader: DefaultResourceLoader;
-	readonly customTools: ToolDefinition[];
-	readonly sandboxConfig: ResolvedSandboxConfig;
-	readonly appendPrompts: string[];
-	readonly cwd: string;
-	readonly approvalBroker: ApprovalBroker | undefined;
-	readonly definition: AgentDefinition;
-	readonly resultSchema: unknown | undefined;
-	readonly executionPolicy: ExecutionPolicy;
-}
-
 export class AgentWorker implements Agent {
-	private structuredOutput?: unknown;
-	private submitResultRetries = 0;
-	private turns = 0;
-	private toolCalls = 0;
-	private workedMs = 0;
-	private terminalState: "completed" | "failed" | "shutdown" | undefined = undefined;
-	private turnStartTime: number | undefined = undefined;
-	private tools: ToolRecord[] = [];
-	private pendingTools: Map<string, ToolRecord> = new Map();
-	private sessionUnsubscribe: (() => void) | undefined = undefined;
-	private activeFiber: Fiber.Fiber<void, never> | undefined = undefined;
+	private readonly tracking = createWorkerTrackingState();
+	private readonly sessionController: WorkerSessionController;
 
 	constructor(
 		readonly id: AgentId,
@@ -488,23 +68,63 @@ export class AgentWorker implements Agent {
 			cwd: string;
 			approvalBroker: ApprovalBroker | undefined;
 		},
-	) {}
+	) {
+		this.sessionController = new WorkerSessionController({
+			tracking: this.tracking,
+			resultSchema: this.infra.resultSchema,
+			maxSubmitResultRetries: MAX_SUBMIT_RESULT_RETRIES,
+			spawnBackground: (effect) => Effect.runFork(effect),
+			publishRunningStatus: () => this.publishRunningStatus(),
+			publishRunningStatusIfNotFinal: () => this.publishRunningStatusIfNotFinal(),
+			publishCompleted: (message) => this.publishCompleted(message),
+			publishFailed: (reason) => this.publishFailed(reason),
+			repromptForSubmitResult: (retry) => this.repromptForSubmitResult(retry),
+			statusRef: this.statusRef,
+		});
+	}
 
 	get definition(): AgentDefinition {
 		return this.infra.definition;
 	}
 
+	private get structuredOutput(): unknown {
+		return this.tracking.structuredOutput;
+	}
+
+	private set structuredOutput(value: unknown) {
+		this.tracking.structuredOutput = value;
+	}
+
+	private get submitResultRetries(): number {
+		return this.tracking.submitResultRetries;
+	}
+
+	private set submitResultRetries(value: number) {
+		this.tracking.submitResultRetries = value;
+	}
+
+	private get turns(): number {
+		return this.tracking.turns;
+	}
+
+	private get toolCalls(): number {
+		return this.tracking.toolCalls;
+	}
+
+	private get workedMs(): number {
+		return this.tracking.workedMs;
+	}
+
+	private get terminalState(): "completed" | "failed" | "shutdown" | undefined {
+		return this.tracking.terminalState;
+	}
+
+	private set terminalState(value: "completed" | "failed" | "shutdown" | undefined) {
+		this.tracking.terminalState = value;
+	}
+
 	private currentRunningStatus(): Status {
-		return {
-			state: "running",
-			turns: this.turns,
-			toolCalls: this.toolCalls,
-			workedMs: this.workedMs,
-			...(this.turnStartTime !== undefined
-				? { activeTurnStartedAtMs: this.turnStartTime }
-				: {}),
-			tools: this.tools,
-		};
+		return buildRunningStatus(this.tracking);
 	}
 
 	private publishStatus(status: Status): void {
@@ -524,27 +144,14 @@ export class AgentWorker implements Agent {
 
 	private publishFailed(reason: string): void {
 		this.terminalState = "failed";
-		this.publishStatus({
-			state: "failed",
-			reason,
-			turns: this.turns,
-			toolCalls: this.toolCalls,
-			workedMs: this.workedMs,
-			tools: this.tools,
-		});
+		this.publishStatus(buildFailedStatus(this.tracking, reason));
 	}
 
 	private publishCompleted(message: string | undefined): void {
 		this.terminalState = "completed";
-		this.publishStatus({
-			state: "completed",
-			message,
-			structured_output: this.structuredOutput,
-			turns: this.turns,
-			toolCalls: this.toolCalls,
-			workedMs: this.workedMs,
-			tools: this.tools,
-		});
+		this.publishStatus(
+			buildCompletedStatus(this.tracking, message, this.structuredOutput),
+		);
 	}
 
 	private repromptForSubmitResult(retry: number): Effect.Effect<void> {
@@ -738,116 +345,7 @@ export class AgentWorker implements Agent {
 
 	/** Subscribe to session events for status tracking. Replaces any previous subscription. */
 	private subscribeToSession(session: AgentSession): void {
-		if (this.sessionUnsubscribe) {
-			this.sessionUnsubscribe();
-		}
-		// eslint-disable-next-line @typescript-eslint/no-this-alias
-		const agent = this;
-
-		this.sessionUnsubscribe = session.subscribe((event) => {
-			if (agent.terminalState === "shutdown") {
-				return;
-			}
-
-			if (event.type === "turn_start") {
-				agent.terminalState = undefined;
-				agent.turns++;
-				agent.turnStartTime = Date.now();
-				agent.publishRunningStatus();
-			} else if (event.type === "turn_end") {
-				if (agent.turnStartTime !== undefined) {
-					agent.workedMs += Date.now() - agent.turnStartTime;
-					agent.turnStartTime = undefined;
-				}
-				agent.publishRunningStatusIfNotFinal();
-			} else if (event.type === "tool_execution_start") {
-				agent.toolCalls++;
-				const argsPreview = truncateStr(formatToolArgs(event.toolName, event.args), 100);
-				agent.pendingTools.set(event.toolCallId, {
-					name: event.toolName,
-					args: argsPreview,
-				});
-				agent.publishRunningStatus();
-			} else if (event.type === "tool_execution_end") {
-				const pending = agent.pendingTools.get(event.toolCallId);
-				if (pending) {
-					agent.pendingTools.delete(event.toolCallId);
-					const resultPreview = truncateStr(
-						typeof event.result === "string"
-							? event.result
-							: JSON.stringify(event.result),
-						100,
-					);
-					agent.tools.push({
-						...pending,
-						result: resultPreview,
-						isError: event.isError,
-					});
-				}
-				agent.publishRunningStatusIfNotFinal();
-			} else if (event.type === "auto_compaction_start") {
-				agent.publishRunningStatusIfNotFinal();
-			} else if (event.type === "auto_compaction_end") {
-				if (event.errorMessage) {
-					agent.publishRunningStatusIfNotFinal();
-					return;
-				}
-				agent.publishRunningStatusIfNotFinal();
-			} else if (event.type === "agent_end") {
-				if (agent.turnStartTime !== undefined) {
-					agent.workedMs += Date.now() - agent.turnStartTime;
-					agent.turnStartTime = undefined;
-				}
-
-				const assistantMsg = getLastAssistantMessage(event.messages);
-
-				if (assistantMsg?.stopReason === "error") {
-					agent.publishRunningStatusIfNotFinal();
-					return;
-				}
-
-				if (assistantMsg?.stopReason === "aborted") {
-					// submit_result aborts the session after capturing output —
-					// if structuredOutput is set, that's a successful completion.
-					if (agent.structuredOutput !== undefined) {
-						agent.publishCompleted(undefined);
-						return;
-					}
-					// Explicit interrupt/close — do NOT retry, honor the abort.
-					const textContent = getAssistantText(assistantMsg);
-
-					if (!textContent) {
-						agent.publishFailed("Agent was aborted before producing a response");
-					} else {
-						agent.publishCompleted(textContent);
-					}
-					return;
-				}
-
-				// Retry when structured output was requested but agent didn't call submit_result.
-				// Only applies to non-aborted endings (normal turn completion without tool call).
-				if (
-					agent.infra.resultSchema !== undefined &&
-					agent.structuredOutput === undefined
-				) {
-					if (agent.submitResultRetries < MAX_SUBMIT_RESULT_RETRIES) {
-						agent.submitResultRetries += 1;
-						agent.activeFiber = Effect.runFork(
-							agent.repromptForSubmitResult(agent.submitResultRetries),
-						);
-					} else {
-						agent.publishFailed(
-							`Agent did not call submit_result after ${MAX_SUBMIT_RESULT_RETRIES} retries`,
-						);
-					}
-					return;
-				}
-
-				const message = assistantMsg ? getAssistantText(assistantMsg) : undefined;
-
-				agent.publishCompleted(message);
-			}
-		});
+		this.sessionController.attach(session);
 	}
 
 	private switchToModel(spec: ModelSpec): Effect.Effect<void, string> {
@@ -855,11 +353,7 @@ export class AgentWorker implements Agent {
 		const worker = this;
 		return Effect.gen(function* () {
 			yield* Effect.promise(() => worker.session.abort()).pipe(Effect.ignore);
-			if (worker.sessionUnsubscribe) {
-				worker.sessionUnsubscribe();
-				worker.sessionUnsubscribe = undefined;
-			}
-			setWorkerApprovalBroker(worker.session.sessionId, undefined);
+			worker.sessionController.releaseSession(worker.session.sessionId);
 
 			const newSession = yield* createSessionForModel(
 				worker.infra,
@@ -927,14 +421,7 @@ export class AgentWorker implements Agent {
 				? (errors[0] ?? "Unknown error")
 				: `All models failed:\n${errors.map((e) => `  - ${e}`).join("\n")}`;
 
-		return SubscriptionRef.set(this.statusRef, {
-			state: "failed",
-			reason,
-			turns: this.turns,
-			toolCalls: this.toolCalls,
-			workedMs: this.workedMs,
-			tools: this.tools,
-		});
+		return SubscriptionRef.set(this.statusRef, buildFailedStatus(this.tracking, reason));
 	}
 
 	private tryModelSpec(
@@ -982,25 +469,16 @@ export class AgentWorker implements Agent {
 			worker.structuredOutput = undefined;
 			worker.terminalState = undefined;
 
-			if (worker.activeFiber) {
-				yield* Fiber.interrupt(worker.activeFiber);
-				worker.activeFiber = undefined;
-			}
-
 			yield* SubscriptionRef.set(worker.statusRef, worker.currentRunningStatus());
 
-			worker.activeFiber = Effect.runFork(
+			yield* worker.sessionController.replaceBackground(
 				worker.runWithModelFallback(message).pipe(
 					Effect.catch((err: unknown) => {
 						const reason = err instanceof Error ? err.message : String(err);
-						return SubscriptionRef.set(worker.statusRef, {
-							state: "failed",
-							reason,
-							turns: worker.turns,
-							toolCalls: worker.toolCalls,
-							workedMs: worker.workedMs,
-							tools: worker.tools,
-						});
+						return SubscriptionRef.set(
+							worker.statusRef,
+							buildFailedStatus(worker.tracking, reason),
+						);
 					}),
 				),
 			);
@@ -1018,17 +496,7 @@ export class AgentWorker implements Agent {
 		const worker = this;
 		return Effect.gen(function* () {
 			worker.terminalState = "shutdown";
-			if (worker.activeFiber) {
-				yield* Fiber.interrupt(worker.activeFiber);
-				worker.activeFiber = undefined;
-			}
-			yield* Effect.promise(() => worker.session.abort());
-			if (worker.sessionUnsubscribe) {
-				worker.sessionUnsubscribe();
-				worker.sessionUnsubscribe = undefined;
-			}
-			setWorkerApprovalBroker(worker.session.sessionId, undefined);
-			yield* SubscriptionRef.set(worker.statusRef, { state: "shutdown" });
+			yield* worker.sessionController.shutdown(worker.session);
 		});
 	}
 
@@ -1039,61 +507,4 @@ export class AgentWorker implements Agent {
 	subscribeStatus(): Stream.Stream<Status> {
 		return SubscriptionRef.changes(this.statusRef);
 	}
-}
-
-/** Create a session for a specific ModelSpec. Used in make() (Effect context). */
-function createSessionForModel(
-	infra: SessionInfra,
-	spec: ModelSpec,
-	parentModel: Model<Api> | undefined,
-	modelRegistry: ModelRegistry,
-): Effect.Effect<AgentSession, AgentError> {
-	return Effect.gen(function* () {
-		const resolvedModel =
-			spec.model !== "inherit"
-				? resolveModelPattern(spec.model, modelRegistry.getAll())
-				: parentModel;
-
-		const sessionOpts = {
-			cwd: infra.cwd,
-			authStorage: infra.authStorage,
-			modelRegistry,
-			sessionManager: SessionManager.inMemory(infra.cwd),
-			settingsManager: infra.settingsManager,
-			resourceLoader: infra.resourceLoader,
-			customTools: infra.customTools,
-			...(resolvedModel ? { model: resolvedModel } : {}),
-		};
-		const { session } = yield* Effect.promise(() => createAgentSession(sessionOpts));
-
-		yield* applyAgentToolAllowlist(
-			session,
-			infra.definition,
-			infra.resultSchema,
-			infra.executionPolicy,
-		);
-
-		// Apply thinking level
-		const thinkingLevel = spec.thinking;
-		if (thinkingLevel && thinkingLevel !== "inherit") {
-			session.setThinkingLevel(thinkingLevel as ThinkingLevel);
-		}
-
-		return session;
-	});
-}
-
-/** Wire sandbox config and approval broker onto a session. */
-function wireSession(
-	session: AgentSession,
-	sandboxConfig: ResolvedSandboxConfig,
-	approvalBroker: ApprovalBroker | undefined,
-	executionState: ExecutionSessionState,
-): void {
-	const persisted = loadPersistedState({
-		sessionManager: session.sessionManager,
-	});
-	const next = withWorkerSandboxOverride(persisted, sandboxConfig, executionState);
-	session.sessionManager.appendCustomEntry(TAU_PERSISTED_STATE_TYPE, next);
-	setWorkerApprovalBroker(session.sessionId, approvalBroker);
 }

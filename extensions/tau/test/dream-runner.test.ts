@@ -14,6 +14,7 @@ import type {
 } from "../src/dream/errors.js";
 import {
 	DreamDisabled,
+	DreamSubagentSpawnFailed,
 } from "../src/dream/errors.js";
 import { DreamLock, type DreamLease, type DreamLockInfo, type ManualDreamLease } from "../src/dream/lock.js";
 import { DreamScheduler } from "../src/dream/scheduler.js";
@@ -21,7 +22,14 @@ import { DreamTaskRegistry, DreamTaskRegistryLive } from "../src/dream/task-regi
 import { DreamSubagent, type DreamSubagentContext, type DreamSubagentResult } from "../src/dream/subagent.js";
 import { DreamRunner, DreamRunnerLive, type DreamRunnerLiveConfig } from "../src/dream/runner.js";
 import { CuratedMemory, type MutationResult } from "../src/services/curated-memory.js";
-import type { MemoryEntriesSnapshot, MemoryEntry, MemoryBucketEntriesSnapshot } from "../src/memory/format.js";
+import type {
+	MemoryEntriesSnapshot,
+	MemoryEntry,
+	MemoryBucketEntriesSnapshot,
+	MemorySnapshot,
+	MemoryBucketSnapshot,
+} from "../src/memory/format.js";
+import { MemoryFileError } from "../src/memory/errors.js";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { createMemoryEntry } from "../src/memory/format.js";
 import { DateTime } from "effect";
@@ -51,6 +59,30 @@ function makeEmptySnapshot(): MemoryEntriesSnapshot {
 		project: makeBucket("project"),
 		global: makeBucket("global"),
 		user: makeBucket("user", [], 25_000),
+	};
+}
+
+function makeBucketSnapshot(
+	bucket: "project" | "global" | "user",
+	entries: string[] = [],
+	limitChars = 25_000,
+): MemoryBucketSnapshot {
+	const chars = entries.reduce((sum, entry) => sum + entry.length, 0);
+	return {
+		bucket,
+		path: `/fake/.pi/tau/memories/${bucket.toUpperCase()}.jsonl`,
+		entries,
+		chars,
+		limitChars,
+		usagePercent: Math.round((chars / limitChars) * 100),
+	};
+}
+
+function makeEmptyMemorySnapshot(): MemorySnapshot {
+	return {
+		project: makeBucketSnapshot("project"),
+		global: makeBucketSnapshot("global"),
+		user: makeBucketSnapshot("user", [], 25_000),
 	};
 }
 
@@ -145,6 +177,20 @@ function makeMockScheduler(opts: {
 	);
 }
 
+function makeRecordingScheduler(recordedRuns: DreamRunResult[]): Layer.Layer<DreamScheduler> {
+	return Layer.succeed(
+		DreamScheduler,
+		DreamScheduler.of({
+			evaluateAutoStart: () => Effect.succeed({ sinceMs: 0, sessions: [] }),
+			markCompleted: (_cwd, result) =>
+				Effect.sync(() => {
+					recordedRuns.push(result);
+				}),
+			readLastCompletedAt: () => Effect.succeed(null),
+		}),
+	);
+}
+
 /**
  * Create a mock subagent that simulates calling dream_finish via the
  * custom tools it receives. The `run` method finds the dream_finish tool
@@ -209,12 +255,126 @@ function makeMockMemory(opts: {
 			getSnapshot: () => Effect.die("not implemented in mock"),
 			getEntriesSnapshot: () => Effect.succeed(snapshot),
 			reloadFrozenSnapshot: () => Effect.void,
-			getFrozenPromptBlock: () => "",
+			getFrozenPromptBlock: Effect.succeed(""),
 			add: () => Effect.succeed(defaultResult),
 			update: () => Effect.succeed(defaultResult),
 			remove: () => Effect.succeed(defaultResult),
 			read: () => Effect.die("not implemented in mock"),
 			setup: Effect.void,
+		}),
+	);
+}
+
+function makeFailingMemoryAddLayer(): Layer.Layer<CuratedMemory> {
+	const snapshot = makeEmptySnapshot();
+	return Layer.succeed(
+		CuratedMemory,
+		CuratedMemory.of({
+			getSnapshot: () => Effect.die("not implemented in mock"),
+			getEntriesSnapshot: () => Effect.succeed(snapshot),
+			reloadFrozenSnapshot: () => Effect.void,
+			getFrozenPromptBlock: Effect.succeed(""),
+			add: () => Effect.fail(new MemoryFileError({ reason: "write failed" })),
+			update: () => Effect.die("not implemented in mock"),
+			remove: () => Effect.die("not implemented in mock"),
+			read: () => Effect.die("not implemented in mock"),
+			setup: Effect.void,
+		}),
+	);
+}
+
+function makeSuccessfulMemoryAddLayer(): Layer.Layer<CuratedMemory> {
+	const entriesSnapshot = makeEmptySnapshot();
+	const snapshot = makeEmptyMemorySnapshot();
+	const defaultResult: MutationResult = {
+		changedScope: "project",
+		entry: makeEntry("abc123456789", "project", "test"),
+	};
+
+	return Layer.succeed(
+		CuratedMemory,
+		CuratedMemory.of({
+			getSnapshot: () => Effect.succeed(snapshot),
+			getEntriesSnapshot: () => Effect.succeed(entriesSnapshot),
+			reloadFrozenSnapshot: () => Effect.void,
+			getFrozenPromptBlock: Effect.succeed(""),
+			add: () => Effect.succeed(defaultResult),
+			update: () => Effect.die("not implemented in mock"),
+			remove: () => Effect.die("not implemented in mock"),
+			read: () => Effect.die("not implemented in mock"),
+			setup: Effect.void,
+		}),
+	);
+}
+
+function makeMutatingFailingSubagent(): Layer.Layer<DreamSubagent> {
+	return Layer.succeed(
+		DreamSubagent,
+		DreamSubagent.of({
+			run: (request, _context, customTools) =>
+				Effect.gen(function* () {
+					const memoryTool = customTools.find((tool) => tool.name === "memory");
+					if (memoryTool === undefined) {
+						return yield* Effect.fail(
+							new DreamSubagentSpawnFailed({ reason: "missing memory tool" }),
+						);
+					}
+
+					yield* Effect.promise(() =>
+						memoryTool.execute(
+							"memory-call",
+							{
+								action: "add",
+								target: "project",
+								summary: "new summary",
+								content: "new content",
+							},
+							new AbortController().signal,
+							() => undefined,
+							{} as Parameters<typeof memoryTool.execute>[4],
+						),
+					);
+
+					return yield* Effect.fail(
+						new DreamSubagentSpawnFailed({ reason: "subagent crashed after memory write" }),
+					);
+				}),
+		}),
+	);
+}
+
+function makeFailingMemoryNoFinishSubagent(): Layer.Layer<DreamSubagent> {
+	return Layer.succeed(
+		DreamSubagent,
+		DreamSubagent.of({
+			run: (_request, _context, customTools) =>
+				Effect.gen(function* () {
+					const memoryTool = customTools.find((tool) => tool.name === "memory");
+					if (memoryTool === undefined) {
+						return yield* Effect.fail(
+							new DreamSubagentSpawnFailed({ reason: "missing memory tool" }),
+						);
+					}
+
+					yield* Effect.promise(() =>
+						memoryTool.execute(
+							"memory-call",
+							{
+								action: "add",
+								target: "project",
+								summary: "new summary",
+								content: "new content",
+							},
+							new AbortController().signal,
+							() => undefined,
+							{} as Parameters<typeof memoryTool.execute>[4],
+						),
+					);
+
+					return {
+						memoryMutations: 0,
+					} satisfies DreamSubagentResult;
+				}),
 		}),
 	);
 }
@@ -351,6 +511,65 @@ describe("DreamRunner", () => {
 			await expect(
 				runWithRunner(result, { config }),
 			).rejects.toThrow();
+		});
+
+		it("fails when the subagent exits without calling dream_finish", async () => {
+			const result = Effect.gen(function* () {
+				const runner = yield* DreamRunner;
+				return yield* runner.runOnce(defaultRequest);
+			});
+
+			await expect(
+				runWithRunner(result, {
+					subagent: makeMockSubagent({ callFinish: false }),
+				}),
+			).rejects.toMatchObject({
+				_tag: "DreamSubagentNoFinish",
+				reason: "Dream subagent ended without calling dream_finish",
+			});
+		});
+
+		it("does not advance the scheduler when failed memory writes are followed by missing dream_finish", async () => {
+			const recordedRuns: DreamRunResult[] = [];
+			const result = Effect.gen(function* () {
+				const runner = yield* DreamRunner;
+				return yield* runner.runOnce(defaultRequest);
+			});
+
+			await expect(
+				runWithRunner(result, {
+					scheduler: makeRecordingScheduler(recordedRuns),
+					subagent: makeFailingMemoryNoFinishSubagent(),
+					memory: makeFailingMemoryAddLayer(),
+				}),
+			).rejects.toMatchObject({
+				_tag: "DreamSubagentNoFinish",
+			});
+
+			expect(recordedRuns).toHaveLength(0);
+		});
+
+		it("advances the scheduler when runOnce fails after a durable memory mutation", async () => {
+			const recordedRuns: DreamRunResult[] = [];
+			const result = Effect.gen(function* () {
+				const runner = yield* DreamRunner;
+				return yield* runner.runOnce(defaultRequest);
+			});
+
+			await expect(
+				runWithRunner(result, {
+					scheduler: makeRecordingScheduler(recordedRuns),
+					subagent: makeMutatingFailingSubagent(),
+					memory: makeSuccessfulMemoryAddLayer(),
+				}),
+			).rejects.toMatchObject({
+				_tag: "DreamSubagentSpawnFailed",
+				reason: "subagent crashed after memory write",
+			});
+
+			expect(recordedRuns).toHaveLength(1);
+			expect(recordedRuns[0]?.memoryMutations).toBe(1);
+			expect(recordedRuns[0]?.summary).toContain("Partial run");
 		});
 	});
 

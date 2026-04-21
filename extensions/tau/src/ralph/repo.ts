@@ -3,6 +3,8 @@ import * as path from "node:path";
 
 import { Effect, FileSystem, Layer, Option, ServiceMap } from "effect";
 
+import { StorageError, atomicWriteFileString, toStorageError } from "../shared/atomic-write.js";
+import { LoopContractValidationError } from "../loops/errors.js";
 import { LoopRepo, LoopRepoLive } from "../loops/repo.js";
 import type {
 	LoopPersistedState,
@@ -51,6 +53,13 @@ function toContractError(entity: string, reason: string): RalphContractValidatio
 		entity,
 		reason,
 	});
+}
+
+function mapLoopRepoError(error: LoopContractValidationError | StorageError): RalphContractValidationError | StorageError {
+	if (error instanceof StorageError) {
+		return error;
+	}
+	return toContractError(error.entity, error.reason);
 }
 
 function makeLegacyLayoutError(): RalphContractValidationError {
@@ -188,33 +197,12 @@ export function ralphDir(cwd: string): string {
 const readOptionalFile = (
 	fs: FileSystem.FileSystem,
 	filePath: string,
-): Effect.Effect<Option.Option<string>, never, never> =>
+): Effect.Effect<Option.Option<string>, StorageError, never> =>
 	fs.readFileString(filePath).pipe(
 		Effect.map((content) => Option.some(content)),
 		Effect.catchIf(isNotFound, () => Effect.succeed(Option.none())),
-		Effect.orDie,
+		Effect.mapError((error) => toStorageError("read-file", filePath, `Failed to read ${filePath}`, error)),
 	);
-
-const ensureParentDirectory = (
-	fs: FileSystem.FileSystem,
-	filePath: string,
-): Effect.Effect<void, never, never> =>
-	fs.makeDirectory(path.dirname(filePath), { recursive: true }).pipe(Effect.orDie);
-
-const atomicWriteFileString = (
-	fs: FileSystem.FileSystem,
-	filePath: string,
-	content: string,
-): Effect.Effect<void, never, never> =>
-	Effect.gen(function* () {
-		yield* ensureParentDirectory(fs, filePath);
-		const tempPath = path.join(
-			path.dirname(filePath),
-			`.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-		);
-		yield* fs.writeFileString(tempPath, content).pipe(Effect.orDie);
-		yield* fs.rename(tempPath, filePath).pipe(Effect.orDie);
-	});
 
 function toPersistedState(
 	state: LoopState,
@@ -267,43 +255,43 @@ export interface RalphRepoService {
 		cwd: string,
 		name: string,
 		archived?: boolean,
-	) => Effect.Effect<Option.Option<LoopState>, RalphContractValidationError, never>;
+	) => Effect.Effect<Option.Option<LoopState>, RalphContractValidationError | StorageError, never>;
 	readonly saveState: (
 		cwd: string,
 		state: LoopState,
 		archived?: boolean,
-	) => Effect.Effect<void, RalphContractValidationError, never>;
+	) => Effect.Effect<void, RalphContractValidationError | StorageError, never>;
 	readonly listLoops: (
 		cwd: string,
 		archived?: boolean,
-	) => Effect.Effect<ReadonlyArray<LoopState>, RalphContractValidationError, never>;
+	) => Effect.Effect<ReadonlyArray<LoopState>, RalphContractValidationError | StorageError, never>;
 	readonly findLoopBySessionFile: (
 		cwd: string,
 		sessionFile: string | undefined,
-	) => Effect.Effect<Option.Option<LoopState>, RalphContractValidationError, never>;
+	) => Effect.Effect<Option.Option<LoopState>, RalphContractValidationError | StorageError, never>;
 	readonly readTaskFile: (
 		cwd: string,
 		taskFile: string,
-	) => Effect.Effect<Option.Option<string>, never, never>;
+	) => Effect.Effect<Option.Option<string>, StorageError, never>;
 	readonly writeTaskFile: (
 		cwd: string,
 		taskFile: string,
 		content: string,
-	) => Effect.Effect<void, never, never>;
+	) => Effect.Effect<void, StorageError, never>;
 	readonly ensureTaskFile: (
 		cwd: string,
 		taskFile: string,
 		content: string,
-	) => Effect.Effect<boolean, never, never>;
-	readonly deleteState: (cwd: string, name: string, archived?: boolean) => Effect.Effect<void, never, never>;
+	) => Effect.Effect<boolean, StorageError, never>;
+	readonly deleteState: (cwd: string, name: string, archived?: boolean) => Effect.Effect<void, StorageError, never>;
 	readonly deleteTaskByLoopName: (
 		cwd: string,
 		name: string,
 		archived?: boolean,
-	) => Effect.Effect<void, never, never>;
-	readonly archiveLoop: (cwd: string, state: LoopState) => Effect.Effect<void, never, never>;
-	readonly existsRalphDirectory: (cwd: string) => Effect.Effect<boolean, never, never>;
-	readonly removeRalphDirectory: (cwd: string) => Effect.Effect<void, never, never>;
+	) => Effect.Effect<void, StorageError, never>;
+	readonly archiveLoop: (cwd: string, state: LoopState) => Effect.Effect<void, RalphContractValidationError | StorageError, never>;
+	readonly existsRalphDirectory: (cwd: string) => Effect.Effect<boolean, StorageError, never>;
+	readonly removeRalphDirectory: (cwd: string) => Effect.Effect<void, RalphContractValidationError | StorageError, never>;
 }
 
 export class RalphRepo extends ServiceMap.Service<RalphRepo, RalphRepoService>()("RalphRepo") {}
@@ -320,9 +308,7 @@ const RalphRepoBase = Layer.effect(
 					return yield* Effect.fail(makeLegacyLayoutError());
 				}
 				const persisted = yield* loopRepo.loadState(cwd, name, archived).pipe(
-					Effect.mapError((error) =>
-						toContractError(error.entity, error.reason),
-					),
+					Effect.mapError(mapLoopRepoError),
 				);
 				if (Option.isNone(persisted)) {
 					return Option.none();
@@ -335,9 +321,7 @@ const RalphRepoBase = Layer.effect(
 		const saveState: RalphRepoService["saveState"] = Effect.fn("RalphRepo.saveState")(
 			function* (cwd, state, archived = false) {
 				const existing = yield* loopRepo.loadState(cwd, state.name, archived).pipe(
-					Effect.mapError((error) =>
-						toContractError(error.entity, error.reason),
-					),
+					Effect.mapError(mapLoopRepoError),
 				);
 				const existingRalph = Option.isSome(existing)
 					? Option.some(yield* ensureRalphState(existing.value, "ralph.loop_state"))
@@ -345,9 +329,7 @@ const RalphRepoBase = Layer.effect(
 				const timestamp = yield* nowIso;
 				const nextState = toPersistedState(state, existingRalph, archived, timestamp);
 				yield* loopRepo.saveState(cwd, nextState, archived).pipe(
-					Effect.mapError((error) =>
-						toContractError(error.entity, error.reason),
-					),
+					Effect.mapError(mapLoopRepoError),
 				);
 			},
 		);
@@ -358,9 +340,7 @@ const RalphRepoBase = Layer.effect(
 					return yield* Effect.fail(makeLegacyLayoutError());
 				}
 				const persisted = yield* loopRepo.listStates(cwd, archived).pipe(
-					Effect.mapError((error) =>
-						toContractError(error.entity, error.reason),
-					),
+					Effect.mapError(mapLoopRepoError),
 				);
 				const loops: LoopState[] = [];
 				for (const state of persisted) {
@@ -418,7 +398,9 @@ const RalphRepoBase = Layer.effect(
 		const ensureTaskFile: RalphRepoService["ensureTaskFile"] = Effect.fn("RalphRepo.ensureTaskFile")(
 			function* (cwd, taskFile, content) {
 				const target = path.resolve(cwd, taskFile);
-				const exists = yield* fs.exists(target).pipe(Effect.orDie);
+				const exists = yield* fs.exists(target).pipe(
+					Effect.mapError((error) => toStorageError("exists-task", target, `Failed to inspect ${target}`, error)),
+				);
 				if (exists) {
 					return false;
 				}
@@ -442,10 +424,7 @@ const RalphRepoBase = Layer.effect(
 		const archiveLoop: RalphRepoService["archiveLoop"] = Effect.fn("RalphRepo.archiveLoop")(
 			function* (cwd, state) {
 				const persisted = yield* loopRepo.loadState(cwd, state.name, false).pipe(
-					Effect.mapError((error) =>
-						toContractError(error.entity, error.reason),
-					),
-					Effect.orDie,
+					Effect.mapError(mapLoopRepoError),
 				);
 				if (Option.isNone(persisted) || persisted.value.kind !== "ralph") {
 					return yield* Effect.void;
@@ -470,10 +449,7 @@ const RalphRepoBase = Layer.effect(
 
 				yield* loopRepo.archiveTaskArtifacts(cwd, persisted.value.taskId);
 				yield* loopRepo.saveState(cwd, archivedState, true).pipe(
-					Effect.mapError((error) =>
-						toContractError(error.entity, error.reason),
-					),
-					Effect.orDie,
+					Effect.mapError(mapLoopRepoError),
 				);
 				yield* loopRepo.deleteState(cwd, persisted.value.taskId, false);
 			},
@@ -482,17 +458,16 @@ const RalphRepoBase = Layer.effect(
 		const existsRalphDirectory: RalphRepoService["existsRalphDirectory"] = Effect.fn(
 			"RalphRepo.existsRalphDirectory",
 		)(function* (cwd) {
-			return yield* fs.exists(ralphDir(cwd)).pipe(Effect.orDie);
+			return yield* fs.exists(ralphDir(cwd)).pipe(
+				Effect.mapError((error) => toStorageError("exists-ralph-dir", ralphDir(cwd), `Failed to inspect ${ralphDir(cwd)}`, error)),
+			);
 		});
 
 		const removeRalphDirectory: RalphRepoService["removeRalphDirectory"] = Effect.fn(
 			"RalphRepo.removeRalphDirectory",
 		)(function* (cwd) {
 			const active = yield* loopRepo.listStates(cwd, false).pipe(
-				Effect.mapError((error) =>
-					toContractError(error.entity, error.reason),
-				),
-				Effect.orDie,
+				Effect.mapError(mapLoopRepoError),
 			);
 			for (const state of active) {
 				if (!isRalphOwnedState(state)) {
@@ -505,10 +480,7 @@ const RalphRepoBase = Layer.effect(
 			}
 
 			const archived = yield* loopRepo.listStates(cwd, true).pipe(
-				Effect.mapError((error) =>
-					toContractError(error.entity, error.reason),
-				),
-				Effect.orDie,
+				Effect.mapError(mapLoopRepoError),
 			);
 			for (const state of archived) {
 				if (!isRalphOwnedState(state)) {
@@ -525,7 +497,16 @@ const RalphRepoBase = Layer.effect(
 					recursive: true,
 					force: true,
 				})
-				.pipe(Effect.orDie);
+				.pipe(
+					Effect.mapError((error) =>
+						toStorageError(
+							"remove-ralph-dir",
+							path.resolve(cwd, ".pi", "ralph"),
+							`Failed to remove ${path.resolve(cwd, ".pi", "ralph")}`,
+							error,
+						),
+					),
+				);
 		});
 
 		return RalphRepo.of({

@@ -58,6 +58,7 @@ import {
 	parseAutoresearchTaskDocument,
 	renderAutoresearchTaskDocument,
 } from "./task-contract.js";
+import { atomicWriteFileStringSync } from "../shared/atomic-write.js";
 import {
 	AutoresearchValidationError,
 	AutoresearchGitError,
@@ -225,17 +226,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function sessionRefMatches(left: LoopSessionRef, right: LoopSessionRef): boolean {
 	return left.sessionId === right.sessionId || left.sessionFile === right.sessionFile;
-}
-
-function writeAtomicFileSync(filePath: string, content: string): void {
-	const parent = path.dirname(filePath);
-	fs.mkdirSync(parent, { recursive: true });
-	const tempPath = path.join(
-		parent,
-		`.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-	);
-	fs.writeFileSync(tempPath, content, "utf-8");
-	fs.renameSync(tempPath, filePath);
 }
 
 function assertNoLegacyAutoresearchLayout(cwd: string): void {
@@ -880,7 +870,23 @@ export default function initAutoresearch(
 	);
 
 	const expandedState = new Map<string, boolean>();
-	const activeAutoresearchLoops = new Map<string, { cancelled: boolean }>();
+	type ActiveAutoresearchLoopControl = {
+		cancelled: boolean;
+		cancelWait: (() => void) | undefined;
+	};
+	type WaitForAutoresearchAgentEndResult =
+		| {
+			readonly _tag: "completed";
+			readonly event: unknown;
+		}
+		| {
+			readonly _tag: "timed_out";
+		}
+		| {
+			readonly _tag: "cancelled";
+		};
+	const AUTORESEARCH_AGENT_END_WAIT_TIMEOUT = "30 minutes";
+	const activeAutoresearchLoops = new Map<string, ActiveAutoresearchLoopControl>();
 	const waitingAutoresearchAgentEnds = new Map<string, (event: unknown) => void>();
 	type OverlayState = {
 		readonly tui: import("@mariozechner/pi-tui").TUI;
@@ -1009,15 +1015,44 @@ export default function initAutoresearch(
 		};
 	};
 
-	const waitForAutoresearchAgentEnd = (sessionFile: string): Promise<unknown> =>
-		new Promise((resolve) => {
-			waitingAutoresearchAgentEnds.set(sessionFile, resolve);
+	const waitForAutoresearchAgentEnd = (
+		sessionFile: string,
+		signal: AbortSignal,
+	): Promise<WaitForAutoresearchAgentEndResult> =>
+		Effect.runPromise(
+			Effect.callback<unknown>((resume) => {
+				const complete = (event: unknown): void => {
+					resume(Effect.succeed(event));
+				};
+				waitingAutoresearchAgentEnds.set(sessionFile, complete);
+				return Effect.sync(() => {
+					const currentWaiter = waitingAutoresearchAgentEnds.get(sessionFile);
+					if (currentWaiter === complete) {
+						waitingAutoresearchAgentEnds.delete(sessionFile);
+					}
+				});
+			}).pipe(
+				Effect.timeoutOption(AUTORESEARCH_AGENT_END_WAIT_TIMEOUT),
+				Effect.map((eventOption): WaitForAutoresearchAgentEndResult =>
+					Option.match(eventOption, {
+						onNone: () => ({ _tag: "timed_out" }),
+						onSome: (event) => ({ _tag: "completed", event }),
+					}),
+				),
+			),
+			{ signal },
+		).catch((error: unknown) => {
+			if (error instanceof Error && error.name === "AbortError") {
+				return { _tag: "cancelled" };
+			}
+			throw error;
 		});
 
 	const cancelAutoresearchLoop = (cwd: string, taskId: string): void => {
 		const active = activeAutoresearchLoops.get(`${cwd}:${taskId}`);
 		if (active) {
 			active.cancelled = true;
+			active.cancelWait?.();
 		}
 	};
 
@@ -1134,7 +1169,7 @@ export default function initAutoresearch(
 
 	const writeCanonicalLoopState = (cwd: string, state: LoopPersistedState): void => {
 		const statePath = path.resolve(cwd, loopStateFile(state.taskId));
-		writeAtomicFileSync(statePath, encodeLoopPersistedStateJsonSync(state));
+		atomicWriteFileStringSync(statePath, encodeLoopPersistedStateJsonSync(state));
 	};
 
 	const loadPhaseSnapshotForState = (
@@ -1278,7 +1313,7 @@ export default function initAutoresearch(
 
 	const writeRunRecord = (cwd: string, run: PersistedAutoresearchRun): void => {
 		const runPath = path.resolve(cwd, loopRunDirectory(run.taskId, run.runId), RUN_RECORD_FILE);
-		writeAtomicFileSync(runPath, `${JSON.stringify(run, null, 2)}\n`);
+		atomicWriteFileStringSync(runPath, `${JSON.stringify(run, null, 2)}\n`);
 	};
 
 	const switchSession = async (
@@ -1442,7 +1477,7 @@ export default function initAutoresearch(
 			return;
 		}
 
-		const control = { cancelled: false };
+		const control: ActiveAutoresearchLoopControl = { cancelled: false, cancelWait: undefined };
 		activeAutoresearchLoops.set(loopKey, control);
 
 		void (async () => {
@@ -1477,7 +1512,29 @@ export default function initAutoresearch(
 						queueAutoresearchChildPrompt(ctx.cwd, taskId);
 					}
 
-					await waitForAutoresearchAgentEnd(child.sessionFile);
+					const waitAbortController = new AbortController();
+					control.cancelWait = () => {
+						waitAbortController.abort();
+					};
+					const waitResult = await waitForAutoresearchAgentEnd(
+						child.sessionFile,
+						waitAbortController.signal,
+					);
+					control.cancelWait = undefined;
+					if (waitResult._tag === "cancelled") {
+						return;
+					}
+					if (waitResult._tag === "timed_out") {
+						await withLoopEngine((engine) => engine.pauseLoop(ctx.cwd, taskId));
+						if (ctx.hasUI) {
+							ctx.ui.notify(
+								`Autoresearch paused: timed out waiting for child session for ${taskId} to end.`,
+								"warning",
+							);
+						}
+						await updateAutoresearchUI(ctx.cwd, ctx);
+						return;
+					}
 
 					if (control.cancelled) {
 						return;
@@ -1510,6 +1567,7 @@ export default function initAutoresearch(
 				await updateAutoresearchUI(ctx.cwd, ctx);
 				return;
 			} finally {
+				control.cancelWait = undefined;
 				activeAutoresearchLoops.delete(loopKey);
 			}
 		})();

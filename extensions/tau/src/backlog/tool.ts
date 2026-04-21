@@ -2,6 +2,7 @@ import { basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { Text, type AutocompleteItem } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
 import { Effect } from "effect";
 
 import {
@@ -100,12 +101,25 @@ const backlogParams = Type.Object({
 	),
 });
 
+type BacklogParams = {
+	readonly command: string;
+	readonly cwd?: string;
+};
+
+function decodeBacklogParams(rawParams: unknown): BacklogParams {
+	return Value.Parse(backlogParams, rawParams);
+}
+
+function readBacklogArgString(args: unknown, key: "command" | "cwd"): string | undefined {
+	if (typeof args !== "object" || args === null || !Object.hasOwn(args, key)) {
+		return undefined;
+	}
+	const value = Reflect.get(args, key);
+	return typeof value === "string" ? value : undefined;
+}
+
 const separator =
 	"──────────────────────────────────────────────────────────────────────────────";
-
-function normalizeWorkspaceRoot(cwd?: string): string {
-	return cwd ?? process.cwd();
-}
 
 function statusKind(
 	issue: Issue,
@@ -582,8 +596,8 @@ function createFieldsFromFlags(parsed: ParsedCommand): Readonly<Record<string, u
 	return fields;
 }
 
-export async function runBacklogCommand(command: string, cwd?: string): Promise<BacklogToolDetails> {
-	const workspaceRoot = normalizeWorkspaceRoot(cwd);
+export async function runBacklogCommand(command: string, cwd: string): Promise<BacklogToolDetails> {
+	const workspaceRoot = cwd;
 	const projectName = basename(workspaceRoot);
 	const parsed = parseCommand(command);
 	const kind = commandKind(parsed);
@@ -897,7 +911,7 @@ export function renderBacklogResult(
 	return renderBacklog(details, options, theme);
 }
 
-export function createBacklogToolDefinition(): ToolDefinition<typeof backlogParams, BacklogToolDetails> {
+export function createBacklogToolDefinition(): ToolDefinition {
 	return {
 		name: "backlog",
 		label: "backlog",
@@ -906,8 +920,9 @@ export function createBacklogToolDefinition(): ToolDefinition<typeof backlogPara
 		promptGuidelines: [...TOOL_PROMPT_GUIDELINES],
 		parameters: backlogParams,
 
-		async execute(_toolCallId, params) {
-			const details = await runBacklogCommand(params.command, params.cwd);
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const decodedParams = decodeBacklogParams(params);
+			const details = await runBacklogCommand(decodedParams.command, decodedParams.cwd ?? ctx.cwd);
 			return {
 				content: [{ type: "text", text: formatBacklogDetailsAsText(details) }],
 				details,
@@ -915,7 +930,7 @@ export function createBacklogToolDefinition(): ToolDefinition<typeof backlogPara
 		},
 
 		renderCall(args, theme) {
-			const rawCmd = typeof args?.command === "string" ? args.command.trim() : "";
+			const rawCmd = readBacklogArgString(args, "command")?.trim() ?? "";
 			const parsed = parseCommand(rawCmd);
 
 			// Build header: backlog <verb> <positional args...>
@@ -946,8 +961,9 @@ export function createBacklogToolDefinition(): ToolDefinition<typeof backlogPara
 				out += `\n  ${theme.fg("toolTitle", `${displayKey}:`)} ${theme.fg("toolOutput", value)}`;
 			}
 
-			if (args?.cwd) {
-				out += `\n${theme.fg("muted", `cwd: ${args.cwd}`)}`;
+			const cwd = readBacklogArgString(args, "cwd");
+			if (cwd) {
+				out += `\n${theme.fg("muted", `cwd: ${cwd}`)}`;
 			}
 			return new Text(out, 0, 0);
 		},
@@ -986,7 +1002,7 @@ export default function initBacklog(pi: ExtensionAPI): void {
 				ctx.ui.notify("Usage: /backlog list | /backlog show <id> | /backlog <command>", "info");
 				return;
 			}
-			const details = await runBacklogCommand(trimmed);
+			const details = await runBacklogCommand(trimmed, ctx.cwd);
 			pi.sendMessage(
 				{
 					customType: BACKLOG_MESSAGE_TYPE,

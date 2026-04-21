@@ -8,6 +8,7 @@ import { Option } from "effect";
 import {
 	AgentSelectionStore,
 	getAgentSettingsPath,
+	preloadRalphOwnedSessionCache,
 } from "../src/agents-menu/state.js";
 import { encodeLoopPersistedStateJsonSync } from "../src/loops/schema.js";
 import { makeExecutionProfile } from "./ralph-test-helpers.js";
@@ -101,7 +102,7 @@ describe("agent selection settings", () => {
 		);
 
 		const store = new AgentSelectionStore();
-		store.activate(workspace, ["deep", "finder", "smart"]);
+		await store.activate(workspace, ["deep", "finder", "smart"]);
 
 		expect(store.isDisabledForCwd(workspace, "finder")).toBe(false);
 		expect(store.isDisabledForCwd(workspace, "deep")).toBe(true);
@@ -113,10 +114,10 @@ describe("agent selection settings", () => {
 		cleanup.add(workspace);
 
 		const store = new AgentSelectionStore();
-		store.activate(workspace, ["finder", "smart"]);
+		await store.activate(workspace, ["finder", "smart"]);
 		store.setEnabledForCwd(workspace, "smart", false);
 
-		store.activate(workspace, ["finder", "smart"]);
+		await store.activate(workspace, ["finder", "smart"]);
 
 		expect(store.isDisabledForCwd(workspace, "smart")).toBe(true);
 		expect(store.isDisabledForCwd(workspace, "finder")).toBe(false);
@@ -129,10 +130,10 @@ describe("agent selection settings", () => {
 		cleanup.add(workspaceB);
 
 		const store = new AgentSelectionStore();
-		store.activate(workspaceA, ["finder", "smart"]);
+		await store.activate(workspaceA, ["finder", "smart"]);
 		store.setEnabledForCwd(workspaceA, "smart", false);
 
-		store.activate(workspaceB, ["finder", "smart"]);
+		await store.activate(workspaceB, ["finder", "smart"]);
 
 		expect(store.isDisabledForCwd(workspaceA, "smart")).toBe(true);
 		expect(store.isDisabledForCwd(workspaceB, "smart")).toBe(false);
@@ -158,9 +159,9 @@ describe("agent selection settings", () => {
 		);
 
 		const store = new AgentSelectionStore();
-		store.activate(workspace, ["finder", "smart"]);
+		await store.activate(workspace, ["finder", "smart"]);
 		store.setEnabledForCwd(workspace, "smart", false);
-		store.persistForCwd(workspace, ["finder", "smart"]);
+		await store.persistForCwd(workspace, ["finder", "smart"]);
 
 		const raw = await fs.readFile(settingsPath, "utf8");
 		expect(JSON.parse(raw)).toEqual({
@@ -179,8 +180,8 @@ describe("agent selection settings", () => {
 		cleanup.add(workspaceB);
 
 		const store = new AgentSelectionStore();
-		store.activate(workspaceA, ["finder", "smart"]);
-		store.activate(workspaceB, ["finder", "smart"]);
+		await store.activate(workspaceA, ["finder", "smart"]);
+		await store.activate(workspaceB, ["finder", "smart"]);
 		store.setEnabledForCwd(workspaceA, "smart", false);
 
 		expect(store.isDirtyForCwd(workspaceA)).toBe(true);
@@ -197,7 +198,8 @@ describe("agent selection settings", () => {
 		});
 
 		const store = new AgentSelectionStore();
-		store.activate(workspace, ["deep", "finder", "librarian", "smart"]);
+		await store.activate(workspace, ["deep", "finder", "librarian", "smart"]);
+		await preloadRalphOwnedSessionCache(workspace, controllerSession);
 
 		expect(store.isDisabledForSession(workspace, controllerSession, "finder")).toBe(false);
 		expect(store.isDisabledForSession(workspace, controllerSession, "librarian")).toBe(false);
@@ -223,7 +225,8 @@ describe("agent selection settings", () => {
 		});
 
 		const store = new AgentSelectionStore();
-		store.activate(workspace, ["finder", "librarian", "oracle"]);
+		await store.activate(workspace, ["finder", "librarian", "oracle"]);
+		await preloadRalphOwnedSessionCache(workspace, iterationSession);
 
 		expect(store.isDisabledForSession(workspace, iterationSession, "finder")).toBe(false);
 		expect(store.isDisabledForSession(workspace, iterationSession, "oracle")).toBe(false);
@@ -247,7 +250,8 @@ describe("agent selection settings", () => {
 		});
 
 		const store = new AgentSelectionStore();
-		store.activate(workspace, ["finder", "librarian"]);
+		await store.activate(workspace, ["finder", "librarian"]);
+		await preloadRalphOwnedSessionCache(workspace, controllerSession);
 
 		expect(store.isDisabledForSession(workspace, controllerSession, "finder")).toBe(true);
 		expect(store.isDisabledForSession(workspace, controllerSession, "librarian")).toBe(false);
@@ -264,7 +268,8 @@ describe("agent selection settings", () => {
 		});
 
 		const store = new AgentSelectionStore();
-		store.activate(workspace, ["deep", "finder", "librarian", "smart"]);
+		await store.activate(workspace, ["deep", "finder", "librarian", "smart"]);
+		await preloadRalphOwnedSessionCache(workspace, controllerSession);
 
 		expect(store.isDisabledForSession(workspace, controllerSession, "deep")).toBe(false);
 		expect(store.isDisabledForSession(workspace, controllerSession, "smart")).toBe(false);

@@ -26,7 +26,7 @@ import {
 	injectSandboxNoticeIntoMessages,
 } from "./sandbox-change.js";
 import type { ResolvedSandboxConfig, SandboxConfig, SandboxPreset } from "./config.js";
-import { computeEffectiveConfig, ensureUserDefaults } from "./config.js";
+import { DEFAULT_SANDBOX_CONFIG, computeEffectiveConfig, ensureUserDefaults } from "./config.js";
 import { checkWriteAllowed } from "./fs-policy.js";
 import { wrapCommandWithSandbox, isAsrtAvailable, getAsrtLoadError } from "./bash.js";
 import { detectMissingSandboxDeps, formatMissingDepsMessage } from "./sandbox-prereqs.js";
@@ -42,6 +42,7 @@ import {
 import { isRecord } from "../shared/json.js";
 import type { TauPersistedState } from "../shared/state.js";
 import { loadPersistedState } from "../shared/state.js";
+import { setToolActivationTransform } from "../shared/tool-activation.js";
 import { type ApprovalBroker, getWorkerApprovalBroker } from "../agent/approval-broker.js";
 import { SANDBOX_PRESET_NAMES } from "../shared/policy.js";
 
@@ -82,6 +83,7 @@ function killProcessTree(pid: number): void {
 }
 
 const SANDBOX_CHANGE_MESSAGE_TYPE = "sandbox:change";
+const SANDBOX_MUTATION_TOOLS_KEY = "sandbox.mutation-tools";
 
 const PRESET_VALUES: readonly SandboxPreset[] = SANDBOX_PRESET_NAMES;
 
@@ -240,9 +242,9 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 	// First-run: ensure sandbox defaults are written into ~/.pi/agent/settings.json (only fills missing keys).
 	ensureUserDefaults();
 
-	let workspaceRoot = process.cwd();
+	let workspaceRoot = "";
 	let sessionState: SessionState = {};
-	let effectiveConfig = computeEffectiveConfig({ workspaceRoot });
+	let effectiveConfig = DEFAULT_SANDBOX_CONFIG;
 	let cliOverride: SandboxConfig | undefined;
 
 	function refreshConfig(ctx: ExtensionContext) {
@@ -295,13 +297,12 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 			persistState();
 		}
 
-		const nextToolNames = rewriteMutationToolNames(activeToolNames, {
-			useApplyPatch: shouldUseApplyPatchForProvider(provider),
-			legacySelection: sessionState.legacyMutationTools,
-		});
-		if (!sameToolNames(activeToolNames, nextToolNames)) {
-			pi.setActiveTools(nextToolNames);
-		}
+		setToolActivationTransform(pi, SANDBOX_MUTATION_TOOLS_KEY, (toolNames) =>
+			rewriteMutationToolNames(toolNames, {
+				useApplyPatch: shouldUseApplyPatchForProvider(provider),
+				legacySelection: sessionState.legacyMutationTools,
+			}),
+		);
 	}
 
 	function sendSandboxChangeHistoryEntry(text: string): void {
@@ -442,9 +443,10 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 		}
 	}
 
-	const baseBashTool = createBashTool(process.cwd());
-	const baseEditTool = createEditTool(process.cwd());
-	const baseWriteTool = createWriteTool(process.cwd());
+	const registrationToolCwd = os.homedir();
+	const baseBashTool = createBashTool(registrationToolCwd);
+	const baseEditTool = createEditTool(registrationToolCwd);
+	const baseWriteTool = createWriteTool(registrationToolCwd);
 
 	function singleLine(str: string): string {
 		return (str ?? "")

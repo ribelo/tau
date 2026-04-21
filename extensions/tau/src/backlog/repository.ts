@@ -2,7 +2,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { NodeFileSystem } from "@effect/platform-node";
-import { FileSystem, Effect, Layer, Option, Schema } from "effect";
+import { FileSystem, Effect, Layer, Schema } from "effect";
 
 import {
 	BacklogIssueImportedEventSchema,
@@ -30,47 +30,27 @@ import {
 	type Issue,
 } from "./schema.js";
 import { BacklogConfig, BacklogLegacyImport, BacklogRepository } from "./services.js";
+import {
+	acquireSharedFileLock,
+	describeSharedFileLockError,
+	releaseSharedFileLock,
+	SharedFileLockCorrupt,
+	SharedFileLockHeld,
+	SharedFileLockIoError,
+	SharedFileLockTimeout,
+	type SharedFileLockConfig,
+} from "../shared/lock.js";
 
 const BACKLOG_LOCK_STALE_MS = 10_000;
 const BACKLOG_LOCK_MAX_ATTEMPTS = 50;
 const BACKLOG_LOCK_RETRY_MS = 100;
 
-type BacklogLockMetadata = {
-	readonly pid: number;
-	readonly token: string;
+const backlogLockConfig: SharedFileLockConfig = {
+	staleMs: BACKLOG_LOCK_STALE_MS,
+	retryDelayMs: BACKLOG_LOCK_RETRY_MS,
+	maxAttempts: BACKLOG_LOCK_MAX_ATTEMPTS,
+	heldPolicy: "wait",
 };
-
-type BacklogLockMatch =
-	| {
-			readonly type: "token";
-			readonly token: string;
-	  }
-	| {
-			readonly type: "raw";
-			readonly raw: string;
-	  };
-
-type BacklogLockInspection = {
-	readonly exists: boolean;
-	readonly reclaimable: boolean;
-	readonly match: BacklogLockMatch | null;
-};
-
-const isPlatformReasonTag = (error: unknown, tag: string): boolean => {
-	if (typeof error !== "object" || error === null) {
-		return false;
-	}
-	if (!("_tag" in error) || error._tag !== "PlatformError") {
-		return false;
-	}
-	if (!("reason" in error) || typeof error.reason !== "object" || error.reason === null) {
-		return false;
-	}
-	return "_tag" in error.reason && error.reason._tag === tag;
-};
-
-const isNotFound = (error: unknown): boolean => isPlatformReasonTag(error, "NotFound");
-const isAlreadyExists = (error: unknown): boolean => isPlatformReasonTag(error, "AlreadyExists");
 
 const toStorageError = (
 	operation: string,
@@ -110,6 +90,27 @@ const toLockError = (
 		reclaimAttempted,
 		cause,
 	});
+
+const toBacklogLockErrorFromShared = (lockPath: string, error: unknown): BacklogLockError => {
+	if (error instanceof BacklogLockError) {
+		return error;
+	}
+	if (
+		error instanceof SharedFileLockHeld ||
+		error instanceof SharedFileLockCorrupt ||
+		error instanceof SharedFileLockTimeout ||
+		error instanceof SharedFileLockIoError
+	) {
+		const reclaimAttempted =
+			error instanceof SharedFileLockCorrupt ||
+			error instanceof SharedFileLockTimeout ||
+			error instanceof SharedFileLockIoError
+				? error.reclaimAttempted
+				: false;
+		return toLockError(lockPath, describeSharedFileLockError(error), reclaimAttempted, error);
+	}
+	return toLockError(lockPath, String(error), false, error);
+};
 
 const toLegacyImportError = (source: string, reason: string, cause: unknown): BacklogLegacyImportError =>
 	new BacklogLegacyImportError({
@@ -627,37 +628,6 @@ const eventFilePath = (
 
 const lockPathFor = (cacheRoot: string): string => path.join(cacheRoot, ".lock");
 
-const parseLockMetadata = (raw: string): BacklogLockMetadata | null => {
-	try {
-		const parsed = JSON.parse(raw) as unknown;
-		if (
-			typeof parsed === "object" &&
-			parsed !== null &&
-			"pid" in parsed &&
-			"token" in parsed &&
-			typeof parsed.pid === "number" &&
-			typeof parsed.token === "string"
-		) {
-			return {
-				pid: parsed.pid,
-				token: parsed.token,
-			};
-		}
-		return null;
-	} catch {
-		return null;
-	}
-};
-
-const isProcessAlive = (pid: number): boolean => {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch {
-		return false;
-	}
-};
-
 const listFilesRecursive = (
 	fs: FileSystem.FileSystem,
 	rootDir: string,
@@ -741,222 +711,6 @@ const serializeMaterializedIssues = (
 			encoded.push(yield* encodeIssue(issue));
 		}
 		return `${encoded.map((issue) => JSON.stringify(issue)).join("\n")}\n`;
-	});
-
-const readLockContent = (
-	fs: FileSystem.FileSystem,
-	lockPath: string,
-	reclaimAttempted: boolean,
-): Effect.Effect<Option.Option<string>, BacklogLockError, never> =>
-	fs.readFileString(lockPath).pipe(
-		Effect.map((content) => Option.some(content)),
-		Effect.catchIf(isNotFound, () => Effect.succeed(Option.none())),
-		Effect.mapError((error) =>
-			toLockError(lockPath, `Failed to read lock file ${lockPath}`, reclaimAttempted, error),
-		),
-	);
-
-const readLockStat = (
-	fs: FileSystem.FileSystem,
-	lockPath: string,
-	reclaimAttempted: boolean,
-): Effect.Effect<Option.Option<FileSystem.File.Info>, BacklogLockError, never> =>
-	fs.stat(lockPath).pipe(
-		Effect.map((info) => Option.some(info)),
-		Effect.catchIf(isNotFound, () => Effect.succeed(Option.none())),
-		Effect.mapError((error) =>
-			toLockError(lockPath, `Failed to stat lock file ${lockPath}`, reclaimAttempted, error),
-		),
-	);
-
-const lockFileMatches = (
-	fs: FileSystem.FileSystem,
-	lockPath: string,
-	expected: BacklogLockMatch,
-	reclaimAttempted: boolean,
-): Effect.Effect<boolean, BacklogLockError, never> =>
-	Effect.gen(function* () {
-		const rawOption = yield* readLockContent(fs, lockPath, reclaimAttempted);
-		if (Option.isNone(rawOption)) {
-			return false;
-		}
-		const raw = rawOption.value;
-
-		if (expected.type === "raw") {
-			return raw === expected.raw;
-		}
-
-		const metadata = parseLockMetadata(raw);
-		return metadata?.token === expected.token;
-	});
-
-const removeLockIfStillMatches = (
-	fs: FileSystem.FileSystem,
-	lockPath: string,
-	expected: BacklogLockMatch,
-): Effect.Effect<boolean, BacklogLockError, never> =>
-	Effect.gen(function* () {
-		const matches = yield* lockFileMatches(fs, lockPath, expected, false);
-		if (!matches) {
-			return false;
-		}
-
-		return yield* fs.remove(lockPath, { force: false }).pipe(
-			Effect.as(true),
-			Effect.catchIf(isNotFound, () => Effect.succeed(false)),
-			Effect.mapError((error) =>
-				toLockError(lockPath, `Failed to remove lock file ${lockPath}`, false, error),
-			),
-		);
-	});
-
-const inspectLock = (
-	fs: FileSystem.FileSystem,
-	lockPath: string,
-): Effect.Effect<BacklogLockInspection, BacklogLockError, never> =>
-	Effect.gen(function* () {
-		const statOption = yield* readLockStat(fs, lockPath, true);
-		if (Option.isNone(statOption)) {
-			return {
-				exists: false,
-				reclaimable: false,
-				match: null,
-			} satisfies BacklogLockInspection;
-		}
-
-		const rawOption = yield* readLockContent(fs, lockPath, true);
-		if (Option.isNone(rawOption)) {
-			return {
-				exists: false,
-				reclaimable: false,
-				match: null,
-			} satisfies BacklogLockInspection;
-		}
-
-		const raw = rawOption.value;
-		const stale = Option.match(statOption.value.mtime, {
-			onNone: () => false,
-			onSome: (modifiedAt) => Date.now() - modifiedAt.getTime() > BACKLOG_LOCK_STALE_MS,
-		});
-
-		const metadata = parseLockMetadata(raw);
-		if (!metadata) {
-			return {
-				exists: true,
-				reclaimable: stale,
-				match: { type: "raw", raw },
-			} satisfies BacklogLockInspection;
-		}
-
-		return {
-			exists: true,
-			reclaimable: !isProcessAlive(metadata.pid),
-			match: { type: "token", token: metadata.token },
-		} satisfies BacklogLockInspection;
-	});
-
-const reclaimLockIfStillMatches = (
-	fs: FileSystem.FileSystem,
-	lockPath: string,
-	expected: BacklogLockMatch,
-): Effect.Effect<boolean, BacklogLockError, never> =>
-	Effect.gen(function* () {
-		const claimPath = `${lockPath}.claim-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-		const linked = yield* fs.link(lockPath, claimPath).pipe(
-			Effect.as(true),
-			Effect.catchIf(isNotFound, () => Effect.succeed(false)),
-			Effect.mapError((error) =>
-				toLockError(lockPath, `Failed to create reclaim claim link ${claimPath}`, true, error),
-			),
-		);
-		if (!linked) {
-			return false;
-		}
-
-		const attempt = Effect.gen(function* () {
-			const claimMatches = yield* lockFileMatches(fs, claimPath, expected, true);
-			if (!claimMatches) {
-				return false;
-			}
-
-			const lockStatOption = yield* readLockStat(fs, lockPath, true);
-			const claimStatOption = yield* readLockStat(fs, claimPath, true);
-			if (Option.isNone(lockStatOption) || Option.isNone(claimStatOption)) {
-				return false;
-			}
-
-			const lockInode = lockStatOption.value.ino;
-			const claimInode = claimStatOption.value.ino;
-			if (Option.isNone(lockInode) || Option.isNone(claimInode)) {
-				return false;
-			}
-
-			if (
-				lockStatOption.value.dev !== claimStatOption.value.dev ||
-				lockInode.value !== claimInode.value
-			) {
-				return false;
-			}
-
-			return yield* fs.remove(lockPath, { force: false }).pipe(
-				Effect.as(true),
-				Effect.catchIf(isNotFound, () => Effect.succeed(false)),
-				Effect.mapError((error) =>
-					toLockError(lockPath, `Failed to reclaim lock at ${lockPath}`, true, error),
-				),
-			);
-		});
-
-		const cleanup = fs.remove(claimPath, { force: true }).pipe(Effect.orElseSucceed(() => undefined));
-		return yield* attempt.pipe(Effect.ensuring(cleanup));
-	});
-
-const tryAcquireLock = (
-	fs: FileSystem.FileSystem,
-	lockPath: string,
-	token: string,
-): Effect.Effect<boolean, BacklogLockError, never> =>
-	fs.writeFileString(lockPath, JSON.stringify({ pid: process.pid, token }), { flag: "wx" }).pipe(
-		Effect.as(true),
-		Effect.catchIf(isAlreadyExists, () => Effect.succeed(false)),
-		Effect.mapError((error) =>
-			toLockError(lockPath, `Failed to create lock file ${lockPath}`, false, error),
-		),
-	);
-
-const acquireLockToken = (
-	fs: FileSystem.FileSystem,
-	lockPath: string,
-	attempt: number,
-): Effect.Effect<string, BacklogLockError, never> =>
-	Effect.gen(function* () {
-		const token = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-		const acquired = yield* tryAcquireLock(fs, lockPath, token);
-		if (acquired) {
-			return token;
-		}
-
-		const inspection = yield* inspectLock(fs, lockPath);
-		if (inspection.exists && inspection.reclaimable && inspection.match) {
-			const reclaimed = yield* reclaimLockIfStillMatches(fs, lockPath, inspection.match);
-			if (reclaimed) {
-				return yield* acquireLockToken(fs, lockPath, attempt);
-			}
-		}
-
-		if (attempt >= BACKLOG_LOCK_MAX_ATTEMPTS - 1) {
-			return yield* Effect.fail(
-				toLockError(
-					lockPath,
-					`Failed to acquire backlog lock after ${BACKLOG_LOCK_MAX_ATTEMPTS} attempts`,
-					inspection.reclaimable,
-					new Error("lock-acquire-timeout"),
-				),
-			);
-		}
-
-		yield* Effect.sleep(`${BACKLOG_LOCK_RETRY_MS} millis`);
-		return yield* acquireLockToken(fs, lockPath, attempt + 1);
 	});
 
 export const BacklogConfigLive = (workspaceRoot: string) => {
@@ -1166,11 +920,14 @@ export const BacklogRepositoryLive = Layer.effect(
 					),
 				);
 
-				const token = yield* acquireLockToken(fs, lockPath, 0);
-				const release = removeLockIfStillMatches(fs, lockPath, { type: "token", token }).pipe(
-					Effect.orElseSucceed(() => false),
-					Effect.asVoid,
-				);
+				const lease = yield* Effect.tryPromise({
+					try: () => acquireSharedFileLock(lockPath, backlogLockConfig),
+					catch: (error) => toBacklogLockErrorFromShared(lockPath, error),
+				});
+				const release = Effect.tryPromise({
+					try: () => releaseSharedFileLock(lease),
+					catch: (error) => toBacklogLockErrorFromShared(lockPath, error),
+				}).pipe(Effect.orElseSucceed(() => undefined));
 				return yield* effect.pipe(Effect.ensuring(release));
 			});
 

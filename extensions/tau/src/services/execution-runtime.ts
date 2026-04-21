@@ -231,7 +231,8 @@ export const ExecutionRuntimeLive = Layer.effect(
 			}
 
 			const currentModel = readModelId(ctx.model);
-			if (currentModel !== profile.model) {
+			const forceModelSelect = options?.ephemeral === true;
+			if (forceModelSelect || currentModel !== profile.model) {
 				const parsed = parseProviderModel(profile.model);
 				if (!parsed) {
 					return notifyApplyFailure(ctx, `Mode ${profile.mode}: invalid model id: ${profile.model}`);

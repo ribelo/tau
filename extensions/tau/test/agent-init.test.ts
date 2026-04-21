@@ -64,7 +64,7 @@ function makeCuratedMemoryStub() {
 		getSnapshot: () => Effect.die("unused"),
 		getEntriesSnapshot: () => Effect.die("unused"),
 		reloadFrozenSnapshot: () => Effect.die("unused"),
-		getFrozenPromptBlock: () => "",
+		getFrozenPromptBlock: Effect.succeed(""),
 		add: () => Effect.die("unused"),
 		update: () => Effect.die("unused"),
 		remove: () => Effect.die("unused"),

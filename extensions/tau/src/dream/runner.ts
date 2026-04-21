@@ -6,19 +6,20 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { Dirent, Stats } from "node:fs";
 
-import { Cause, Clock, Effect, Fiber, Layer, Option, Scope, ServiceMap } from "effect";
+import { Clock, Effect, Exit, Layer, Option, Schema, Scope, ServiceMap } from "effect";
 import { nanoid } from "nanoid";
 import { Type, type Static } from "@sinclair/typebox";
 
 import type { ModelRegistry, ToolDefinition } from "@mariozechner/pi-coding-agent";
 
-import type {
-	DreamFinishParams,
-	DreamProgressEvent,
-	DreamRunRequest,
-	DreamRunResult,
-	DreamTaskHandle,
-	DreamTranscriptCandidate,
+import {
+	DreamFinishParams as DreamFinishParamsSchema,
+	type DreamFinishParams,
+	type DreamProgressEvent,
+	type DreamRunRequest,
+	type DreamRunResult,
+	type DreamTaskHandle,
+	type DreamTranscriptCandidate,
 } from "./domain.js";
 import type { DreamConfig } from "./config.js";
 import type {
@@ -31,6 +32,7 @@ import { DreamDisabled, DreamLockHeld, DreamLockIoError, DreamSubagentNoFinish }
 import type { DreamRunError } from "./task-registry.js";
 
 import { DreamLock } from "./lock.js";
+import { readMemoryToolAction, shouldCountMemoryMutation } from "./memory-mutations.js";
 import { DreamScheduler } from "./scheduler.js";
 import { DreamTaskRegistry } from "./task-registry.js";
 import { DreamSubagent } from "./subagent.js";
@@ -91,17 +93,48 @@ interface DreamFinishCapture {
 	value: DreamFinishParams | undefined;
 }
 
+const decodeDreamFinishParamsSync = Schema.decodeUnknownSync(DreamFinishParamsSchema);
+
+const parseDreamFinishParams = (
+	rawParams: unknown,
+): { readonly ok: true; readonly params: DreamFinishParams } | {
+	readonly ok: false;
+	readonly error: string;
+} => {
+	try {
+		return {
+			ok: true,
+			params: decodeDreamFinishParamsSync(rawParams),
+		};
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
+		return {
+			ok: false,
+			error: `Invalid dream_finish params: ${reason}`,
+		};
+	}
+};
+
 function createDreamFinishToolForSubagent(
 	expectedRunId: string,
 	capture: DreamFinishCapture,
-): ToolDefinition<typeof DreamFinishToolParams> {
+): ToolDefinition {
 	return {
 		name: "dream_finish",
 		label: "dream_finish",
 		description: "Signal that the dream memory consolidation run is complete. Call this after all memory mutations are done.",
 		parameters: DreamFinishToolParams,
 		async execute(_toolCallId, rawParams) {
-			const params = rawParams as DreamFinishToolParams;
+			const decoded = parseDreamFinishParams(rawParams);
+			if (!decoded.ok) {
+				return {
+					isError: true,
+					content: [{ type: "text", text: decoded.error }],
+					details: {},
+				};
+			}
+
+			const params = decoded.params;
 
 			if (params.runId !== expectedRunId) {
 				return {
@@ -245,6 +278,9 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 			const reg = yield* DreamTaskRegistry;
 			const subagent = yield* DreamSubagent;
 			const mem = yield* CuratedMemory;
+			const serviceScope = yield* Effect.scope;
+			const backgroundScope = yield* Scope.make();
+			yield* Scope.addFinalizer(serviceScope, Scope.close(backgroundScope, Exit.void));
 
 			const subagentContext = {
 				modelRegistry: runtimeConfig.modelRegistry,
@@ -263,21 +299,19 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 					Effect.runPromise(
 						effect.pipe(Effect.provideService(CuratedMemory, CuratedMemory.of(mem))),
 					),
-				) as unknown as ToolDefinition;
+				);
 
 				let mutations = 0;
 
-				const tracked: ToolDefinition = {
-					...baseTool,
-					async execute(toolCallId, rawParams, signal, onUpdate, ctx) {
-						const result = await baseTool.execute(toolCallId, rawParams, signal, onUpdate, ctx);
-						const params = rawParams as Record<string, unknown> | undefined;
-						const action = params?.["action"];
-						const isError = result && typeof result === "object" && "isError" in result && (result as Record<string, unknown>)["isError"];
-						if (!isError && (action === "add" || action === "update" || action === "remove")) {
-							mutations += 1;
-						}
-						return result;
+					const tracked: ToolDefinition = {
+						...baseTool,
+						async execute(toolCallId, rawParams, signal, onUpdate, ctx) {
+							const result = await baseTool.execute(toolCallId, rawParams, signal, onUpdate, ctx);
+							const action = readMemoryToolAction(rawParams);
+							if (shouldCountMemoryMutation(action, result)) {
+								mutations += 1;
+							}
+							return result;
 					},
 				};
 
@@ -343,22 +377,46 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 					const runId = nanoid(12);
 					const finishCapture: DreamFinishCapture = { value: undefined };
 					const dreamFinishTool = createDreamFinishToolForSubagent(runId, finishCapture);
-					const { tool: memoryTool } = createTrackedMemoryTool();
+					const { tool: memoryTool, getMutationCount } = createTrackedMemoryTool();
 
-					const subagentResult = yield* subagent.run(
-						{
-							cwd: request.cwd,
-							runId,
-							mode: request.mode,
-							model: dreamConfig.subagent,
-							memorySnapshot,
-							transcriptCandidates,
-							nowIso: new Date().toISOString(),
-						},
-						subagentContext,
-						[memoryTool as unknown as ToolDefinition, dreamFinishTool as unknown as ToolDefinition],
-						() => Effect.void,
-					);
+					const subagentResult = yield* subagent
+						.run(
+							{
+								cwd: request.cwd,
+								runId,
+								mode: request.mode,
+								model: dreamConfig.subagent,
+								memorySnapshot,
+								transcriptCandidates,
+								nowIso: new Date().toISOString(),
+							},
+							subagentContext,
+							[memoryTool, dreamFinishTool],
+							() => Effect.void,
+						)
+						.pipe(
+							Effect.catch((err: DreamSubagentError) => {
+								const mutations = getMutationCount();
+								if (mutations > 0) {
+									return advanceSchedulerOnFailure(
+										request,
+										startedAt,
+										mutations,
+									).pipe(Effect.flatMap(() => Effect.fail(err)));
+								}
+								return Effect.fail(err);
+							}),
+						);
+
+					if (finishCapture.value === undefined) {
+						const mutations = getMutationCount();
+						if (mutations > 0) {
+							yield* advanceSchedulerOnFailure(request, startedAt, mutations);
+						}
+						return yield* new DreamSubagentNoFinish({
+							reason: "Dream subagent ended without calling dream_finish",
+						});
+					}
 
 					yield* mem.reloadFrozenSnapshot(request.cwd);
 
@@ -369,10 +427,10 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 						mode: request.mode,
 						startedAt,
 						finishedAt,
-						summary: finishParams?.summary ?? "Dream run completed",
-						reviewedSessions: finishParams?.reviewedSessions ?? [],
+						summary: finishParams.summary,
+						reviewedSessions: finishParams.reviewedSessions,
 						memoryMutations: subagentResult.memoryMutations,
-						noChanges: finishParams?.noChanges ?? subagentResult.memoryMutations === 0,
+						noChanges: finishParams.noChanges,
 					};
 
 					yield* scheduler.markCompleted(request.cwd, runResult);
@@ -467,7 +525,7 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 								nowIso: new Date().toISOString(),
 							},
 							subagentContext,
-							[memoryTool as unknown as ToolDefinition, dreamFinishTool as unknown as ToolDefinition],
+							[memoryTool, dreamFinishTool],
 							(event: DreamProgressEvent) => progress(taskId, event),
 						)
 						.pipe(
@@ -558,8 +616,9 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 					}
 
 					const handle = yield* reg.create(request);
-					const fiber = yield* Effect.forkDetach(
+					const fiber = yield* Effect.forkIn(
 						Effect.scoped(runOnceWithProgress(request, handle.taskId)),
+						backgroundScope,
 					);
 					yield* reg.attach(handle.taskId, fiber);
 
@@ -588,8 +647,9 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 					}
 
 					const handle = yield* reg.create(request);
-					const fiber = yield* Effect.forkDetach(
+					const fiber = yield* Effect.forkIn(
 						Effect.scoped(runOnceWithProgress(request, handle.taskId)),
+						backgroundScope,
 					);
 					yield* reg.attach(handle.taskId, fiber);
 

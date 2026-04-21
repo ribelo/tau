@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { Dirent } from "node:fs";
 
-import { Effect, Option } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { nanoid } from "nanoid";
 import { Type, type Static } from "@sinclair/typebox";
 
@@ -14,12 +14,13 @@ import type {
 } from "@mariozechner/pi-coding-agent";
 
 import { loadDreamConfig } from "./config-loader.js";
-import type {
-	DreamFinishParams,
-	DreamRunRequest,
-	DreamRunResult,
-	DreamTaskState,
-	DreamTranscriptCandidate,
+import {
+	DreamFinishParams as DreamFinishParamsSchema,
+	type DreamFinishParams,
+	type DreamRunRequest,
+	type DreamRunResult,
+	type DreamTaskState,
+	type DreamTranscriptCandidate,
 } from "./domain.js";
 import { DreamLock, type ManualDreamLease } from "./lock.js";
 import { DreamRunner, DreamRunnerLive, type DreamRunnerApi } from "./runner.js";
@@ -30,7 +31,6 @@ import {
 	parseDreamTranscriptSessionId,
 } from "./transcripts.js";
 import { CuratedMemory } from "../services/curated-memory.js";
-import type { MemoryEntriesSnapshot } from "../memory/format.js";
 import { DreamTaskRegistry, type DreamTaskRegistryApi } from "./task-registry.js";
 import type { DreamSubagent } from "./subagent.js";
 import { buildDreamPrompt } from "./prompt.js";
@@ -69,6 +69,27 @@ const DreamFinishToolParams = Type.Object({
 });
 
 type DreamFinishToolParams = Static<typeof DreamFinishToolParams>;
+
+const decodeDreamFinishParamsSync = Schema.decodeUnknownSync(DreamFinishParamsSchema);
+
+const parseDreamFinishParams = (
+	rawParams: unknown,
+):
+	| { readonly ok: true; readonly params: DreamFinishParams }
+	| { readonly ok: false; readonly error: string } => {
+	try {
+		return {
+			ok: true,
+			params: decodeDreamFinishParamsSync(rawParams),
+		};
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
+		return {
+			ok: false,
+			error: `Invalid dream_finish params: ${reason}`,
+		};
+	}
+};
 
 // ---------------------------------------------------------------------------
 // Foreground run state
@@ -500,7 +521,16 @@ function createDreamFinishTool(
 		description: "Signal that the foreground dream memory consolidation run is complete. Call this after all memory mutations are done.",
 		parameters: DreamFinishToolParams,
 		async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {
-			const params = rawParams as DreamFinishToolParams;
+			const decoded = parseDreamFinishParams(rawParams);
+			if (!decoded.ok) {
+				return {
+					isError: true,
+					content: [{ type: "text", text: decoded.error }],
+					details: {},
+				};
+			}
+
+			const params = decoded.params;
 			const sessionId = currentSessionIdOf(ctx);
 			if (sessionId === undefined) {
 				return {

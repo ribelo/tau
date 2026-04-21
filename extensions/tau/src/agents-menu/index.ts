@@ -9,14 +9,20 @@ import {
 	Text,
 } from "@mariozechner/pi-tui";
 import { AgentRegistry } from "../agent/agent-registry.js";
+import { validateResolvedAgentConfiguration } from "../agent/startup-validation.js";
 import { buildToolDescription } from "../agent/tool.js";
 import type { AgentToolHandle } from "../agent/index.js";
-import { Effect } from "effect";
+import { Cause, Data, Effect } from "effect";
 import {
 	AgentSelectionStore,
+	clearRalphOwnedSessionCache,
 	getAgentSettingsPath,
 	isRalphOwnedSession,
+	preloadRalphOwnedSessionCache,
 } from "./state.js";
+import { setToolActivationTransform } from "../shared/tool-activation.js";
+
+const AGENT_TOOL_ACTIVATION_KEY = "agents-menu.agent-tool";
 
 function getSessionFileFromContext(ctx: { readonly sessionManager?: unknown }): string | undefined {
 	const sessionManager = ctx.sessionManager;
@@ -56,11 +62,48 @@ export function setAgentEnabledForCwd(cwd: string, name: string, enabled: boolea
 	agentSelections.setEnabledForCwd(cwd, name, enabled);
 }
 
-function loadRegistry(cwd: string): Effect.Effect<AgentRegistry, never> {
+function loadRegistry(cwd: string): Effect.Effect<AgentRegistry, AgentMenuRegistryLoadError> {
 	return AgentRegistry.load(cwd).pipe(
-		Effect.catch(() => Effect.die("Failed to load agent registry")),
+		Effect.tap(validateResolvedAgentConfiguration),
+		Effect.catchCause((cause: Cause.Cause<unknown>) =>
+			Effect.fail(
+				new AgentMenuRegistryLoadError({
+					cwd,
+					reason: Cause.pretty(cause),
+				}),
+			),
+		),
 	);
 }
+
+class AgentMenuRegistryLoadError extends Data.TaggedError("AgentMenuRegistryLoadError")<{
+	readonly cwd: string;
+	readonly reason: string;
+}> {}
+
+const formatRegistryLoadError = (error: unknown): string => {
+	if (error instanceof AgentMenuRegistryLoadError) {
+		return `Failed to load or validate agent registry in ${error.cwd}: ${error.reason}`;
+	}
+
+	if (error instanceof Error && error.message.length > 0) {
+		return error.message;
+	}
+
+	return "Failed to load or validate agent registry.";
+};
+
+const loadRegistrySafe = async (
+	cwd: string,
+	notify?: (message: string) => void,
+): Promise<AgentRegistry | null> => {
+	try {
+		return await Effect.runPromise(loadRegistry(cwd));
+	} catch (error) {
+		notify?.(formatRegistryLoadError(error));
+		return null;
+	}
+};
 
 function refreshToolDescription(
 	agentTool: AgentToolHandle,
@@ -100,17 +143,13 @@ function syncAgentToolAvailability(
 	refreshToolDescription(agentTool, registry, cwd, sessionFile);
 
 	const enabledCount = registry.names().filter((name) => !isAgentDisabledForSession(cwd, sessionFile, name)).length;
-	const activeTools = pi.getActiveTools();
-	const hasAgentTool = activeTools.includes("agent");
-
-	if (enabledCount === 0 && hasAgentTool) {
-		pi.setActiveTools(activeTools.filter((name) => name !== "agent"));
-		return;
-	}
-
-	if (enabledCount > 0 && !hasAgentTool) {
-		pi.setActiveTools([...activeTools, "agent"]);
-	}
+	setToolActivationTransform(pi, AGENT_TOOL_ACTIVATION_KEY, (toolNames) => {
+		const hasAgentTool = toolNames.includes("agent");
+		if (enabledCount === 0) {
+			return hasAgentTool ? toolNames.filter((name) => name !== "agent") : toolNames;
+		}
+		return hasAgentTool ? toolNames : [...toolNames, "agent"];
+	});
 }
 
 /**
@@ -309,26 +348,51 @@ class AgentsSelectorComponent extends Container implements Focusable {
 }
 
 export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHandle): void {
-	const syncForCwd = async (cwd: string, sessionFile: string | undefined) => {
-		const registry = await Effect.runPromise(loadRegistry(cwd));
-		agentSelections.activate(cwd, registry.names());
+	const syncForCwd = async (
+		cwd: string,
+		sessionFile: string | undefined,
+		notify?: (message: string) => void,
+	) => {
+		const registry = await loadRegistrySafe(cwd, notify);
+		if (registry === null) {
+			return;
+		}
+		await agentSelections.activate(cwd, registry.names());
+		await preloadRalphOwnedSessionCache(cwd, sessionFile);
 		syncAgentToolAvailability(pi, agentTool, registry, cwd, sessionFile);
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
-		const registry = await Effect.runPromise(loadRegistry(ctx.cwd));
-		agentSelections.activate(ctx.cwd, registry.names());
+		clearRalphOwnedSessionCache(ctx.cwd);
+		const registry = await loadRegistrySafe(
+			ctx.cwd,
+			ctx.hasUI ? (message) => ctx.ui.notify(message, "error") : undefined,
+		);
+		if (registry === null) {
+			return;
+		}
+		await agentSelections.activate(ctx.cwd, registry.names());
 		if (ctx.hasUI) {
-			syncAgentToolAvailability(pi, agentTool, registry, ctx.cwd, getSessionFileFromContext(ctx));
+			const sessionFile = getSessionFileFromContext(ctx);
+			await preloadRalphOwnedSessionCache(ctx.cwd, sessionFile);
+			syncAgentToolAvailability(pi, agentTool, registry, ctx.cwd, sessionFile);
 		}
 	});
 	pi.on("session_switch", async (_event, ctx) => {
+		clearRalphOwnedSessionCache();
 		if (!ctx.hasUI) {
-			const registry = await Effect.runPromise(loadRegistry(ctx.cwd));
-			agentSelections.activate(ctx.cwd, registry.names());
+			const registry = await loadRegistrySafe(ctx.cwd);
+			if (registry === null) {
+				return;
+			}
+			await agentSelections.activate(ctx.cwd, registry.names());
 			return;
 		}
-		await syncForCwd(ctx.cwd, getSessionFileFromContext(ctx));
+		await syncForCwd(
+			ctx.cwd,
+			getSessionFileFromContext(ctx),
+			(message) => ctx.ui.notify(message, "error"),
+		);
 	});
 
 	pi.registerCommand("agents", {
@@ -346,10 +410,16 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 			handler: async (args, ctx) => {
 				if (!ctx.hasUI) return;
 
-				const registry = await Effect.runPromise(loadRegistry(ctx.cwd));
-				agentSelections.activate(ctx.cwd, registry.names());
+				const registry = await loadRegistrySafe(ctx.cwd, (message) =>
+					ctx.ui.notify(message, "error"),
+				);
+				if (registry === null) {
+					return;
+				}
+				await agentSelections.activate(ctx.cwd, registry.names());
 				const allNames = registry.names();
 				const sessionFile = getSessionFileFromContext(ctx);
+				await preloadRalphOwnedSessionCache(ctx.cwd, sessionFile);
 
 			const trimmed = (args || "").trim();
 
@@ -422,8 +492,14 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 							setAgentEnabledForCwd(ctx.cwd, name, enabled);
 						},
 						() => {
-							const settingsPath = agentSelections.persistForCwd(ctx.cwd, allNames);
-							ctx.ui.notify(`Saved agent selection to ${settingsPath}`, "info");
+							void agentSelections.persistForCwd(ctx.cwd, allNames).then(
+								(settingsPath) => {
+									ctx.ui.notify(`Saved agent selection to ${settingsPath}`, "info");
+								},
+								(error: unknown) => {
+									ctx.ui.notify(String(error), "error");
+								},
+							);
 						},
 						() => syncAgentToolAvailability(pi, agentTool, registry, ctx.cwd, sessionFile),
 					);

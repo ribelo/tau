@@ -17,6 +17,7 @@ export async function isAsrtAvailable(): Promise<boolean> {
 		execSync("bwrap --version", { stdio: "ignore" });
 		return true;
 	} catch {
+		// Command probing is expected to fail when bubblewrap is absent.
 		return false;
 	}
 }
@@ -36,6 +37,7 @@ function exists(p: string): boolean {
 		fs.accessSync(p);
 		return true;
 	} catch {
+		// Missing mount roots are normal across distros; treat them as absent.
 		return false;
 	}
 }
@@ -152,6 +154,8 @@ export async function wrapCommandWithSandbox(opts: {
 			try {
 				entries = fs.readdirSync(dirPath);
 			} catch {
+				// If the directory cannot be enumerated, skip granular binding here and
+				// let the higher-level sandbox execution surface any later access error.
 				return;
 			}
 			for (const entry of entries) {

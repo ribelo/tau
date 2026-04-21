@@ -1,9 +1,8 @@
 import * as crypto from "node:crypto";
-import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { DateTime, Effect, Layer, Ref, Semaphore, ServiceMap } from "effect";
+import { DateTime, Effect, Layer, Semaphore, ServiceMap } from "effect";
 import type { Scope } from "effect";
 import { nanoid } from "nanoid";
 
@@ -42,6 +41,11 @@ import {
 	type MemoryMutationError,
 } from "../memory/errors.js";
 import { getProjectTauMemoryDir, getTauMemoryDir } from "../shared/discovery.js";
+import {
+	describeSharedFileLockError,
+	withSharedFileLock,
+	type SharedFileLockConfig,
+} from "../shared/lock.js";
 
 // Claude Code's MEMORY.md entrypoint is capped at ~25k bytes. Keep tau scope
 // limits in the same order of magnitude so memory is durable without frequent
@@ -49,18 +53,18 @@ import { getProjectTauMemoryDir, getTauMemoryDir } from "../shared/discovery.js"
 const PROJECT_SCOPE_CHAR_LIMIT = 25_000;
 const GLOBAL_SCOPE_CHAR_LIMIT = 25_000;
 const USER_SCOPE_CHAR_LIMIT = 25_000;
-const LOCK_STALE_MS = 5_000;
 const MEMORY_ID_SHORT_LENGTH = 12;
+const memoryLockConfig: SharedFileLockConfig = {
+	staleMs: 5_000,
+	retryDelayMs: 100,
+	maxAttempts: 50,
+	heldPolicy: "wait",
+};
 
 interface FrozenSnapshot {
 	readonly renderedIndex: string;
 	readonly index: MemoryIndex;
 	readonly entriesSnapshot: MemoryEntriesSnapshot;
-}
-
-interface LockMetadata {
-	readonly pid: number;
-	readonly token: string;
 }
 
 export interface MutationResult {
@@ -143,52 +147,6 @@ async function ensureDir(dirPath: string): Promise<void> {
 
 function isNodeError(err: unknown, code: string): boolean {
 	return typeof err === "object" && err !== null && "code" in err && (err as { code: unknown }).code === code;
-}
-
-function parseLockMetadata(raw: string): LockMetadata | null {
-	try {
-		const parsed = JSON.parse(raw);
-		if (
-			typeof parsed === "object" &&
-			parsed !== null &&
-			"pid" in parsed &&
-			"token" in parsed &&
-			typeof parsed.pid === "number" &&
-			typeof parsed.token === "string"
-		) {
-			return { pid: parsed.pid, token: parsed.token };
-		}
-		return null;
-	} catch {
-		return null;
-	}
-}
-
-function processExists(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (err: unknown) {
-		return !isNodeError(err, "ESRCH");
-	}
-}
-
-async function shouldReclaimLock(lockPath: string): Promise<boolean> {
-	try {
-		const raw = await fs.readFile(lockPath, "utf8");
-		const metadata = parseLockMetadata(raw);
-		if (!metadata) {
-			// Corrupt lock: reclaim only if stale by mtime
-			const stats = await fs.stat(lockPath);
-			return Date.now() - stats.mtimeMs > LOCK_STALE_MS;
-		}
-		return !processExists(metadata.pid);
-	} catch (err: unknown) {
-		if (isNodeError(err, "ENOENT")) {
-			return false;
-		}
-		return true;
-	}
 }
 
 function entryContents(entries: readonly MemoryEntry[]): string[] {
@@ -317,72 +275,46 @@ async function atomicWrite(scope: MemoryScope, cwd: string, entries: readonly Me
 		try {
 			await fs.unlink(tmp);
 		} catch {
-			// best-effort cleanup
+			// Best-effort temp cleanup only. The original write/rename failure below
+			// remains the surfaced error path.
 		}
 		throw err;
 	}
 }
 
 async function withFileLock<T>(scope: MemoryScope, cwd: string, fn: () => Promise<T>): Promise<T> {
-	const dirPath = directoryForScope(scope, cwd);
-	await ensureDir(dirPath);
-	const targetLockPath = lockFilePath(scope, cwd);
-	const maxAttempts = 50;
-	const retryDelay = 100;
-	const token = crypto.randomBytes(6).toString("hex");
-	let fd: fs.FileHandle | undefined;
+	await ensureDir(directoryForScope(scope, cwd));
+	return withSharedFileLock(lockFilePath(scope, cwd), memoryLockConfig, fn);
+}
 
-	for (let attempt = 0; attempt < maxAttempts; attempt++) {
-		try {
-			fd = await fs.open(
-				targetLockPath,
-				fsSync.constants.O_WRONLY | fsSync.constants.O_CREAT | fsSync.constants.O_EXCL,
-				0o644,
-			);
-			await fd.writeFile(JSON.stringify({ pid: process.pid, token }), "utf8");
-			break;
-		} catch (err: unknown) {
-			if (!isNodeError(err, "EEXIST")) {
-				throw err;
-			}
-
-			if (await shouldReclaimLock(targetLockPath)) {
-				try {
-					await fs.unlink(targetLockPath);
-				} catch (unlinkErr: unknown) {
-					if (!isNodeError(unlinkErr, "ENOENT")) {
-						throw unlinkErr;
-					}
-				}
-				continue;
-			}
-
-			if (attempt === maxAttempts - 1) {
-				throw err;
-			}
-
-			await new Promise((resolve) => setTimeout(resolve, retryDelay));
-		}
+function toMemoryFileReason(error: unknown): string {
+	if (error instanceof MemoryFileError) {
+		return error.reason;
 	}
+	return describeSharedFileLockError(error);
+}
 
-	if (!fd) {
-		throw new Error(`Failed to acquire memory lock at ${targetLockPath}`);
-	}
+function isMemoryMutationError(error: unknown): error is MemoryMutationError {
+	return (
+		error instanceof MemoryEmptyContent ||
+		error instanceof MemoryEmptySummary ||
+		error instanceof MemoryEntryTooLarge ||
+		error instanceof MemoryNoMatch ||
+		error instanceof MemoryDuplicateEntry ||
+		error instanceof MemoryDuplicateSummary ||
+		error instanceof MemorySummaryMatchesContent ||
+		error instanceof MemoryFileError
+	);
+}
 
-	try {
-		return await fn();
-	} finally {
-		await fd.close();
-		try {
-			const currentRaw = await fs.readFile(targetLockPath, "utf8");
-			const current = parseLockMetadata(currentRaw);
-			if (current && current.token === token && current.pid === process.pid) {
-				await fs.unlink(targetLockPath);
-			}
-		} catch {
-			// ignore cleanup errors (e.g., lock already reclaimed by another process)
-		}
+function describeFrozenSnapshotReloadError(error: unknown): string {
+	if (error instanceof MemoryFileError) {
+		return `Failed to reload memory index: ${error.reason}`;
 	}
+	if (error instanceof Error) {
+		return `Failed to reload memory index: ${error.message}`;
+	}
+	return `Failed to reload memory index: ${String(error)}`;
 }
 
 function findEntryIndexById(entries: readonly MemoryEntry[], id: string): number {
@@ -465,22 +397,13 @@ function makeFrozenSnapshot(entriesSnapshot: MemoryEntriesSnapshot): FrozenSnaps
 	};
 }
 
-function makeEmptyFrozenSnapshot(cwd: string): FrozenSnapshot {
-	const entriesSnapshot: MemoryEntriesSnapshot = {
-		project: makeBucketEntriesSnapshot("project", cwd, []),
-		global: makeBucketEntriesSnapshot("global", cwd, []),
-		user: makeBucketEntriesSnapshot("user", cwd, []),
-	};
-	return makeFrozenSnapshot(entriesSnapshot);
-}
-
 export class CuratedMemory extends ServiceMap.Service<
 	CuratedMemory,
 	{
 		readonly getSnapshot: (cwd: string) => Effect.Effect<MemorySnapshot, MemoryFileError>;
 		readonly getEntriesSnapshot: (cwd: string) => Effect.Effect<MemoryEntriesSnapshot, MemoryFileError>;
 		readonly reloadFrozenSnapshot: (cwd: string) => Effect.Effect<void, MemoryFileError>;
-		readonly getFrozenPromptBlock: () => string;
+		readonly getFrozenPromptBlock: Effect.Effect<string>;
 		readonly add: (
 			scope: MemoryScope,
 			summary: string,
@@ -508,38 +431,33 @@ export const CuratedMemoryLive = Layer.effect(
 	CuratedMemory,
 	Effect.gen(function* () {
 		const pi = yield* PiAPI;
-		const snapshotRef = yield* Ref.make<FrozenSnapshot>(makeEmptyFrozenSnapshot(process.cwd()));
+		let frozenPromptBlock = "";
 		const mutex = yield* Semaphore.make(1);
 
 		const getSnapshot = (cwd: string): Effect.Effect<MemorySnapshot, MemoryFileError> =>
 			Effect.tryPromise({
 				try: () => loadSnapshotValue(cwd),
-				catch: (err) => new MemoryFileError({ reason: String(err) }),
+				catch: (err) => new MemoryFileError({ reason: toMemoryFileReason(err) }),
 			});
 
 		const getEntriesSnapshot = (cwd: string): Effect.Effect<MemoryEntriesSnapshot, MemoryFileError> =>
 			Effect.tryPromise({
 				try: () => loadEntriesSnapshotValue(cwd),
-				catch: (err) => new MemoryFileError({ reason: String(err) }),
+				catch: (err) => new MemoryFileError({ reason: toMemoryFileReason(err) }),
 			});
 
 		const reloadFrozenSnapshot = (cwd: string): Effect.Effect<void, MemoryFileError> =>
 			getEntriesSnapshot(cwd).pipe(
 				Effect.map(makeFrozenSnapshot),
-				Effect.flatMap((snapshot) => Ref.set(snapshotRef, snapshot)),
-			);
-
-		const getFrozenPromptBlock = (): string => {
-			let rendered = "";
-			Effect.runSync(
-				Ref.get(snapshotRef).pipe(
-					Effect.map((snapshot) => {
-						rendered = snapshot.renderedIndex;
+				Effect.tap((snapshot) =>
+					Effect.sync(() => {
+						frozenPromptBlock = snapshot.renderedIndex;
 					}),
 				),
+				Effect.asVoid,
 			);
-			return rendered;
-		};
+
+		const getFrozenPromptBlock = Effect.sync(() => frozenPromptBlock);
 
 		const mutate = (
 			scope: MemoryScope,
@@ -579,24 +497,10 @@ export const CuratedMemoryLive = Layer.effect(
 							return entry;
 						}),
 					catch: (err) => {
-						if (
-							typeof err === "object" &&
-							err !== null &&
-							"_tag" in err &&
-							typeof (err as { _tag: unknown })._tag === "string" &&
-							[
-								"MemoryEmptyContent",
-								"MemoryEmptySummary",
-								"MemoryEntryTooLarge",
-								"MemoryNoMatch",
-								"MemoryDuplicateEntry",
-								"MemoryDuplicateSummary",
-								"MemorySummaryMatchesContent",
-							].includes((err as { _tag: string })._tag)
-						) {
-							return err as MemoryMutationError;
+						if (isMemoryMutationError(err)) {
+							return err;
 						}
-						return new MemoryFileError({ reason: String(err) });
+						return new MemoryFileError({ reason: toMemoryFileReason(err) });
 					},
 				}).pipe(
 					Effect.map((entry) => ({
@@ -681,19 +585,17 @@ export const CuratedMemoryLive = Layer.effect(
 					return Effect.fail(new MemoryNoMatch({ id: trimmedId }));
 				}
 
-				if (entries.some((entry, entryIndex) => entryIndex !== index && entry.content === draft.content)) {
-					const existingEntry = entries.find((entry, entryIndex) => entryIndex !== index && entry.content === draft.content);
-					if (!existingEntry) {
-						return Effect.die(new Error("Expected duplicate memory entry to exist"));
-					}
+				const existingEntry = entries.find(
+					(entry, entryIndex) => entryIndex !== index && entry.content === draft.content,
+				);
+				if (existingEntry !== undefined) {
 					return Effect.fail(new MemoryDuplicateEntry({ scope, entry: existingEntry }));
 				}
 
-				if (entries.some((entry, entryIndex) => entryIndex !== index && entry.summary === draft.summary)) {
-					const existingSummary = entries.find((entry, entryIndex) => entryIndex !== index && entry.summary === draft.summary);
-					if (!existingSummary) {
-						return Effect.die(new Error("Expected duplicate memory summary to exist"));
-					}
+				const existingSummary = entries.find(
+					(entry, entryIndex) => entryIndex !== index && entry.summary === draft.summary,
+				);
+				if (existingSummary !== undefined) {
 					return Effect.fail(new MemoryDuplicateSummary({ scope, entry: existingSummary }));
 				}
 
@@ -743,10 +645,11 @@ export const CuratedMemoryLive = Layer.effect(
 				}
 
 				const candidate = [...entries];
-				const [entry] = candidate.splice(index, 1);
-				if (!entry) {
-					return Effect.die(new Error("Expected memory entry to remove"));
+				const entry = candidate[index];
+				if (entry === undefined) {
+					return Effect.fail(new MemoryNoMatch({ id: trimmedId }));
 				}
+				candidate.splice(index, 1);
 				return Effect.succeed({ nextEntries: candidate, entry });
 			});
 		};
@@ -784,15 +687,20 @@ export const CuratedMemoryLive = Layer.effect(
 			remove,
 			read,
 			setup: Effect.gen(function* () {
-				yield* reloadFrozenSnapshot(process.cwd()).pipe(Effect.orElseSucceed(() => undefined));
 				yield* Effect.sync(() => {
 					const reload = async (_event: unknown, ctx: ExtensionContext) => {
-						await Effect.runPromise(reloadFrozenSnapshot(ctx.cwd).pipe(Effect.orElseSucceed(() => undefined)));
+						try {
+							await Effect.runPromise(reloadFrozenSnapshot(ctx.cwd));
+						} catch (error: unknown) {
+							if (ctx.hasUI) {
+								ctx.ui.notify(describeFrozenSnapshotReloadError(error), "error");
+							}
+						}
 					};
 					pi.on("session_start", reload);
 					pi.on("session_switch", reload);
 					pi.on("before_agent_start", async (event) => {
-						const block = getFrozenPromptBlock();
+						const block = frozenPromptBlock;
 						if (!block) {
 							return { systemPrompt: event.systemPrompt };
 						}

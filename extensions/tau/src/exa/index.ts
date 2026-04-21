@@ -1,4 +1,4 @@
-import { Data, Effect, Schema } from "effect";
+import { Data, Effect, Layer, ManagedRuntime, Schema, ServiceMap } from "effect";
 import {
 	getMarkdownTheme,
 	type ExtensionAPI,
@@ -7,6 +7,7 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { Markdown, Text } from "@mariozechner/pi-tui";
+import { defineEffectTool, textToolResult } from "../shared/effect-tool.js";
 
 // =============================================================================
 // Errors
@@ -99,7 +100,10 @@ interface ExaConfig {
 	readonly apiKey: string;
 }
 
-const getExaConfig = (): Effect.Effect<ExaConfig, ExaConfigError> =>
+class ExaConfigService extends ServiceMap.Service<ExaConfigService, ExaConfig>()("ExaConfigService") {}
+
+const ExaConfigLive = Layer.effect(
+	ExaConfigService,
 	Effect.gen(function* () {
 		const apiKey = process.env["EXA_API_KEY"]?.trim();
 		if (!apiKey) {
@@ -112,8 +116,17 @@ const getExaConfig = (): Effect.Effect<ExaConfig, ExaConfigError> =>
 			/\/+$/,
 			"",
 		);
-		return { baseUrl, apiKey };
-	});
+		return {
+			baseUrl,
+			apiKey,
+		} satisfies ExaConfig;
+	}),
+);
+
+const exaRuntime = ManagedRuntime.make(ExaConfigLive);
+
+const runExaEffect = <A, E>(effect: Effect.Effect<A, E, ExaConfigService>): Promise<A> =>
+	exaRuntime.runPromise(effect);
 
 // =============================================================================
 // API Client
@@ -124,9 +137,10 @@ const exaPost = <S extends Schema.Decoder<unknown>>(
 	body: unknown,
 	schema: S,
 	signal: AbortSignal | undefined,
-): Effect.Effect<S["Type"], ExaApiError | ExaConfigError> =>
+): Effect.Effect<S["Type"], ExaApiError | ExaConfigError, ExaConfigService> =>
+
 	Effect.gen(function* () {
-		const config = yield* getExaConfig();
+		const config = yield* ExaConfigService;
 		const url = `${config.baseUrl}${path.startsWith("/") ? "" : "/"}${path}`;
 
 		const res = yield* Effect.tryPromise({
@@ -190,15 +204,15 @@ interface ExaService {
 	readonly search: (
 		params: WebSearchParams,
 		signal: AbortSignal | undefined,
-	) => Effect.Effect<ExaSearchResponse, ExaApiError | ExaConfigError>;
+	) => Effect.Effect<ExaSearchResponse, ExaApiError | ExaConfigError, ExaConfigService>;
 	readonly crawl: (
 		params: CrawlingParams,
 		signal: AbortSignal | undefined,
-	) => Effect.Effect<ExaContentsResponse, ExaApiError | ExaConfigError>;
+	) => Effect.Effect<ExaContentsResponse, ExaApiError | ExaConfigError, ExaConfigService>;
 	readonly codeContext: (
 		params: CodeContextParams,
 		signal: AbortSignal | undefined,
-	) => Effect.Effect<ExaContextResponse, ExaApiError | ExaConfigError>;
+	) => Effect.Effect<ExaContextResponse, ExaApiError | ExaConfigError, ExaConfigService>;
 }
 
 // =============================================================================
@@ -245,23 +259,44 @@ const compactContentsResults = (
 
 interface WebSearchParams {
 	readonly query: string;
-	readonly type?: "auto" | "neural" | "fast" | "deep";
-	readonly additionalQueries?: ReadonlyArray<string>;
-	readonly category?: string;
-	readonly userLocation?: string;
-	readonly numResults?: number;
-	readonly text?: boolean;
-	readonly context?: boolean;
-	readonly includeDomains?: ReadonlyArray<string>;
-	readonly excludeDomains?: ReadonlyArray<string>;
-	readonly startCrawlDate?: string;
-	readonly endCrawlDate?: string;
-	readonly startPublishedDate?: string;
-	readonly endPublishedDate?: string;
-	readonly includeText?: ReadonlyArray<string>;
-	readonly excludeText?: ReadonlyArray<string>;
-	readonly moderation?: boolean;
+	readonly type?: "auto" | "neural" | "fast" | "deep" | undefined;
+	readonly additionalQueries?: ReadonlyArray<string> | undefined;
+	readonly category?: string | undefined;
+	readonly userLocation?: string | undefined;
+	readonly numResults?: number | undefined;
+	readonly text?: boolean | undefined;
+	readonly context?: boolean | undefined;
+	readonly includeDomains?: ReadonlyArray<string> | undefined;
+	readonly excludeDomains?: ReadonlyArray<string> | undefined;
+	readonly startCrawlDate?: string | undefined;
+	readonly endCrawlDate?: string | undefined;
+	readonly startPublishedDate?: string | undefined;
+	readonly endPublishedDate?: string | undefined;
+	readonly includeText?: ReadonlyArray<string> | undefined;
+	readonly excludeText?: ReadonlyArray<string> | undefined;
+	readonly moderation?: boolean | undefined;
 }
+
+const WebSearchParamsSchema = Schema.Struct({
+	query: Schema.String,
+	type: Schema.optional(Schema.Literals(["auto", "neural", "fast", "deep"] as const)),
+	additionalQueries: Schema.optional(Schema.Array(Schema.String)),
+	category: Schema.optional(Schema.String),
+	userLocation: Schema.optional(Schema.String),
+	numResults: Schema.optional(Schema.Number),
+	text: Schema.optional(Schema.Boolean),
+	context: Schema.optional(Schema.Boolean),
+	includeDomains: Schema.optional(Schema.Array(Schema.String)),
+	excludeDomains: Schema.optional(Schema.Array(Schema.String)),
+	startCrawlDate: Schema.optional(Schema.String),
+	endCrawlDate: Schema.optional(Schema.String),
+	startPublishedDate: Schema.optional(Schema.String),
+	endPublishedDate: Schema.optional(Schema.String),
+	includeText: Schema.optional(Schema.Array(Schema.String)),
+	excludeText: Schema.optional(Schema.Array(Schema.String)),
+	moderation: Schema.optional(Schema.Boolean),
+});
+const decodeWebSearchParams = Schema.decodeUnknownSync(WebSearchParamsSchema);
 
 const makeSearchBody = (params: WebSearchParams): Record<string, unknown> => {
 	const body: Record<string, unknown> = { query: params.query };
@@ -296,15 +331,28 @@ const makeSearchBody = (params: WebSearchParams): Record<string, unknown> => {
 
 interface CrawlingParams {
 	readonly urls: ReadonlyArray<string>;
-	readonly text?: boolean;
-	readonly highlights?: boolean;
-	readonly summary?: boolean;
-	readonly context?: boolean;
-	readonly livecrawl?: "never" | "fallback" | "preferred" | "always";
-	readonly livecrawlTimeout?: number;
-	readonly subpages?: number;
-	readonly subpageTarget?: ReadonlyArray<string>;
+	readonly text?: boolean | undefined;
+	readonly highlights?: boolean | undefined;
+	readonly summary?: boolean | undefined;
+	readonly context?: boolean | undefined;
+	readonly livecrawl?: "never" | "fallback" | "preferred" | "always" | undefined;
+	readonly livecrawlTimeout?: number | undefined;
+	readonly subpages?: number | undefined;
+	readonly subpageTarget?: ReadonlyArray<string> | undefined;
 }
+
+const CrawlingParamsSchema = Schema.Struct({
+	urls: Schema.Array(Schema.String),
+	text: Schema.optional(Schema.Boolean),
+	highlights: Schema.optional(Schema.Boolean),
+	summary: Schema.optional(Schema.Boolean),
+	context: Schema.optional(Schema.Boolean),
+	livecrawl: Schema.optional(Schema.Literals(["never", "fallback", "preferred", "always"] as const)),
+	livecrawlTimeout: Schema.optional(Schema.Number),
+	subpages: Schema.optional(Schema.Number),
+	subpageTarget: Schema.optional(Schema.Array(Schema.String)),
+});
+const decodeCrawlingParams = Schema.decodeUnknownSync(CrawlingParamsSchema);
 
 const makeCrawlBody = (params: CrawlingParams): Record<string, unknown> => {
 	const body: Record<string, unknown> = {
@@ -328,8 +376,14 @@ const makeCrawlBody = (params: CrawlingParams): Record<string, unknown> => {
 
 interface CodeContextParams {
 	readonly query: string;
-	readonly tokensNum?: "dynamic" | string;
+	readonly tokensNum?: "dynamic" | string | undefined;
 }
+
+const CodeContextParamsSchema = Schema.Struct({
+	query: Schema.String,
+	tokensNum: Schema.optional(Schema.String),
+});
+const decodeCodeContextParams = Schema.decodeUnknownSync(CodeContextParamsSchema);
 
 const makeCodeContextBody = (params: CodeContextParams): Record<string, unknown> => {
 	const body: Record<string, unknown> = { query: params.query };
@@ -782,15 +836,26 @@ const renderCodeContextResult = (
 // Tool Registration
 // =============================================================================
 
-export function createExaToolDefinitions(): ToolDefinition[] {
-	return [
-		{
+const formatToolErrorText = (error: unknown): string =>
+	error instanceof Error ? error.message : String(error);
+
+const emptySearchResponse: ExaSearchResponse = { results: [] };
+const emptyContentsResponse: ExaContentsResponse = { results: [] };
+const emptyContextResponse: ExaContextResponse = {};
+
+export function createExaToolDefinitions(): readonly ToolDefinition[] {
+	const searchTool = defineEffectTool<typeof WebSearchTypeBox, WebSearchParams, ExaSearchResponse>({
 			name: "web_search_exa",
 			label: "exa.web_search",
 			description:
 				"Search the Exa index (web, papers, GitHub, news, etc.). Use this to find relevant URLs. Best practices: keep numResults small (3-10), use filters (includeDomains/category/date ranges) to narrow results, and only request text when you need snippets.",
 			promptSnippet: "Search the Exa index (web, papers, GitHub, news, etc.)",
 			parameters: WebSearchTypeBox,
+			decodeParams: decodeWebSearchParams,
+			formatInvalidParamsResult: (message) =>
+				textToolResult(message, emptySearchResponse, { isError: true }),
+			formatExecuteErrorResult: (error) =>
+				textToolResult(formatToolErrorText(error), emptySearchResponse, { isError: true }),
 
 			renderCall(args, theme) {
 				return new Text(renderSearchCall(args, theme), 0, 0);
@@ -810,13 +875,14 @@ export function createExaToolDefinitions(): ToolDefinition[] {
 				return new Text(renderSearchResult(details, options.expanded, theme), 0, 0);
 			},
 
-			async execute(_toolCallId, params, signal, onUpdate, _ctx) {
-				onUpdate?.({ content: [{ type: "text", text: "Searching Exa…" }], details: {} });
+			async execute(params, { signal, onUpdate }) {
+				onUpdate?.({
+					content: [{ type: "text", text: "Searching Exa…" }],
+					details: emptySearchResponse,
+				});
+				const program = ExaServiceLive.search(params, signal);
 
-				const typedParams = params as WebSearchParams;
-				const program = ExaServiceLive.search(typedParams, signal);
-
-				const result = await Effect.runPromise(program);
+				const result = await runExaEffect(program);
 
 				// Format text content
 				const textContent = result.results
@@ -828,15 +894,20 @@ export function createExaToolDefinitions(): ToolDefinition[] {
 					details: result,
 				};
 			},
-		},
+		});
 
-		{
+	const crawlTool = defineEffectTool<typeof CrawlingTypeBox, CrawlingParams, ExaContentsResponse>({
 			name: "crawling_exa",
 			label: "exa.crawl",
 			description:
 				"Fetch page contents via Exa (/contents). Use this when you already have URLs and need text, highlights, or summaries. Best practice: request only what you need (summary/highlights vs full text) to keep tool output small.",
 			promptSnippet: "Fetch page contents via Exa (/contents) when you already have URLs",
 			parameters: CrawlingTypeBox,
+			decodeParams: decodeCrawlingParams,
+			formatInvalidParamsResult: (message) =>
+				textToolResult(message, emptyContentsResponse, { isError: true }),
+			formatExecuteErrorResult: (error) =>
+				textToolResult(formatToolErrorText(error), emptyContentsResponse, { isError: true }),
 
 			renderCall(args, theme) {
 				return new Text(renderCrawlCall(args, theme), 0, 0);
@@ -855,16 +926,14 @@ export function createExaToolDefinitions(): ToolDefinition[] {
 				return new Text(renderCrawlResult(details, options.expanded, theme), 0, 0);
 			},
 
-			async execute(_toolCallId, params, signal, onUpdate, _ctx) {
+			async execute(params, { signal, onUpdate }) {
 				onUpdate?.({
 					content: [{ type: "text", text: "Fetching contents from Exa…" }],
-					details: {},
+					details: emptyContentsResponse,
 				});
+				const program = ExaServiceLive.crawl(params, signal);
 
-				const typedParams = params as CrawlingParams;
-				const program = ExaServiceLive.crawl(typedParams, signal);
-
-				const result = await Effect.runPromise(program);
+				const result = await runExaEffect(program);
 
 				const textContent = result.results
 					.map((r, i) => formatCrawlResultText(r, i))
@@ -875,15 +944,22 @@ export function createExaToolDefinitions(): ToolDefinition[] {
 					details: result,
 				};
 			},
-		},
+		});
 
-		{
+	const codeContextTool = defineEffectTool<typeof CodeContextTypeBox, CodeContextParams, ExaContextResponse>({
 			name: "get_code_context_exa",
 			label: "exa.code_context",
 			description:
 				"Get relevant code snippets and examples via Exa Context API (Exa Code). Best practice: start with tokensNum omitted (defaults to 'dynamic') for token-efficient results; use '5000' (or '10000' if needed) when you want a fixed size.",
 			promptSnippet: "Get relevant code snippets and examples via Exa Context API (Exa Code)",
 			parameters: CodeContextTypeBox,
+			decodeParams: decodeCodeContextParams,
+			formatInvalidParamsResult: (message) =>
+				textToolResult(message, emptyContextResponse, { isError: true }),
+			formatExecuteErrorResult: (error) => {
+				const message = formatToolErrorText(error);
+				return textToolResult(message, emptyContextResponse, { isError: true });
+			},
 
 			renderCall(args, theme) {
 				return new Text(renderCodeContextCall(args, theme), 0, 0);
@@ -908,24 +984,23 @@ export function createExaToolDefinitions(): ToolDefinition[] {
 				return new Text(out, 0, 0);
 			},
 
-			async execute(_toolCallId, params, signal, onUpdate, _ctx) {
+			async execute(params, { signal, onUpdate }) {
 				onUpdate?.({
 					content: [{ type: "text", text: "Getting code context from Exa…" }],
-					details: {},
+					details: emptyContextResponse,
 				});
+				const program = ExaServiceLive.codeContext(params, signal);
 
-				const typedParams = params as CodeContextParams;
-				const program = ExaServiceLive.codeContext(typedParams, signal);
-
-				const result = await Effect.runPromise(program);
+				const result = await runExaEffect(program);
 
 				return {
 					content: [{ type: "text", text: result.response ?? "(no response)" }],
 					details: result,
 				};
 			},
-		},
-	];
+		});
+
+	return [searchTool, crawlTool, codeContextTool];
 }
 
 export default function initExa(pi: ExtensionAPI): void {

@@ -1,9 +1,10 @@
-import { Effect } from "effect";
-import { Type, type Static } from "@sinclair/typebox";
-import type { ExtensionAPI, ToolDefinition } from "@mariozechner/pi-coding-agent";
+import { Effect, Schema } from "effect";
+import { Type } from "@sinclair/typebox";
+import type { AgentToolResult, ExtensionAPI, ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 
 import { SkillManager } from "../services/skill-manager.js";
+import { defineEffectTool, textToolResult } from "../shared/effect-tool.js";
 import {
 	SkillAlreadyExists,
 	SkillFileError,
@@ -58,7 +59,27 @@ const SkillManageParams = Type.Object({
 		Type.String({ description: "Content for the file. Required for 'write_file'." }),
 	),
 });
-type SkillManageParams = Static<typeof SkillManageParams>;
+
+const SkillManageParamsSchema = Schema.Struct({
+	action: Schema.Literals([
+		"create",
+		"patch",
+		"edit",
+		"delete",
+		"write_file",
+		"remove_file",
+	] as const),
+	name: Schema.String,
+	content: Schema.optional(Schema.String),
+	old_string: Schema.optional(Schema.String),
+	new_string: Schema.optional(Schema.String),
+	replace_all: Schema.optional(Schema.Boolean),
+	category: Schema.optional(Schema.String),
+	file_path: Schema.optional(Schema.String),
+	file_content: Schema.optional(Schema.String),
+});
+const decodeSkillManageParams = Schema.decodeUnknownSync(SkillManageParamsSchema);
+type SkillManageParams = Schema.Schema.Type<typeof SkillManageParamsSchema>;
 
 const TOOL_DESCRIPTION =
 	"Manage skills (create, update, delete). Skills are your procedural memory — reusable approaches for recurring task types. New skills default to ~/.pi/agent/skills/, and edits/patches can target matching skills discovered from the current workspace as well.\n\nActions: create (full SKILL.md + optional category), patch (old_string/new_string — preferred for fixes), edit (full SKILL.md rewrite — major overhauls only), delete, write_file, remove_file.\n\nCreate when: complex task succeeded (5+ tool calls), errors overcome, user-corrected approach worked, non-trivial workflow discovered, or user asks you to remember a procedure.\nUpdate when: instructions stale/wrong, missing steps or pitfalls found during use. If you used a skill and hit issues not covered by it, patch it immediately.\n\nAfter difficult/iterative tasks, offer to save as a skill. Skip for simple one-offs. Confirm with user before creating/deleting.\n\nGood skills: trigger conditions, numbered steps with exact commands, pitfalls section, verification steps.";
@@ -78,7 +99,7 @@ type ToolDetails = {
 	readonly patch?: SkillPatchDetails;
 };
 
-type ToolResult = { content: { type: "text"; text: string }[]; details: ToolDetails };
+type ToolResult = AgentToolResult<ToolDetails>;
 
 type ValidatedSkillManageParams =
 	| {
@@ -126,18 +147,21 @@ type ToolSuccessPayload = {
 };
 
 function toolOk(text: string, details: Omit<ToolDetails, "success"> = {}): ToolResult {
-	return { content: [{ type: "text", text }], details: { success: true, ...details } };
+	return textToolResult(text, { success: true, ...details });
 }
 function toolFail(text: string, details: Omit<ToolDetails, "success"> = {}): ToolResult {
-	return { content: [{ type: "text", text }], details: { success: false, ...details } };
+	return textToolResult(text, { success: false, ...details });
 }
 
 function getToolCwd(ctx: unknown): string {
 	if (typeof ctx !== "object" || ctx === null || !("cwd" in ctx)) {
-		return process.cwd();
+		throw new Error("skill_manage requires an execution context with cwd.");
 	}
 	const cwd = ctx.cwd;
-	return typeof cwd === "string" ? cwd : process.cwd();
+	if (typeof cwd !== "string" || cwd.length === 0) {
+		throw new Error("skill_manage requires a non-empty execution context cwd.");
+	}
+	return cwd;
 }
 
 function validateParams(params: SkillManageParams): ValidationResult {
@@ -267,15 +291,16 @@ function renderPatchDiff(
 
 export function createSkillManageToolDefinition(
 	runEffect: <A, E>(effect: Effect.Effect<A, E, SkillManager>) => Promise<A>,
-): ToolDefinition<typeof SkillManageParams, ToolDetails> {
-	return {
+): ToolDefinition {
+	return defineEffectTool<typeof SkillManageParams, SkillManageParams, ToolDetails>({
 		name: "skill_manage",
 		label: "skill_manage",
 		description: TOOL_DESCRIPTION,
 		parameters: SkillManageParams,
-		async execute(_toolCallId, rawParams, _signal, _onUpdate, _ctx) {
-			const params = rawParams as SkillManageParams;
-			const cwd = getToolCwd(_ctx);
+		decodeParams: decodeSkillManageParams,
+		formatInvalidParamsResult: (message) => toolFail(message),
+		async execute(params, { ctx }) {
+			const cwd = getToolCwd(ctx);
 			const validation = validateParams(params);
 			if (!validation.ok) {
 				return validation.result;
@@ -414,7 +439,7 @@ export function createSkillManageToolDefinition(
 			const renderedDiff = renderPatchDiff(details.patch.diff, theme);
 			return new Text(`\n${header}\n${renderedDiff}`, 0, 0);
 		},
-	};
+	});
 }
 
 export default function initSkillManage(

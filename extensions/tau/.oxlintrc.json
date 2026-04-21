@@ -1,3 +1,17 @@
 {
-	"$schema": "./node_modules/oxlint/configuration_schema.json"
+	"$schema": "./node_modules/oxlint/configuration_schema.json",
+	"plugins": ["typescript", "eslint"],
+	"rules": {
+		"typescript/no-unused-vars": [
+			"warn",
+			{
+				"argsIgnorePattern": "^_",
+				"varsIgnorePattern": "^_"
+			}
+		],
+		"typescript/no-explicit-any": "error",
+		"typescript/no-unsafe-type-assertion": "warn",
+		"typescript/no-floating-promises": "warn",
+		"eslint/no-console": "warn"
+	}
 }

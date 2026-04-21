@@ -3,6 +3,7 @@ import * as fsPromises from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Data, Effect } from "effect";
+import { atomicWriteFileStringSync } from "./atomic-write.js";
 import { isRecord, type AnyRecord } from "./json.js";
 
 type JsonFileReadResult =
@@ -101,8 +102,7 @@ export function readJsonObjectFileOrThrow(filePath: string): AnyRecord {
 }
 
 export function writeJsonFile(filePath: string, obj: unknown): void {
-	fs.mkdirSync(path.dirname(filePath), { recursive: true });
-	fs.writeFileSync(filePath, JSON.stringify(obj, null, 2) + "\n", "utf-8");
+	atomicWriteFileStringSync(filePath, JSON.stringify(obj, null, 2) + "\n");
 }
 
 export function safeRealpath(targetPath: string): string {

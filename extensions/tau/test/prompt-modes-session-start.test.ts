@@ -42,6 +42,7 @@ type PiMock = {
 	readonly setModelCalls: Array<ModelRef>;
 	readonly thinkingCalls: string[];
 	readonly modeChangedEvents: PromptModeName[];
+	readonly seedCurrentModel: (model: ModelRef) => void;
 	readonly getCurrentModel: () => ModelRef | undefined;
 	readonly getCurrentThinking: () => string;
 };
@@ -177,6 +178,9 @@ function makePiMock(options?: PiMockOptions): PiMock {
 		setModelCalls,
 		thinkingCalls,
 		modeChangedEvents,
+		seedCurrentModel: (model) => {
+			currentModel = model;
+		},
 		getCurrentModel: () => currentModel,
 		getCurrentThinking: () => currentThinking,
 	};
@@ -287,6 +291,56 @@ async function setupPromptModes(
 		PromptModesLive.pipe(Layer.provide(executionRuntimeLayer)),
 	).pipe(Layer.provide(PiAPILive(pi)));
 	await Effect.runPromise(Effect.scoped(setup.pipe(Effect.provide(layer))));
+}
+
+async function runWithPromptModes<A>(
+	stateRef: SubscriptionRef.SubscriptionRef<TauPersistedState>,
+	pi: ExtensionAPI,
+	effect: (promptModes: PromptModes) => Effect.Effect<A>,
+): Promise<A> {
+	const persistenceLayer = Layer.succeed(Persistence, {
+		getSnapshot: () => Effect.runSync(SubscriptionRef.get(stateRef)),
+		setSnapshot: (next: TauPersistedState) => {
+			Effect.runSync(SubscriptionRef.set(stateRef, next));
+		},
+		hydrate: (patch: Partial<TauPersistedState>) => {
+			Effect.runSync(
+				SubscriptionRef.update(stateRef, (current) => mergePersistedState(current, patch)),
+			);
+		},
+		update: (patch: Partial<TauPersistedState>) => {
+			Effect.runSync(
+				SubscriptionRef.update(stateRef, (current) => mergePersistedState(current, patch)),
+			);
+		},
+		getSnapshotEffect: SubscriptionRef.get(stateRef),
+		setSnapshotEffect: (next: TauPersistedState) => SubscriptionRef.set(stateRef, next),
+		updateEffect: (patch: Partial<TauPersistedState>) =>
+			SubscriptionRef.updateAndGet(stateRef, (current) => mergePersistedState(current, patch)),
+		changes: SubscriptionRef.changes(stateRef),
+		setup: Effect.sync(() => undefined),
+	});
+
+	const executionStateLayer = ExecutionStateLive.pipe(Layer.provide(persistenceLayer));
+	const executionRuntimeLayer = ExecutionRuntimeLive.pipe(Layer.provide(executionStateLayer));
+	const layer = Layer.mergeAll(
+		persistenceLayer,
+		executionStateLayer,
+		executionRuntimeLayer,
+		PromptModesLive.pipe(Layer.provide(executionRuntimeLayer)),
+	).pipe(Layer.provide(PiAPILive(pi)));
+
+	return await Effect.runPromise(
+		Effect.scoped(
+			Effect.gen(function* () {
+				const executionState = yield* ExecutionState;
+				yield* executionState.setup;
+				const promptModes = yield* PromptModes;
+				yield* promptModes.setup;
+				return yield* effect(promptModes);
+			}).pipe(Effect.provide(layer)),
+		),
+	);
 }
 
 async function dispatchLifecycleEvent(
@@ -654,6 +708,37 @@ describe("prompt-modes session_start", () => {
 
 			const persisted = Effect.runSync(SubscriptionRef.get(stateRef));
 			expect(persisted.execution?.selector?.mode).toBe("deep");
+		});
+	});
+
+	it("forces model selection for ephemeral execution-profile application even when ctx.model is stale", async () => {
+		await withTempDir(async (cwd) => {
+			const stateRef = await Effect.runPromise(SubscriptionRef.make<TauPersistedState>({}));
+			const mock = makePiMock();
+
+			mock.seedCurrentModel({ provider: "moonshot", id: "kimi-for-coding" });
+			mock.setModelCalls.length = 0;
+
+			const result = await runWithPromptModes(stateRef, mock.pi, (promptModes) =>
+				promptModes.applyExecutionProfile(
+					{
+						selector: { mode: "deep" },
+						promptProfile: {
+							mode: "deep",
+							model: "openai-codex/gpt-5.4",
+							thinking: "high",
+						},
+						policy: { tools: { kind: "inherit" } },
+					},
+					makeSessionStartContext(cwd, [], true, {
+						model: { provider: "openai-codex", id: "gpt-5.4" },
+					}),
+					{ persist: false, ephemeral: true },
+				),
+			);
+
+			expect(result.applied).toBe(true);
+			expect(mock.setModelCalls).toEqual([{ provider: "openai-codex", id: "gpt-5.4" }]);
 		});
 	});
 });

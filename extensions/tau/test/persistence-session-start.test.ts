@@ -6,7 +6,11 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 
 import { PiAPILive } from "../src/effect/pi.js";
 import { Persistence, PersistenceLive } from "../src/services/persistence.js";
-import { TAU_PERSISTED_STATE_TYPE, type TauPersistedState } from "../src/shared/state.js";
+import {
+	PersistedStateDecodeError,
+	TAU_PERSISTED_STATE_TYPE,
+	type TauPersistedState,
+} from "../src/shared/state.js";
 
 type SessionStartHandler = (event: unknown, ctx: ExtensionContext) => unknown;
 
@@ -168,5 +172,25 @@ describe("persistence session_start", () => {
 
 		const state = persistence.getSnapshot();
 		expect(state.execution?.selector?.mode).toBe("default");
+	});
+
+	it("surfaces invalid session tau state instead of treating it as missing", async () => {
+		const mock = makePiMock();
+		await setupPersistence(mock.pi);
+
+		const sessionStart = mock.handlers.get("session_start")?.[0];
+		expect(sessionStart).toBeTypeOf("function");
+
+		const ctx = makeSessionStartContext([
+			{
+				type: "custom",
+				customType: TAU_PERSISTED_STATE_TYPE,
+				data: { status: { fetchedAt: Number.POSITIVE_INFINITY, values: {} } },
+			},
+		]);
+
+		expect(() => sessionStart?.({ type: "session_start" }, ctx)).toThrowError(
+			PersistedStateDecodeError,
+		);
 	});
 });

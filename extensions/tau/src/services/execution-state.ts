@@ -37,13 +37,12 @@ export const ExecutionStateLive = Layer.effect(
 	ExecutionState,
 	Effect.gen(function* () {
 		const persistence = yield* Persistence;
-		const snapshotRef = yield* SubscriptionRef.make<ExecutionSessionState>(
-			normalizeExecutionState(persistence.getSnapshot().execution),
-		);
-		const runtimeSnapshotRef = MutableRef.make(SubscriptionRef.getUnsafe(snapshotRef));
+		const initialSnapshot = normalizeExecutionState(persistence.getSnapshot().execution);
+		const snapshotRef = yield* SubscriptionRef.make<ExecutionSessionState>(initialSnapshot);
+		const runtimeSnapshotRef = MutableRef.make(initialSnapshot);
 		const transientSnapshotRef = MutableRef.make<Option.Option<ExecutionSessionState>>(Option.none());
 		const defaultProfileRef = MutableRef.make<Option.Option<PromptModeProfile>>(Option.none());
-		const syncQueue = yield* Queue.unbounded<ExecutionSessionState>();
+		const syncQueue = yield* Queue.sliding<ExecutionSessionState>(1);
 
 		const publishSnapshot = (next: ExecutionSessionState): ExecutionSessionState => {
 			MutableRef.set(runtimeSnapshotRef, next);

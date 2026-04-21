@@ -61,13 +61,13 @@ function skillFilePath(name: string, category?: string): string {
 	return path.join(skillDirPath(name, category), "SKILL.md");
 }
 
-const createSkillEffect = (name: string, content: string, category?: string) =>
+const createSkillEffect = (name: string, content: string, category?: string, cwd = tempDir) =>
 	Effect.gen(function* () {
 		const manager = yield* SkillManager;
-		return yield* manager.create(name, content, category);
+		return yield* manager.create(name, content, category, cwd);
 	});
 
-const editSkillEffect = (name: string, content: string, cwd?: string) =>
+const editSkillEffect = (name: string, content: string, cwd = tempDir) =>
 	Effect.gen(function* () {
 		const manager = yield* SkillManager;
 		return yield* manager.edit(name, content, cwd);
@@ -79,26 +79,26 @@ const patchSkillEffect = (
 	newString: string,
 	filePath?: string,
 	replaceAll?: boolean,
-	cwd?: string,
+	cwd = tempDir,
 ) =>
 	Effect.gen(function* () {
 		const manager = yield* SkillManager;
 		return yield* manager.patch(name, oldString, newString, filePath, replaceAll, cwd);
 	});
 
-const removeSkillEffect = (name: string, cwd?: string) =>
+const removeSkillEffect = (name: string, cwd = tempDir) =>
 	Effect.gen(function* () {
 		const manager = yield* SkillManager;
 		return yield* manager.remove(name, cwd);
 	});
 
-const writeFileEffect = (name: string, filePath: string, fileContent: string, cwd?: string) =>
+const writeFileEffect = (name: string, filePath: string, fileContent: string, cwd = tempDir) =>
 	Effect.gen(function* () {
 		const manager = yield* SkillManager;
 		return yield* manager.writeFile(name, filePath, fileContent, cwd);
 	});
 
-const removeFileEffect = (name: string, filePath: string, cwd?: string) =>
+const removeFileEffect = (name: string, filePath: string, cwd = tempDir) =>
 	Effect.gen(function* () {
 		const manager = yield* SkillManager;
 		return yield* manager.removeFile(name, filePath, cwd);
@@ -190,6 +190,23 @@ describe("SkillManager", () => {
 
 		expect(error).toBeInstanceOf(SkillInvalidName);
 		expect(error).toMatchObject({ name: "INVALID" });
+	});
+
+	it("rejects missing cwd instead of falling back to process.cwd()", async () => {
+		const error = await getFailure(
+			Effect.gen(function* () {
+				const manager = yield* SkillManager;
+				return yield* manager.create(
+					"test-skill",
+					makeSkillContent("test-skill"),
+					undefined,
+					undefined,
+				);
+			}),
+		);
+
+		expect(error).toBeInstanceOf(SkillFileError);
+		expect(error).toMatchObject({ reason: "cwd is required" });
 	});
 
 	it("rejects content without frontmatter", async () => {

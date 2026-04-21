@@ -1,4 +1,4 @@
-import { Option, Schema } from "effect";
+import { Data, Schema } from "effect";
 import { deepMerge, isRecord } from "./json.js";
 import {
 	normalizeExecutionState,
@@ -9,8 +9,8 @@ import {
 export const TAU_PERSISTED_STATE_TYPE = "tau:state";
 
 export type TauPersistedState = {
-	terminalPrompt?: { enabled?: boolean } | undefined;
-	workedFor?: { enabled?: boolean; toolsEnabled?: boolean } | undefined;
+	terminalPrompt?: { enabled?: boolean | undefined } | undefined;
+	workedFor?: { enabled?: boolean | undefined; toolsEnabled?: boolean | undefined } | undefined;
 	status?: { fetchedAt: number; values: Record<string, { percentLeft: number }> } | undefined;
 	execution?: ExecutionPersistedState | undefined;
 	sandbox?: Record<string, unknown> | undefined;
@@ -71,22 +71,74 @@ const TauPersistedStateSchema = Schema.Struct({
 	),
 });
 
-const decodePersistedState = Schema.decodeUnknownOption(TauPersistedStateSchema);
+const decodePersistedStateSync = Schema.decodeUnknownSync(TauPersistedStateSchema);
+
+export class PersistedStateDecodeError extends Data.TaggedError("PersistedStateDecodeError")<{
+	readonly message: string;
+	readonly cause?: unknown;
+}> {}
+
+type PersistedStateEntry = {
+	readonly data: unknown;
+	readonly index: number;
+};
+
+export type PersistedStateLoadResult =
+	| { readonly _tag: "missing" }
+	| { readonly _tag: "invalid"; readonly error: PersistedStateDecodeError }
+	| { readonly _tag: "ok"; readonly state: TauPersistedState };
+
+function findPersistedStateEntry(entries: readonly unknown[]): PersistedStateEntry | undefined {
+	for (let index = entries.length - 1; index >= 0; index -= 1) {
+		const entry = entries[index];
+		if (
+			isRecord(entry) &&
+			entry["type"] === "custom" &&
+			entry["customType"] === TAU_PERSISTED_STATE_TYPE
+		) {
+			return {
+				data: entry["data"],
+				index,
+			};
+		}
+	}
+
+	return undefined;
+}
+
+export function loadPersistedStateDetailed(ctx: {
+	sessionManager: { getEntries: () => unknown[] };
+}): PersistedStateLoadResult {
+	const entry = findPersistedStateEntry(ctx.sessionManager.getEntries());
+	if (entry === undefined) {
+		return { _tag: "missing" };
+	}
+
+	try {
+		return {
+			_tag: "ok",
+			state: normalizePersistedState(decodePersistedStateSync(entry.data)),
+		};
+	} catch (cause) {
+		return {
+			_tag: "invalid",
+			error: new PersistedStateDecodeError({
+				message: `Invalid tau persisted state in session entry ${entry.index + 1}`,
+				cause,
+			}),
+		};
+	}
+}
 
 export function loadPersistedState(ctx: {
 	sessionManager: { getEntries: () => unknown[] };
 }): TauPersistedState {
-	const entries = ctx.sessionManager.getEntries();
-	const last = entries
-		.filter(
-			(e): e is { type: "custom"; customType: string; data: unknown } =>
-				isRecord(e) &&
-				e["type"] === "custom" &&
-				e["customType"] === TAU_PERSISTED_STATE_TYPE,
-		)
-		.pop();
-
-	const decoded = decodePersistedState(last?.data);
-	const state = Option.getOrElse(decoded, (): TauPersistedState => ({})) as TauPersistedState;
-	return normalizePersistedState(state);
+	const result = loadPersistedStateDetailed(ctx);
+	if (result._tag === "missing") {
+		return {};
+	}
+	if (result._tag === "invalid") {
+		throw result.error;
+	}
+	return result.state;
 }

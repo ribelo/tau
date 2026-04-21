@@ -1,8 +1,8 @@
-import { Type, type TSchema } from "@sinclair/typebox";
+import { Type } from "@sinclair/typebox";
 import { Effect, Stream, Cause, Schema } from "effect";
 import { StringEnum } from "@mariozechner/pi-ai";
 import type { Model, Api } from "@mariozechner/pi-ai";
-import type { ModelRegistry } from "@mariozechner/pi-coding-agent";
+import type { ModelRegistry, ToolDefinition } from "@mariozechner/pi-coding-agent";
 import type { AgentToolUpdateCallback } from "@mariozechner/pi-agent-core";
 import {
 	AgentControl,
@@ -20,6 +20,7 @@ import type { AgentId } from "./types.js";
 import { renderAgentCall, renderAgentResult } from "./render.js";
 import type { ApprovalBroker } from "./approval-broker.js";
 import { DEFAULT_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS } from "./control.js";
+import { defineEffectTool, textToolResult } from "../shared/effect-tool.js";
 
 /**
  * Convert an AbortSignal to an Effect that completes when the signal aborts.
@@ -91,6 +92,7 @@ const AgentParamsSchema = Schema.Struct({
 	ids: Schema.optional(Schema.Array(Schema.String)),
 	timeout_ms: Schema.optional(Schema.Number),
 });
+const decodeAgentParams = Schema.decodeUnknownSync(AgentParamsSchema);
 
 type DecodedAgentParams = Schema.Schema.Type<typeof AgentParamsSchema>;
 
@@ -241,25 +243,7 @@ async function executeWaitWithUpdates(
 	}
 }
 
-export interface AgentToolDef {
-	name: string;
-	label: string;
-	description: string;
-	parameters: TSchema;
-	execute: (
-		toolCallId: string,
-		params: unknown,
-		signal: AbortSignal | undefined,
-		onUpdate: unknown,
-		ctx: unknown,
-	) => Promise<{
-		isError?: boolean;
-		content: Array<{ type: "text"; text: string }>;
-		details: object;
-	}>;
-	renderCall?: typeof renderAgentCall;
-	renderResult?: typeof renderAgentResult;
-}
+export type AgentToolDef = ToolDefinition;
 
 /**
  * Create an agent tool that uses the provided runtime to execute commands.
@@ -271,19 +255,18 @@ export function createAgentToolDef(
 	getContext: () => AgentToolContext,
 	description: string,
 ): AgentToolDef {
-	return {
+	return defineEffectTool<typeof AgentParams, DecodedAgentParams, object>({
 		name: "agent",
 		label: "agent",
 		description,
 		parameters: AgentParams,
-
-		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
+		decodeParams: decodeAgentParams,
+		formatInvalidParamsResult: (message) =>
+			textToolResult(message, { error: message }, { isError: true }),
+		renderCall: renderAgentCall,
+		renderResult: renderAgentResult,
+		async execute(p, { signal, onUpdate }) {
 			const context = getContext();
-			const p = await Effect.runPromise(
-				Schema.decodeUnknownEffect(AgentParamsSchema)(params).pipe(
-					Effect.mapError((error) => new Error(`Invalid agent params: ${error}`)),
-				),
-			);
 
 			// Special case for wait: use streaming with onUpdate and abort handling
 			if (p.action === "wait") {
@@ -436,8 +419,5 @@ export function createAgentToolDef(
 				};
 			}
 		},
-
-		renderCall: renderAgentCall,
-		renderResult: renderAgentResult,
-	};
+	});
 }

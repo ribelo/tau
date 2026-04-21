@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { Dirent, Stats } from "node:fs";
 
-import { Clock, Effect, Layer, Ref, Schema, ServiceMap } from "effect";
+import { Clock, Effect, Layer, Option, Ref, Schema, ServiceMap } from "effect";
 
 import type { DreamConfig } from "./config.js";
 import type {
@@ -23,6 +23,7 @@ import {
 	type DreamGateError,
 	type DreamLockError,
 } from "./errors.js";
+import { DreamLock, type DreamLockApi } from "./lock.js";
 import {
 	dreamTranscriptRoot,
 	isDreamTranscriptFile,
@@ -77,10 +78,6 @@ function errorReason(error: unknown): string {
 
 function dreamStatePath(cwd: string): string {
 	return path.join(cwd, ".pi", "tau", "dream-state.json");
-}
-
-function dreamLockPath(cwd: string): string {
-	return path.join(cwd, ".pi", "tau", "dream.lock");
 }
 
 function readDirEntries(dirPath: string): Effect.Effect<ReadonlyArray<Dirent>, DreamLockIoError> {
@@ -191,25 +188,22 @@ function scanTranscriptCandidates(
 	});
 }
 
-function ensureDreamLockNotHeld(cwd: string): Effect.Effect<void, DreamLockError> {
-	const lockPath = dreamLockPath(cwd);
-
-	return Effect.tryPromise({
-		try: () => fs.access(lockPath),
-		catch: (cause) => cause,
-	}).pipe(
-		Effect.as(true),
-		Effect.catchIf((cause) => isNodeError(cause, "ENOENT"), () => Effect.succeed(false)),
-		Effect.mapError(
-			(cause) =>
-				new DreamLockIoError({
-					path: lockPath,
-					operation: "access",
-					reason: errorReason(cause),
-				}),
-		),
-		Effect.flatMap((exists) =>
-			exists ? Effect.fail(new DreamLockHeld({ path: lockPath })) : Effect.void,
+function ensureDreamLockNotHeld(
+	lock: DreamLockApi,
+	cwd: string,
+): Effect.Effect<void, DreamLockError> {
+	return lock.inspect(cwd).pipe(
+		Effect.flatMap((lockInfo) =>
+			Option.isSome(lockInfo)
+				? Effect.fail(
+						new DreamLockHeld({
+							path: lockInfo.value.path,
+							...(lockInfo.value.holderPid === undefined
+								? {}
+								: { holderPid: lockInfo.value.holderPid }),
+						}),
+					)
+				: Effect.void,
 		),
 	);
 }
@@ -303,6 +297,7 @@ export const DreamSchedulerLive = (config: DreamSchedulerLiveConfig) =>
 		DreamScheduler,
 		Effect.gen(function* () {
 			const lastScanAtRef = yield* Ref.make<number | null>(null);
+			const lock = yield* DreamLock;
 
 			const readLastCompletedAt: DreamSchedulerApi["readLastCompletedAt"] = Effect.fn(
 				"DreamScheduler.readLastCompletedAt",
@@ -354,7 +349,7 @@ export const DreamSchedulerLive = (config: DreamSchedulerLiveConfig) =>
 					);
 				}
 
-				yield* Ref.set(lastScanAtRef, nowMs);
+				yield* ensureDreamLockNotHeld(lock, request.cwd);
 
 				const sinceMs = lastCompletedAtMs ?? 0;
 				const sessions = yield* scanTranscriptCandidates(
@@ -362,6 +357,8 @@ export const DreamSchedulerLive = (config: DreamSchedulerLiveConfig) =>
 					sinceMs,
 					request.currentSessionId,
 				);
+
+				yield* Ref.set(lastScanAtRef, nowMs);
 
 				if (sessions.length < dreamConfig.auto.minSessionsSinceLastRun) {
 					return yield* Effect.fail(
@@ -371,8 +368,6 @@ export const DreamSchedulerLive = (config: DreamSchedulerLiveConfig) =>
 						}),
 					);
 				}
-
-				yield* ensureDreamLockNotHeld(request.cwd);
 
 				return {
 					sinceMs,

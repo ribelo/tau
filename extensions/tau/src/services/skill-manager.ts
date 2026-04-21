@@ -168,6 +168,15 @@ function fileError(reason: string, error: unknown): SkillFileError {
 	return new SkillFileError({ reason: `${reason}: ${String(error)}` });
 }
 
+const requireWorkspaceCwd = Effect.fn("SkillManager.requireWorkspaceCwd")(function* (
+	cwd: string | undefined,
+) {
+	if (typeof cwd !== "string" || cwd.length === 0) {
+		return yield* Effect.fail(new SkillFileError({ reason: "cwd is required" }));
+	}
+	return cwd;
+});
+
 function resolveChildPath(root: string, childPath: string): string | undefined {
 	const resolved = path.resolve(root, childPath);
 	const relative = path.relative(root, resolved);
@@ -395,7 +404,8 @@ const atomicWrite = Effect.fn("SkillManager.atomicWrite")(function* (
 });
 
 const findSkill = Effect.fn("SkillManager.findSkill")(function* (name: string, cwd?: string) {
-	for (const root of getSkillRoots(cwd ?? process.cwd())) {
+	const resolvedCwd = yield* requireWorkspaceCwd(cwd);
+	for (const root of getSkillRoots(resolvedCwd)) {
 		const skillDirs = yield* tryFile(`failed to scan skills directory ${root}`, () =>
 			findSkillDirs(root),
 		);
@@ -509,7 +519,7 @@ export const SkillManagerLive = (config: { onSkillMutated: (cwd: string) => void
 
 			const create: SkillManagerService["create"] = Effect.fn("SkillManager.create")(
 				function* (name: string, content: string, category?: string, cwd?: string) {
-					const resolvedCwd = cwd ?? process.cwd();
+					const resolvedCwd = yield* requireWorkspaceCwd(cwd);
 					yield* ensureValidName(name);
 					yield* ensureValidContent(content);
 					yield* ensureNoInjectionPatterns(content);
@@ -551,7 +561,7 @@ export const SkillManagerLive = (config: { onSkillMutated: (cwd: string) => void
 				content: string,
 				cwd?: string,
 			) {
-				const resolvedCwd = cwd ?? process.cwd();
+				const resolvedCwd = yield* requireWorkspaceCwd(cwd);
 				const skill = yield* findSkillOrFail(name, resolvedCwd);
 				yield* ensureValidContent(content);
 				yield* ensureNoInjectionPatterns(content);
@@ -568,7 +578,7 @@ export const SkillManagerLive = (config: { onSkillMutated: (cwd: string) => void
 				replaceAll?: boolean,
 				cwd?: string,
 			) {
-				const resolvedCwd = cwd ?? process.cwd();
+				const resolvedCwd = yield* requireWorkspaceCwd(cwd);
 				if (oldString.length === 0) {
 					return yield* Effect.fail(
 						new SkillPatchFailed({ reason: "old_string must not be empty" }),
@@ -625,7 +635,7 @@ export const SkillManagerLive = (config: { onSkillMutated: (cwd: string) => void
 
 			const remove: SkillManagerService["remove"] = Effect.fn("SkillManager.remove")(
 				function* (name: string, cwd?: string) {
-					const resolvedCwd = cwd ?? process.cwd();
+					const resolvedCwd = yield* requireWorkspaceCwd(cwd);
 					const skill = yield* findSkillOrFail(name, resolvedCwd);
 					yield* tryFile(`failed to remove skill ${skill.path}`, () =>
 						fs.rm(skill.path, { recursive: true }),
@@ -640,7 +650,7 @@ export const SkillManagerLive = (config: { onSkillMutated: (cwd: string) => void
 
 			const writeFile: SkillManagerService["writeFile"] = Effect.fn("SkillManager.writeFile")(
 				function* (name: string, filePath: string, fileContent: string, cwd?: string) {
-					const resolvedCwd = cwd ?? process.cwd();
+					const resolvedCwd = yield* requireWorkspaceCwd(cwd);
 					yield* ensureValidFilePath(filePath);
 					const skill = yield* findSkillOrFail(name, resolvedCwd);
 					yield* ensureNoInjectionPatterns(fileContent);
@@ -654,7 +664,7 @@ export const SkillManagerLive = (config: { onSkillMutated: (cwd: string) => void
 			const removeFile: SkillManagerService["removeFile"] = Effect.fn(
 				"SkillManager.removeFile",
 			)(function* (name: string, filePath: string, cwd?: string) {
-				const resolvedCwd = cwd ?? process.cwd();
+				const resolvedCwd = yield* requireWorkspaceCwd(cwd);
 				yield* ensureValidFilePath(filePath);
 				const skill = yield* findSkillOrFail(name, resolvedCwd);
 				const targetPath = yield* resolveSkillFileTarget(skill.path, filePath);

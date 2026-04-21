@@ -1,5 +1,7 @@
 import { Schema } from "effect";
 
+import { StorageError } from "../shared/atomic-write.js";
+
 export class LoopContractValidationError extends Schema.TaggedErrorClass<LoopContractValidationError>()(
 	"LoopContractValidationError",
 	{
@@ -54,4 +56,5 @@ export type LoopEngineError =
 	| LoopTaskAlreadyExistsError
 	| LoopLifecycleConflictError
 	| LoopOwnershipValidationError
-	| LoopAmbiguousOwnershipError;
+	| LoopAmbiguousOwnershipError
+	| StorageError;

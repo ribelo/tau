@@ -1,3 +1,4 @@
+import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import { Effect, Option } from "effect";
 import { createThreadToolDefinitions } from "../src/thread/index.js";
@@ -9,6 +10,10 @@ import {
 } from "../src/thread/renderer.js";
 import { resolveThreadPath } from "../src/thread/search.js";
 import type { FindThreadResult, ReadThreadResult } from "../src/thread/types.js";
+
+function createToolContext(cwd: string): ExtensionContext {
+	return { cwd } as ExtensionContext;
+}
 
 describe("createThreadToolDefinitions", () => {
 	it("exports find_thread and read_thread tools", () => {
@@ -28,6 +33,25 @@ describe("createThreadToolDefinitions", () => {
 		const readThread = tools.find((t) => t.name === "read_thread")!;
 		expect(readThread).toBeDefined();
 		expect(readThread.description).toContain("thread by ID");
+	});
+
+	it("rejects invalid find_thread params before execution", async () => {
+		const tools = createThreadToolDefinitions();
+		const findThread = tools.find((tool) => tool.name === "find_thread")!;
+
+		const result = await findThread.execute(
+			"call-1",
+			{},
+			undefined,
+			undefined,
+			createToolContext(process.cwd()),
+		);
+
+		expect(result.content[0]?.type).toBe("text");
+		expect(result.content[0]?.type === "text" ? result.content[0].text : "").toContain(
+			"Invalid find_thread params",
+		);
+		expect(result.details).toBeUndefined();
 	});
 });
 

@@ -1,6 +1,7 @@
 import { Clock, Effect, Layer, Option, ServiceMap } from "effect";
 
 import type { ExecutionProfile } from "../execution/schema.js";
+import type { StorageError } from "../shared/atomic-write.js";
 import {
 	createAutoresearchPhaseSnapshot,
 	normalizeAutoresearchTaskContractInput,
@@ -221,7 +222,7 @@ export const LoopEngineLive = Layer.effect(
 		const ensureLoadedState = (
 			cwd: string,
 			taskId: string,
-		): Effect.Effect<LoopPersistedState, LoopTaskNotFoundError | LoopContractValidationError, never> =>
+		): Effect.Effect<LoopPersistedState, LoopTaskNotFoundError | LoopContractValidationError | StorageError, never> =>
 			Effect.gen(function* () {
 				const normalizedTaskId = yield* normalizeTaskId(taskId);
 				const stateOption = yield* repo.loadState(cwd, normalizedTaskId);
@@ -239,7 +240,7 @@ export const LoopEngineLive = Layer.effect(
 		const loadAllValidated = (
 			cwd: string,
 			archived = false,
-		): Effect.Effect<ReadonlyArray<LoopPersistedState>, LoopContractValidationError | LoopOwnershipValidationError, never> =>
+		): Effect.Effect<ReadonlyArray<LoopPersistedState>, LoopContractValidationError | LoopOwnershipValidationError | StorageError, never> =>
 			repo.listStates(cwd, archived).pipe(
 				Effect.flatMap((states) =>
 					Effect.forEach(states, (state) => validateState(state), {

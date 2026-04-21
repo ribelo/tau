@@ -52,7 +52,7 @@ export const PersistenceLive = Layer.effect(
 	Effect.gen(function* () {
 		const pi = yield* PiAPI;
 		const ref = yield* SubscriptionRef.make<TauPersistedState>({});
-		const syncQueue = yield* Queue.unbounded<TauPersistedState>();
+		const syncQueue = yield* Queue.sliding<TauPersistedState>(1);
 		let snapshot: TauPersistedState = {};
 		let persistExecutionForCurrentSession = true;
 
