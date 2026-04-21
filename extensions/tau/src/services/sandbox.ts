@@ -22,11 +22,9 @@ export const SandboxLive = Layer.effect(
 		const pi = yield* PiAPI;
 		const state = yield* SandboxState;
 		const persistence = yield* Persistence;
-		const syncQueue = yield* Queue.unbounded<SandboxConfigRequired>();
-		let currentConfig = SubscriptionRef.getUnsafe(state);
+		const syncQueue = yield* Queue.sliding<SandboxConfigRequired>(1);
 
 		const publishConfig = (next: SandboxConfigRequired): void => {
-			currentConfig = next;
 			Queue.offerUnsafe(syncQueue, next);
 		};
 
@@ -36,7 +34,7 @@ export const SandboxLive = Layer.effect(
 		);
 
 		return Sandbox.of({
-			getConfig: Effect.sync(() => currentConfig),
+			getConfig: SubscriptionRef.get(state),
 			changes: SubscriptionRef.changes(state),
 			setup: Effect.gen(function* () {
 				yield* Effect.forkScoped(drainSyncQueue);

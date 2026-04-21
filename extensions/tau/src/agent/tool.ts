@@ -1,5 +1,5 @@
-import { Type, type Static, type TSchema } from "@sinclair/typebox";
-import { Effect, Stream, Cause } from "effect";
+import { Type, type TSchema } from "@sinclair/typebox";
+import { Effect, Stream, Cause, Schema } from "effect";
 import { StringEnum } from "@mariozechner/pi-ai";
 import type { Model, Api } from "@mariozechner/pi-ai";
 import type { ModelRegistry } from "@mariozechner/pi-coding-agent";
@@ -80,6 +80,20 @@ export const AgentParams = Type.Object({
 	),
 });
 
+// Effect Schema mirror for runtime validation at execution boundary.
+const AgentParamsSchema = Schema.Struct({
+	action: Schema.Literals(["spawn", "send", "wait", "close", "list"] as const),
+	agent: Schema.optional(Schema.String),
+	message: Schema.optional(Schema.String),
+	result_schema: Schema.optional(Schema.Unknown),
+	id: Schema.optional(Schema.String),
+	interrupt: Schema.optional(Schema.Boolean),
+	ids: Schema.optional(Schema.Array(Schema.String)),
+	timeout_ms: Schema.optional(Schema.Number),
+});
+
+type DecodedAgentParams = Schema.Schema.Type<typeof AgentParamsSchema>;
+
 export function buildToolDescription(
 	registry: {
 		list: () => ReadonlyArray<{ readonly name: string; readonly description: string }>;
@@ -142,7 +156,7 @@ type ToolResult = {
  */
 async function executeWaitWithUpdates(
 	runEffect: <A, E>(effect: Effect.Effect<A, E, AgentControl>) => Promise<A>,
-	p: Static<typeof AgentParams>,
+	p: DecodedAgentParams,
 	onUpdate: AgentToolUpdateCallback<object> | undefined,
 	signal: AbortSignal | undefined,
 ): Promise<ToolResult> {
@@ -265,7 +279,11 @@ export function createAgentToolDef(
 
 		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
 			const context = getContext();
-			const p = params as Static<typeof AgentParams>;
+			const p = await Effect.runPromise(
+				Schema.decodeUnknownEffect(AgentParamsSchema)(params).pipe(
+					Effect.mapError((error) => new Error(`Invalid agent params: ${error}`)),
+				),
+			);
 
 			// Special case for wait: use streaming with onUpdate and abort handling
 			if (p.action === "wait") {
