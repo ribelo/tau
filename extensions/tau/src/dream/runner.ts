@@ -6,7 +6,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { Dirent, Stats } from "node:fs";
 
-import { Clock, Effect, Exit, Layer, Option, Schema, Scope, ServiceMap } from "effect";
+import { Clock, Effect, Exit, Layer, Option, Schema, Scope, Context } from "effect";
 import { nanoid } from "nanoid";
 import { Type, type Static } from "@sinclair/typebox";
 
@@ -62,7 +62,7 @@ export interface DreamRunnerApi {
 	) => Effect.Effect<Option.Option<DreamTaskHandle>, DreamConfigError | DreamLockError>;
 }
 
-export class DreamRunner extends ServiceMap.Service<DreamRunner, DreamRunnerApi>()(
+export class DreamRunner extends Context.Service<DreamRunner, DreamRunnerApi>()(
 	"DreamRunner",
 ) {}
 

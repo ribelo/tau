@@ -1,4 +1,4 @@
-import { Effect, Option, ServiceMap } from "effect";
+import { Effect, Option, Context } from "effect";
 
 import type { BacklogEvent } from "./contract.js";
 import type {
@@ -52,7 +52,7 @@ export interface BacklogConfigService {
 	readonly issuesCachePath: string;
 }
 
-export class BacklogConfig extends ServiceMap.Service<BacklogConfig, BacklogConfigService>()(
+export class BacklogConfig extends Context.Service<BacklogConfig, BacklogConfigService>()(
 	"BacklogConfig",
 ) {}
 
@@ -87,7 +87,7 @@ export interface BacklogRepositoryService {
 	) => Effect.Effect<A, E | BacklogLockError, never>;
 }
 
-export class BacklogRepository extends ServiceMap.Service<BacklogRepository, BacklogRepositoryService>()(
+export class BacklogRepository extends Context.Service<BacklogRepository, BacklogRepositoryService>()(
 	"BacklogRepository",
 ) {}
 
@@ -99,7 +99,7 @@ export interface BacklogLegacyImportService {
 	>;
 }
 
-export class BacklogLegacyImport extends ServiceMap.Service<
+export class BacklogLegacyImport extends Context.Service<
 	BacklogLegacyImport,
 	BacklogLegacyImportService
 >()("BacklogLegacyImport") {}
@@ -187,7 +187,7 @@ export interface BacklogCommandServiceApi {
 	readonly status: () => Effect.Effect<BacklogStatusSummary, BacklogCommandQueryError, never>;
 }
 
-export class BacklogCommandService extends ServiceMap.Service<
+export class BacklogCommandService extends Context.Service<
 	BacklogCommandService,
 	BacklogCommandServiceApi
 >()(

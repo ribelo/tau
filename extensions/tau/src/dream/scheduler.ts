@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { Dirent, Stats } from "node:fs";
 
-import { Clock, Effect, Layer, Option, Ref, Schema, ServiceMap } from "effect";
+import { Clock, Effect, Layer, Option, Ref, Schema, Context } from "effect";
 
 import type { DreamConfig } from "./config.js";
 import type {
@@ -59,7 +59,7 @@ export interface DreamSchedulerLiveConfig {
 	readonly loadConfig: (cwd: string) => Effect.Effect<DreamConfig, DreamConfigError>;
 }
 
-export class DreamScheduler extends ServiceMap.Service<DreamScheduler, DreamSchedulerApi>()(
+export class DreamScheduler extends Context.Service<DreamScheduler, DreamSchedulerApi>()(
 	"DreamScheduler",
 ) {}
 

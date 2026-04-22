@@ -1,4 +1,4 @@
-import { Effect, Exit, Layer, Queue, Schema, Scope, ServiceMap, Stream, SubscriptionRef } from "effect";
+import { Effect, Exit, Layer, Queue, Schema, Scope, Context, Stream, SubscriptionRef } from "effect";
 
 import { PiAPI } from "../effect/pi.js";
 import { SandboxConfigRequired } from "../schemas/config.js";
@@ -14,7 +14,7 @@ export interface Sandbox {
 	readonly setup: Effect.Effect<void, never, Scope.Scope>;
 }
 
-export const Sandbox = ServiceMap.Service<Sandbox>("Sandbox");
+export const Sandbox = Context.Service<Sandbox>("Sandbox");
 
 export const SandboxLive = Layer.effect(
 	Sandbox,

@@ -1,4 +1,4 @@
-import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Scope, ServiceMap } from "effect";
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Scope, Context } from "effect";
 
 export type WaitForAutoresearchAgentEndResult =
 	| {
@@ -27,7 +27,7 @@ export interface AutoresearchLoopRunnerService {
 	) => Effect.Effect<void, never, never>;
 }
 
-export class AutoresearchLoopRunner extends ServiceMap.Service<
+export class AutoresearchLoopRunner extends Context.Service<
 	AutoresearchLoopRunner,
 	AutoresearchLoopRunnerService
 >()("AutoresearchLoopRunner") {}

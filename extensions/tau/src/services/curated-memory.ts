@@ -2,7 +2,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { DateTime, Effect, Layer, Semaphore, ServiceMap } from "effect";
+import { DateTime, Effect, Layer, Semaphore, Context } from "effect";
 import type { Scope } from "effect";
 import { nanoid } from "nanoid";
 
@@ -397,7 +397,7 @@ function makeFrozenSnapshot(entriesSnapshot: MemoryEntriesSnapshot): FrozenSnaps
 	};
 }
 
-export class CuratedMemory extends ServiceMap.Service<
+export class CuratedMemory extends Context.Service<
 	CuratedMemory,
 	{
 		readonly getSnapshot: (cwd: string) => Effect.Effect<MemorySnapshot, MemoryFileError>;

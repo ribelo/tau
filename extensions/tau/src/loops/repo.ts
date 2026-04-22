@@ -1,6 +1,6 @@
 import * as path from "node:path";
 
-import { Effect, FileSystem, Layer, Option, ServiceMap } from "effect";
+import { Effect, FileSystem, Layer, Option, Context } from "effect";
 
 import { StorageError, atomicWriteFileString, toStorageError } from "../shared/atomic-write.js";
 import {
@@ -208,7 +208,7 @@ export interface LoopRepoService {
 	readonly removeLoopsDirectory: (cwd: string) => Effect.Effect<void, StorageError, never>;
 }
 
-export class LoopRepo extends ServiceMap.Service<LoopRepo, LoopRepoService>()("LoopRepo") {}
+export class LoopRepo extends Context.Service<LoopRepo, LoopRepoService>()("LoopRepo") {}
 
 export const LoopRepoLive = Layer.effect(
 	LoopRepo,

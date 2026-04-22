@@ -1,6 +1,6 @@
 import * as path from "node:path";
 
-import { Effect, Layer, Option, ServiceMap } from "effect";
+import { Effect, Layer, Option, Context } from "effect";
 import type { Scope } from "effect";
 
 import {
@@ -51,7 +51,7 @@ export interface DreamLockApi {
 	readonly inspect: (cwd: string) => Effect.Effect<Option.Option<DreamLockInfo>, DreamLockError>;
 }
 
-export class DreamLock extends ServiceMap.Service<DreamLock, DreamLockApi>()("DreamLock") {}
+export class DreamLock extends Context.Service<DreamLock, DreamLockApi>()("DreamLock") {}
 
 function lockPathForCwd(cwd: string): string {
 	return path.join(cwd, ".pi", "tau", "dream.lock");

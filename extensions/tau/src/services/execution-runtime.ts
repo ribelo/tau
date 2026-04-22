@@ -3,7 +3,7 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
-import { Effect, Layer, MutableRef, Option, ServiceMap } from "effect";
+import { Effect, Layer, MutableRef, Option, Context } from "effect";
 
 import { isPromptModeThinkingLevel } from "../agent/model-spec.js";
 import { PiAPI } from "../effect/pi.js";
@@ -64,7 +64,7 @@ export interface ExecutionRuntime {
 	) => Effect.Effect<PromptModeApplyResult>;
 }
 
-export const ExecutionRuntime = ServiceMap.Service<ExecutionRuntime>("ExecutionRuntime");
+export const ExecutionRuntime = Context.Service<ExecutionRuntime>("ExecutionRuntime");
 
 type WithModelSelectSuppressed = <A>(run: () => Promise<A>) => Promise<A>;
 

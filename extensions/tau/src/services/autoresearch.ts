@@ -1,6 +1,6 @@
 import * as path from "node:path";
 
-import { Clock, Effect, Layer, Option, Ref, ServiceMap } from "effect";
+import { Clock, Effect, Layer, Option, Ref, Context } from "effect";
 import type { TruncationResult } from "@mariozechner/pi-coding-agent";
 
 import { AutoresearchRepo } from "../autoresearch/repo.js";
@@ -320,7 +320,7 @@ export interface AutoresearchService {
 	readonly resetSessionCounters: (sessionId: string) => Effect.Effect<void, never, never>;
 }
 
-export class Autoresearch extends ServiceMap.Service<Autoresearch, AutoresearchService>()("Autoresearch") {}
+export class Autoresearch extends Context.Service<Autoresearch, AutoresearchService>()("Autoresearch") {}
 
 // ------------------------------------------------------------------------------
 // Helpers

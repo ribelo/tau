@@ -1,6 +1,6 @@
 import * as path from "node:path";
 
-import { Clock, Deferred, Effect, Layer, Option, Ref, ServiceMap } from "effect";
+import { Clock, Deferred, Effect, Layer, Option, Ref, Context } from "effect";
 import type { AgentEndEvent } from "@mariozechner/pi-coding-agent";
 
 import type { ExecutionProfile } from "../execution/schema.js";
@@ -438,7 +438,7 @@ export interface RalphService {
 	) => Effect.Effect<RalphAgentEndResult, RalphContractValidationError, never>;
 }
 
-export class Ralph extends ServiceMap.Service<Ralph, RalphService>()("Ralph") {}
+export class Ralph extends Context.Service<Ralph, RalphService>()("Ralph") {}
 
 const stopWithMessage = (message: string): LoopStepResult => ({
 	_tag: "stopped",

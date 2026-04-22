@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { Effect, Layer, ServiceMap } from "effect";
+import { Effect, Layer, Context } from "effect";
 
 import type { ExecutionProfile } from "../execution/schema.js";
 import type { PromptModeProfile } from "../prompt/profile.js";
@@ -31,7 +31,7 @@ export interface PromptModes {
 	) => Effect.Effect<PromptModeApplyResult>;
 }
 
-export const PromptModes = ServiceMap.Service<PromptModes>("PromptModes");
+export const PromptModes = Context.Service<PromptModes>("PromptModes");
 
 export const PromptModesLive = Layer.effect(
 	PromptModes,

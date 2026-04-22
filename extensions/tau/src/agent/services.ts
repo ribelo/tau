@@ -1,4 +1,4 @@
-import { ServiceMap, Data, Effect, Stream } from "effect";
+import { Context, Data, Effect, Stream } from "effect";
 import type { Model, Api } from "@mariozechner/pi-ai";
 import type { ModelRegistry } from "@mariozechner/pi-coding-agent";
 import type { AgentId, AgentDefinition } from "./types.js";
@@ -44,7 +44,7 @@ export interface AgentConfigService {
 	readonly maxDepth: number;
 }
 
-export class AgentConfig extends ServiceMap.Service<AgentConfig, AgentConfigService>()(
+export class AgentConfig extends Context.Service<AgentConfig, AgentConfigService>()(
 	"AgentConfig",
 ) {}
 
@@ -90,7 +90,7 @@ export interface SpawnOptions {
 	}>;
 }
 
-export class AgentManager extends ServiceMap.Service<
+export class AgentManager extends Context.Service<
 	AgentManager,
 	{
 		readonly spawn: (
@@ -142,7 +142,7 @@ export interface WaitResult {
 	readonly interrupted?: boolean;
 }
 
-export class AgentControl extends ServiceMap.Service<
+export class AgentControl extends Context.Service<
 	AgentControl,
 	{
 		readonly spawn: (

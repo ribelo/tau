@@ -1,4 +1,4 @@
-import { Effect, Layer, Queue, Scope, ServiceMap, Stream, SubscriptionRef } from "effect";
+import { Effect, Layer, Queue, Scope, Context, Stream, SubscriptionRef } from "effect";
 
 import { PiAPI } from "../effect/pi.js";
 import {
@@ -32,7 +32,7 @@ function sanitizePersistedStateForSession(
 	};
 }
 
-export class Persistence extends ServiceMap.Service<
+export class Persistence extends Context.Service<
 	Persistence,
 	{
 		readonly getSnapshot: () => TauPersistedState;

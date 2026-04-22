@@ -2,7 +2,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Effect, Layer, ServiceMap } from "effect";
+import { Effect, Layer, Context } from "effect";
 import * as Diff from "diff";
 
 import {
@@ -499,7 +499,7 @@ const resolveSkillFileTarget = Effect.fn("SkillManager.resolveSkillFileTarget")(
 	return resolved;
 });
 
-export class SkillManager extends ServiceMap.Service<SkillManager, SkillManagerService>()(
+export class SkillManager extends Context.Service<SkillManager, SkillManagerService>()(
 	"SkillManager",
 ) {}
 

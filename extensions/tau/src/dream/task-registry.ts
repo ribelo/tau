@@ -1,4 +1,4 @@
-import { Clock, Data, Effect, Fiber, Layer, Option, Ref, ServiceMap, Stream, SubscriptionRef } from "effect";
+import { Clock, Data, Effect, Fiber, Layer, Option, Ref, Context, Stream, SubscriptionRef } from "effect";
 import { nanoid } from "nanoid";
 
 import type { MemoryFileError, MemoryMutationError } from "../memory/errors.js";
@@ -38,7 +38,7 @@ export interface DreamTaskRegistryApi {
 	readonly watch: (taskId: DreamTaskId) => Stream.Stream<DreamTaskState, DreamTaskNotFound>;
 }
 
-export class DreamTaskRegistry extends ServiceMap.Service<DreamTaskRegistry, DreamTaskRegistryApi>()(
+export class DreamTaskRegistry extends Context.Service<DreamTaskRegistry, DreamTaskRegistryApi>()(
 	"DreamTaskRegistry",
 ) {}
 

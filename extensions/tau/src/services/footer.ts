@@ -1,4 +1,4 @@
-import { Effect, Layer, Queue, Schedule, Scope, ServiceMap, Stream } from "effect";
+import { Effect, Layer, Queue, Schedule, Scope, Context, Stream } from "effect";
 
 import type {
 	ExtensionAPI,
@@ -25,7 +25,7 @@ export interface Footer {
 	readonly setup: Effect.Effect<void, never, Scope.Scope>;
 }
 
-export const Footer = ServiceMap.Service<Footer>("Footer");
+export const Footer = Context.Service<Footer>("Footer");
 
 type GitLineDelta = { readonly added: number; readonly removed: number };
 

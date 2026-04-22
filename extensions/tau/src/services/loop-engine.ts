@@ -1,4 +1,4 @@
-import { Clock, Effect, Layer, Option, ServiceMap } from "effect";
+import { Clock, Effect, Layer, Option, Context } from "effect";
 
 import type { ExecutionProfile } from "../execution/schema.js";
 import type { StorageError } from "../shared/atomic-write.js";
@@ -142,7 +142,7 @@ export interface LoopEngineService {
 	) => Effect.Effect<BlockedManualResolutionLoopState, LoopEngineError, never>;
 }
 
-export class LoopEngine extends ServiceMap.Service<LoopEngine, LoopEngineService>()("LoopEngine") {}
+export class LoopEngine extends Context.Service<LoopEngine, LoopEngineService>()("LoopEngine") {}
 
 function sessionRefMatches(left: LoopSessionRef, right: LoopSessionRef): boolean {
 	return left.sessionId === right.sessionId || left.sessionFile === right.sessionFile;

@@ -1,4 +1,4 @@
-import { Effect, Fiber, Layer, ServiceMap } from "effect";
+import { Effect, Fiber, Layer, Context } from "effect";
 
 import { AgentControl } from "./services.js";
 import { createAgentToolDef, type AgentToolContext, type AgentToolDef } from "./tool.js";
@@ -19,7 +19,7 @@ export interface AgentRuntimeBridgeService {
 	readonly closeAll: () => Promise<void>;
 }
 
-export class AgentRuntimeBridge extends ServiceMap.Service<
+export class AgentRuntimeBridge extends Context.Service<
 	AgentRuntimeBridge,
 	AgentRuntimeBridgeService
 >()("AgentRuntimeBridge") {}

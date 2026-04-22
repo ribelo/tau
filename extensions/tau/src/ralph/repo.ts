@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { Effect, FileSystem, Layer, Option, ServiceMap } from "effect";
+import { Effect, FileSystem, Layer, Option, Context } from "effect";
 
 import { StorageError, atomicWriteFileString, toStorageError } from "../shared/atomic-write.js";
 import { LoopContractValidationError } from "../loops/errors.js";
@@ -294,7 +294,7 @@ export interface RalphRepoService {
 	readonly removeRalphDirectory: (cwd: string) => Effect.Effect<void, RalphContractValidationError | StorageError, never>;
 }
 
-export class RalphRepo extends ServiceMap.Service<RalphRepo, RalphRepoService>()("RalphRepo") {}
+export class RalphRepo extends Context.Service<RalphRepo, RalphRepoService>()("RalphRepo") {}
 
 const RalphRepoBase = Layer.effect(
 	RalphRepo,

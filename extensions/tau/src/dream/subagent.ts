@@ -2,7 +2,7 @@
 // memory through the existing memory tool, and signals completion via
 // dream_finish.  No more plan/apply; the model does the work directly.
 
-import { Effect, Layer, ServiceMap } from "effect";
+import { Effect, Layer, Context } from "effect";
 
 import {
 	createAgentSession,
@@ -67,7 +67,7 @@ export interface DreamSubagentApi {
 	) => Effect.Effect<DreamSubagentResult, DreamSubagentError>;
 }
 
-export class DreamSubagent extends ServiceMap.Service<DreamSubagent, DreamSubagentApi>()(
+export class DreamSubagent extends Context.Service<DreamSubagent, DreamSubagentApi>()(
 	"DreamSubagent",
 ) {}
 

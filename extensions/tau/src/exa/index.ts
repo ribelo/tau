@@ -1,4 +1,4 @@
-import { Data, Effect, Layer, ManagedRuntime, Schema, ServiceMap } from "effect";
+import { Data, Effect, Layer, ManagedRuntime, Schema, Context } from "effect";
 import {
 	getMarkdownTheme,
 	type ExtensionAPI,
@@ -101,7 +101,7 @@ interface ExaConfig {
 	readonly apiKey: string;
 }
 
-class ExaConfigService extends ServiceMap.Service<ExaConfigService, ExaConfig>()("ExaConfigService") {}
+class ExaConfigService extends Context.Service<ExaConfigService, ExaConfig>()("ExaConfigService") {}
 
 const ExaConfigLive = Layer.effect(
 	ExaConfigService,

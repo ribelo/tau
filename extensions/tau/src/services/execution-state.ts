@@ -5,7 +5,7 @@ import {
 	Option,
 	Queue,
 	Scope,
-	ServiceMap,
+	Context,
 	Stream,
 	SubscriptionRef,
 } from "effect";
@@ -31,7 +31,7 @@ export interface ExecutionState {
 	readonly setup: Effect.Effect<void, never, Scope.Scope>;
 }
 
-export const ExecutionState = ServiceMap.Service<ExecutionState>("ExecutionState");
+export const ExecutionState = Context.Service<ExecutionState>("ExecutionState");
 
 export const ExecutionStateLive = Layer.effect(
 	ExecutionState,

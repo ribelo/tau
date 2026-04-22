@@ -1,6 +1,6 @@
 import * as path from "node:path";
 
-import { Effect, FileSystem, Layer, Option, ServiceMap } from "effect";
+import { Effect, FileSystem, Layer, Option, Context } from "effect";
 
 import { StorageError, atomicWriteFileString, toStorageError } from "../shared/atomic-write.js";
 import {
@@ -75,7 +75,7 @@ export interface AutoresearchRepoService {
 	readonly readChecksLog: (runDirectory: string) => Effect.Effect<Option.Option<string>, StorageError, never>;
 }
 
-export class AutoresearchRepo extends ServiceMap.Service<AutoresearchRepo, AutoresearchRepoService>()(
+export class AutoresearchRepo extends Context.Service<AutoresearchRepo, AutoresearchRepoService>()(
 	"AutoresearchRepo",
 ) {}
 
