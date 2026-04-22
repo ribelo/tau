@@ -84,12 +84,7 @@ For every P0 and P1 finding, before writing any fix:
 3. If the test **passes** → the reviewer's claim is wrong. Record it as invalid with evidence.
 4. If the test **fails** → confirmed real. Proceed to fix.
 
-This follows the test-driven-development skill's RED-GREEN-REFACTOR cycle:
-- **RED:** Test fails, proving the finding is real.
-- **GREEN:** Write minimal code to pass the test.
-- **REFACTOR:** Clean up if needed.
-
-After each fix, run the full test suite to catch regressions.
+This is the RED-GREEN-REFACTOR cycle from the test-driven-development skill — follow it exactly.
 
 ### Step 4: Push Back on Invalid Findings
 
@@ -189,11 +184,7 @@ send follow-up to same reviewer → wait
 
 ## Integration with TDD
 
-The RED test step IS test-driven development applied to review findings:
-- The reviewer's finding is the "requirement."
-- The RED test proves the requirement is unmet.
-- The GREEN fix satisfies it.
-- The test stays as a permanent regression guard.
+The RED test step IS the test-driven-development skill applied to review findings. The reviewer's finding is the "requirement" — follow that skill's full RED-GREEN-REFACTOR cycle to validate and fix it. The test stays as a permanent regression guard.
 
 Review findings that survive RED test validation become permanent tests in the codebase. This is how reviews compound the test suite over time.
 
