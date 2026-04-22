@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import initAgent from "../src/agent/index.js";
 import { AgentControl, type ControlSpawnOptions } from "../src/agent/services.js";
-import { type RunAgentControlPromise } from "../src/agent/runtime.js";
+import { type RunAgentControlFork, type RunAgentControlPromise } from "../src/agent/runtime.js";
 import { CuratedMemory } from "../src/services/curated-memory.js";
 import {
 	ExecutionState,
@@ -143,8 +143,39 @@ describe("initAgent", () => {
 			return Effect.runPromise(provided);
 		};
 
+		const runFork: RunAgentControlFork = <
+			A,
+			E,
+			R extends AgentControl | CuratedMemory | ExecutionState,
+		>(
+			effect: Effect.Effect<A, E, R>,
+		) => {
+			const provided = effect.pipe(
+				Effect.provide(
+					Layer.mergeAll(
+						Layer.succeed(
+							AgentControl,
+							AgentControl.of({
+								spawn: () => Effect.die("unused"),
+								send: () => Effect.die("unused"),
+								wait: () => Effect.die("unused"),
+								waitStream: () => Stream.empty,
+								close: () => Effect.die("unused"),
+								closeAll: Effect.void,
+								list: Effect.succeed([]),
+							}),
+						),
+						Layer.succeed(ExecutionState, makeExecutionStateStub()),
+						Layer.succeed(CuratedMemory, makeCuratedMemoryStub()),
+					),
+				),
+			) as Effect.Effect<A, E, never>;
+			return Effect.runFork(provided);
+		};
+
 		const runtime = {
 			runPromise,
+			runFork,
 			closeAll: async () => undefined,
 		};
 

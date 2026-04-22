@@ -10,26 +10,21 @@ import {
 	type DreamLockError,
 } from "./errors.js";
 import {
-	acquireSharedFileLock,
+	acquireSharedFileLockEffect,
+	acquireSharedFileLockScoped,
 	describeSharedFileLockError,
 	inspectSharedFileLock,
-	releaseSharedFileLock,
+	releaseSharedFileLockEffect,
 	SharedFileLockCorrupt,
 	SharedFileLockHeld,
 	SharedFileLockIoError,
 	SharedFileLockTimeout,
 	type SharedFileLockConfig,
-	type SharedFileLockLease,
 } from "../shared/lock.js";
 
 const LOCK_STALE_MS = 5_000;
 const LOCK_RETRY_DELAY_MS = 100;
 const LOCK_ACQUIRE_MAX_ATTEMPTS = 50;
-
-interface OwnedDreamLease {
-	readonly lease: DreamLease;
-	readonly token: string;
-}
 
 export interface DreamLease {
 	readonly path: string;
@@ -106,63 +101,37 @@ function toDreamLockError(error: unknown, lockPath: string, operation: string): 
 	});
 }
 
-async function acquireOwnedLease(cwd: string): Promise<OwnedDreamLease> {
-	const lease = await acquireSharedFileLock(lockPathForCwd(cwd), dreamLockConfig);
-	return {
-		lease: {
-			path: lease.path,
-			acquiredAtMs: lease.acquiredAtMs,
-		},
-		token: lease.token,
-	};
-}
-
-async function releaseOwnedLease(ownedLease: OwnedDreamLease): Promise<void> {
-	const lease: SharedFileLockLease = {
-		path: ownedLease.lease.path,
-		token: ownedLease.token,
-		acquiredAtMs: ownedLease.lease.acquiredAtMs,
-	};
-	await releaseSharedFileLock(lease);
-}
-
 export const DreamLockLive = Layer.succeed(
 	DreamLock,
 	DreamLock.of({
-		acquire: (cwd) =>
-			Effect.acquireRelease(
-				Effect.tryPromise({
-					try: () => acquireOwnedLease(cwd),
-					catch: (error) => toDreamLockError(error, lockPathForCwd(cwd), "acquire"),
-				}),
-				(ownedLease) =>
-					Effect.tryPromise({
-						try: () => releaseOwnedLease(ownedLease),
-						catch: () => undefined,
-					}).pipe(Effect.orElseSucceed(() => undefined)),
-			).pipe(Effect.map((ownedLease) => ownedLease.lease)),
-
-		acquireManual: (cwd) =>
-			Effect.tryPromise({
-				try: () => acquireOwnedLease(cwd),
-				catch: (error) => toDreamLockError(error, lockPathForCwd(cwd), "acquireManual"),
-			}).pipe(
-				Effect.map((ownedLease) => ({
-					path: ownedLease.lease.path,
-					token: ownedLease.token,
-					acquiredAtMs: ownedLease.lease.acquiredAtMs,
+		acquire: (cwd) => {
+			const lockPath = lockPathForCwd(cwd);
+			return acquireSharedFileLockScoped(lockPath, dreamLockConfig).pipe(
+				Effect.mapError((error) => toDreamLockError(error, lockPath, "acquire")),
+				Effect.map((lease) => ({
+					path: lease.path,
+					acquiredAtMs: lease.acquiredAtMs,
 				})),
-			),
+			);
+		},
+
+		acquireManual: (cwd) => {
+			const lockPath = lockPathForCwd(cwd);
+			return acquireSharedFileLockEffect(lockPath, dreamLockConfig).pipe(
+				Effect.mapError((error) => toDreamLockError(error, lockPath, "acquireManual")),
+				Effect.map((lease) => ({
+					path: lease.path,
+					token: lease.token,
+					acquiredAtMs: lease.acquiredAtMs,
+				})),
+			);
+		},
 
 		releaseManual: (lease) =>
-			Effect.tryPromise({
-				try: () =>
-					releaseSharedFileLock({
-						path: lease.path,
-						token: lease.token,
-						acquiredAtMs: lease.acquiredAtMs,
-					}),
-				catch: () => undefined,
+			releaseSharedFileLockEffect({
+				path: lease.path,
+				token: lease.token,
+				acquiredAtMs: lease.acquiredAtMs,
 			}).pipe(Effect.orElseSucceed(() => undefined)),
 
 		inspect: (cwd) =>

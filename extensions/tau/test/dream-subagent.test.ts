@@ -1,4 +1,4 @@
-import { DateTime, Schema } from "effect";
+import { DateTime, Effect, Fiber, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 
@@ -101,16 +101,41 @@ describe("createTurnLimitGuard", () => {
 			1,
 		);
 
+		const guardPromise = Effect.runPromise(guard);
+
 		listeners[0]?.(turnStartEvent);
 		expect(aborts).toBe(0);
 
 		listeners[0]?.(turnStartEvent);
 
-		await expect(guard.promise).resolves.toEqual({
+		await expect(guardPromise).resolves.toEqual({
 			_tag: "turn_limit_exceeded",
 			maxTurns: 1,
 		});
 		expect(aborts).toBe(1);
+	});
+
+	it("unsubscribes the turn listener when interrupted", async () => {
+		let unsubscribed = 0;
+
+		const fiber = Effect.runFork(
+			createTurnLimitGuard(
+				{
+					agent: {
+						subscribe: () => {
+							return () => {
+								unsubscribed += 1;
+							};
+						},
+					},
+					abort: async () => undefined,
+				},
+				10,
+			),
+		);
+
+		await Effect.runPromise(Fiber.interrupt(fiber));
+		expect(unsubscribed).toBe(1);
 	});
 });
 

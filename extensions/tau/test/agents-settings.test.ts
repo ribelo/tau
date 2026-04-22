@@ -109,6 +109,38 @@ describe("agent selection settings", () => {
 		expect(store.isDisabledForCwd(workspace, "smart")).toBe(true);
 	});
 
+	it("fails closed when project settings JSON is malformed", async () => {
+		const workspace = await makeWorkspace();
+		cleanup.add(workspace);
+		const settingsPath = getAgentSettingsPath(workspace);
+
+		await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+		await fs.writeFile(settingsPath, "{\n  \"tau\":", "utf8");
+
+		const store = new AgentSelectionStore();
+		await store.activate(workspace, ["deep", "finder", "smart"]);
+
+		expect(store.isDisabledForCwd(workspace, "finder")).toBe(true);
+		expect(store.isDisabledForCwd(workspace, "deep")).toBe(true);
+		expect(store.isDisabledForCwd(workspace, "smart")).toBe(true);
+	});
+
+	it("fails closed when project settings JSON is not an object", async () => {
+		const workspace = await makeWorkspace();
+		cleanup.add(workspace);
+		const settingsPath = getAgentSettingsPath(workspace);
+
+		await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+		await fs.writeFile(settingsPath, JSON.stringify(["invalid"]), "utf8");
+
+		const store = new AgentSelectionStore();
+		await store.activate(workspace, ["deep", "finder", "smart"]);
+
+		expect(store.isDisabledForCwd(workspace, "finder")).toBe(true);
+		expect(store.isDisabledForCwd(workspace, "deep")).toBe(true);
+		expect(store.isDisabledForCwd(workspace, "smart")).toBe(true);
+	});
+
 	it("keeps unsaved agent changes across reactivation for the same project", async () => {
 		const workspace = await makeWorkspace();
 		cleanup.add(workspace);

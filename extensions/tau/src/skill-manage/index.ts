@@ -1,10 +1,11 @@
-import { Effect, Schema } from "effect";
-import { Type } from "@sinclair/typebox";
+import { Effect } from "effect";
+import { Type, type Static } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
 import type { AgentToolResult, ExtensionAPI, ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 
 import { SkillManager } from "../services/skill-manager.js";
-import { defineEffectTool, textToolResult } from "../shared/effect-tool.js";
+import { defineDecodedTool, textToolResult } from "../shared/decoded-tool.js";
 import {
 	SkillAlreadyExists,
 	SkillFileError,
@@ -15,11 +16,15 @@ import {
 	SkillSecurityViolation,
 } from "./errors.js";
 
-const StringEnum = <T extends string[]>(values: [...T]) =>
-	Type.Unsafe<T[number]>({ type: "string", enum: values });
-
 const SkillManageParams = Type.Object({
-	action: StringEnum(["create", "patch", "edit", "delete", "write_file", "remove_file"]),
+	action: Type.Union([
+		Type.Literal("create"),
+		Type.Literal("patch"),
+		Type.Literal("edit"),
+		Type.Literal("delete"),
+		Type.Literal("write_file"),
+		Type.Literal("remove_file"),
+	]),
 	name: Type.String({
 		description: "Skill name (lowercase, hyphens/underscores, max 64 chars).",
 	}),
@@ -60,26 +65,11 @@ const SkillManageParams = Type.Object({
 	),
 });
 
-const SkillManageParamsSchema = Schema.Struct({
-	action: Schema.Literals([
-		"create",
-		"patch",
-		"edit",
-		"delete",
-		"write_file",
-		"remove_file",
-	] as const),
-	name: Schema.String,
-	content: Schema.optional(Schema.String),
-	old_string: Schema.optional(Schema.String),
-	new_string: Schema.optional(Schema.String),
-	replace_all: Schema.optional(Schema.Boolean),
-	category: Schema.optional(Schema.String),
-	file_path: Schema.optional(Schema.String),
-	file_content: Schema.optional(Schema.String),
-});
-const decodeSkillManageParams = Schema.decodeUnknownSync(SkillManageParamsSchema);
-type SkillManageParams = Schema.Schema.Type<typeof SkillManageParamsSchema>;
+type SkillManageParams = Static<typeof SkillManageParams>;
+
+function decodeSkillManageParams(rawParams: unknown): SkillManageParams {
+	return Value.Parse(SkillManageParams, rawParams);
+}
 
 const TOOL_DESCRIPTION =
 	"Manage skills (create, update, delete). Skills are your procedural memory — reusable approaches for recurring task types. New skills default to ~/.pi/agent/skills/, and edits/patches can target matching skills discovered from the current workspace as well.\n\nActions: create (full SKILL.md + optional category), patch (old_string/new_string — preferred for fixes), edit (full SKILL.md rewrite — major overhauls only), delete, write_file, remove_file.\n\nCreate when: complex task succeeded (5+ tool calls), errors overcome, user-corrected approach worked, non-trivial workflow discovered, or user asks you to remember a procedure.\nUpdate when: instructions stale/wrong, missing steps or pitfalls found during use. If you used a skill and hit issues not covered by it, patch it immediately.\n\nAfter difficult/iterative tasks, offer to save as a skill. Skip for simple one-offs. Confirm with user before creating/deleting.\n\nGood skills: trigger conditions, numbered steps with exact commands, pitfalls section, verification steps.";
@@ -292,7 +282,7 @@ function renderPatchDiff(
 export function createSkillManageToolDefinition(
 	runEffect: <A, E>(effect: Effect.Effect<A, E, SkillManager>) => Promise<A>,
 ): ToolDefinition {
-	return defineEffectTool<typeof SkillManageParams, SkillManageParams, ToolDetails>({
+	return defineDecodedTool<typeof SkillManageParams, SkillManageParams, ToolDetails>({
 		name: "skill_manage",
 		label: "skill_manage",
 		description: TOOL_DESCRIPTION,

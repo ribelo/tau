@@ -2,7 +2,11 @@ import type { AgentSession } from "@mariozechner/pi-coding-agent";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import { Effect } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { AgentControl } from "../src/agent/services.js";
 import type { AgentDefinition } from "../src/agent/types.js";
+import type { RunAgentControlFork } from "../src/agent/runtime.js";
+import type { CuratedMemory } from "../src/services/curated-memory.js";
+import type { ExecutionState } from "../src/services/execution-state.js";
 import type { ResolvedSandboxConfig } from "../src/sandbox/config.js";
 import { TAU_PERSISTED_STATE_TYPE } from "../src/shared/state.js";
 
@@ -160,6 +164,14 @@ const makeModelRegistry = () => ({
 	getAll: () => [TEST_MODEL, TEST_FALLBACK_MODEL],
 });
 
+const runForkForTests: RunAgentControlFork = <
+	A,
+	E,
+	R extends AgentControl | CuratedMemory | ExecutionState,
+>(
+	effect: Effect.Effect<A, E, R>,
+) => Effect.runFork(effect as unknown as Effect.Effect<A, E, never>);
+
 const makeSession = (index: number, model: Model<Api>): FakeAgentSession => {
 	const session = new FakeAgentSession(
 		`session-${index}`,
@@ -197,6 +209,7 @@ describe("AgentWorker structured-output wiring", () => {
 				runPromise: async () => {
 					throw new Error("unused");
 				},
+				runFork: runForkForTests,
 			}),
 		);
 
@@ -222,6 +235,7 @@ describe("AgentWorker structured-output wiring", () => {
 				runPromise: async () => {
 					throw new Error("unused");
 				},
+				runFork: runForkForTests,
 			}),
 		);
 
@@ -262,6 +276,7 @@ describe("AgentWorker structured-output wiring", () => {
 				runPromise: async () => {
 					throw new Error("unused");
 				},
+				runFork: runForkForTests,
 			}),
 		);
 
@@ -311,6 +326,7 @@ describe("AgentWorker structured-output wiring", () => {
 				runPromise: async () => {
 					throw new Error("unused");
 				},
+				runFork: runForkForTests,
 			}),
 		);
 
@@ -343,6 +359,7 @@ describe("AgentWorker structured-output wiring", () => {
 				runPromise: async () => {
 					throw new Error("unused");
 				},
+				runFork: runForkForTests,
 			}),
 		);
 
@@ -384,6 +401,7 @@ describe("AgentWorker structured-output wiring", () => {
 				runPromise: async () => {
 					throw new Error("unused");
 				},
+				runFork: runForkForTests,
 			}),
 		);
 

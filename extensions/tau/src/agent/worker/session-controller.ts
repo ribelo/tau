@@ -38,9 +38,7 @@ export class WorkerSessionController {
 			publishCompleted: this.options.publishCompleted,
 			publishFailed: this.options.publishFailed,
 			repromptForSubmitResult: (retry) => {
-				this.options.spawnBackground(
-					this.replaceBackground(this.options.repromptForSubmitResult(retry)),
-				);
+				this.replaceBackgroundSync(this.options.repromptForSubmitResult(retry));
 			},
 		});
 	}
@@ -58,6 +56,17 @@ export class WorkerSessionController {
 				}),
 			),
 		);
+	}
+
+	private replaceBackgroundSync(effect: Effect.Effect<void, never>): void {
+		if (this.options.tracking.terminalState === "shutdown") {
+			return;
+		}
+
+		const activeFiber = this.activeFiber;
+		this.activeFiber = undefined;
+		activeFiber?.interruptUnsafe();
+		this.activeFiber = this.options.spawnBackground(effect);
 	}
 
 	interruptBackground(): Effect.Effect<void> {

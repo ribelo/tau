@@ -1,4 +1,4 @@
-import { Effect, Layer, ServiceMap } from "effect";
+import { Effect, Fiber, Layer, ServiceMap } from "effect";
 
 import { AgentControl } from "./services.js";
 import { createAgentToolDef, type AgentToolContext, type AgentToolDef } from "./tool.js";
@@ -9,8 +9,13 @@ export type RunAgentControlPromise = <A, E, R extends AgentControl | CuratedMemo
 	effect: Effect.Effect<A, E, R>,
 ) => Promise<A>;
 
+export type RunAgentControlFork = <A, E, R extends AgentControl | CuratedMemory | ExecutionState>(
+	effect: Effect.Effect<A, E, R>,
+) => Fiber.Fiber<A, E>;
+
 export interface AgentRuntimeBridgeService {
 	readonly runPromise: RunAgentControlPromise;
+	readonly runFork: RunAgentControlFork;
 	readonly closeAll: () => Promise<void>;
 }
 
@@ -19,11 +24,15 @@ export class AgentRuntimeBridge extends ServiceMap.Service<
 	AgentRuntimeBridgeService
 >()("AgentRuntimeBridge") {}
 
-export const AgentRuntimeBridgeLive = (runPromise: RunAgentControlPromise) =>
+export const AgentRuntimeBridgeLive = (
+	runPromise: RunAgentControlPromise,
+	runFork: RunAgentControlFork,
+) =>
 	Layer.succeed(
 		AgentRuntimeBridge,
 		AgentRuntimeBridge.of({
 			runPromise,
+			runFork,
 			closeAll: () =>
 				runPromise(
 					Effect.gen(function* () {

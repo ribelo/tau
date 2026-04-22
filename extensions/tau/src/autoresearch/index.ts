@@ -12,7 +12,7 @@ import { truncateTail, formatSize, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "
 import type { TruncationResult } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { matchesKey, Text } from "@mariozechner/pi-tui";
-import { Effect, Option } from "effect";
+import { Cause, Effect, Option } from "effect";
 
 import { Sandbox } from "../services/sandbox.js";
 import { PromptModes } from "../services/prompt-modes.js";
@@ -20,6 +20,10 @@ import {
 	LoopEngine,
 	type LoopEngineService,
 } from "../services/loop-engine.js";
+import {
+	AutoresearchLoopRunner,
+	type AutoresearchLoopRunnerService,
+} from "../services/autoresearch-loop-runner.js";
 import {
 	type BenchmarkProgress,
 	type ExecuteBenchmarkInput,
@@ -823,7 +827,7 @@ function buildRunExperimentText(details: RunDetails): string {
 export default function initAutoresearch(
 	pi: ExtensionAPI,
 	runEffect: <A, E>(
-		effect: Effect.Effect<A, E, LoopEngine | Sandbox | PromptModes>,
+		effect: Effect.Effect<A, E, LoopEngine | Sandbox | PromptModes | AutoresearchLoopRunner>,
 	) => Promise<A>,
 ): void {
 	const withLoopEngine = <A, E>(
@@ -869,25 +873,17 @@ export default function initAutoresearch(
 		),
 	);
 
+	const withAutoresearchLoopRunner = <A, E>(
+		f: (service: AutoresearchLoopRunnerService) => Effect.Effect<A, E, never>,
+	): Promise<A> =>
+		runEffect(
+			Effect.gen(function* () {
+				const service = yield* AutoresearchLoopRunner;
+				return yield* f(service);
+			}),
+		);
+
 	const expandedState = new Map<string, boolean>();
-	type ActiveAutoresearchLoopControl = {
-		cancelled: boolean;
-		cancelWait: (() => void) | undefined;
-	};
-	type WaitForAutoresearchAgentEndResult =
-		| {
-			readonly _tag: "completed";
-			readonly event: unknown;
-		}
-		| {
-			readonly _tag: "timed_out";
-		}
-		| {
-			readonly _tag: "cancelled";
-		};
-	const AUTORESEARCH_AGENT_END_WAIT_TIMEOUT = "30 minutes";
-	const activeAutoresearchLoops = new Map<string, ActiveAutoresearchLoopControl>();
-	const waitingAutoresearchAgentEnds = new Map<string, (event: unknown) => void>();
 	type OverlayState = {
 		readonly tui: import("@mariozechner/pi-tui").TUI;
 		readonly done: (value: void) => void;
@@ -1015,45 +1011,10 @@ export default function initAutoresearch(
 		};
 	};
 
-	const waitForAutoresearchAgentEnd = (
-		sessionFile: string,
-		signal: AbortSignal,
-	): Promise<WaitForAutoresearchAgentEndResult> =>
-		Effect.runPromise(
-			Effect.callback<unknown>((resume) => {
-				const complete = (event: unknown): void => {
-					resume(Effect.succeed(event));
-				};
-				waitingAutoresearchAgentEnds.set(sessionFile, complete);
-				return Effect.sync(() => {
-					const currentWaiter = waitingAutoresearchAgentEnds.get(sessionFile);
-					if (currentWaiter === complete) {
-						waitingAutoresearchAgentEnds.delete(sessionFile);
-					}
-				});
-			}).pipe(
-				Effect.timeoutOption(AUTORESEARCH_AGENT_END_WAIT_TIMEOUT),
-				Effect.map((eventOption): WaitForAutoresearchAgentEndResult =>
-					Option.match(eventOption, {
-						onNone: () => ({ _tag: "timed_out" }),
-						onSome: (event) => ({ _tag: "completed", event }),
-					}),
-				),
-			),
-			{ signal },
-		).catch((error: unknown) => {
-			if (error instanceof Error && error.name === "AbortError") {
-				return { _tag: "cancelled" };
-			}
-			throw error;
-		});
-
 	const cancelAutoresearchLoop = (cwd: string, taskId: string): void => {
-		const active = activeAutoresearchLoops.get(`${cwd}:${taskId}`);
-		if (active) {
-			active.cancelled = true;
-			active.cancelWait?.();
-		}
+		void withAutoresearchLoopRunner((runner) => runner.cancelLoop(`${cwd}:${taskId}`)).catch(
+			() => undefined,
+		);
 	};
 
 	const openFullscreenOverlay = async (cwd: string, ctx: ExtensionContext): Promise<void> => {
@@ -1473,70 +1434,59 @@ export default function initAutoresearch(
 
 	const runAutoresearchLoop = (ctx: ExtensionCommandContext, taskId: string): void => {
 		const loopKey = `${ctx.cwd}:${taskId}`;
-		if (activeAutoresearchLoops.has(loopKey)) {
-			return;
-		}
 
-		const control: ActiveAutoresearchLoopControl = { cancelled: false, cancelWait: undefined };
-		activeAutoresearchLoops.set(loopKey, control);
-
-		void (async () => {
-			try {
-				while (!control.cancelled) {
+		void withAutoresearchLoopRunner((runner) => {
+			const loopProgram = Effect.gen(function* () {
+				while (true) {
 					const persisted = requireAutoresearchLoopState(readCanonicalLoopState(ctx.cwd, taskId));
 					if (persisted.lifecycle !== "active") {
 						return;
 					}
+					const maxIterations = Option.getOrUndefined(persisted.autoresearch.maxIterations);
 
 					if (
-						Option.isSome(persisted.autoresearch.maxIterations) &&
-						persisted.autoresearch.runCount >= persisted.autoresearch.maxIterations.value &&
+						maxIterations !== undefined &&
+						persisted.autoresearch.runCount >= maxIterations &&
 						Option.isNone(persisted.autoresearch.pendingRunId)
 					) {
-						await withLoopEngine((engine) => engine.stopLoop(ctx.cwd, taskId));
+						yield* Effect.promise(() => withLoopEngine((engine) => engine.stopLoop(ctx.cwd, taskId)));
 						if (ctx.hasUI) {
-							ctx.ui.notify(
-								`Autoresearch task ${taskId} reached limits.max_iterations=${persisted.autoresearch.maxIterations.value}.`,
-								"info",
-							);
+							yield* Effect.sync(() => {
+								ctx.ui.notify(
+									`Autoresearch task ${taskId} reached limits.max_iterations=${maxIterations}.`,
+									"info",
+								);
+							});
 						}
-						await updateAutoresearchUI(ctx.cwd, ctx);
+						yield* Effect.promise(() => updateAutoresearchUI(ctx.cwd, ctx));
 						return;
 					}
 
 					const currentChild = Option.getOrUndefined(persisted.ownership.child);
 					const child =
 						currentChild ??
-						(await ensureAutoresearchChildSession(ctx, taskId));
+						(yield* Effect.promise(() => ensureAutoresearchChildSession(ctx, taskId)));
 					if (currentChild === undefined) {
-						queueAutoresearchChildPrompt(ctx.cwd, taskId);
+						yield* Effect.sync(() => {
+							queueAutoresearchChildPrompt(ctx.cwd, taskId);
+						});
 					}
 
-					const waitAbortController = new AbortController();
-					control.cancelWait = () => {
-						waitAbortController.abort();
-					};
-					const waitResult = await waitForAutoresearchAgentEnd(
-						child.sessionFile,
-						waitAbortController.signal,
-					);
-					control.cancelWait = undefined;
+					const waitResult = yield* runner.waitForAgentEnd(child.sessionFile);
 					if (waitResult._tag === "cancelled") {
 						return;
 					}
 					if (waitResult._tag === "timed_out") {
-						await withLoopEngine((engine) => engine.pauseLoop(ctx.cwd, taskId));
+						yield* Effect.promise(() => withLoopEngine((engine) => engine.pauseLoop(ctx.cwd, taskId)));
 						if (ctx.hasUI) {
-							ctx.ui.notify(
-								`Autoresearch paused: timed out waiting for child session for ${taskId} to end.`,
-								"warning",
-							);
+							yield* Effect.sync(() => {
+								ctx.ui.notify(
+									`Autoresearch paused: timed out waiting for child session for ${taskId} to end.`,
+									"warning",
+								);
+							});
 						}
-						await updateAutoresearchUI(ctx.cwd, ctx);
-						return;
-					}
-
-					if (control.cancelled) {
+						yield* Effect.promise(() => updateAutoresearchUI(ctx.cwd, ctx));
 						return;
 					}
 
@@ -1546,31 +1496,43 @@ export default function initAutoresearch(
 					}
 
 					if (Option.isSome(afterTurn.autoresearch.pendingRunId)) {
-						await withLoopEngine((engine) => engine.pauseLoop(ctx.cwd, taskId));
+						yield* Effect.promise(() => withLoopEngine((engine) => engine.pauseLoop(ctx.cwd, taskId)));
 						if (ctx.hasUI) {
-							ctx.ui.notify(
-								`Autoresearch paused: child session for ${taskId} ended without autoresearch_done.`,
-								"warning",
-							);
+							yield* Effect.sync(() => {
+								ctx.ui.notify(
+									`Autoresearch paused: child session for ${taskId} ended without autoresearch_done.`,
+									"warning",
+								);
+							});
 						}
-						await updateAutoresearchUI(ctx.cwd, ctx);
+						yield* Effect.promise(() => updateAutoresearchUI(ctx.cwd, ctx));
 						return;
 					}
 				}
-			} catch (error) {
-				if (ctx.hasUI) {
-					ctx.ui.notify(
-						error instanceof Error ? error.message : String(error),
-						"error",
-					);
-				}
-				await updateAutoresearchUI(ctx.cwd, ctx);
-				return;
-			} finally {
-				control.cancelWait = undefined;
-				activeAutoresearchLoops.delete(loopKey);
+			});
+
+			const guardedLoopProgram = loopProgram.pipe(
+				Effect.catchCause((cause) => {
+					if (Cause.hasInterrupts(cause)) {
+						return Effect.void;
+					}
+
+					const error = Cause.squash(cause);
+					return Effect.promise(async () => {
+						if (ctx.hasUI) {
+							ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+						}
+						await updateAutoresearchUI(ctx.cwd, ctx);
+					});
+				}),
+			);
+
+			return runner.ensureLoopRunning(loopKey, guardedLoopProgram);
+		}).catch((error) => {
+			if (ctx.hasUI) {
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 			}
-		})();
+		});
 	};
 
 	const clearAutoresearchUI = (ctx: ExtensionContext): void => {
@@ -2434,11 +2396,7 @@ export default function initAutoresearch(
 	pi.on("agent_end", async (event, ctx) => {
 		const sessionFile = ctx.sessionManager.getSessionFile?.();
 		if (sessionFile !== undefined) {
-			const resolve = waitingAutoresearchAgentEnds.get(sessionFile);
-			if (resolve) {
-				waitingAutoresearchAgentEnds.delete(sessionFile);
-				resolve(event);
-			}
+			await withAutoresearchLoopRunner((runner) => runner.resolveAgentEnd(sessionFile, event));
 		}
 
 		try {
@@ -2511,11 +2469,7 @@ export default function initAutoresearch(
 	pi.on("session_shutdown", async (event, ctx) => {
 		const sessionFile = ctx.sessionManager.getSessionFile?.();
 		if (sessionFile !== undefined) {
-			const resolve = waitingAutoresearchAgentEnds.get(sessionFile);
-			if (resolve) {
-				waitingAutoresearchAgentEnds.delete(sessionFile);
-				resolve(event);
-			}
+			await withAutoresearchLoopRunner((runner) => runner.resolveAgentEnd(sessionFile, event));
 
 			const loops = await withLoopEngine((engine) => engine.listLoops(ctx.cwd, false));
 			for (const loop of loops) {

@@ -18,7 +18,11 @@ import type { ResolvedSandboxConfig } from "../sandbox/config.js";
 import type { ExecutionProfile, ExecutionSessionState } from "../execution/schema.js";
 
 import type { ApprovalBroker } from "./approval-broker.js";
-import { createWorkerAgentTool, type RunAgentControlPromise } from "./runtime.js";
+import {
+	createWorkerAgentTool,
+	type RunAgentControlFork,
+	type RunAgentControlPromise,
+} from "./runtime.js";
 import { buildToolDescription } from "./tool.js";
 import { buildWorkerAppendPrompts, createWorkerCustomTools } from "./worker/tools.js";
 import {
@@ -58,6 +62,7 @@ export class AgentWorker implements Agent {
 		private readonly parentModel: Model<Api> | undefined,
 		private readonly executionState: ExecutionSessionState,
 		private readonly executionProfile: ExecutionProfile,
+		private readonly runFork: RunAgentControlFork,
 		private readonly agentContext: {
 			parentSessionFile: string | undefined;
 			parentAgentId?: AgentId | undefined;
@@ -73,7 +78,7 @@ export class AgentWorker implements Agent {
 			tracking: this.tracking,
 			resultSchema: this.infra.resultSchema,
 			maxSubmitResultRetries: MAX_SUBMIT_RESULT_RETRIES,
-			spawnBackground: (effect) => Effect.runFork(effect),
+			spawnBackground: (effect) => this.runFork(effect),
 			publishRunningStatus: () => this.publishRunningStatus(),
 			publishRunningStatusIfNotFinal: () => this.publishRunningStatusIfNotFinal(),
 			publishCompleted: (message) => this.publishCompleted(message),
@@ -186,6 +191,7 @@ export class AgentWorker implements Agent {
 		modelRegistry?: ModelRegistry | undefined;
 		resultSchema?: unknown;
 		runPromise: RunAgentControlPromise;
+		runFork: RunAgentControlFork;
 		agentSummaries?: ReadonlyArray<{ readonly name: string; readonly description: string }>;
 	}) {
 		return Effect.gen(function* () {
@@ -334,6 +340,7 @@ export class AgentWorker implements Agent {
 				opts.parentModel,
 				opts.executionState,
 				agentContext.parentExecutionProfile,
+				opts.runFork,
 				agentContext,
 			);
 

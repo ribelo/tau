@@ -1,10 +1,11 @@
-import { Effect, Schema } from "effect";
-import { Type } from "@sinclair/typebox";
+import { Effect } from "effect";
+import { Type, type Static } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
 import type { AgentToolResult, ExtensionAPI, ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 
 import { CuratedMemory, type MutationResult } from "../services/curated-memory.js";
-import { defineEffectTool, textToolResult } from "../shared/effect-tool.js";
+import { defineDecodedTool, textToolResult } from "../shared/decoded-tool.js";
 import { findMemoryRepairIssues, type MemoryBucketSnapshot, type MemoryEntry, type MemoryScope } from "./format.js";
 import {
 	MemoryDuplicateEntry,
@@ -25,12 +26,19 @@ import {
 	type MemoryToolDetails,
 } from "./renderer.js";
 
-const StringEnum = <T extends string[]>(values: [...T]) => Type.Unsafe<T[number]>({ type: "string", enum: values });
-
-const MemoryScopeTypeBox = StringEnum(["project", "global", "user"]);
+const MemoryScopeTypeBox = Type.Union([
+	Type.Literal("project"),
+	Type.Literal("global"),
+	Type.Literal("user"),
+]);
 
 const MemoryToolParams = Type.Object({
-	action: StringEnum(["add", "update", "remove", "read"]),
+	action: Type.Union([
+		Type.Literal("add"),
+		Type.Literal("update"),
+		Type.Literal("remove"),
+		Type.Literal("read"),
+	]),
 	target: Type.Optional(
 		MemoryScopeTypeBox,
 	),
@@ -47,17 +55,11 @@ const MemoryToolParams = Type.Object({
 	id: Type.Optional(Type.String({ description: "Exact memory entry id. Required for update, remove, and read." })),
 });
 
-const MemoryToolParamsSchema = Schema.Struct({
-	action: Schema.Literals(["add", "update", "remove", "read"] as const),
-	target: Schema.optional(Schema.Literals(["project", "global", "user"] as const)),
-	summary: Schema.optional(Schema.String),
-	content: Schema.optional(Schema.String),
-	id: Schema.optional(Schema.String),
-});
+type DecodedMemoryToolParams = Static<typeof MemoryToolParams>;
 
-const decodeMemoryToolParams = Schema.decodeUnknownSync(MemoryToolParamsSchema);
-
-type DecodedMemoryToolParams = Schema.Schema.Type<typeof MemoryToolParamsSchema>;
+function decodeMemoryToolParams(rawParams: unknown): DecodedMemoryToolParams {
+	return Value.Parse(MemoryToolParams, rawParams);
+}
 
 const TOOL_DESCRIPTION = "Save and retrieve durable information that survives across sessions. Each memory has a short summary hook and a full content body. Future prompts receive only the summary hook in the memory index, so write summaries that help you decide whether to read the full content.\n\nWHEN TO SAVE (do this proactively, do not wait to be asked):\n- User corrects you or says 'remember this' / 'don't do that again'\n- User shares a preference, habit, or personal detail (name, role, timezone, coding style)\n- You discover something about the environment (OS, installed tools, project structure)\n- You learn a convention, API quirk, or workflow specific to this user's setup\n\nPRIORITY: User preferences and corrections > environment facts > procedural knowledge. The most valuable memory prevents the user from having to repeat themselves.\n\nDo NOT save task progress, session outcomes, completed-work logs, or temporary TODO state.\n\nTHREE TARGETS:\n- 'project': workspace-specific facts. Stored at the nearest workspace root in .pi/tau/memories/PROJECT.jsonl (25000 chars total)\n- 'global': notes that apply across projects. Stored in ~/.pi/agent/tau/memories/MEMORY.jsonl (25000 chars total)\n- 'user': who the user is - name, role, preferences, communication style, pet peeves. Stored in ~/.pi/agent/tau/memories/USER.jsonl (25000 chars total)\n\nACTIONS: add (new entry), update (replace an existing entry by id), remove (delete an entry by id), read (fetch full content by id).\n\nSUMMARY VS CONTENT:\n- summary: short prompt-visible hook, concise and distinct from the full content\n- content: full body returned by read, with the detail that should require explicit retrieval\n- summary must not duplicate the content verbatim\n\nIMPORTANT: The system prompt only shows memory summaries (id, scope, type, summary). Use the read action to fetch full content before relying on details.\n\nEvery successful action returns the affected memory entry. Per-scope total limits are enforced independently.\n\nSKIP: trivial/obvious info, things easily re-discovered, raw data dumps, temporary TODO state.";
 
@@ -207,7 +209,7 @@ export default function initMemory(
 export function createMemoryToolDefinition(
 	runEffect: <A, E>(effect: Effect.Effect<A, E, CuratedMemory>) => Promise<A>,
 ): ToolDefinition {
-	return defineEffectTool<typeof MemoryToolParams, DecodedMemoryToolParams, ToolDetails>({
+	return defineDecodedTool<typeof MemoryToolParams, DecodedMemoryToolParams, ToolDetails>({
 		name: "memory",
 		label: "memory",
 		description: TOOL_DESCRIPTION,

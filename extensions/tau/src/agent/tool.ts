@@ -1,6 +1,6 @@
-import { Type } from "@sinclair/typebox";
-import { Effect, Stream, Cause, Schema } from "effect";
-import { StringEnum } from "@mariozechner/pi-ai";
+import { Type, type Static } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
+import { Effect, Stream, Cause } from "effect";
 import type { Model, Api } from "@mariozechner/pi-ai";
 import type { ModelRegistry, ToolDefinition } from "@mariozechner/pi-coding-agent";
 import type { AgentToolUpdateCallback } from "@mariozechner/pi-agent-core";
@@ -20,7 +20,7 @@ import type { AgentId } from "./types.js";
 import { renderAgentCall, renderAgentResult } from "./render.js";
 import type { ApprovalBroker } from "./approval-broker.js";
 import { DEFAULT_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS } from "./control.js";
-import { defineEffectTool, textToolResult } from "../shared/effect-tool.js";
+import { defineDecodedTool, textToolResult } from "../shared/decoded-tool.js";
 
 /**
  * Convert an AbortSignal to an Effect that completes when the signal aborts.
@@ -41,10 +41,19 @@ function abortSignalEffect(signal: AbortSignal | undefined): Effect.Effect<void>
 }
 
 export const AgentParams = Type.Object({
-	action: StringEnum(["spawn", "send", "wait", "close", "list"] as const, {
-		description:
-			"Action: spawn (create), send (message existing), wait (block until done), close (terminate), list (show all)",
-	}),
+	action: Type.Union(
+		[
+			Type.Literal("spawn"),
+			Type.Literal("send"),
+			Type.Literal("wait"),
+			Type.Literal("close"),
+			Type.Literal("list"),
+		],
+		{
+			description:
+				"Action: spawn (create), send (message existing), wait (block until done), close (terminate), list (show all)",
+		},
+	),
 	// spawn
 	agent: Type.Optional(
 		Type.String({
@@ -81,20 +90,13 @@ export const AgentParams = Type.Object({
 	),
 });
 
-// Effect Schema mirror for runtime validation at execution boundary.
-const AgentParamsSchema = Schema.Struct({
-	action: Schema.Literals(["spawn", "send", "wait", "close", "list"] as const),
-	agent: Schema.optional(Schema.String),
-	message: Schema.optional(Schema.String),
-	result_schema: Schema.optional(Schema.Unknown),
-	id: Schema.optional(Schema.String),
-	interrupt: Schema.optional(Schema.Boolean),
-	ids: Schema.optional(Schema.Array(Schema.String)),
-	timeout_ms: Schema.optional(Schema.Number),
-});
-const decodeAgentParams = Schema.decodeUnknownSync(AgentParamsSchema);
+type DecodedAgentParams = Omit<Static<typeof AgentParams>, "result_schema"> & {
+	readonly result_schema?: unknown;
+};
 
-type DecodedAgentParams = Schema.Schema.Type<typeof AgentParamsSchema>;
+function decodeAgentParams(rawParams: unknown): DecodedAgentParams {
+	return Value.Parse(AgentParams, rawParams);
+}
 
 export function buildToolDescription(
 	registry: {
@@ -255,7 +257,7 @@ export function createAgentToolDef(
 	getContext: () => AgentToolContext,
 	description: string,
 ): AgentToolDef {
-	return defineEffectTool<typeof AgentParams, DecodedAgentParams, object>({
+	return defineDecodedTool<typeof AgentParams, DecodedAgentParams, object>({
 		name: "agent",
 		label: "agent",
 		description,

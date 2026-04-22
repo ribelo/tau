@@ -31,9 +31,8 @@ import {
 } from "./schema.js";
 import { BacklogConfig, BacklogLegacyImport, BacklogRepository } from "./services.js";
 import {
-	acquireSharedFileLock,
+	acquireSharedFileLockScoped,
 	describeSharedFileLockError,
-	releaseSharedFileLock,
 	SharedFileLockCorrupt,
 	SharedFileLockHeld,
 	SharedFileLockIoError,
@@ -913,23 +912,21 @@ export const BacklogRepositoryLive = Layer.effect(
 		const withWriteLock = <A, E>(
 			effect: Effect.Effect<A, E, never>,
 		): Effect.Effect<A, E | BacklogLockError, never> =>
-			Effect.gen(function* () {
-				yield* fs.makeDirectory(config.cacheRoot, { recursive: true }).pipe(
-					Effect.mapError((error) =>
-						toLockError(lockPath, `Failed to create lock directory ${config.cacheRoot}`, false, error),
-					),
-				);
+			Effect.scoped(
+				Effect.gen(function* () {
+					yield* fs.makeDirectory(config.cacheRoot, { recursive: true }).pipe(
+						Effect.mapError((error) =>
+							toLockError(lockPath, `Failed to create lock directory ${config.cacheRoot}`, false, error),
+						),
+					);
 
-				const lease = yield* Effect.tryPromise({
-					try: () => acquireSharedFileLock(lockPath, backlogLockConfig),
-					catch: (error) => toBacklogLockErrorFromShared(lockPath, error),
-				});
-				const release = Effect.tryPromise({
-					try: () => releaseSharedFileLock(lease),
-					catch: (error) => toBacklogLockErrorFromShared(lockPath, error),
-				}).pipe(Effect.orElseSucceed(() => undefined));
-				return yield* effect.pipe(Effect.ensuring(release));
-			});
+					yield* acquireSharedFileLockScoped(lockPath, backlogLockConfig).pipe(
+						Effect.mapError((error) => toBacklogLockErrorFromShared(lockPath, error)),
+					);
+
+					return yield* effect;
+				}),
+			);
 
 		return BacklogRepository.of({
 			readEvents,

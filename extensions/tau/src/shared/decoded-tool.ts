@@ -6,14 +6,14 @@ import type {
 	ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
 
-export interface EffectToolExecuteContext<TDetails> {
+export interface ToolExecuteContext<TDetails> {
 	readonly toolCallId: string;
 	readonly signal: AbortSignal | undefined;
 	readonly onUpdate: AgentToolUpdateCallback<TDetails> | undefined;
 	readonly ctx: ExtensionContext;
 }
 
-interface DefineEffectToolOptions<TParamsSchema extends TSchema, TParams, TDetails> {
+interface DefineDecodedToolOptions<TParamsSchema extends TSchema, TParams, TDetails> {
 	readonly name: string;
 	readonly label: string;
 	readonly description: string;
@@ -30,7 +30,7 @@ interface DefineEffectToolOptions<TParamsSchema extends TSchema, TParams, TDetai
 	) => AgentToolResult<TDetails>;
 	readonly execute: (
 		params: TParams,
-		context: EffectToolExecuteContext<TDetails>,
+		context: ToolExecuteContext<TDetails>,
 	) => Promise<AgentToolResult<TDetails>> | AgentToolResult<TDetails>;
 }
 
@@ -46,8 +46,8 @@ export function textToolResult<TDetails>(
 	};
 }
 
-export function defineEffectTool<TParamsSchema extends TSchema, TParams, TDetails>(
-	options: DefineEffectToolOptions<TParamsSchema, TParams, TDetails>,
+export function defineDecodedTool<TParamsSchema extends TSchema, TParams, TDetails>(
+	options: DefineDecodedToolOptions<TParamsSchema, TParams, TDetails>,
 ): ToolDefinition {
 	return {
 		name: options.name,

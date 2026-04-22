@@ -6,8 +6,9 @@ import {
 	type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
 import { Markdown, Text } from "@mariozechner/pi-tui";
-import { defineEffectTool, textToolResult } from "../shared/effect-tool.js";
+import { defineDecodedTool, textToolResult } from "../shared/decoded-tool.js";
 
 // =============================================================================
 // Errors
@@ -277,27 +278,6 @@ interface WebSearchParams {
 	readonly moderation?: boolean | undefined;
 }
 
-const WebSearchParamsSchema = Schema.Struct({
-	query: Schema.String,
-	type: Schema.optional(Schema.Literals(["auto", "neural", "fast", "deep"] as const)),
-	additionalQueries: Schema.optional(Schema.Array(Schema.String)),
-	category: Schema.optional(Schema.String),
-	userLocation: Schema.optional(Schema.String),
-	numResults: Schema.optional(Schema.Number),
-	text: Schema.optional(Schema.Boolean),
-	context: Schema.optional(Schema.Boolean),
-	includeDomains: Schema.optional(Schema.Array(Schema.String)),
-	excludeDomains: Schema.optional(Schema.Array(Schema.String)),
-	startCrawlDate: Schema.optional(Schema.String),
-	endCrawlDate: Schema.optional(Schema.String),
-	startPublishedDate: Schema.optional(Schema.String),
-	endPublishedDate: Schema.optional(Schema.String),
-	includeText: Schema.optional(Schema.Array(Schema.String)),
-	excludeText: Schema.optional(Schema.Array(Schema.String)),
-	moderation: Schema.optional(Schema.Boolean),
-});
-const decodeWebSearchParams = Schema.decodeUnknownSync(WebSearchParamsSchema);
-
 const makeSearchBody = (params: WebSearchParams): Record<string, unknown> => {
 	const body: Record<string, unknown> = { query: params.query };
 	if (params.type !== undefined) body["type"] = params.type;
@@ -341,19 +321,6 @@ interface CrawlingParams {
 	readonly subpageTarget?: ReadonlyArray<string> | undefined;
 }
 
-const CrawlingParamsSchema = Schema.Struct({
-	urls: Schema.Array(Schema.String),
-	text: Schema.optional(Schema.Boolean),
-	highlights: Schema.optional(Schema.Boolean),
-	summary: Schema.optional(Schema.Boolean),
-	context: Schema.optional(Schema.Boolean),
-	livecrawl: Schema.optional(Schema.Literals(["never", "fallback", "preferred", "always"] as const)),
-	livecrawlTimeout: Schema.optional(Schema.Number),
-	subpages: Schema.optional(Schema.Number),
-	subpageTarget: Schema.optional(Schema.Array(Schema.String)),
-});
-const decodeCrawlingParams = Schema.decodeUnknownSync(CrawlingParamsSchema);
-
 const makeCrawlBody = (params: CrawlingParams): Record<string, unknown> => {
 	const body: Record<string, unknown> = {
 		urls: params.urls,
@@ -378,12 +345,6 @@ interface CodeContextParams {
 	readonly query: string;
 	readonly tokensNum?: "dynamic" | string | undefined;
 }
-
-const CodeContextParamsSchema = Schema.Struct({
-	query: Schema.String,
-	tokensNum: Schema.optional(Schema.String),
-});
-const decodeCodeContextParams = Schema.decodeUnknownSync(CodeContextParamsSchema);
 
 const makeCodeContextBody = (params: CodeContextParams): Record<string, unknown> => {
 	const body: Record<string, unknown> = { query: params.query };
@@ -453,9 +414,17 @@ const WebSearchTypeBox = Type.Object({
 		maxLength: 2000,
 	}),
 	type: Type.Optional(
-		Type.String({
-			description: "Search type. Options: auto (default), neural, fast, deep.",
-		}),
+		Type.Union(
+			[
+				Type.Literal("auto"),
+				Type.Literal("neural"),
+				Type.Literal("fast"),
+				Type.Literal("deep"),
+			],
+			{
+				description: "Search type. Options: auto (default), neural, fast, deep.",
+			},
+		),
 	),
 	additionalQueries: Type.Optional(
 		Type.Array(Type.String({ minLength: 1 }), {
@@ -569,10 +538,18 @@ const CrawlingTypeBox = Type.Object({
 		}),
 	),
 	livecrawl: Type.Optional(
-		Type.String({
-			description:
-				"Livecrawl mode: never (default), fallback, preferred, always. Use 'always' only if you cannot tolerate cached content.",
-		}),
+		Type.Union(
+			[
+				Type.Literal("never"),
+				Type.Literal("fallback"),
+				Type.Literal("preferred"),
+				Type.Literal("always"),
+			],
+			{
+				description:
+					"Livecrawl mode: never (default), fallback, preferred, always. Use 'always' only if you cannot tolerate cached content.",
+			},
+		),
 	),
 	livecrawlTimeout: Type.Optional(
 		Type.Integer({
@@ -607,6 +584,18 @@ const CodeContextTypeBox = Type.Object({
 		}),
 	),
 });
+
+function decodeWebSearchParams(rawParams: unknown): WebSearchParams {
+	return Value.Parse(WebSearchTypeBox, rawParams);
+}
+
+function decodeCrawlingParams(rawParams: unknown): CrawlingParams {
+	return Value.Parse(CrawlingTypeBox, rawParams);
+}
+
+function decodeCodeContextParams(rawParams: unknown): CodeContextParams {
+	return Value.Parse(CodeContextTypeBox, rawParams);
+}
 
 // =============================================================================
 // Rendering Helpers
@@ -844,7 +833,7 @@ const emptyContentsResponse: ExaContentsResponse = { results: [] };
 const emptyContextResponse: ExaContextResponse = {};
 
 export function createExaToolDefinitions(): readonly ToolDefinition[] {
-	const searchTool = defineEffectTool<typeof WebSearchTypeBox, WebSearchParams, ExaSearchResponse>({
+	const searchTool = defineDecodedTool<typeof WebSearchTypeBox, WebSearchParams, ExaSearchResponse>({
 			name: "web_search_exa",
 			label: "exa.web_search",
 			description:
@@ -896,7 +885,7 @@ export function createExaToolDefinitions(): readonly ToolDefinition[] {
 			},
 		});
 
-	const crawlTool = defineEffectTool<typeof CrawlingTypeBox, CrawlingParams, ExaContentsResponse>({
+	const crawlTool = defineDecodedTool<typeof CrawlingTypeBox, CrawlingParams, ExaContentsResponse>({
 			name: "crawling_exa",
 			label: "exa.crawl",
 			description:
@@ -946,7 +935,7 @@ export function createExaToolDefinitions(): readonly ToolDefinition[] {
 			},
 		});
 
-	const codeContextTool = defineEffectTool<typeof CodeContextTypeBox, CodeContextParams, ExaContextResponse>({
+	const codeContextTool = defineDecodedTool<typeof CodeContextTypeBox, CodeContextParams, ExaContextResponse>({
 			name: "get_code_context_exa",
 			label: "exa.code_context",
 			description:

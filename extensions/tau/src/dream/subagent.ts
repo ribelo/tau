@@ -208,104 +208,114 @@ type TurnLimitSession = Pick<AgentSession, "abort"> & {
 	};
 };
 
-function waitForSessionEnd(session: AgentSession): Promise<SessionSuccess | SessionFailure> {
-	return Effect.runPromise(
-		Effect.callback<SessionSuccess | SessionFailure>((resume) => {
-			let settled = false;
+function waitForSessionEnd(session: AgentSession): Effect.Effect<SessionSuccess | SessionFailure> {
+	return Effect.callback<SessionSuccess | SessionFailure>((resume) => {
+		let settled = false;
 
-			const settle = (result: SessionSuccess | SessionFailure): void => {
-				if (settled) {
-					return;
-				}
+		const settle = (result: SessionSuccess | SessionFailure): void => {
+			if (settled) {
+				return;
+			}
+			settled = true;
+			unsubscribe();
+			resume(Effect.succeed(result));
+		};
+
+		const unsubscribe = session.subscribe((event) => {
+			if (event.type !== "agent_end") {
+				return;
+			}
+
+			const messages: unknown[] = "messages" in event ? (event.messages as unknown[]) : [];
+			const lastAssistant = [...messages].reverse().find(isAssistantMessage);
+
+			if (!lastAssistant) {
+				settle({ ok: false, reason: "No assistant response from dream subagent" });
+				return;
+			}
+
+			if (lastAssistant.stopReason === "error") {
+				const errorReason =
+					lastAssistant.errorMessage ??
+					extractAssistantText(lastAssistant) ??
+					"Agent ended with error";
+				settle({ ok: false, reason: errorReason });
+				return;
+			}
+
+			if (lastAssistant.stopReason === "aborted") {
+				settle({ ok: false, reason: "Dream subagent was aborted" });
+				return;
+			}
+
+			settle({ ok: true });
+		});
+
+		return Effect.sync(() => {
+			if (!settled) {
 				settled = true;
-				unsubscribe();
-				resume(Effect.succeed(result));
-			};
-
-			const unsubscribe = session.subscribe((event) => {
-				if (event.type !== "agent_end") {
-					return;
-				}
-
-				const messages: unknown[] = "messages" in event ? (event.messages as unknown[]) : [];
-				const lastAssistant = [...messages].reverse().find(isAssistantMessage);
-
-				if (!lastAssistant) {
-					settle({ ok: false, reason: "No assistant response from dream subagent" });
-					return;
-				}
-
-				if (lastAssistant.stopReason === "error") {
-					const errorReason =
-						lastAssistant.errorMessage ??
-						extractAssistantText(lastAssistant) ??
-						"Agent ended with error";
-					settle({ ok: false, reason: errorReason });
-					return;
-				}
-
-				if (lastAssistant.stopReason === "aborted") {
-					settle({ ok: false, reason: "Dream subagent was aborted" });
-					return;
-				}
-
-				settle({ ok: true });
-			});
-
-			return Effect.sync(() => {
-				if (!settled) {
-					settled = true;
-				}
-				unsubscribe();
-			});
-		}),
-	);
+			}
+			unsubscribe();
+		});
+	});
 }
 
 function createTurnLimitGuard(
 	session: TurnLimitSession,
 	maxTurns: number,
-): {
-	readonly promise: Promise<TurnLimitExceeded>;
-	readonly dispose: () => void;
-} {
-	let disposed = false;
-	let turns = 0;
-	let unsubscribe: (() => void) | undefined;
+): Effect.Effect<TurnLimitExceeded> {
+	return Effect.callback<TurnLimitExceeded>((resume) => {
+		let settled = false;
+		let turns = 0;
 
-	const dispose = () => {
-		if (disposed) {
-			return;
-		}
-		disposed = true;
-		unsubscribe?.();
-		unsubscribe = undefined;
-	};
+		const settle = (result: TurnLimitExceeded): void => {
+			if (settled) {
+				return;
+			}
+			settled = true;
+			unsubscribe();
+			resume(Effect.succeed(result));
+		};
 
-	const promise = Effect.runPromise(
-		Effect.callback<TurnLimitExceeded>((resume) => {
-			unsubscribe = session.agent.subscribe((event) => {
-				if (disposed || event.type !== "turn_start") {
-					return;
-				}
+		const unsubscribe = session.agent.subscribe((event) => {
+			if (settled || event.type !== "turn_start") {
+				return;
+			}
 
-				turns += 1;
-				if (turns <= maxTurns) {
-					return;
-				}
+			turns += 1;
+			if (turns <= maxTurns) {
+				return;
+			}
 
-				dispose();
-				resume(Effect.succeed({ _tag: "turn_limit_exceeded", maxTurns }));
-				void session.abort();
-			});
+			settle({ _tag: "turn_limit_exceeded", maxTurns });
+			void session.abort();
+		});
 
-			return Effect.sync(() => {
-				dispose();
-			});
-		}),
-	);
+		return Effect.sync(() => {
+			if (!settled) {
+				settled = true;
+			}
+			unsubscribe();
+		});
+	});
+}
 
-	return { promise, dispose };
+function waitForPromptFailure(promptPromise: Promise<void>): Effect.Effect<PromptFailed> {
+	return Effect.callback<PromptFailed>((resume) => {
+		let settled = false;
+
+		void promptPromise.catch((error) => {
+			if (settled) {
+				return;
+			}
+			settled = true;
+			resume(Effect.succeed({ _tag: "prompt_failed", error }));
+		});
+
+		return Effect.sync(() => {
+			settled = true;
+		});
+	});
 }
 
 // ---------------------------------------------------------------------------
@@ -429,55 +439,43 @@ function runImpl(
 			message: `Running dream with ${resolvedModel.provider}/${resolvedModel.id}`,
 		});
 
-		const endPromise = waitForSessionEnd(session);
 		const promptPromise = session.prompt(
 			"Begin the 4-phase memory consolidation. Read the transcript files listed above, then use the memory tool to make changes, and finish with dream_finish.",
 			{ source: "extension" },
 		);
-		const promptFailurePromise = Effect.runPromise(
-			Effect.callback<PromptFailed>((resume) => {
-				let active = true;
-				void promptPromise.catch((error) => {
-					if (!active) {
-						return;
-					}
-					resume(Effect.succeed({ _tag: "prompt_failed", error }));
-				});
 
-				return Effect.sync(() => {
-					active = false;
-				});
-			}),
-		);
-
-		const outcome: SessionOutcome = yield* Effect.tryPromise({
-			try: async (): Promise<SessionOutcome> => {
-				const raceResult = await Promise.race([
-					endPromise,
-					turnLimitGuard.promise,
-					promptFailurePromise,
-				]);
-
+		const outcome: SessionOutcome = yield* Effect.race(
+			Effect.race(waitForSessionEnd(session), turnLimitGuard),
+			waitForPromptFailure(promptPromise),
+		).pipe(
+			Effect.flatMap((raceResult): Effect.Effect<SessionOutcome, DreamSubagentSpawnFailed> => {
 				if ("_tag" in raceResult && raceResult._tag === "prompt_failed") {
-					throw raceResult.error;
+					return Effect.fail(
+						new DreamSubagentSpawnFailed({
+							reason: `Failed to prompt dream subagent: ${String(raceResult.error)}`,
+						}),
+					);
 				}
 
 				if ("_tag" in raceResult && raceResult._tag === "turn_limit_exceeded") {
-					await promptPromise.catch(() => undefined);
-					return raceResult;
+					return Effect.promise(() => promptPromise.catch(() => undefined)).pipe(
+						Effect.as(raceResult),
+					);
 				}
 
-				await promptPromise;
-				return raceResult;
-			},
-			catch: (_error) =>
-				new DreamSubagentSpawnFailed({
-					reason: `Failed to prompt dream subagent: ${String(_error)}`,
-				}),
-		}).pipe(
+				return Effect.tryPromise({
+					try: async (): Promise<SessionSuccess | SessionFailure> => {
+						await promptPromise;
+						return raceResult;
+					},
+					catch: (error) =>
+						new DreamSubagentSpawnFailed({
+							reason: `Failed to prompt dream subagent: ${String(error)}`,
+						}),
+				});
+			}),
 			Effect.ensuring(
 				Effect.sync(() => {
-					turnLimitGuard.dispose();
 					unsubscribeActivity();
 				}),
 			),

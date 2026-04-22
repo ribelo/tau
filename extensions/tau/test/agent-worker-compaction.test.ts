@@ -107,6 +107,7 @@ const makeWorker = async (
 			parentModel: Model<Api> | undefined,
 			executionState: unknown,
 			executionProfile: unknown,
+			runFork: unknown,
 			agentContext: unknown,
 		): AgentWorker;
 	})(
@@ -146,6 +147,7 @@ const makeWorker = async (
 				},
 			},
 		},
+		(effect: Effect.Effect<unknown, unknown, never>) => Effect.runFork(effect),
 		{
 			parentSessionFile: "parent-session",
 			parentModel: undefined,

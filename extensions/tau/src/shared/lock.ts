@@ -2,7 +2,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
-import { Schema } from "effect";
+import { Effect, type Scope, Schema } from "effect";
 
 type ParsedLockMetadata =
 	| {
@@ -98,6 +98,29 @@ export type SharedFileLockError =
 	| SharedFileLockCorrupt
 	| SharedFileLockTimeout
 	| SharedFileLockIoError;
+
+function toSharedFileLockError(
+	lockPath: string,
+	operation: string,
+	error: unknown,
+): SharedFileLockError {
+	if (
+		error instanceof SharedFileLockHeld ||
+		error instanceof SharedFileLockCorrupt ||
+		error instanceof SharedFileLockTimeout ||
+		error instanceof SharedFileLockIoError
+	) {
+		return error;
+	}
+
+	return toIoError(
+		lockPath,
+		operation,
+		`Failed to ${operation} shared lock ${lockPath}`,
+		false,
+		error,
+	);
+}
 
 function isNodeError(err: unknown, code: string): boolean {
 	return typeof err === "object" && err !== null && "code" in err && err.code === code;
@@ -440,6 +463,31 @@ export async function releaseSharedFileLock(lease: SharedFileLockLease): Promise
 		throw toIoError(lease.path, "release", `Failed to remove lock file ${lease.path}`, false, error);
 	}
 }
+
+export const acquireSharedFileLockEffect = (
+	lockPath: string,
+	config: SharedFileLockConfig,
+): Effect.Effect<SharedFileLockLease, SharedFileLockError, never> =>
+	Effect.tryPromise({
+		try: () => acquireSharedFileLock(lockPath, config),
+		catch: (error) => toSharedFileLockError(lockPath, "acquire", error),
+	});
+
+export const releaseSharedFileLockEffect = (
+	lease: SharedFileLockLease,
+): Effect.Effect<void, SharedFileLockError, never> =>
+	Effect.tryPromise({
+		try: () => releaseSharedFileLock(lease),
+		catch: (error) => toSharedFileLockError(lease.path, "release", error),
+	});
+
+export const acquireSharedFileLockScoped = (
+	lockPath: string,
+	config: SharedFileLockConfig,
+): Effect.Effect<SharedFileLockLease, SharedFileLockError, Scope.Scope> =>
+	Effect.acquireRelease(acquireSharedFileLockEffect(lockPath, config), (lease) =>
+		releaseSharedFileLockEffect(lease).pipe(Effect.orElseSucceed(() => undefined)),
+	);
 
 export async function withSharedFileLock<T>(
 	lockPath: string,

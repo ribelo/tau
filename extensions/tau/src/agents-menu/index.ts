@@ -12,7 +12,7 @@ import { AgentRegistry } from "../agent/agent-registry.js";
 import { validateResolvedAgentConfiguration } from "../agent/startup-validation.js";
 import { buildToolDescription } from "../agent/tool.js";
 import type { AgentToolHandle } from "../agent/index.js";
-import { Cause, Data, Effect } from "effect";
+import { Data, Effect } from "effect";
 import {
 	AgentSelectionStore,
 	clearRalphOwnedSessionCache,
@@ -73,16 +73,27 @@ export function setAgentEnabledForCwd(cwd: string, name: string, enabled: boolea
 function loadRegistry(cwd: string): Effect.Effect<AgentRegistry, AgentMenuRegistryLoadError> {
 	return AgentRegistry.load(cwd).pipe(
 		Effect.tap(validateResolvedAgentConfiguration),
-		Effect.catchCause((cause: Cause.Cause<unknown>) =>
+		Effect.catch((error) =>
 			Effect.fail(
 				new AgentMenuRegistryLoadError({
 					cwd,
-					reason: Cause.pretty(cause),
+					reason: summarizeRegistryLoadError(error),
 				}),
 			),
 		),
 	);
 }
+
+const summarizeRegistryLoadError = (error: unknown): string => {
+	if (error instanceof Error) {
+		const message = error.message.trim();
+		if (message.length > 0) {
+			return message;
+		}
+	}
+
+	return "Unexpected internal error while loading agent registry.";
+};
 
 class AgentMenuRegistryLoadError extends Data.TaggedError("AgentMenuRegistryLoadError")<{
 	readonly cwd: string;

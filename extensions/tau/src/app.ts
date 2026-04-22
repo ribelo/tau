@@ -49,6 +49,10 @@ import { DreamSchedulerLive } from "./dream/scheduler.js";
 import { DreamSubagentLive } from "./dream/subagent.js";
 import { DreamTaskRegistryLive } from "./dream/task-registry.js";
 import { loadDreamConfig } from "./dream/config-loader.js";
+import {
+	AutoresearchLoopRunner,
+	AutoresearchLoopRunnerLive,
+} from "./services/autoresearch-loop-runner.js";
 import type { DreamLock } from "./dream/lock.js";
 import type { DreamScheduler } from "./dream/scheduler.js";
 import type { DreamTaskRegistry } from "./dream/task-registry.js";
@@ -87,7 +91,9 @@ const createMainLayer = (agentRuntimeBridge: AgentRuntimeBridgeService) => {
 	const AgentLayer = AgentControlLive.pipe(
 		Layer.provide(AgentManagerLive),
 		Layer.provide(AgentConfigLive),
-		Layer.provide(AgentRuntimeBridgeLive(agentRuntimeBridge.runPromise)),
+		Layer.provide(
+			AgentRuntimeBridgeLive(agentRuntimeBridge.runPromise, agentRuntimeBridge.runFork),
+		),
 		Layer.provide(SandboxLayer),
 	);
 
@@ -128,6 +134,7 @@ const createMainLayer = (agentRuntimeBridge: AgentRuntimeBridgeService) => {
 		DreamSchedulerLayer,
 		DreamTaskRegistryLive,
 		DreamSubagentLive,
+		AutoresearchLoopRunnerLive,
 		SkillManagerLayer,
 		AgentLayer,
 		RalphLayer,
@@ -146,6 +153,7 @@ type TauRuntime = ManagedRuntime.ManagedRuntime<
 	| SkillManager
 	| Ralph
 	| LoopEngine
+	| AutoresearchLoopRunner
 	| DreamLock
 	| DreamScheduler
 	| DreamTaskRegistry
@@ -175,6 +183,12 @@ export const startTau = (pi: ExtensionAPI) => {
 			}
 			return runtime.runPromise(effect);
 		},
+		runFork: (effect) => {
+			if (!runtime) {
+				throw new Error("tau runtime not initialized");
+			}
+			return runtime.runFork(effect);
+		},
 		closeAll: () =>
 			agentRuntimeBridge
 				.runPromise(
@@ -203,7 +217,7 @@ export const startTau = (pi: ExtensionAPI) => {
 	const runRalph = <A, E>(effect: Effect.Effect<A, E, Ralph | PromptModes>) =>
 		currentRuntime.runPromise(effect);
 	const runAutoresearch = <A, E>(
-		effect: Effect.Effect<A, E, LoopEngine | Sandbox | PromptModes>,
+		effect: Effect.Effect<A, E, LoopEngine | Sandbox | PromptModes | AutoresearchLoopRunner>,
 	) => currentRuntime.runPromise(effect);
 
 	const startup = Effect.gen(function* () {

@@ -4,7 +4,7 @@ import { Effect, Option } from "effect";
 import type { ExtensionAPI, ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 
-import { defineEffectTool, textToolResult } from "../shared/effect-tool.js";
+import { defineDecodedTool, textToolResult } from "../shared/decoded-tool.js";
 import { ThreadAmbiguousError, ThreadNotFoundError } from "./errors.js";
 import {
 	renderFindThreadCall,
@@ -57,7 +57,7 @@ function readDetails<T>(result: unknown): T | undefined {
 
 export function createThreadToolDefinitions(): readonly ToolDefinition[] {
 	return [
-		defineEffectTool<typeof FindThreadParamsSchema, FindThreadParams, FindThreadResult | undefined>({
+		defineDecodedTool<typeof FindThreadParamsSchema, FindThreadParams, FindThreadResult | undefined>({
 			name: "find_thread",
 			label: "find_thread",
 			description:
@@ -105,7 +105,7 @@ export function createThreadToolDefinitions(): readonly ToolDefinition[] {
 				};
 			},
 		}),
-		defineEffectTool<typeof ReadThreadParamsSchema, ReadThreadParams, ReadThreadResult | undefined>({
+		defineDecodedTool<typeof ReadThreadParamsSchema, ReadThreadParams, ReadThreadResult | undefined>({
 			name: "read_thread",
 			label: "read_thread",
 			description:

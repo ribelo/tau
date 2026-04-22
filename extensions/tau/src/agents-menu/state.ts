@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { Option } from "effect";
 
 import { findNearestWorkspaceRoot } from "../shared/discovery.js";
+import { atomicWriteFileStringSync } from "../shared/atomic-write.js";
 import { isRecord, type AnyRecord } from "../shared/json.js";
 import { LOOPS_STATE_DIR } from "../loops/paths.js";
 import { decodeLoopPersistedStateJsonSync } from "../loops/schema.js";
@@ -14,6 +15,11 @@ type ProjectAgentState = {
 	ralphEnabledAgents: ReadonlyArray<string> | undefined;
 	dirty: boolean;
 };
+
+type SettingsReadResult =
+	| { readonly _tag: "missing" }
+	| { readonly _tag: "valid"; readonly settings: AnyRecord }
+	| { readonly _tag: "invalid" };
 
 const DEFAULT_RALPH_ENABLED_AGENTS = ["finder", "librarian"] as const;
 const RALPH_SESSION_CACHE_KEY_DELIMITER = "\u0000";
@@ -122,33 +128,24 @@ function pruneStateToAvailableAgents(
 	);
 }
 
-async function readSettingsFile(settingsPath: string): Promise<AnyRecord | null> {
+async function readSettingsFile(settingsPath: string): Promise<SettingsReadResult> {
 	try {
 		const raw = await fs.readFile(settingsPath, "utf-8");
 		const parsed: unknown = JSON.parse(raw);
-		return isRecord(parsed) ? parsed : null;
+		if (!isRecord(parsed)) {
+			return { _tag: "invalid" };
+		}
+		return { _tag: "valid", settings: parsed };
 	} catch (error: unknown) {
 		if (isNodeError(error, "ENOENT")) {
-			return null;
+			return { _tag: "missing" };
 		}
-		return null;
+		return { _tag: "invalid" };
 	}
 }
 
 async function writeSettingsFile(settingsPath: string, settings: AnyRecord): Promise<void> {
-	await fs.mkdir(path.dirname(settingsPath), { recursive: true });
-	const tempPath = `${settingsPath}.tmp-${process.pid}-${Date.now()}`;
-	try {
-		await fs.writeFile(tempPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
-		await fs.rename(tempPath, settingsPath);
-	} catch (error: unknown) {
-		try {
-			await fs.rm(tempPath, { force: true });
-		} catch {
-			// Best-effort temp cleanup only; surface the original write failure.
-		}
-		throw error;
-	}
+	atomicWriteFileStringSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
 }
 
 export function getAgentSettingsPath(cwd: string): string {
@@ -281,7 +278,18 @@ export class AgentSelectionStore {
 
 	async activate(cwd: string, availableAgents: ReadonlyArray<string>): Promise<void> {
 		const settingsPath = getAgentSettingsPath(cwd);
-		const settings = await readSettingsFile(settingsPath);
+		const settingsReadResult = await readSettingsFile(settingsPath);
+
+		if (settingsReadResult._tag === "invalid") {
+			this.states.set(
+				settingsPath,
+				createProjectAgentState(availableAgents, false, null, []),
+			);
+			return;
+		}
+
+		const settings =
+			settingsReadResult._tag === "valid" ? settingsReadResult.settings : null;
 		const ralphEnabledAgents = readRalphEnabledAgentsFromSettings(settings);
 
 		const existing = this.states.get(settingsPath);

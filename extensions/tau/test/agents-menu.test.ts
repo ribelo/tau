@@ -173,6 +173,11 @@ describe("agents menu", () => {
 			expect(refreshedDescriptions).toHaveLength(1);
 			expect(refreshedDescriptions[0]).toContain("## Available agents");
 			expect(notify).toHaveBeenCalledTimes(1);
+			const [message, level] = notify.mock.calls[0] ?? [];
+			expect(level).toBe("error");
+			expect(message).toContain("Failed to load or validate agent registry in");
+			expect(message).toContain('Invalid tools for agent "deep": imaginary_tool');
+			expect(message).not.toContain("\n");
 		} finally {
 			fs.rmSync(tempHome, { recursive: true, force: true });
 		}

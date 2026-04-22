@@ -213,6 +213,7 @@ export const AgentManagerLive = Layer.effect(
 							modelRegistry: opts.modelRegistry,
 							resultSchema: opts.resultSchema,
 							runPromise: agentRuntime.runPromise,
+							runFork: agentRuntime.runFork,
 							...(opts.agentSummaries !== undefined
 								? { agentSummaries: opts.agentSummaries }
 								: {}),
