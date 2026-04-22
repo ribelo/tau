@@ -9,6 +9,29 @@ function makeTempDir(prefix: string): string {
 	return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
+describe("wrapCommandWithSandbox argv", () => {
+	it("does not include duplicate 'bwrap' in args (Node spawn prepends file as argv[0])", async () => {
+		const workspaceRoot = makeTempDir("tau-sandbox-argv-");
+
+		const result = await wrapCommandWithSandbox({
+			command: "echo hello",
+			workspaceRoot,
+			filesystemMode: "workspace-write",
+			networkMode: "deny",
+		});
+
+		expect(result.success).toBe(true);
+		if (!result.success) return;
+
+		// Node.js spawn(file, args) prepends file to argv automatically.
+		// args[0] must NOT be "bwrap" — that would create a duplicate entry
+		// that bwrap misinterprets as the command to execute.
+		expect(result.file).toBe("bwrap");
+		expect(result.args[0]).not.toBe("bwrap");
+		expect(result.args[0]).toBe("--new-session");
+	});
+});
+
 describe("wrapCommandWithSandbox mount order", () => {
 	it("binds siblings of .pi/loops/tasks as read-only and tasks as writable", async () => {
 		const workspaceRoot = makeTempDir("tau-sandbox-bwrap-");

@@ -84,7 +84,10 @@ export async function wrapCommandWithSandbox(opts: {
 	}
 
 	const resolvedWorkspace = safeRealpath(workspaceRoot);
-	const args: string[] = ["bwrap", "--new-session", "--die-with-parent"];
+	// Node.js spawn(file, args) prepends file as argv[0] automatically.
+	// Do NOT include "bwrap" here — that would create a duplicate argv entry
+	// that bwrap misinterprets as the command to execute inside the sandbox.
+	const args: string[] = ["--new-session", "--die-with-parent"];
 
 	// Minimal synthetic /dev (null, zero, full, random, urandom, tty) instead of
 	// exposing all host devices. Isolate user/pid namespaces and mount fresh /proc.
