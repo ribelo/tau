@@ -618,10 +618,8 @@ describe("ralph adapter boundary freeze", () => {
 		runtimes.push(ralphRuntime);
 		initRalph(piHarness.pi, ralphRuntime.run);
 
-		const startTool = piHarness.tools.get("ralph_create");
 		const doneTool = piHarness.tools.get("ralph_continue");
 		const command = piHarness.commands.get("ralph");
-		expect(startTool).toBeDefined();
 		expect(doneTool).toBeDefined();
 		expect(command).toBeDefined();
 
@@ -632,17 +630,6 @@ describe("ralph adapter boundary freeze", () => {
 			iteration: 7,
 			status: "active",
 		});
-
-		await startTool?.execute(
-			"call-start",
-			{
-				name: "tool-loop",
-				taskContent: "# Task\n- via tool\n",
-			},
-			undefined,
-			undefined,
-			context.ctx,
-		);
 
 		const doneResult = (await doneTool?.execute(
 			"call-done",

@@ -157,12 +157,12 @@ describe("skill-marker", () => {
 		const runtime = createSkillMarkerRuntime();
 		initSkillMarker(pi, runtime);
 
-		const [result] = await emit("before_agent_start", { prompt: "please use $godmode now" });
+		const [result] = await emit("before_agent_start", { prompt: "please use $code-review now" });
 
 		expect(result).toEqual({
 			message: expect.objectContaining({
 				customType: "skill-marker",
-				content: expect.stringContaining("G0DM0D3 Jailbreaking Skill"),
+				content: expect.stringContaining("Code Review Skill"),
 			}),
 		});
 	});

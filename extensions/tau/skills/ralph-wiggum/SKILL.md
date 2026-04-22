@@ -5,54 +5,20 @@ description: Long-running iterative development loops with pacing control and ve
 
 # Ralph Wiggum - Long-Running Development Loops
 
-Use the `ralph_create` tool to create a loop task:
+## Creating a Task File
 
-```
-ralph_create({
-  name: "loop-name",
-  taskContent: "# Task\n\n## Goals\n- Goal 1\n\n## Checklist\n- [ ] Item 1\n- [ ] Item 2",
-  maxIterations: 50,        // Default: 50
-  itemsPerIteration: 3,     // Optional: suggest N items per turn
-  reflectEvery: 10          // Optional: reflect every N iterations
-})
-```
+Write the task file directly at `.pi/loops/tasks/<name>.md` using `write` or `edit`.
 
-## Loop Behavior
+Pick a concise lowercase hyphenated name that fits naturally in `/ralph start <name>`.
 
-1. **Write the task file**: The `ralph_create` tool creates `.pi/ralph/tasks/<name>.md` with the provided task content.
-2. Start the fresh-session loop with `/ralph start <name>`.
-3. Work on the task and update the file each iteration.
-4. Record verification evidence (commands run, file paths, outputs) in the task file.
-5. Call `ralph_continue` to proceed to the next iteration.
-6. Call `ralph_finish` with a short completion message when finished.
-7. Stop when complete or when max iterations is reached (default 50).
+If the target corresponds to a backlog item, inspect it first with `backlog show <id>` and synthesize the task from that issue. Use the backlog id as the file name (e.g. `.pi/loops/tasks/foo-31z.md`).
 
-## User Commands
-
-- `/ralph create <request|path|backlog-id>` - Ask the current model to draft a task file.
-- `/ralph start <name>` - Start a new loop.
-- `/ralph pause` - Pause loop and keep it resumable.
-- `/ralph stop` - End the active loop (when agent idle).
-- `/ralph resume <name>` - Resume loop.
-- `/ralph status` - Show loops.
-- `/ralph list --archived` - Show archived loops.
-- `/ralph archive <name>` - Move loop to archive.
-- `/ralph clean [--all]` - Clean completed loops.
-- `/ralph cancel <name>` - Delete loop.
-- `/ralph nuke [--yes]` - Delete all .ralph data.
-
-Press ESC to interrupt streaming. Run `/ralph pause` to keep the loop resumable, or `/ralph stop` when idle to end it.
-
-For free-form requests, `/ralph create <request>` should have the model choose a short loop name and write `.pi/ralph/tasks/<chosen-name>.md`.
-
-For backlog-backed work, use `/ralph create <backlog-id>` first. The model should inspect the issue with `backlog show <id>` and write `.pi/ralph/tasks/<id>.md`.
-
-## Task File Format
+### Task File Template
 
 ```markdown
 # Task Title
 
-Brief description.
+Brief description of the work.
 
 ## Goals
 - Goal 1
@@ -61,19 +27,65 @@ Brief description.
 ## Checklist
 - [ ] Item 1
 - [ ] Item 2
-- [x] Completed item
 
 ## Verification
-- Evidence, commands run, or file paths
+- Commands, outputs, or file paths that prove the work is done
 
 ## Notes
-(Update with progress, decisions, blockers)
+(Update with progress, decisions, blockers as you work)
 ```
+
+### Structure Rules
+
+- **Title and brief summary** at the top.
+- **Goals** — concrete outcomes.
+- **Checklist** — discrete, verifiable items. Each item stands alone.
+- **Verification** — commands to run, files to check, outputs to capture.
+- **Notes** — assumptions, decisions, progress updates during the loop.
+
+After writing the file, tell the user the path and recommend starting with `/ralph start <name>`.
+
+## Starting and Running Loops
+
+The `/ralph` command manages loop lifecycle. The agent does not start loops — the user does.
+
+### User Commands
+
+| Command | Description |
+|:--------|:------------|
+| `/ralph start <name\|path> [options]` | Start a new loop |
+| `/ralph pause` | Pause current loop (keep resumable) |
+| `/ralph stop` | End active loop (agent must be idle) |
+| `/ralph resume <name> [options]` | Resume a paused or completed loop |
+| `/ralph status` | Show all loops |
+| `/ralph list --archived` | Show archived loops |
+| `/ralph archive <name>` | Move loop to archive |
+| `/ralph clean [--all]` | Clean completed loops |
+| `/ralph cancel <name>` | Delete loop state |
+| `/ralph nuke [--yes]` | Delete all Ralph loop data |
+
+### Start Options
+
+| Option | Description |
+|:-------|:------------|
+| `--max-iterations N` | Stop after N iterations (default 50) |
+| `--items-per-iteration N` | Suggest N items per turn (prompt hint) |
+| `--reflect-every N` | Reflect every N iterations |
+
+Press ESC to interrupt streaming. Run `/ralph pause` to keep the loop resumable, or `/ralph stop` when idle to end it.
+
+## Loop Behavior During Iterations
+
+1. Read the task file and work on the next unchecked item(s).
+2. Update the task file as you progress (check off items, add notes, record verification evidence).
+3. Call `ralph_continue` to proceed to the next iteration.
+4. Call `ralph_finish` with a short completion message when all work is done.
+5. End each iteration with exactly one Ralph loop tool — never end with free text alone.
 
 ## Best Practices
 
-1. Write a clear checklist with discrete items.
-2. Update checklist and notes as you go.
-3. Capture verification evidence for completed items.
+1. Write a clear checklist with discrete items — each should be independently verifiable.
+2. Update checklist and notes every iteration.
+3. Capture verification evidence (commands run, file paths, test output) for completed items.
 4. Reflect when stuck to reassess approach.
-5. End each iteration with exactly one Ralph loop tool.
+5. Keep iterations focused — respect `items-per-iteration` when set.

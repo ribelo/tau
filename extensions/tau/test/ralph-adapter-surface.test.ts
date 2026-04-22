@@ -45,10 +45,9 @@ describe("ralph adapter surface", () => {
 		expect(exposed).not.toContain("clearCurrentLoop");
 	});
 
-	it("routes ralph_create persistence through prepareLoopTask", () => {
+	it("does not register a ralph_create tool (task creation is skill-driven)", () => {
 		const source = fs.readFileSync(new URL("../src/ralph/index.ts", import.meta.url), "utf-8");
-		expect(source).toContain("ralph.prepareLoopTask");
-		expect(source).toContain('name: "ralph_create"');
+		expect(source).not.toContain('name: "ralph_create"');
 		expect(source).not.toContain('name: "ralph_start"');
 		expect(source).not.toContain("ralph.writeTaskFile");
 		expect(source).not.toContain("ralph.loadState");
