@@ -1,14 +1,46 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 
 import initAgentsMenu from "../src/agents-menu/index.js";
 
-type EventHandler = (event: unknown, ctx: { cwd: string; hasUI: boolean }) => unknown;
+type EventContext = {
+	readonly cwd: string;
+	readonly hasUI: boolean;
+	readonly ui?: {
+		readonly notify: (message: string, level: "info" | "error") => void;
+	};
+};
+
+type EventHandler = (event: unknown, ctx: EventContext) => unknown;
 
 type RegisteredCommand = {
 	readonly name: string;
 	readonly description: string;
 };
+
+function writeInvalidAgentSettings(tempHome: string): void {
+	const agentDir = path.join(tempHome, ".pi", "agent");
+	fs.mkdirSync(agentDir, { recursive: true });
+	fs.writeFileSync(
+		path.join(agentDir, "settings.json"),
+		JSON.stringify(
+			{
+				agents: {
+					deep: {
+						tools: ["read", "imaginary_tool"],
+					},
+				},
+			},
+			null,
+			2,
+		),
+		"utf-8",
+	);
+}
 
 function makePiStub(): {
 	readonly pi: ExtensionAPI;
@@ -48,6 +80,10 @@ function makePiStub(): {
 }
 
 describe("agents menu", () => {
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
 	it("describes /agents as session-scoped", () => {
 		const { pi, commands } = makePiStub();
 
@@ -99,5 +135,75 @@ describe("agents menu", () => {
 		await Promise.resolve(sessionStart?.({ type: "session_start" }, { cwd: process.cwd(), hasUI: true }));
 
 		expect(refreshCount).toBe(1);
+	});
+
+	it("fails closed on visible session_start when registry loading fails", async () => {
+		const { pi, handlers, setActiveToolsCalls } = makePiStub();
+		const refreshedDescriptions: string[] = [];
+
+		initAgentsMenu(pi, {
+			refresh: (description) => {
+				refreshedDescriptions.push(description);
+			},
+		});
+
+		const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "tau-agents-menu-home-"));
+		writeInvalidAgentSettings(tempHome);
+		vi.stubEnv("HOME", tempHome);
+
+		try {
+			const notify = vi.fn();
+			const sessionStart = handlers.get("session_start")?.[0];
+			expect(sessionStart).toBeTypeOf("function");
+
+			await Promise.resolve(
+				sessionStart?.(
+					{ type: "session_start" },
+					{
+						cwd: process.cwd(),
+						hasUI: true,
+						ui: {
+							notify,
+						},
+					},
+				),
+			);
+
+			expect(setActiveToolsCalls.at(-1)).toEqual([]);
+			expect(refreshedDescriptions).toHaveLength(1);
+			expect(refreshedDescriptions[0]).toContain("## Available agents");
+			expect(notify).toHaveBeenCalledTimes(1);
+		} finally {
+			fs.rmSync(tempHome, { recursive: true, force: true });
+		}
+	});
+
+	it("fails closed on headless session_switch when registry loading fails", async () => {
+		const { pi, handlers, setActiveToolsCalls } = makePiStub();
+		const refreshedDescriptions: string[] = [];
+
+		initAgentsMenu(pi, {
+			refresh: (description) => {
+				refreshedDescriptions.push(description);
+			},
+		});
+
+		const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "tau-agents-menu-headless-home-"));
+		writeInvalidAgentSettings(tempHome);
+		vi.stubEnv("HOME", tempHome);
+
+		try {
+			const sessionSwitch = handlers.get("session_switch")?.[0];
+			expect(sessionSwitch).toBeTypeOf("function");
+
+			await Promise.resolve(
+				sessionSwitch?.({ type: "session_switch" }, { cwd: process.cwd(), hasUI: false }),
+			);
+
+			expect(setActiveToolsCalls.at(-1)).toEqual([]);
+			expect(refreshedDescriptions).toHaveLength(1);
+		} finally {
+			fs.rmSync(tempHome, { recursive: true, force: true });
+		}
 	});
 });

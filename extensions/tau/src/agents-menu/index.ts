@@ -160,6 +160,17 @@ function syncAgentToolAvailability(
 	});
 }
 
+function failClosedAgentToolAvailability(pi: ExtensionAPI, agentTool: AgentToolHandle): void {
+	agentTool.refresh(
+		buildToolDescription({
+			list: () => [],
+		}),
+	);
+	setToolActivationTransform(pi, AGENT_TOOL_ACTIVATION_KEY, (toolNames) =>
+		toolNames.filter((name) => name !== "agent"),
+	);
+}
+
 /**
  * TUI component for toggling agents on/off. Stays open until Escape.
  */
@@ -363,6 +374,7 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 	) => {
 		const registry = await loadRegistrySafe(cwd, notify);
 		if (registry === null) {
+			failClosedAgentToolAvailability(pi, agentTool);
 			return;
 		}
 		await agentSelections.activate(cwd, registry.names());
@@ -377,6 +389,7 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 			ctx.hasUI ? (message) => ctx.ui.notify(message, "error") : undefined,
 		);
 		if (registry === null) {
+			failClosedAgentToolAvailability(pi, agentTool);
 			return;
 		}
 		await agentSelections.activate(ctx.cwd, registry.names());
@@ -391,6 +404,7 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 		if (!ctx.hasUI) {
 			const registry = await loadRegistrySafe(ctx.cwd);
 			if (registry === null) {
+				failClosedAgentToolAvailability(pi, agentTool);
 				return;
 			}
 			await agentSelections.activate(ctx.cwd, registry.names());
@@ -422,6 +436,7 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 					ctx.ui.notify(message, "error"),
 				);
 				if (registry === null) {
+					failClosedAgentToolAvailability(pi, agentTool);
 					return;
 				}
 				await agentSelections.activate(ctx.cwd, registry.names());
