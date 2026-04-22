@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 
 import { Effect, Fiber } from "effect";
 
@@ -239,6 +243,38 @@ describe("runTau runtime", () => {
 
 		for (const handler of sessionShutdownHandlers) {
 			await expect(Promise.resolve(handler({ type: "session_shutdown" }, ctx))).resolves.toBeUndefined();
+		}
+	});
+
+	it("fails startup when resolved agent configuration is invalid", async () => {
+		const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "tau-home-"));
+
+		fs.mkdirSync(path.join(tempHome, ".pi", "agent"), { recursive: true });
+		fs.writeFileSync(
+			path.join(tempHome, ".pi", "agent", "settings.json"),
+			JSON.stringify(
+				{
+					agents: {
+						deep: {
+							tools: ["read", "imaginary_tool"],
+						},
+					},
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		vi.stubEnv("HOME", tempHome);
+
+		try {
+			await expect(tau(makePiStub())).rejects.toThrow(
+				'Invalid tools for agent "deep": imaginary_tool',
+			);
+		} finally {
+			vi.unstubAllEnvs();
+			fs.rmSync(tempHome, { recursive: true, force: true });
 		}
 	});
 });
