@@ -212,7 +212,7 @@ describe("runTau runtime", () => {
 		expect(editorSetCount).toBeGreaterThan(0);
 	});
 
-	it("runs Ralph session shutdown before app runtime disposal", async () => {
+	it("registers per-module session_shutdown handlers without disposing the shared runtime", async () => {
 		const pi = makePiStub() as ExtensionAPI & {
 			readonly __eventHandlers: Map<string, Array<(payload: unknown, ctx?: unknown) => unknown>>;
 		};
@@ -243,6 +243,67 @@ describe("runTau runtime", () => {
 
 		for (const handler of sessionShutdownHandlers) {
 			await expect(Promise.resolve(handler({ type: "session_shutdown" }, ctx))).resolves.toBeUndefined();
+		}
+	});
+
+	it("does not dispose the ManagedRuntime on session_shutdown so mid-run sessions survive /new and /fork", async () => {
+		// Regression: pi fires session_shutdown on every session teardown
+		// (switchSession, newSession, fork, reload), not just on process exit.
+		// If tau disposes its ManagedRuntime on that event, any effect still
+		// running under the old session (e.g. `/ralph start` → `ralph.runLoop`
+		// → `boundary.newSession(...)` → pi tears down current session and
+		// fires session_shutdown) will fail with "ManagedRuntime disposed".
+		//
+		// tau's app.ts must not register a session_shutdown handler that
+		// disposes the shared runtime. Per-module handlers (ralph, autoresearch,
+		// dream) are fine — they run under the same runtime and never dispose it.
+		const pi = makePiStub() as ExtensionAPI & {
+			readonly __eventHandlers: Map<string, Array<(payload: unknown, ctx?: unknown) => unknown>>;
+		};
+
+		await tau(pi);
+
+		const sessionShutdownHandlers = pi.__eventHandlers.get("session_shutdown") ?? [];
+
+		// Every handler must be a no-runtime-disposal handler. We cannot directly
+		// observe "does this handler dispose the runtime" from the outside, so we
+		// verify the effective guarantee: after running every shutdown handler,
+		// the runtime-backed services are still usable.
+		const ctx = {
+			cwd: process.cwd(),
+			hasUI: true,
+			sessionManager: {
+				getEntries: () => [],
+				getBranch: () => [],
+				getSessionId: () => "test-session",
+				getSessionFile: () => undefined,
+			},
+			ui: {
+				setStatus: () => undefined,
+				setWidget: () => undefined,
+				notify: () => undefined,
+				setFooter: () => () => undefined,
+				getEditorText: () => "",
+			},
+		} as unknown;
+
+		for (const handler of sessionShutdownHandlers) {
+			await Promise.resolve(handler({ type: "session_shutdown" }, ctx));
+		}
+
+		// Re-run handlers a second time — if anything disposed the runtime on
+		// the first pass, a re-entrant call would blow up with "ManagedRuntime
+		// disposed" instead of cleanly reporting the RalphContractValidationError
+		// that normally comes from an empty cwd.
+		for (const handler of sessionShutdownHandlers) {
+			let caught: unknown;
+			try {
+				await Promise.resolve(handler({ type: "session_shutdown" }, ctx));
+			} catch (error) {
+				caught = error;
+			}
+			const message = caught instanceof Error ? caught.message : String(caught);
+			expect(message).not.toContain("ManagedRuntime disposed");
 		}
 	});
 

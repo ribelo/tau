@@ -1,4 +1,4 @@
-import { Cause, Effect, Fiber, Layer, ManagedRuntime } from "effect";
+import { Cause, Effect, Layer, ManagedRuntime } from "effect";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 
 import { PiAPILive } from "./effect/pi.js";
@@ -271,13 +271,24 @@ export const startTau = (pi: ExtensionAPI) => {
 		yield* Effect.sync(() => {
 			const agentToolHandle = initAgent(pi, agentRuntimeBridge, agentToolDescription);
 			initAgentsMenu(pi, agentToolHandle);
-			pi.on("session_shutdown", async () => {
-				if (disposed) return;
-				disposed = true;
-				await Effect.runPromise(Fiber.interrupt(rootFiber));
-				await currentRuntime.dispose();
-				runtime = undefined;
-			});
+
+			// The tau ManagedRuntime is created once per process in the extension
+			// factory and lives for the entire process lifetime. It backs every
+			// tau session (including sessions created mid-run via /new, /fork,
+			// switchSession, and the Ralph iteration boundary).
+			//
+			// pi emits `session_shutdown` on every session teardown — not just
+			// process exit — so disposing the runtime on that event would break
+			// any tool call running on the old session that still has pending
+			// effects. For example, `/ralph start` runs `ralph.runLoop` which
+			// itself calls `ctx.newSession(...)`; pi reacts by tearing down the
+			// current session and firing `session_shutdown` while the ralph
+			// effect is still awaiting results from the runtime.
+			//
+			// Per-session cleanup still happens through each module's own
+			// `session_shutdown` handler (e.g. ralph loop state persistence).
+			// Process-level cleanup relies on Node's normal exit sequence;
+			// SQLite and filesystem resources flush on their own.
 		});
 	});
 
@@ -299,7 +310,6 @@ export const startTau = (pi: ExtensionAPI) => {
 	);
 
 	const rootFiber = currentRuntime.runFork(program);
-	let disposed = false;
 
 	return { fiber: rootFiber, ready };
 };
