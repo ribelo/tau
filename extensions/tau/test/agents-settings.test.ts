@@ -274,4 +274,32 @@ describe("agent selection settings", () => {
 		expect(store.isDisabledForSession(workspace, controllerSession, "deep")).toBe(false);
 		expect(store.isDisabledForSession(workspace, controllerSession, "smart")).toBe(false);
 	});
+
+	it("resolves authoritative session restrictions without prior activation or Ralph cache warmup", async () => {
+		const workspace = await makeWorkspace();
+		cleanup.add(workspace);
+		const settingsPath = getAgentSettingsPath(workspace);
+		const controllerSession = path.join(workspace, ".pi", "sessions", "controller.session.json");
+
+		await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+		await fs.writeFile(
+			settingsPath,
+			JSON.stringify({ tau: { agents: { enabled: ["deep", "finder", "librarian"] } } }, null, 2),
+			"utf8",
+		);
+		await writeRalphState(workspace, "loop-e", {
+			controllerSessionFile: controllerSession,
+		});
+
+		const store = new AgentSelectionStore();
+		const enabled = await store.resolveEnabledAgentsForSession(
+			workspace,
+			controllerSession,
+			["deep", "finder", "librarian"],
+		);
+
+		expect(enabled).toEqual(["finder", "librarian"]);
+		expect(store.isDisabledForSession(workspace, controllerSession, "deep")).toBe(true);
+		expect(store.isDisabledForSession(workspace, controllerSession, "finder")).toBe(false);
+	});
 });

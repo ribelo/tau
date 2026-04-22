@@ -58,6 +58,14 @@ export function isAgentDisabledForSession(
 	return agentSelections.isDisabledForSession(cwd, sessionFile, name);
 }
 
+export function resolveEnabledAgentsForSessionAuthoritative(
+	cwd: string,
+	sessionFile: string | undefined,
+	availableAgents: ReadonlyArray<string>,
+): Promise<ReadonlyArray<string>> {
+	return agentSelections.resolveEnabledAgentsForSession(cwd, sessionFile, availableAgents);
+}
+
 export function setAgentEnabledForCwd(cwd: string, name: string, enabled: boolean): void {
 	agentSelections.setEnabledForCwd(cwd, name, enabled);
 }

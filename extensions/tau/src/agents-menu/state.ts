@@ -311,6 +311,16 @@ export class AgentSelectionStore {
 		return this.isDisabledForCwd(cwd, name) || isDisabledByRalphPolicy(state?.ralphEnabledAgents, cwd, sessionFile, name);
 	}
 
+	async resolveEnabledAgentsForSession(
+		cwd: string,
+		sessionFile: string | undefined,
+		availableAgents: ReadonlyArray<string>,
+	): Promise<ReadonlyArray<string>> {
+		await this.activate(cwd, availableAgents);
+		await preloadRalphOwnedSessionCache(cwd, sessionFile);
+		return availableAgents.filter((name) => !this.isDisabledForSession(cwd, sessionFile, name));
+	}
+
 	setEnabledForCwd(cwd: string, name: string, enabled: boolean): void {
 		const state = this.getStateForCwd(cwd);
 		if (enabled) {

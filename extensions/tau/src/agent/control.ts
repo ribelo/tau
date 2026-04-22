@@ -15,7 +15,7 @@ import { AgentRegistry } from "./agent-registry.js";
 import { isFinal } from "./status.js";
 import type { AgentId } from "./types.js";
 import { Sandbox } from "../services/sandbox.js";
-import { isAgentDisabledForSession } from "../agents-menu/index.js";
+import { resolveEnabledAgentsForSessionAuthoritative } from "../agents-menu/index.js";
 import { resolveAgentExecutionAtSpawn } from "./execution-profile.js";
 
 export const DEFAULT_WAIT_TIMEOUT_MS = 20 * 60 * 1000;
@@ -53,27 +53,29 @@ export const AgentControlLive = Layer.effect(
 				Effect.gen(function* () {
 					const parentExecution = opts.parentExecution;
 					const registry = yield* AgentRegistry.load(opts.cwd);
-
-					if (isAgentDisabledForSession(opts.cwd, opts.parentSessionFile, opts.agent)) {
-						const enabled = registry
-							.names()
-							.filter(
-								(n) =>
-									!isAgentDisabledForSession(opts.cwd, opts.parentSessionFile, n),
-							);
-						return yield* Effect.fail(
-							new AgentError({
-								message: buildDisabledAgentMessage(opts.agent, enabled),
-							}),
-						);
-					}
-
+					const availableAgents = registry.names();
 					const definition = registry.resolve(opts.agent);
 
 					if (!definition) {
 						return yield* Effect.fail(
 							new AgentError({
-								message: `Unknown agent: "${opts.agent}". Available: ${registry.names().join(", ")}`,
+								message: `Unknown agent: "${opts.agent}". Available: ${availableAgents.join(", ")}`,
+							}),
+						);
+					}
+
+					const enabledAgents = yield* Effect.promise(() =>
+						resolveEnabledAgentsForSessionAuthoritative(
+							opts.cwd,
+							opts.parentSessionFile,
+							availableAgents,
+						),
+					);
+
+					if (!enabledAgents.includes(opts.agent)) {
+						return yield* Effect.fail(
+							new AgentError({
+								message: buildDisabledAgentMessage(opts.agent, enabledAgents),
 							}),
 						);
 					}
