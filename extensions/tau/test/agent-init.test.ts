@@ -20,12 +20,12 @@ type RegisteredTool = {
 		signal: AbortSignal | undefined,
 		onUpdate: unknown,
 		ctx: {
-			readonly cwd: string;
+			readonly cwd: unknown;
 			readonly hasUI: boolean;
 			readonly model: Model<Api>;
 			readonly modelRegistry: object;
 			readonly sessionManager: {
-				getCwd: () => string;
+				getCwd: () => unknown;
 				getSessionId: () => string;
 				getSessionFile: () => string | undefined;
 			};
@@ -248,5 +248,38 @@ describe("initAgent", () => {
 
 		expect(spawnCalls).toHaveLength(1);
 		expect(spawnCalls[0]?.cwd).toBe("/session-manager-cwd");
+	});
+
+	it("uses the process cwd when the harness context has no cwd", async () => {
+		const registeredTools: RegisteredTool[] = [];
+		const spawnCalls: ControlSpawnOptions[] = [];
+		const runtime = makeRuntimeWithSpawnCalls(spawnCalls);
+
+		const pi = makePiStub(registeredTools);
+		initAgent(pi, runtime, "agent tool");
+
+		const tool = registeredTools[0];
+		expect(tool).toBeDefined();
+
+		await tool?.execute(
+			"tool-call-1",
+			{ action: "spawn", agent: "librarian", message: "hi" },
+			undefined,
+			undefined,
+			{
+				cwd: undefined,
+				hasUI: false,
+				model: TEST_MODEL,
+				modelRegistry: {},
+				sessionManager: {
+					getCwd: () => undefined,
+					getSessionId: () => "session-uuid",
+					getSessionFile: () => undefined,
+				},
+			},
+		);
+
+		expect(spawnCalls).toHaveLength(1);
+		expect(spawnCalls[0]?.cwd).toBe(process.cwd());
 	});
 });

@@ -10,6 +10,17 @@ import { makeExecutionProfile } from "../execution/schema.js";
 import { readModelId } from "../prompt/profile.js";
 import { isPromptModeThinkingLevel } from "./model-spec.js";
 
+function nonEmptyString(value: unknown): string | undefined {
+	return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function resolveAgentContextCwd(ctx: {
+	readonly cwd: unknown;
+	readonly sessionManager: { readonly getCwd: () => unknown };
+}): string {
+	return nonEmptyString(ctx.sessionManager.getCwd()) ?? nonEmptyString(ctx.cwd) ?? process.cwd();
+}
+
 export interface AgentToolHandle {
 	/** Re-register the agent tool with an updated description. */
 	refresh(description: string): void;
@@ -91,7 +102,7 @@ export default function initAgent(
 						parentModel: ctx.model,
 						resolveParentExecution,
 						modelRegistry: ctx.modelRegistry,
-						cwd: ctx.sessionManager.getCwd(),
+						cwd: resolveAgentContextCwd(ctx),
 						approvalBroker,
 					}),
 					currentDescription,
