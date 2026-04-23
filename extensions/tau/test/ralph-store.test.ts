@@ -286,6 +286,16 @@ function makePiStub(): {
 	};
 }
 
+async function waitFor(predicate: () => boolean): Promise<void> {
+	for (let attempt = 0; attempt < 80; attempt += 1) {
+		if (predicate()) {
+			return;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	throw new Error("timed out waiting for condition");
+}
+
 describe("ralph store behavior freeze", () => {
 	const tempDirs: string[] = [];
 	const runtimes: RalphRuntimeHarness[] = [];
@@ -314,6 +324,7 @@ describe("ralph store behavior freeze", () => {
 
 		const context = makeContext(cwd, notifications, [true]);
 		await command?.handler("start alpha-loop", context);
+		await waitFor(() => readState(cwd, "alpha-loop").status === "paused");
 
 		expect(fs.existsSync(taskPath(cwd, "alpha-loop"))).toBe(true);
 		expect(fs.existsSync(statePath(cwd, "alpha-loop"))).toBe(true);
@@ -467,6 +478,7 @@ describe("ralph store behavior freeze", () => {
 
 		const context = makeContext(cwd, notifications);
 		await command?.handler("resume limit-loop --max-iterations 24", context);
+		await waitFor(() => readState(cwd, "limit-loop").status === "paused");
 
 		const state = readState(cwd, "limit-loop");
 		expect(state.status).toBe("paused");
@@ -515,6 +527,7 @@ describe("ralph store behavior freeze", () => {
 
 		const context = makeContext(cwd, notifications);
 		await command?.handler("resume done-loop", context);
+		await waitFor(() => readState(cwd, "done-loop").status === "paused");
 
 		const state = readState(cwd, "done-loop");
 		expect(state.status).toBe("paused");
@@ -623,6 +636,7 @@ describe("ralph store behavior freeze", () => {
 
 		const context = makeContext(cwd, notifications);
 		await command?.handler("resume legacy-limit-loop --max-iterations 24", context);
+		await waitFor(() => readState(cwd, "legacy-limit-loop").status === "paused");
 
 		const state = readState(cwd, "legacy-limit-loop");
 		expect(state.status).toBe("paused");
@@ -1141,6 +1155,9 @@ describe("ralph store behavior freeze", () => {
 		await command?.handler("start sleepy-loop", sleepyContext);
 		await command?.handler("start done-a", doneAContext);
 		await command?.handler("start done-b", doneBContext);
+		await waitFor(() => readState(cwd, "sleepy-loop").status === "paused");
+		await waitFor(() => readState(cwd, "done-a").status === "paused");
+		await waitFor(() => readState(cwd, "done-b").status === "paused");
 
 		for (const loopName of ["done-a", "done-b"] as const) {
 			const state = readState(cwd, loopName);

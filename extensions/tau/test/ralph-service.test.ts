@@ -10,6 +10,7 @@ import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
+	SessionManager,
 	ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
 
@@ -22,7 +23,11 @@ import {
 import { LoopRepoLive } from "../src/loops/repo.js";
 import { LoopEngineLive } from "../src/services/loop-engine.js";
 import { PromptModes } from "../src/services/prompt-modes.js";
-import { Ralph, RalphLive } from "../src/services/ralph.js";
+import {
+	Ralph,
+	RalphLive,
+	resetRalphIterationSignalBridgeForTests,
+} from "../src/services/ralph.js";
 import { makeExecutionProfile, makePromptModesStubLayer } from "./ralph-test-helpers.js";
 
 type EventHandler = (event: unknown, ctx: ExtensionContext) => unknown;
@@ -72,17 +77,64 @@ type PiHarness = {
 type NewSessionPlan = {
 	readonly cancelled: boolean;
 	readonly sessionFile?: string;
+	readonly updateContextSessionFile?: boolean;
+	readonly staleContextAfterReplacement?: boolean;
 };
+
+type NewSessionOptionsForTest = {
+	readonly parentSession?: string;
+	readonly setup?: (sessionManager: SessionManager) => Promise<void>;
+	readonly withSession?: (ctx: ReplacementSessionContextForTest) => Promise<void>;
+};
+
+type ReplacementSessionContextForTest = ExtensionCommandContext & {
+	readonly sendMessage: () => Promise<void>;
+	readonly sendUserMessage: () => Promise<void>;
+};
+
+const STALE_EXTENSION_CONTEXT_MESSAGE =
+	"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().";
+
+function readNewSessionOptionsForTest(options: unknown): NewSessionOptionsForTest {
+	if (typeof options !== "object" || options === null) {
+		return {};
+	}
+	const candidate = options as {
+		readonly parentSession?: unknown;
+		readonly setup?: unknown;
+		readonly withSession?: unknown;
+	};
+	return {
+		...(typeof candidate.parentSession === "string"
+			? { parentSession: candidate.parentSession }
+			: {}),
+		...(typeof candidate.setup === "function"
+			? {
+					setup: candidate.setup as (sessionManager: SessionManager) => Promise<void>,
+				}
+			: {}),
+		...(typeof candidate.withSession === "function"
+			? {
+					withSession: candidate.withSession as (
+						ctx: ReplacementSessionContextForTest,
+					) => Promise<void>,
+				}
+			: {}),
+	};
+}
 
 type LoopStatus = "active" | "paused" | "completed";
 
-function makeRalphRuntime(activeSubagents: boolean): RalphRuntimeHarness {
+function makeRalphRuntime(
+	activeSubagents: boolean,
+	promptModesLayer: Layer.Layer<PromptModes, never, never> = makePromptModesStubLayer(),
+): RalphRuntimeHarness {
 	const layer = RalphLive({
 		hasActiveSubagents: () => Effect.succeed(activeSubagents),
 	}).pipe(
 		Layer.provideMerge(RalphRepoLive),
 		Layer.provideMerge(LoopEngineLive.pipe(Layer.provideMerge(LoopRepoLive))),
-		Layer.provideMerge(makePromptModesStubLayer()),
+		Layer.provideMerge(promptModesLayer),
 		Layer.provide(NodeFileSystem.layer),
 	);
 	const runtime = ManagedRuntime.make(layer);
@@ -156,12 +208,12 @@ function writeLoopState(
 			| {
 					readonly kind: "continue";
 					readonly requestedAt: string;
-				}
+			  }
 			| {
 					readonly kind: "finish";
 					readonly requestedAt: string;
 					readonly message: string;
-				};
+			  };
 	},
 ): void {
 	const filePath = loopStatePath(cwd, loopName);
@@ -226,51 +278,138 @@ function makeContext(
 	let sessionFile = path.join(cwd, ".pi", "sessions", "controller.session.json");
 	let sessionCounter = 0;
 	let disposed = false;
+	let stale = false;
 
 	const throwIfDisposed = (): void => {
 		if (disposed) {
 			throw new Error("ManagedRuntime disposed");
 		}
 	};
+	const throwIfStale = (): void => {
+		if (stale) {
+			throw new Error(STALE_EXTENSION_CONTEXT_MESSAGE);
+		}
+	};
+	const throwIfInactive = (): void => {
+		throwIfStale();
+	};
+
+	const makeReplacementContext = (targetSessionFile: string): ReplacementSessionContextForTest =>
+		({
+			cwd,
+			hasUI: true,
+			model: undefined,
+			modelRegistry: {
+				find: (provider: string, id: string) => ({ provider, id }),
+				getAll: () => [],
+			},
+			sessionManager: {
+				getEntries: () => [],
+				getBranch: () => [],
+				getSessionId: () => "replacement-session",
+				getSessionFile: () => targetSessionFile,
+			},
+			ui: {
+				setStatus: () => {
+					throwIfDisposed();
+				},
+				setWidget: () => {
+					throwIfDisposed();
+				},
+				setFooter: () => {
+					throwIfDisposed();
+					return () => undefined;
+				},
+				setEditorComponent: () => {
+					throwIfDisposed();
+				},
+				notify: (message: string, level: string) => {
+					throwIfDisposed();
+					notifications.push({ message, level });
+				},
+				confirm: async () => true,
+				getEditorText: () => "",
+				theme: {
+					fg: (_color: string, text: string) => text,
+					bold: (text: string) => text,
+				},
+			},
+			isIdle: () => true,
+			abort: () => undefined,
+			hasPendingMessages: () => false,
+			shutdown: () => undefined,
+			getContextUsage: () => undefined,
+			compact: () => undefined,
+			getSystemPrompt: () => "",
+			waitForIdle: async () => undefined,
+			newSession: async () => ({ cancelled: false }),
+			fork: async () => ({ cancelled: false }),
+			navigateTree: async () => ({ cancelled: false }),
+			switchSession: async (target: string) => {
+				switchSessionCalls.push(target);
+				return { cancelled: false };
+			},
+			reload: async () => undefined,
+			sendMessage: async () => undefined,
+			sendUserMessage: async () => undefined,
+		}) as unknown as ReplacementSessionContextForTest;
 
 	const ctx = {
-		cwd,
-		hasUI: true,
-		model: undefined,
-		modelRegistry: {
-			find: (provider: string, id: string) => ({ provider, id }),
-			getAll: () => [],
+		get cwd() {
+			throwIfInactive();
+			return cwd;
 		},
-		sessionManager: {
-			getEntries: () => [],
-			getBranch: () => [],
-			getSessionId: () => "test-session",
-			getSessionFile: () => sessionFile,
+		get hasUI() {
+			throwIfInactive();
+			return true;
 		},
-		ui: {
-			setStatus: () => {
-				throwIfDisposed();
-			},
-			setWidget: () => {
-				throwIfDisposed();
-			},
-			setFooter: () => {
-				throwIfDisposed();
-				return () => undefined;
-			},
-			setEditorComponent: () => {
-				throwIfDisposed();
-			},
-			notify: (message: string, level: string) => {
-				throwIfDisposed();
-				notifications.push({ message, level });
-			},
-			confirm: async () => true,
-			getEditorText: () => "",
-			theme: {
-				fg: (_color: string, text: string) => text,
-				bold: (text: string) => text,
-			},
+		get model() {
+			throwIfInactive();
+			return undefined;
+		},
+		get modelRegistry() {
+			throwIfInactive();
+			return {
+				find: (provider: string, id: string) => ({ provider, id }),
+				getAll: () => [],
+			};
+		},
+		get sessionManager() {
+			throwIfInactive();
+			return {
+				getEntries: () => [],
+				getBranch: () => [],
+				getSessionId: () => "test-session",
+				getSessionFile: () => sessionFile,
+			};
+		},
+		get ui() {
+			throwIfInactive();
+			return {
+				setStatus: () => {
+					throwIfInactive();
+				},
+				setWidget: () => {
+					throwIfInactive();
+				},
+				setFooter: () => {
+					throwIfInactive();
+					return () => undefined;
+				},
+				setEditorComponent: () => {
+					throwIfInactive();
+				},
+				notify: (message: string, level: string) => {
+					throwIfInactive();
+					notifications.push({ message, level });
+				},
+				confirm: async () => true,
+				getEditorText: () => "",
+				theme: {
+					fg: (_color: string, text: string) => text,
+					bold: (text: string) => text,
+				},
+			};
 		},
 		isIdle: () => true,
 		abort: () => undefined,
@@ -282,12 +421,28 @@ function makeContext(
 		waitForIdle: async () => undefined,
 		newSession: async (options?: unknown) => {
 			newSessionCalls.push(options);
+			const sessionOptions = readNewSessionOptionsForTest(options);
 			const plan = newSessionPlan[sessionCounter] ?? { cancelled: false };
 			sessionCounter += 1;
 			if (!plan.cancelled) {
-				sessionFile =
+				const targetSessionFile =
 					plan.sessionFile ??
 					path.join(cwd, ".pi", "sessions", `child-${sessionCounter}.session.json`);
+				if (sessionOptions.setup) {
+					const setupSessionManager: Pick<SessionManager, "getSessionFile"> = {
+						getSessionFile: () => targetSessionFile,
+					};
+					await sessionOptions.setup(setupSessionManager as SessionManager);
+				}
+				if (sessionOptions.withSession) {
+					await sessionOptions.withSession(makeReplacementContext(targetSessionFile));
+				}
+				if (plan.updateContextSessionFile !== false) {
+					sessionFile = targetSessionFile;
+				}
+				if (plan.staleContextAfterReplacement) {
+					stale = true;
+				}
 			}
 			return { cancelled: plan.cancelled };
 		},
@@ -425,6 +580,7 @@ describe("ralph service behavior freeze", () => {
 	const runtimes: RalphRuntimeHarness[] = [];
 
 	afterEach(async () => {
+		resetRalphIterationSignalBridgeForTests();
 		for (const dir of tempDirs.splice(0)) {
 			fs.rmSync(dir, { recursive: true, force: true });
 		}
@@ -562,6 +718,191 @@ describe("ralph service behavior freeze", () => {
 		expect(Option.isNone(state.activeIterationSessionFile)).toBe(true);
 	});
 
+	it("pauses /ralph start when applying the execution profile defects", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const executionProfile = makeExecutionProfile();
+		const failingPromptModesLayer = Layer.succeed(
+			PromptModes,
+			PromptModes.of({
+				setup: Effect.void,
+				captureCurrentProfile: () => Effect.succeed(executionProfile.promptProfile),
+				captureCurrentExecutionProfile: () => Effect.succeed(executionProfile),
+				applyProfile: (profile) =>
+					Effect.succeed({
+						applied: true as const,
+						profile,
+					}),
+				applyExecutionProfile: () =>
+					Effect.die(new Error("command context disposed during applyExecutionProfile")),
+			}),
+		);
+
+		const piHarness = makePiHarness();
+		const ralphRuntime = makeRalphRuntime(false, failingPromptModesLayer);
+		runtimes.push(ralphRuntime);
+		initRalph(piHarness.pi, ralphRuntime.run);
+
+		const command = piHarness.commands.get("ralph");
+		expect(command).toBeDefined();
+		if (!command) {
+			throw new Error("missing ralph command");
+		}
+
+		const context = makeContext(cwd, [{ cancelled: false }]);
+		await expect(
+			command.handler("start apply-profile-defect", context.ctx),
+		).resolves.toBeUndefined();
+		await waitFor(() => readLoopState(cwd, "apply-profile-defect").status === "paused");
+		await waitFor(() =>
+			context.notifications.some((entry) =>
+				entry.message.includes("Could not apply Ralph execution profile"),
+			),
+		);
+
+		const state = readLoopState(cwd, "apply-profile-defect");
+		expect(state.status).toBe("paused");
+		expect(state.iteration).toBe(1);
+		expect(Option.isNone(state.pendingDecision)).toBe(true);
+		expect(Option.isNone(state.activeIterationSessionFile)).toBe(true);
+		const hasFailureNotification = context.notifications.some((entry) =>
+			entry.message.includes("Could not apply Ralph execution profile"),
+		);
+		expect(hasFailureNotification).toBe(true);
+	});
+
+	it("dispatches Ralph prompts through the active child-session runtime after newSession", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const controllerHarness = makePiHarness();
+		const childHarness = makePiHarness();
+		const executionProfile = makeExecutionProfile();
+		const promptModesLayer = Layer.succeed(
+			PromptModes,
+			PromptModes.of({
+				setup: Effect.void,
+				captureCurrentProfile: () => Effect.succeed(executionProfile.promptProfile),
+				captureCurrentExecutionProfile: () => Effect.succeed(executionProfile),
+				applyProfile: (nextProfile) =>
+					Effect.succeed({ applied: true as const, profile: nextProfile }),
+				applyExecutionProfile: (nextProfile, ctx) =>
+					Effect.sync(() => {
+						ctx.modelRegistry.getAll();
+						return { applied: true as const, profile: nextProfile.promptProfile };
+					}),
+			}),
+		);
+		const ralphRuntime = makeRalphRuntime(false, promptModesLayer);
+		runtimes.push(ralphRuntime);
+		initRalph(controllerHarness.pi, ralphRuntime.run);
+		initRalph(childHarness.pi, ralphRuntime.run);
+
+		const command = controllerHarness.commands.get("ralph");
+		expect(command).toBeDefined();
+		if (!command) {
+			throw new Error("missing ralph command");
+		}
+
+		const childSessionFile = path.join(cwd, ".pi", "sessions", "captured-child.session.json");
+		const childContext = makeContext(cwd);
+		childContext.setSessionFile(childSessionFile);
+		await childHarness.fire("session_start", { type: "session_start" }, childContext.ctx);
+
+		const context = makeContext(cwd, [
+			{
+				cancelled: false,
+				sessionFile: childSessionFile,
+				updateContextSessionFile: false,
+			},
+		]);
+
+		const startPromise = Promise.resolve(
+			command.handler("start captured-child-loop", context.ctx),
+		);
+		await waitFor(() => childHarness.sentUserMessages.length === 1);
+		expect(controllerHarness.sentUserMessages).toHaveLength(0);
+
+		const activeState = readLoopState(cwd, "captured-child-loop");
+		expect(Option.getOrUndefined(activeState.activeIterationSessionFile)).toBe(
+			childSessionFile,
+		);
+
+		await childHarness.fire("session_shutdown", { type: "session_shutdown" }, childContext.ctx);
+		await startPromise;
+
+		const finalState = readLoopState(cwd, "captured-child-loop");
+		expect(finalState.status).toBe("paused");
+		expect(Option.isNone(finalState.activeIterationSessionFile)).toBe(true);
+	});
+
+	it("keeps Ralph start work on the replacement session context after newSession", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const controllerHarness = makePiHarness();
+		const childHarness = makePiHarness();
+		const executionProfile = makeExecutionProfile();
+		const promptModesLayer = Layer.succeed(
+			PromptModes,
+			PromptModes.of({
+				setup: Effect.void,
+				captureCurrentProfile: () => Effect.succeed(executionProfile.promptProfile),
+				captureCurrentExecutionProfile: () => Effect.succeed(executionProfile),
+				applyProfile: (nextProfile) =>
+					Effect.succeed({ applied: true as const, profile: nextProfile }),
+				applyExecutionProfile: (nextProfile, ctx) =>
+					Effect.sync(() => {
+						ctx.modelRegistry.getAll();
+						return { applied: true as const, profile: nextProfile.promptProfile };
+					}),
+			}),
+		);
+		const ralphRuntime = makeRalphRuntime(false, promptModesLayer);
+		runtimes.push(ralphRuntime);
+		initRalph(controllerHarness.pi, ralphRuntime.run);
+		initRalph(childHarness.pi, ralphRuntime.run);
+
+		const command = controllerHarness.commands.get("ralph");
+		expect(command).toBeDefined();
+		if (!command) {
+			throw new Error("missing ralph command");
+		}
+
+		const childSessionFile = path.join(
+			cwd,
+			".pi",
+			"sessions",
+			"stale-guard-child.session.json",
+		);
+		const childContext = makeContext(cwd);
+		childContext.setSessionFile(childSessionFile);
+		await childHarness.fire("session_start", { type: "session_start" }, childContext.ctx);
+
+		const context = makeContext(cwd, [
+			{
+				cancelled: false,
+				sessionFile: childSessionFile,
+				updateContextSessionFile: false,
+				staleContextAfterReplacement: true,
+			},
+		]);
+
+		const startPromise = Promise.resolve(
+			command.handler("start stale-guard-loop", context.ctx),
+		);
+		await waitFor(() => childHarness.sentUserMessages.length === 1);
+		expect(controllerHarness.sentUserMessages).toHaveLength(0);
+
+		await childHarness.fire("session_shutdown", { type: "session_shutdown" }, childContext.ctx);
+		await expect(startPromise).resolves.toBeUndefined();
+
+		const finalState = readLoopState(cwd, "stale-guard-loop");
+		expect(finalState.status).toBe("paused");
+		expect(Option.isNone(finalState.activeIterationSessionFile)).toBe(true);
+	});
+
 	it("pauses /ralph start when subagents are active before creating the next iteration", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
@@ -582,6 +923,11 @@ describe("ralph service behavior freeze", () => {
 		expect(state.iteration).toBe(0);
 		expect(Option.isNone(state.pendingDecision)).toBe(true);
 		expect(context.newSessionCalls).toHaveLength(0);
+		await waitFor(() =>
+			context.notifications.some((entry) =>
+				entry.message.includes("subagents became active"),
+			),
+		);
 		expect(
 			context.notifications.some((entry) =>
 				entry.message.includes("subagents became active"),
@@ -628,6 +974,11 @@ describe("ralph service behavior freeze", () => {
 		expect(Option.isNone(state.activeIterationSessionFile)).toBe(true);
 		expect(context.newSessionCalls).toHaveLength(0);
 		expect(context.switchSessionCalls).toHaveLength(0);
+		await waitFor(() =>
+			context.notifications.some((entry) =>
+				entry.message.includes("subagents are still active"),
+			),
+		);
 		expect(
 			context.notifications.some((entry) =>
 				entry.message.includes("subagents are still active"),
@@ -702,14 +1053,22 @@ describe("ralph service behavior freeze", () => {
 
 		await piHarness.fire("agent_end", agentEndPayload("done now"), context.ctx);
 		await startPromise;
+		await waitFor(() =>
+			context.notifications.some(
+				(entry) =>
+					entry.message.includes("RALPH LOOP COMPLETE") &&
+					entry.message.includes("All checklist items are done."),
+			),
+		);
 
 		const state = readLoopState(cwd, "complete-loop");
 		expect(state.status).toBe("completed");
 		expect(Option.isSome(state.completedAt)).toBe(true);
 		expect(
-			context.notifications.some((entry) =>
-				entry.message.includes("RALPH LOOP COMPLETE") &&
-				entry.message.includes("All checklist items are done."),
+			context.notifications.some(
+				(entry) =>
+					entry.message.includes("RALPH LOOP COMPLETE") &&
+					entry.message.includes("All checklist items are done."),
 			),
 		).toBe(true);
 	});
@@ -731,11 +1090,11 @@ describe("ralph service behavior freeze", () => {
 
 		const context = makeContext(cwd, [{ cancelled: false }]);
 		let startResolved = false;
-		const startPromise = Promise.resolve(command.handler("start nudge-loop --max-iterations 1", context.ctx)).then(
-			() => {
-				startResolved = true;
-			},
-		);
+		const startPromise = Promise.resolve(
+			command.handler("start nudge-loop --max-iterations 1", context.ctx),
+		).then(() => {
+			startResolved = true;
+		});
 		await waitFor(() => piHarness.sentUserMessages.length === 1);
 
 		await piHarness.fire("agent_end", agentEndPayload("stopped without tool"), context.ctx);
@@ -748,14 +1107,22 @@ describe("ralph service behavior freeze", () => {
 
 		await piHarness.fire("agent_end", agentEndPayload("missed again"), context.ctx);
 		await startPromise;
+		await waitFor(() =>
+			context.notifications.some(
+				(entry) =>
+					entry.message.includes("ended twice without calling") ||
+					entry.message.includes("Ralph paused"),
+			),
+		);
 
 		const state = readLoopState(cwd, "nudge-loop");
 		expect(state.status).toBe("paused");
 		expect(Option.isNone(state.pendingDecision)).toBe(true);
 		expect(
-			context.notifications.some((entry) =>
-				entry.message.includes("ended twice without calling") ||
-				entry.message.includes("Ralph paused"),
+			context.notifications.some(
+				(entry) =>
+					entry.message.includes("ended twice without calling") ||
+					entry.message.includes("Ralph paused"),
 			),
 		).toBe(true);
 	});
@@ -784,20 +1151,32 @@ describe("ralph service behavior freeze", () => {
 		});
 		await waitFor(() => piHarness.sentUserMessages.length === 1);
 
-		await piHarness.fire("agent_end", agentEndPayload("stopped without tool", undefined), context.ctx);
+		await piHarness.fire(
+			"agent_end",
+			agentEndPayload("stopped without tool", undefined),
+			context.ctx,
+		);
 		await waitFor(() => piHarness.sentUserMessages.length === 2);
 		expect(startResolved).toBe(false);
 
 		await piHarness.fire("agent_end", agentEndPayload("missed again", undefined), context.ctx);
 		await startPromise;
+		await waitFor(() =>
+			context.notifications.some(
+				(entry) =>
+					entry.message.includes("ended twice without calling") ||
+					entry.message.includes("Ralph paused"),
+			),
+		);
 
 		const state = readLoopState(cwd, "missing-stop-reason");
 		expect(state.status).toBe("paused");
 		expect(Option.isNone(state.pendingDecision)).toBe(true);
 		expect(
-			context.notifications.some((entry) =>
-				entry.message.includes("ended twice without calling") ||
-				entry.message.includes("Ralph paused"),
+			context.notifications.some(
+				(entry) =>
+					entry.message.includes("ended twice without calling") ||
+					entry.message.includes("Ralph paused"),
 			),
 		).toBe(true);
 	});
@@ -828,6 +1207,13 @@ describe("ralph service behavior freeze", () => {
 
 		await piHarness.fire("agent_end", agentEndPayloadWithoutAssistant(), context.ctx);
 		await startPromise;
+		await waitFor(() =>
+			context.notifications.some(
+				(entry) =>
+					entry.message.includes("without a usable Ralph decision") ||
+					entry.message.includes("Ralph paused"),
+			),
+		);
 
 		const state = readLoopState(cwd, "malformed-agent-end");
 		expect(startResolved).toBe(true);
@@ -835,9 +1221,10 @@ describe("ralph service behavior freeze", () => {
 		expect(state.status).toBe("paused");
 		expect(Option.isNone(state.pendingDecision)).toBe(true);
 		expect(
-			context.notifications.some((entry) =>
-				entry.message.includes("without a usable Ralph decision") ||
-				entry.message.includes("Ralph paused"),
+			context.notifications.some(
+				(entry) =>
+					entry.message.includes("without a usable Ralph decision") ||
+					entry.message.includes("Ralph paused"),
 			),
 		).toBe(true);
 	});

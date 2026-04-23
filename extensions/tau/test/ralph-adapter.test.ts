@@ -358,6 +358,16 @@ function makePiHarness(): PiHarness {
 	};
 }
 
+async function waitFor(predicate: () => boolean): Promise<void> {
+	for (let attempt = 0; attempt < 80; attempt += 1) {
+		if (predicate()) {
+			return;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	throw new Error("timed out waiting for condition");
+}
+
 function agentEndPayload(
 	text: string,
 	stopReason: "stop" | "length" | "toolUse" | "error" | "aborted" | undefined = "stop",
@@ -675,6 +685,7 @@ describe("ralph adapter boundary freeze", () => {
 		expect(context.switchSessionCalls).toHaveLength(0);
 
 		await command?.handler("start command-loop", context.ctx);
+		await waitFor(() => context.newSessionCalls.length === 1);
 		expect(context.newSessionCalls).toHaveLength(1);
 
 		const controllerSession = Option.getOrUndefined(
@@ -686,6 +697,7 @@ describe("ralph adapter boundary freeze", () => {
 		context.setSessionFile(path.join(cwd, ".pi", "sessions", "other.session.json"));
 
 		await command?.handler("resume command-loop", context.ctx);
+		await waitFor(() => context.switchSessionCalls.includes(controllerSession));
 		expect(context.switchSessionCalls).toContain(controllerSession);
 	});
 

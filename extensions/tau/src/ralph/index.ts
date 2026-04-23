@@ -62,6 +62,72 @@ const STATUS_ICONS: Record<LoopStatus, string> = {
 	completed: "✓",
 };
 
+type RalphPromptDispatcher = (prompt: string) => void;
+
+type ReplacementSessionContext = ExtensionCommandContext & {
+	readonly sendUserMessage: (
+		content: Parameters<ExtensionAPI["sendUserMessage"]>[0],
+		options?: Parameters<ExtensionAPI["sendUserMessage"]>[1],
+	) => Promise<void>;
+};
+
+type NewSessionSetup = NonNullable<Parameters<ExtensionCommandContext["newSession"]>[0]>["setup"];
+
+type SessionReplacementCommandContext = Omit<
+	ExtensionCommandContext,
+	"newSession" | "switchSession"
+> & {
+	readonly newSession: (options?: {
+		readonly parentSession?: string;
+		readonly setup?: NewSessionSetup;
+		readonly withSession?: (ctx: ReplacementSessionContext) => Promise<void>;
+	}) => Promise<{ readonly cancelled: boolean }>;
+	readonly switchSession: (
+		sessionPath: string,
+		options?: { readonly withSession?: (ctx: ReplacementSessionContext) => Promise<void> },
+	) => Promise<{ readonly cancelled: boolean }>;
+};
+
+type RalphSessionContext = ExtensionCommandContext | ReplacementSessionContext;
+
+type RalphCommandBoundaryHandle = RalphCommandBoundary & {
+	readonly getActiveContext: () => RalphSessionContext;
+};
+
+const RALPH_PROMPT_DISPATCHERS_GLOBAL = "__tau_ralph_prompt_dispatchers";
+
+type RalphGlobalState = typeof globalThis & {
+	[RALPH_PROMPT_DISPATCHERS_GLOBAL]?: Map<string, RalphPromptDispatcher>;
+};
+
+function getRalphPromptDispatchers(): Map<string, RalphPromptDispatcher> {
+	const globalState = globalThis as RalphGlobalState;
+	const existing = globalState[RALPH_PROMPT_DISPATCHERS_GLOBAL];
+	if (existing) {
+		return existing;
+	}
+	const registry = new Map<string, RalphPromptDispatcher>();
+	globalState[RALPH_PROMPT_DISPATCHERS_GLOBAL] = registry;
+	return registry;
+}
+
+function registerRalphPromptDispatcher(
+	sessionFile: string | undefined,
+	dispatcher: RalphPromptDispatcher,
+): void {
+	if (sessionFile === undefined) {
+		return;
+	}
+	getRalphPromptDispatchers().set(sessionFile, dispatcher);
+}
+
+function unregisterRalphPromptDispatcher(sessionFile: string | undefined): void {
+	if (sessionFile === undefined) {
+		return;
+	}
+	getRalphPromptDispatchers().delete(sessionFile);
+}
+
 function isMaxIterationsReached(
 	loop: Pick<LoopState, "status" | "iteration" | "maxIterations">,
 ): boolean {
@@ -122,27 +188,80 @@ function isManagedRuntimeDisposedError(error: unknown): boolean {
 	return String(error).includes("ManagedRuntime disposed");
 }
 
+function isStaleExtensionContextError(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	return message.includes("This extension ctx is stale after session replacement or reload");
+}
+
+function isIgnorableSessionContextError(error: unknown): boolean {
+	return isManagedRuntimeDisposedError(error) || isStaleExtensionContextError(error);
+}
+
+function hasReplacementSender(ctx: RalphSessionContext): ctx is ReplacementSessionContext {
+	return "sendUserMessage" in ctx && typeof ctx.sendUserMessage === "function";
+}
+
 function notifySafely(
 	ctx: Pick<ExtensionContext, "hasUI" | "ui">,
 	message: string,
 	level: "error" | "info" | "warning" | undefined,
 ): void {
-	if (!ctx.hasUI) {
-		return;
-	}
 	try {
+		if (!ctx.hasUI) {
+			return;
+		}
 		ctx.ui.notify(message, level);
 	} catch (error) {
-		if (!isManagedRuntimeDisposedError(error)) {
+		if (!isIgnorableSessionContextError(error)) {
 			throw error;
 		}
 	}
+}
+
+function formatCommandBoundaryError(error: unknown): string {
+	if (error instanceof Error && error.message.length > 0) {
+		return error.message;
+	}
+	if (
+		typeof error === "object" &&
+		error !== null &&
+		"message" in error &&
+		typeof error.message === "string" &&
+		error.message.length > 0
+	) {
+		return error.message;
+	}
+	if (typeof error === "string" && error.length > 0) {
+		return error;
+	}
+	try {
+		const json = JSON.stringify(error);
+		if (typeof json === "string" && json.length > 0 && json !== "{}") {
+			return json;
+		}
+	} catch {
+		// Fall through to String(error).
+	}
+	return String(error);
 }
 
 function sessionFileFromContext(ctx: Pick<ExtensionContext, "sessionManager">): string | undefined {
 	return typeof ctx.sessionManager.getSessionFile === "function"
 		? ctx.sessionManager.getSessionFile()
 		: undefined;
+}
+
+function sessionFileFromContextIfLive(
+	ctx: Pick<ExtensionContext, "sessionManager">,
+): string | undefined {
+	try {
+		return sessionFileFromContext(ctx);
+	} catch (error) {
+		if (isIgnorableSessionContextError(error)) {
+			return undefined;
+		}
+		throw error;
+	}
 }
 
 function formatLoop(loop: LoopState): string {
@@ -522,42 +641,145 @@ export default function initRalph(
 	): Promise<ExecutionProfile | null> =>
 		withPromptModes((promptModes) => promptModes.captureCurrentExecutionProfile(ctx));
 
-	const commandBoundaryFromContext = (ctx: ExtensionCommandContext): RalphCommandBoundary => ({
-		cwd: ctx.cwd,
-		getSessionFile: () => sessionFileFromContext(ctx),
-		switchSession: (targetSessionFile) =>
-			Effect.tryPromise(() => ctx.switchSession(targetSessionFile)).pipe(
-				Effect.catch(() => Effect.succeed({ cancelled: true })),
-			),
-		newSession: (options) =>
-			Effect.tryPromise(() => ctx.newSession({ parentSession: options.parentSession })).pipe(
-				Effect.catch(() => Effect.succeed({ cancelled: true })),
-			),
-		applyExecutionProfile: (profile) =>
-			Effect.promise(() =>
+	const syncPromptDispatcher = (ctx: Pick<ExtensionContext, "sessionManager">): void => {
+		registerRalphPromptDispatcher(sessionFileFromContext(ctx), (prompt) => {
+			pi.sendUserMessage(prompt);
+		});
+	};
+
+	const commandBoundaryFromContext = (
+		ctx: ExtensionCommandContext,
+	): RalphCommandBoundaryHandle => {
+		const sessionControl = ctx as SessionReplacementCommandContext;
+		let currentSessionFile = sessionFileFromContext(ctx);
+		let activeContext: RalphSessionContext = ctx;
+
+		const bindReplacementContext = (
+			replacementCtx: ReplacementSessionContext,
+			fallbackSessionFile: string | undefined,
+		): void => {
+			activeContext = replacementCtx;
+			currentSessionFile =
+				sessionFileFromContext(replacementCtx) ?? fallbackSessionFile ?? currentSessionFile;
+		};
+
+		const switchSession: RalphCommandBoundary["switchSession"] = Effect.fn(
+			"RalphCommandBoundary.switchSession",
+		)(function* (targetSessionFile) {
+			const result = yield* Effect.tryPromise(() =>
+				sessionControl.switchSession(targetSessionFile, {
+					withSession: async (replacementCtx) => {
+						bindReplacementContext(replacementCtx, targetSessionFile);
+					},
+				}),
+			).pipe(Effect.catch(() => Effect.succeed({ cancelled: true as const })));
+			if (!result.cancelled) {
+				currentSessionFile = currentSessionFile ?? targetSessionFile;
+			}
+			return result;
+		});
+
+		const newSession: RalphCommandBoundary["newSession"] = Effect.fn(
+			"RalphCommandBoundary.newSession",
+		)(function* (options) {
+			let createdSessionFile: string | undefined;
+			const result = yield* Effect.tryPromise(() =>
+				sessionControl.newSession({
+					parentSession: options.parentSession,
+					setup: async (sessionManager) => {
+						createdSessionFile = sessionManager.getSessionFile();
+					},
+					withSession: async (replacementCtx) => {
+						bindReplacementContext(replacementCtx, createdSessionFile);
+					},
+				}),
+			).pipe(Effect.catch(() => Effect.succeed({ cancelled: true as const })));
+			if (!result.cancelled) {
+				currentSessionFile = currentSessionFile ?? createdSessionFile;
+			}
+			return result;
+		});
+
+		const applyExecutionProfile: RalphCommandBoundary["applyExecutionProfile"] = Effect.fn(
+			"RalphCommandBoundary.applyExecutionProfile",
+		)(function* (profile) {
+			const profileContext = activeContext;
+			const result = yield* Effect.tryPromise(() =>
 				withPromptModes((promptModes) =>
 					promptModes
-						.applyExecutionProfile(profile, ctx, {
+						.applyExecutionProfile(profile, profileContext, {
 							notifyOnSuccess: false,
 							persist: false,
 							ephemeral: true,
 						})
 						.pipe(
-							Effect.map((result) =>
-								result.applied
+							Effect.map((applyResult) =>
+								applyResult.applied
 									? { applied: true as const }
-									: { applied: false as const, reason: result.reason },
+									: { applied: false as const, reason: applyResult.reason },
 							),
 						),
 				),
-			),
-		sendFollowUp: (prompt) =>
-			Effect.sync(() => {
-				pi.sendUserMessage(prompt, {
-					deliverAs: "followUp",
-				});
-			}),
-	});
+			).pipe(
+				Effect.catch((error) =>
+					Effect.succeed({
+						applied: false as const,
+						reason: formatCommandBoundaryError(error),
+					}),
+				),
+			);
+			return result;
+		});
+
+		const sendFollowUp: RalphCommandBoundary["sendFollowUp"] = Effect.fn(
+			"RalphCommandBoundary.sendFollowUp",
+		)(function* (prompt) {
+			return yield* Effect.sync(() => {
+				const targetSessionFile = currentSessionFile;
+				if (targetSessionFile === undefined) {
+					return {
+						dispatched: false as const,
+						reason: "iteration session file is unavailable",
+					};
+				}
+
+				const dispatcher = getRalphPromptDispatchers().get(targetSessionFile);
+				if (dispatcher) {
+					dispatcher(prompt);
+					return { dispatched: true as const };
+				}
+
+				if (sessionFileFromContextIfLive(ctx) === targetSessionFile) {
+					pi.sendUserMessage(prompt);
+					return { dispatched: true as const };
+				}
+
+				const sessionContext = activeContext;
+				if (
+					hasReplacementSender(sessionContext) &&
+					sessionFileFromContextIfLive(sessionContext) === targetSessionFile
+				) {
+					void sessionContext.sendUserMessage(prompt).catch(() => undefined);
+					return { dispatched: true as const };
+				}
+
+				return {
+					dispatched: false as const,
+					reason: `no prompt dispatcher is registered for ${targetSessionFile}`,
+				};
+			});
+		});
+
+		return {
+			cwd: ctx.cwd,
+			getSessionFile: () => currentSessionFile,
+			getActiveContext: () => activeContext,
+			switchSession,
+			newSession,
+			applyExecutionProfile,
+			sendFollowUp,
+		};
+	};
 
 	const syncRalphHandshakeTools = async (
 		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
@@ -589,6 +811,9 @@ export default function initRalph(
 		try {
 			await syncRalphHandshakeTools(ctx);
 		} catch (error) {
+			if (isIgnorableSessionContextError(error)) {
+				return;
+			}
 			if (Option.isSome(handlePersistedStateFailure(error, ctx))) {
 				return;
 			}
@@ -656,25 +881,19 @@ export default function initRalph(
 	};
 
 	const runLoop = async (ctx: ExtensionCommandContext, loopName: string): Promise<void> => {
-		const result = await withRalph((ralph) =>
-			ralph.runLoop(commandBoundaryFromContext(ctx), loopName),
-		);
-		if (Option.isSome(result.message) && ctx.hasUI) {
-			try {
-				ctx.ui.notify(result.message.value, "info");
-			} catch (error) {
-				if (!isManagedRuntimeDisposedError(error)) {
-					throw error;
-				}
-			}
+		const boundary = commandBoundaryFromContext(ctx);
+		const result = await withRalph((ralph) => ralph.runLoop(boundary, loopName));
+		const resultContext = boundary.getActiveContext();
+		if (Option.isSome(result.message)) {
+			notifySafely(resultContext, result.message.value, "info");
 		}
 		if (Option.isSome(result.banner)) {
-			notifySafely(ctx, result.banner.value, "info");
+			notifySafely(resultContext, result.banner.value, "info");
 		}
 		try {
-			await updateUI(ctx.cwd, ctx);
+			await updateUI(resultContext.cwd, resultContext);
 		} catch (error) {
-			if (!isManagedRuntimeDisposedError(error)) {
+			if (!isIgnorableSessionContextError(error)) {
 				throw error;
 			}
 		}
@@ -1145,7 +1364,9 @@ export default function initRalph(
 			"Do not call this if there is no active loop or if a Ralph decision was already recorded for this iteration.",
 		],
 		parameters: Type.Object({
-			message: Type.String({ description: "Short completion message for the finished Ralph loop" }),
+			message: Type.String({
+				description: "Short completion message for the finished Ralph loop",
+			}),
 		}),
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -1210,9 +1431,12 @@ export default function initRalph(
 				instructions += `- Work on ~${state.itemsPerIteration} items this iteration\n`;
 			}
 			instructions += "- Update the task file as you progress\n";
-			instructions += "- If the Ralph loop is complete, call ralph_finish with a short message\n";
-			instructions += "- If this iteration is done and Ralph should continue, call ralph_continue\n";
-			instructions += "- Do not end the iteration with free text alone; end with exactly one Ralph loop tool";
+			instructions +=
+				"- If the Ralph loop is complete, call ralph_finish with a short message\n";
+			instructions +=
+				"- If this iteration is done and Ralph should continue, call ralph_continue\n";
+			instructions +=
+				"- Do not end the iteration with free text alone; end with exactly one Ralph loop tool";
 
 			return {
 				systemPrompt:
@@ -1253,6 +1477,7 @@ export default function initRalph(
 
 	pi.on("session_start", async (_event, ctx) => {
 		try {
+			syncPromptDispatcher(ctx);
 			await withRalph((ralph) =>
 				ralph.syncCurrentLoopFromSession(ctx.cwd, sessionFileFromContext(ctx)),
 			);
@@ -1279,6 +1504,7 @@ export default function initRalph(
 
 	pi.on("session_switch", async (_event, ctx) => {
 		try {
+			syncPromptDispatcher(ctx);
 			await withRalph((ralph) =>
 				ralph.syncCurrentLoopFromSession(ctx.cwd, sessionFileFromContext(ctx)),
 			);
@@ -1294,6 +1520,7 @@ export default function initRalph(
 
 	pi.on("session_fork", async (_event, ctx) => {
 		try {
+			syncPromptDispatcher(ctx);
 			await withRalph((ralph) =>
 				ralph.syncCurrentLoopFromSession(ctx.cwd, sessionFileFromContext(ctx)),
 			);
@@ -1309,6 +1536,7 @@ export default function initRalph(
 
 	pi.on("session_shutdown", async (_event, ctx) => {
 		try {
+			unregisterRalphPromptDispatcher(sessionFileFromContext(ctx));
 			await withRalph((ralph) =>
 				ralph.persistOwnedLoopOnShutdown(ctx.cwd, sessionFileFromContext(ctx)),
 			);

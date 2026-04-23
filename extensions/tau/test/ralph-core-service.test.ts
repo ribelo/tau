@@ -4,7 +4,7 @@ import * as path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentEndEvent } from "@mariozechner/pi-coding-agent";
-import { Deferred, Effect, Fiber, Layer, Option } from "effect";
+import { Deferred, Effect, Fiber, Layer, ManagedRuntime, Option } from "effect";
 import { NodeFileSystem } from "@effect/platform-node";
 
 import type { ExecutionProfile } from "../src/execution/schema.js";
@@ -15,6 +15,7 @@ import {
 	Ralph,
 	RalphLive,
 	type RalphCommandBoundary,
+	resetRalphIterationSignalBridgeForTests,
 } from "../src/services/ralph.js";
 import type { LoopState, RalphPendingDecision } from "../src/ralph/schema.js";
 import {
@@ -78,6 +79,7 @@ describe("ralph core service", () => {
 	const tempDirs: string[] = [];
 
 	afterEach(() => {
+		resetRalphIterationSignalBridgeForTests();
 		for (const dir of tempDirs.splice(0)) {
 			fs.rmSync(dir, { recursive: true, force: true });
 		}
@@ -192,6 +194,43 @@ describe("ralph core service", () => {
 		}
 	});
 
+	it("recovers the sole active Ralph loop for UI after a fresh session runtime starts", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+		const controllerSessionFile = path.join(cwd, ".pi", "sessions", "controller.session.json");
+		const childSessionFile = path.join(cwd, ".pi", "sessions", "child.session.json");
+
+		await Effect.runPromise(
+			Effect.gen(function* () {
+				const ralph = yield* Ralph;
+				yield* ralph.startLoopState(cwd, {
+					loopName: "recoverable-loop",
+					taskFile: path.join(".pi", "loops", "tasks", "recoverable-loop.md"),
+					executionProfile: makeExecutionProfile(),
+					maxIterations: 50,
+					itemsPerIteration: 0,
+					reflectEvery: 0,
+					reflectInstructions: "reflect",
+					controllerSessionFile: Option.some(controllerSessionFile),
+					defaultTaskTemplate: "# Task\n",
+				});
+			}).pipe(Effect.provide(ralphLayer)),
+		);
+
+		const result = await Effect.runPromise(
+			Effect.gen(function* () {
+				const ralph = yield* Ralph;
+				return yield* ralph.resolveLoopForUi(cwd, childSessionFile);
+			}).pipe(Effect.provide(ralphLayer)),
+		);
+
+		expect(Option.isSome(result)).toBe(true);
+		if (Option.isSome(result)) {
+			expect(result.value.name).toBe("recoverable-loop");
+			expect(result.value.status).toBe("active");
+		}
+	});
+
 	it("keeps iteration ownership after a handled child-session end so ralph_continue still works", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
@@ -235,6 +274,7 @@ describe("ralph core service", () => {
 						Effect.gen(function* () {
 							yield* Deferred.succeed(followUpStarted, undefined);
 							yield* Deferred.await(releaseFollowUp);
+							return { dispatched: true as const };
 						}),
 				};
 
@@ -352,12 +392,13 @@ describe("ralph core service", () => {
 								followUpCount += 1;
 								yield* Deferred.succeed(startedA, undefined);
 								yield* Deferred.await(releaseA);
-								return;
+								return { dispatched: true as const };
 							}
 
 							followUpCount += 1;
 							yield* Deferred.succeed(startedB, undefined);
 							yield* Deferred.await(releaseB);
+							return { dispatched: true as const };
 						}),
 				};
 
@@ -377,6 +418,145 @@ describe("ralph core service", () => {
 		);
 
 		expect(result).toEqual([pinnedExecutionProfile, pinnedExecutionProfile]);
+	});
+
+	it("bridges agent_end across fresh child-session runtimes so ralph_continue starts the next iteration", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+		const loopName = "bridge-loop";
+		const controllerSessionFile = path.join(cwd, ".pi", "sessions", "controller.session.json");
+		const iterationSessionFileA = path.join(cwd, ".pi", "sessions", "iteration-a.session.json");
+		const iterationSessionFileB = path.join(cwd, ".pi", "sessions", "iteration-b.session.json");
+
+		let resolveStartedA!: () => void;
+		let resolveReleaseA!: () => void;
+		let resolveStartedB!: () => void;
+		let resolveReleaseB!: () => void;
+		const startedA = new Promise<void>((resolve) => {
+			resolveStartedA = resolve;
+		});
+		const releaseA = new Promise<void>((resolve) => {
+			resolveReleaseA = resolve;
+		});
+		const startedB = new Promise<void>((resolve) => {
+			resolveStartedB = resolve;
+		});
+		const releaseB = new Promise<void>((resolve) => {
+			resolveReleaseB = resolve;
+		});
+
+		const controllerRuntime = ManagedRuntime.make(ralphLayer);
+		const childRuntime = ManagedRuntime.make(ralphLayer);
+
+		try {
+			const runLoopPromise = controllerRuntime.runPromise(
+				Effect.gen(function* () {
+					const repo = yield* RalphRepo;
+					const ralph = yield* Ralph;
+					yield* repo.saveState(cwd, {
+						...makeState(loopName, iterationSessionFileA),
+						iteration: 0,
+						maxIterations: 2,
+						controllerSessionFile: Option.some(controllerSessionFile),
+						activeIterationSessionFile: Option.none(),
+					});
+					yield* repo.writeTaskFile(
+						cwd,
+						path.join(".pi", "loops", "tasks", `${loopName}.md`),
+						"# Task\n",
+					);
+
+					let sessionFile = controllerSessionFile;
+					let followUpCount = 0;
+					let newSessionCount = 0;
+
+					const boundary: RalphCommandBoundary = {
+						cwd,
+						getSessionFile: () => sessionFile,
+						switchSession: (targetSessionFile) =>
+							Effect.sync(() => {
+								sessionFile = targetSessionFile;
+								return { cancelled: false } as const;
+							}),
+						newSession: () =>
+							Effect.sync(() => {
+								newSessionCount += 1;
+								sessionFile =
+									newSessionCount === 1 ? iterationSessionFileA : iterationSessionFileB;
+								return { cancelled: false } as const;
+							}),
+						applyExecutionProfile: () => Effect.succeed({ applied: true as const }),
+						sendFollowUp: () =>
+							Effect.promise(async () => {
+								if (followUpCount === 0) {
+									followUpCount += 1;
+									resolveStartedA();
+									await releaseA;
+									return { dispatched: true as const };
+								}
+
+								followUpCount += 1;
+								resolveStartedB();
+								await releaseB;
+								return { dispatched: true as const };
+							}),
+					};
+
+					return yield* ralph.runLoop(boundary, loopName);
+				}),
+			);
+
+			await startedA;
+
+			const continueResult = await childRuntime.runPromise(
+				Effect.gen(function* () {
+					const ralph = yield* Ralph;
+					const done = yield* ralph.recordContinue(cwd, iterationSessionFileA);
+					const handled = yield* ralph.handleAgentEnd(
+						cwd,
+						iterationSessionFileA,
+						makeAgentEndEvent("iteration complete"),
+					);
+					return { done, handled };
+				}),
+			);
+
+			expect(continueResult.done.text).toContain("Iteration 1 complete. Continue recorded.");
+			expect(continueResult.handled.consumedByWaitingLoop).toBe(true);
+
+			resolveReleaseA();
+			await startedB;
+
+			const afterContinue = await controllerRuntime.runPromise(
+				Effect.gen(function* () {
+					const repo = yield* RalphRepo;
+					return yield* repo.loadState(cwd, loopName);
+				}),
+			);
+			expect(Option.isSome(afterContinue)).toBe(true);
+			if (Option.isSome(afterContinue)) {
+				expect(afterContinue.value.iteration).toBe(2);
+				expect(
+					Option.getOrUndefined(afterContinue.value.activeIterationSessionFile),
+				).toBe(iterationSessionFileB);
+				expect(Option.isNone(afterContinue.value.pendingDecision)).toBe(true);
+			}
+
+			await childRuntime.runPromise(
+				Effect.gen(function* () {
+					const ralph = yield* Ralph;
+					yield* ralph.recordFinish(cwd, iterationSessionFileB, "done");
+					yield* ralph.handleAgentEnd(cwd, iterationSessionFileB, makeAgentEndEvent("done"));
+				}),
+			);
+			resolveReleaseB();
+
+			const runResult = await runLoopPromise;
+			expect(runResult.status).toBe("stopped");
+		} finally {
+			await controllerRuntime.dispose();
+			await childRuntime.dispose();
+		}
 	});
 
 	it("handles current-loop pause, resume, and stop through command-side Ralph methods", async () => {

@@ -191,17 +191,14 @@ export type RalphCommandBoundary = {
 	readonly applyExecutionProfile: (
 		profile: ExecutionProfile,
 	) => Effect.Effect<{ readonly applied: boolean; readonly reason?: string }, never, never>;
-	readonly sendFollowUp: (prompt: string) => Effect.Effect<void, never, never>;
+	readonly sendFollowUp: (
+		prompt: string,
+	) => Effect.Effect<{ readonly dispatched: boolean; readonly reason?: string }, never, never>;
 };
 
 export interface RalphLiveConfig {
 	readonly hasActiveSubagents: () => Effect.Effect<boolean, never, never>;
 }
-
-type PendingAgentEndWait = {
-	readonly deferred: Deferred.Deferred<IterationSignal>;
-	readonly iterationSessionFile: string;
-};
 
 type IterationSignal =
 	| {
@@ -211,6 +208,41 @@ type IterationSignal =
 	| {
 			readonly _tag: "session_shutdown";
 	  };
+
+type RalphIterationSignalBridgeEntry =
+	| {
+			readonly _tag: "queued";
+			readonly signal: IterationSignal;
+	  }
+	| {
+			readonly _tag: "waiting";
+			readonly deferred: Deferred.Deferred<IterationSignal>;
+	  };
+
+const RALPH_ITERATION_SIGNAL_BRIDGE_GLOBAL = "__tau_ralph_iteration_signal_bridge";
+
+type RalphSignalBridgeGlobalState = typeof globalThis & {
+	[RALPH_ITERATION_SIGNAL_BRIDGE_GLOBAL]?: Map<string, RalphIterationSignalBridgeEntry>;
+};
+
+function getRalphIterationSignalBridge(): Map<string, RalphIterationSignalBridgeEntry> {
+	const globalState = globalThis as RalphSignalBridgeGlobalState;
+	const existing = globalState[RALPH_ITERATION_SIGNAL_BRIDGE_GLOBAL];
+	if (existing) {
+		return existing;
+	}
+	const registry = new Map<string, RalphIterationSignalBridgeEntry>();
+	globalState[RALPH_ITERATION_SIGNAL_BRIDGE_GLOBAL] = registry;
+	return registry;
+}
+
+function resetRalphIterationSignalBridge(): void {
+	getRalphIterationSignalBridge().clear();
+}
+
+export function resetRalphIterationSignalBridgeForTests(): void {
+	resetRalphIterationSignalBridge();
+}
 
 type AssistantStopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
 
@@ -472,9 +504,9 @@ const isAtIterationLimit = (state: LoopState): boolean =>
 	state.maxIterations > 0 && state.iteration >= state.maxIterations;
 
 export const RalphLive = (config: RalphLiveConfig) =>
-	Layer.effect(
-		Ralph,
-		Effect.gen(function* () {
+		Layer.effect(
+			Ralph,
+			Effect.gen(function* () {
 			const rawRepo = yield* RalphRepo;
 			const repo = {
 				loadState: (cwd: string, name: string, archived?: boolean) =>
@@ -504,9 +536,69 @@ export const RalphLive = (config: RalphLiveConfig) =>
 			} as const;
 			const loopEngine = yield* LoopEngine;
 			const currentLoopRef = yield* Ref.make<Option.Option<string>>(Option.none());
-			const waitingAgentEndRef = yield* Ref.make<Option.Option<PendingAgentEndWait>>(
-				Option.none(),
-			);
+
+			const waitForGlobalIterationSignal = Effect.fn(
+				"Ralph.waitForGlobalIterationSignal",
+			)(function* (iterationSessionFile: string) {
+				const deferred = yield* Deferred.make<IterationSignal>();
+				const queuedSignal = yield* Effect.sync(() => {
+					const bridge = getRalphIterationSignalBridge();
+					const existing = bridge.get(iterationSessionFile);
+					if (existing?._tag === "queued") {
+						bridge.delete(iterationSessionFile);
+						return existing.signal;
+					}
+					bridge.set(iterationSessionFile, {
+						_tag: "waiting",
+						deferred,
+					});
+					return undefined;
+				});
+
+				const awaitEvent =
+					queuedSignal !== undefined
+						? Effect.succeed(queuedSignal)
+						: Deferred.await(deferred).pipe(
+								Effect.ensuring(
+									Effect.sync(() => {
+										const bridge = getRalphIterationSignalBridge();
+										const existing = bridge.get(iterationSessionFile);
+										if (
+											existing?._tag === "waiting" &&
+											existing.deferred === deferred
+										) {
+											bridge.delete(iterationSessionFile);
+										}
+									}),
+								),
+							);
+
+				return { awaitEvent } as const;
+			});
+
+			const publishGlobalIterationSignal = Effect.fn(
+				"Ralph.publishGlobalIterationSignal",
+			)(function* (iterationSessionFile: string, signal: IterationSignal) {
+				const waitingDeferred = yield* Effect.sync(() => {
+					const bridge = getRalphIterationSignalBridge();
+					const existing = bridge.get(iterationSessionFile);
+					if (existing?._tag === "waiting") {
+						bridge.delete(iterationSessionFile);
+						return existing.deferred;
+					}
+					if (existing === undefined) {
+						bridge.set(iterationSessionFile, {
+							_tag: "queued",
+							signal,
+						});
+					}
+					return undefined;
+				});
+
+				if (waitingDeferred !== undefined) {
+					yield* Deferred.succeed(waitingDeferred, signal);
+				}
+			});
 
 			const setCurrentLoop = Effect.fn("Ralph.setCurrentLoop")(
 				function* (next: Option.Option<string>) {
@@ -539,16 +631,9 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					return;
 				}
 
-				const pending = yield* Ref.get(waitingAgentEndRef);
-				if (
-					Option.isSome(pending) &&
-					pending.value.iterationSessionFile === sessionFile
-				) {
-					yield* Ref.set(waitingAgentEndRef, Option.none());
-					yield* Deferred.succeed(pending.value.deferred, {
-						_tag: "session_shutdown",
-					});
-				}
+				yield* publishGlobalIterationSignal(sessionFile, {
+					_tag: "session_shutdown",
+				});
 			});
 
 			const markLoopPaused = Effect.fn("Ralph.markLoopPaused")(
@@ -717,8 +802,17 @@ export const RalphLive = (config: RalphLiveConfig) =>
 				const fromSession = yield* repo.findLoopBySessionFile(cwd, sessionFile);
 				if (Option.isSome(fromSession)) {
 					yield* setCurrentLoop(Option.some(fromSession.value.name));
+					return fromSession;
 				}
-				return fromSession;
+
+				const activeLoops = (yield* repo.listLoops(cwd)).filter((loop) => loop.status === "active");
+				const soleActiveLoop = activeLoops.length === 1 ? activeLoops[0] : undefined;
+				if (soleActiveLoop !== undefined) {
+					yield* setCurrentLoop(Option.some(soleActiveLoop.name));
+					return Option.some(soleActiveLoop);
+				}
+
+				return Option.none<LoopState>();
 			});
 
 			const pauseCurrentLoop: RalphService["pauseCurrentLoop"] = Effect.fn(
@@ -1080,24 +1174,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 
 			const waitForIterationSignal = Effect.fn("Ralph.waitForIterationSignal")(
 				function* (iterationSessionFile: string) {
-					const deferred = yield* Deferred.make<IterationSignal>();
-					yield* Ref.set(
-						waitingAgentEndRef,
-						Option.some({
-							deferred,
-							iterationSessionFile,
-						}),
-					);
-					const awaitEvent = Deferred.await(deferred).pipe(
-						Effect.ensuring(
-							Ref.update(waitingAgentEndRef, (current) =>
-								Option.isSome(current) && current.value.deferred === deferred
-									? Option.none()
-									: current,
-							),
-						),
-					);
-					return { awaitEvent } as const;
+					return yield* waitForGlobalIterationSignal(iterationSessionFile);
 				},
 			);
 
@@ -1219,7 +1296,17 @@ export const RalphLive = (config: RalphLiveConfig) =>
 
 					let missingDecisionNudged = false;
 					let pendingSignal = yield* waitForIterationSignal(iterationSessionFile);
-					yield* boundary.sendFollowUp(buildPrompt(afterSession, taskContent.value, needsReflection));
+					const initialPromptDispatch = yield* boundary.sendFollowUp(
+						buildPrompt(afterSession, taskContent.value, needsReflection),
+					);
+					if (!initialPromptDispatch.dispatched) {
+						return yield* pauseLoop(
+							boundary.cwd,
+							afterSession,
+							`Could not deliver Ralph prompt to the iteration session: ${initialPromptDispatch.reason ?? "unknown error"}`,
+							"stopped",
+						);
+					}
 
 					while (true) {
 						const signal = yield* pendingSignal.awaitEvent;
@@ -1279,7 +1366,15 @@ export const RalphLive = (config: RalphLiveConfig) =>
 							}
 							missingDecisionNudged = true;
 							pendingSignal = yield* waitForIterationSignal(iterationSessionFile);
-							yield* boundary.sendFollowUp(buildMissingDecisionNudge());
+							const nudgeDispatch = yield* boundary.sendFollowUp(buildMissingDecisionNudge());
+							if (!nudgeDispatch.dispatched) {
+								return yield* pauseLoop(
+									boundary.cwd,
+									afterTurn,
+									`Could not deliver the Ralph follow-up prompt: ${nudgeDispatch.reason ?? "unknown error"}`,
+									"stopped",
+								);
+							}
 							continue;
 						}
 
@@ -1432,6 +1527,13 @@ export const RalphLive = (config: RalphLiveConfig) =>
 			const handleAgentEnd: RalphService["handleAgentEnd"] = Effect.fn(
 				"Ralph.handleAgentEnd",
 			)(function* (cwd, sessionFile, event) {
+				if (sessionFile === undefined) {
+					return {
+						consumedByWaitingLoop: false,
+						banner: Option.none(),
+					} satisfies RalphAgentEndResult;
+				}
+
 				const stateOption = yield* repo.findLoopBySessionFile(cwd, sessionFile);
 				const ownedActiveState =
 					Option.isSome(stateOption) &&
@@ -1440,13 +1542,13 @@ export const RalphLive = (config: RalphLiveConfig) =>
 						? Option.some(stateOption.value)
 						: Option.none<LoopState>();
 
-				const pending = yield* Ref.get(waitingAgentEndRef);
-				if (
-					Option.isSome(pending) &&
-					pending.value.iterationSessionFile === sessionFile
-				) {
-					yield* Ref.set(waitingAgentEndRef, Option.none());
-					yield* Deferred.succeed(pending.value.deferred, {
+				const pending = yield* Effect.sync(() => {
+					const bridge = getRalphIterationSignalBridge();
+					const existing = bridge.get(sessionFile);
+					return existing?._tag === "waiting" || existing?._tag === "queued";
+				});
+				if (pending) {
+					yield* publishGlobalIterationSignal(sessionFile, {
 						_tag: "agent_end",
 						event,
 					});
