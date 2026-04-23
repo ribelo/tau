@@ -650,9 +650,10 @@ export default function initRalph(
 	const commandBoundaryFromContext = (
 		ctx: ExtensionCommandContext,
 	): RalphCommandBoundaryHandle => {
-		const sessionControl = ctx as SessionReplacementCommandContext;
 		let currentSessionFile = sessionFileFromContext(ctx);
 		let activeContext: RalphSessionContext = ctx;
+		const sessionControl = (): SessionReplacementCommandContext =>
+			activeContext as SessionReplacementCommandContext;
 
 		const bindReplacementContext = (
 			replacementCtx: ReplacementSessionContext,
@@ -667,7 +668,7 @@ export default function initRalph(
 			"RalphCommandBoundary.switchSession",
 		)(function* (targetSessionFile) {
 			const result = yield* Effect.tryPromise(() =>
-				sessionControl.switchSession(targetSessionFile, {
+				sessionControl().switchSession(targetSessionFile, {
 					withSession: async (replacementCtx) => {
 						bindReplacementContext(replacementCtx, targetSessionFile);
 					},
@@ -684,7 +685,7 @@ export default function initRalph(
 		)(function* (options) {
 			let createdSessionFile: string | undefined;
 			const result = yield* Effect.tryPromise(() =>
-				sessionControl.newSession({
+				sessionControl().newSession({
 					parentSession: options.parentSession,
 					setup: async (sessionManager) => {
 						createdSessionFile = sessionManager.getSessionFile();

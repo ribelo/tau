@@ -87,6 +87,10 @@ type NewSessionOptionsForTest = {
 	readonly withSession?: (ctx: ReplacementSessionContextForTest) => Promise<void>;
 };
 
+type SwitchSessionOptionsForTest = {
+	readonly withSession?: (ctx: ReplacementSessionContextForTest) => Promise<void>;
+};
+
 type ReplacementSessionContextForTest = ExtensionCommandContext & {
 	readonly sendMessage: () => Promise<void>;
 	readonly sendUserMessage: () => Promise<void>;
@@ -113,6 +117,22 @@ function readNewSessionOptionsForTest(options: unknown): NewSessionOptionsForTes
 					setup: candidate.setup as (sessionManager: SessionManager) => Promise<void>,
 				}
 			: {}),
+		...(typeof candidate.withSession === "function"
+			? {
+					withSession: candidate.withSession as (
+						ctx: ReplacementSessionContextForTest,
+					) => Promise<void>,
+				}
+			: {}),
+	};
+}
+
+function readSwitchSessionOptionsForTest(options: unknown): SwitchSessionOptionsForTest {
+	if (typeof options !== "object" || options === null) {
+		return {};
+	}
+	const candidate = options as { readonly withSession?: unknown };
+	return {
 		...(typeof candidate.withSession === "function"
 			? {
 					withSession: candidate.withSession as (
@@ -342,11 +362,35 @@ function makeContext(
 			compact: () => undefined,
 			getSystemPrompt: () => "",
 			waitForIdle: async () => undefined,
-			newSession: async () => ({ cancelled: false }),
+			newSession: async (options?: unknown) => {
+				newSessionCalls.push(options);
+				const sessionOptions = readNewSessionOptionsForTest(options);
+				const plan = newSessionPlan[sessionCounter] ?? { cancelled: false };
+				sessionCounter += 1;
+				if (!plan.cancelled) {
+					const nextSessionFile =
+						plan.sessionFile ??
+						path.join(cwd, ".pi", "sessions", `child-${sessionCounter}.session.json`);
+					if (sessionOptions.setup) {
+						const setupSessionManager: Pick<SessionManager, "getSessionFile"> = {
+							getSessionFile: () => nextSessionFile,
+						};
+						await sessionOptions.setup(setupSessionManager as SessionManager);
+					}
+					if (sessionOptions.withSession) {
+						await sessionOptions.withSession(makeReplacementContext(nextSessionFile));
+					}
+				}
+				return { cancelled: plan.cancelled };
+			},
 			fork: async () => ({ cancelled: false }),
 			navigateTree: async () => ({ cancelled: false }),
-			switchSession: async (target: string) => {
+			switchSession: async (target: string, options?: unknown) => {
 				switchSessionCalls.push(target);
+				const sessionOptions = readSwitchSessionOptionsForTest(options);
+				if (sessionOptions.withSession) {
+					await sessionOptions.withSession(makeReplacementContext(target));
+				}
 				return { cancelled: false };
 			},
 			reload: async () => undefined,
@@ -420,6 +464,7 @@ function makeContext(
 		getSystemPrompt: () => "",
 		waitForIdle: async () => undefined,
 		newSession: async (options?: unknown) => {
+			throwIfInactive();
 			newSessionCalls.push(options);
 			const sessionOptions = readNewSessionOptionsForTest(options);
 			const plan = newSessionPlan[sessionCounter] ?? { cancelled: false };
@@ -448,9 +493,15 @@ function makeContext(
 		},
 		fork: async () => ({ cancelled: false }),
 		navigateTree: async () => ({ cancelled: false }),
-		switchSession: async (target: string) => {
+		switchSession: async (target: string, options?: unknown) => {
+			throwIfInactive();
 			switchSessionCalls.push(target);
+			const sessionOptions = readSwitchSessionOptionsForTest(options);
+			if (sessionOptions.withSession) {
+				await sessionOptions.withSession(makeReplacementContext(target));
+			}
 			sessionFile = target;
+			stale = true;
 			return { cancelled: false };
 		},
 		reload: async () => undefined,
@@ -900,6 +951,81 @@ describe("ralph service behavior freeze", () => {
 
 		const finalState = readLoopState(cwd, "stale-guard-loop");
 		expect(finalState.status).toBe("paused");
+		expect(Option.isNone(finalState.activeIterationSessionFile)).toBe(true);
+	});
+
+	it("creates the resumed iteration session through the controller replacement context", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const controllerHarness = makePiHarness();
+		const childHarness = makePiHarness();
+		const executionProfile = makeExecutionProfile();
+		const promptModesLayer = Layer.succeed(
+			PromptModes,
+			PromptModes.of({
+				setup: Effect.void,
+				captureCurrentProfile: () => Effect.succeed(executionProfile.promptProfile),
+				captureCurrentExecutionProfile: () => Effect.succeed(executionProfile),
+				applyProfile: (nextProfile) =>
+					Effect.succeed({ applied: true as const, profile: nextProfile }),
+				applyExecutionProfile: (nextProfile, ctx) =>
+					Effect.sync(() => {
+						ctx.modelRegistry.getAll();
+						return { applied: true as const, profile: nextProfile.promptProfile };
+					}),
+			}),
+		);
+		const ralphRuntime = makeRalphRuntime(false, promptModesLayer);
+		runtimes.push(ralphRuntime);
+		initRalph(controllerHarness.pi, ralphRuntime.run);
+		initRalph(childHarness.pi, ralphRuntime.run);
+
+		const command = controllerHarness.commands.get("ralph");
+		expect(command).toBeDefined();
+		if (!command) {
+			throw new Error("missing ralph command");
+		}
+
+		const controllerSessionFile = path.join(
+			cwd,
+			".pi",
+			"sessions",
+			"resume-controller.session.json",
+		);
+		const childSessionFile = path.join(cwd, ".pi", "sessions", "resume-child.session.json");
+		const childContext = makeContext(cwd);
+		childContext.setSessionFile(childSessionFile);
+		await childHarness.fire("session_start", { type: "session_start" }, childContext.ctx);
+
+		writeLoopState(cwd, "resume-after-switch", {
+			controllerSessionFile,
+			iteration: 3,
+			status: "paused",
+		});
+
+		const context = makeContext(cwd, [
+			{
+				cancelled: false,
+				sessionFile: childSessionFile,
+				updateContextSessionFile: false,
+			},
+		]);
+		context.setSessionFile(path.join(cwd, ".pi", "sessions", "other.session.json"));
+
+		const resumePromise = Promise.resolve(
+			command.handler("resume resume-after-switch", context.ctx),
+		);
+		await waitFor(() => context.switchSessionCalls.includes(controllerSessionFile));
+		await waitFor(() => childHarness.sentUserMessages.length === 1);
+		expect(controllerHarness.sentUserMessages).toHaveLength(0);
+
+		await childHarness.fire("session_shutdown", { type: "session_shutdown" }, childContext.ctx);
+		await expect(resumePromise).resolves.toBeUndefined();
+
+		const finalState = readLoopState(cwd, "resume-after-switch");
+		expect(finalState.status).toBe("paused");
+		expect(finalState.iteration).toBe(4);
 		expect(Option.isNone(finalState.activeIterationSessionFile)).toBe(true);
 	});
 
