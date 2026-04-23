@@ -25,6 +25,7 @@ type RegisteredTool = {
 			readonly model: Model<Api>;
 			readonly modelRegistry: object;
 			readonly sessionManager: {
+				getCwd: () => string;
 				getSessionId: () => string;
 				getSessionFile: () => string | undefined;
 			};
@@ -92,6 +93,82 @@ function makePiStub(registeredTools: RegisteredTool[]): ExtensionAPI {
 	}) as unknown as ExtensionAPI;
 }
 
+function makeRuntimeWithSpawnCalls(spawnCalls: ControlSpawnOptions[]): {
+	readonly runPromise: RunAgentControlPromise;
+	readonly runFork: RunAgentControlFork;
+	readonly closeAll: () => Promise<undefined>;
+} {
+	const runPromise: RunAgentControlPromise = <
+		A,
+		E,
+		R extends AgentControl | CuratedMemory | ExecutionState,
+	>(
+		effect: Effect.Effect<A, E, R>,
+	) => {
+		const provided = effect.pipe(
+			Effect.provide(
+				Layer.mergeAll(
+					Layer.succeed(
+						AgentControl,
+						AgentControl.of({
+							spawn: (opts) =>
+								Effect.sync(() => {
+									spawnCalls.push(opts);
+									return "agent-1";
+								}),
+							send: () => Effect.succeed("submission-1"),
+							wait: () => Effect.succeed({ status: {}, timedOut: false }),
+							waitStream: () => Stream.empty,
+							close: () => Effect.succeed([]),
+							closeAll: Effect.void,
+							list: Effect.succeed([]),
+						}),
+					),
+					Layer.succeed(ExecutionState, makeExecutionStateStub()),
+					Layer.succeed(CuratedMemory, makeCuratedMemoryStub()),
+				),
+			),
+		) as Effect.Effect<A, E, never>;
+		return Effect.runPromise(provided);
+	};
+
+	const runFork: RunAgentControlFork = <
+		A,
+		E,
+		R extends AgentControl | CuratedMemory | ExecutionState,
+	>(
+		effect: Effect.Effect<A, E, R>,
+	) => {
+		const provided = effect.pipe(
+			Effect.provide(
+				Layer.mergeAll(
+					Layer.succeed(
+						AgentControl,
+						AgentControl.of({
+							spawn: () => Effect.die("unused"),
+							send: () => Effect.die("unused"),
+							wait: () => Effect.die("unused"),
+							waitStream: () => Stream.empty,
+							close: () => Effect.die("unused"),
+							closeAll: Effect.void,
+							list: Effect.succeed([]),
+						}),
+					),
+					Layer.succeed(ExecutionState, makeExecutionStateStub()),
+					Layer.succeed(CuratedMemory, makeCuratedMemoryStub()),
+				),
+			),
+		) as Effect.Effect<A, E, never>;
+		return Effect.runFork(provided);
+	};
+
+	return {
+		runPromise,
+		runFork,
+		closeAll: async () => undefined,
+	};
+}
+
 const TEST_MODEL: Model<Api> = {
 	id: "gpt-5.4",
 	name: "gpt-5.4",
@@ -109,75 +186,7 @@ describe("initAgent", () => {
 	it("uses the session file for spawn context so Ralph gating sees owned sessions", async () => {
 		const registeredTools: RegisteredTool[] = [];
 		const spawnCalls: ControlSpawnOptions[] = [];
-		const runPromise: RunAgentControlPromise = <
-			A,
-			E,
-			R extends AgentControl | CuratedMemory | ExecutionState,
-		>(
-			effect: Effect.Effect<A, E, R>,
-		) => {
-			const provided = effect.pipe(
-				Effect.provide(
-					Layer.mergeAll(
-						Layer.succeed(
-							AgentControl,
-							AgentControl.of({
-								spawn: (opts) =>
-									Effect.sync(() => {
-										spawnCalls.push(opts);
-										return "agent-1";
-									}),
-								send: () => Effect.succeed("submission-1"),
-								wait: () => Effect.succeed({ status: {}, timedOut: false }),
-								waitStream: () => Stream.empty,
-								close: () => Effect.succeed([]),
-								closeAll: Effect.void,
-								list: Effect.succeed([]),
-							}),
-						),
-						Layer.succeed(ExecutionState, makeExecutionStateStub()),
-						Layer.succeed(CuratedMemory, makeCuratedMemoryStub()),
-					),
-				),
-			) as Effect.Effect<A, E, never>;
-			return Effect.runPromise(provided);
-		};
-
-		const runFork: RunAgentControlFork = <
-			A,
-			E,
-			R extends AgentControl | CuratedMemory | ExecutionState,
-		>(
-			effect: Effect.Effect<A, E, R>,
-		) => {
-			const provided = effect.pipe(
-				Effect.provide(
-					Layer.mergeAll(
-						Layer.succeed(
-							AgentControl,
-							AgentControl.of({
-								spawn: () => Effect.die("unused"),
-								send: () => Effect.die("unused"),
-								wait: () => Effect.die("unused"),
-								waitStream: () => Stream.empty,
-								close: () => Effect.die("unused"),
-								closeAll: Effect.void,
-								list: Effect.succeed([]),
-							}),
-						),
-						Layer.succeed(ExecutionState, makeExecutionStateStub()),
-						Layer.succeed(CuratedMemory, makeCuratedMemoryStub()),
-					),
-				),
-			) as Effect.Effect<A, E, never>;
-			return Effect.runFork(provided);
-		};
-
-		const runtime = {
-			runPromise,
-			runFork,
-			closeAll: async () => undefined,
-		};
+		const runtime = makeRuntimeWithSpawnCalls(spawnCalls);
 
 		const pi = makePiStub(registeredTools);
 		initAgent(pi, runtime, "agent tool");
@@ -197,6 +206,7 @@ describe("initAgent", () => {
 				model: TEST_MODEL,
 				modelRegistry: {},
 				sessionManager: {
+					getCwd: () => "/workspace",
 					getSessionId: () => "session-uuid",
 					getSessionFile: () => "/workspace/.pi/sessions/ralph-child.jsonl",
 				},
@@ -205,5 +215,38 @@ describe("initAgent", () => {
 
 		expect(spawnCalls).toHaveLength(1);
 		expect(spawnCalls[0]?.parentSessionFile).toBe("/workspace/.pi/sessions/ralph-child.jsonl");
+	});
+
+	it("uses the session manager cwd for spawned agent context", async () => {
+		const registeredTools: RegisteredTool[] = [];
+		const spawnCalls: ControlSpawnOptions[] = [];
+		const runtime = makeRuntimeWithSpawnCalls(spawnCalls);
+
+		const pi = makePiStub(registeredTools);
+		initAgent(pi, runtime, "agent tool");
+
+		const tool = registeredTools[0];
+		expect(tool).toBeDefined();
+
+		await tool?.execute(
+			"tool-call-1",
+			{ action: "spawn", agent: "librarian", message: "hi" },
+			undefined,
+			undefined,
+			{
+				cwd: "/stale-context-cwd",
+				hasUI: false,
+				model: TEST_MODEL,
+				modelRegistry: {},
+				sessionManager: {
+					getCwd: () => "/session-manager-cwd",
+					getSessionId: () => "session-uuid",
+					getSessionFile: () => "/session-manager-cwd/.pi/sessions/main.jsonl",
+				},
+			},
+		);
+
+		expect(spawnCalls).toHaveLength(1);
+		expect(spawnCalls[0]?.cwd).toBe("/session-manager-cwd");
 	});
 });

@@ -91,7 +91,7 @@ export default function initAgent(
 						parentModel: ctx.model,
 						resolveParentExecution,
 						modelRegistry: ctx.modelRegistry,
-						cwd: ctx.cwd,
+						cwd: ctx.sessionManager.getCwd(),
 						approvalBroker,
 					}),
 					currentDescription,
