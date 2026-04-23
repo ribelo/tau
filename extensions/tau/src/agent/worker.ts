@@ -5,6 +5,7 @@ import {
 	ModelRegistry,
 	DefaultResourceLoader,
 	type ToolDefinition,
+	getAgentDir,
 } from "@mariozechner/pi-coding-agent";
 import type { Model, Api } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
@@ -154,9 +155,7 @@ export class AgentWorker implements Agent {
 
 	private publishCompleted(message: string | undefined): void {
 		this.terminalState = "completed";
-		this.publishStatus(
-			buildCompletedStatus(this.tracking, message, this.structuredOutput),
-		);
+		this.publishStatus(buildCompletedStatus(this.tracking, message, this.structuredOutput));
 	}
 
 	private repromptForSubmitResult(retry: number): Effect.Effect<void> {
@@ -277,6 +276,7 @@ export class AgentWorker implements Agent {
 
 			const resourceLoader = new DefaultResourceLoader({
 				cwd: opts.cwd,
+				agentDir: getAgentDir(),
 				settingsManager,
 				appendSystemPromptOverride: (base) => [...base, ...appendPrompts],
 			});

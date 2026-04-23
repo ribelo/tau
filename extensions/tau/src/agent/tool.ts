@@ -414,13 +414,9 @@ export function createAgentToolDef(
 				};
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
-				const text =
-					err instanceof Error && err.stack !== undefined
-						? `${message}\n${err.stack}`
-						: message;
 				return {
 					isError: true,
-					content: [{ type: "text", text }],
+					content: [{ type: "text", text: message }],
 					details: { error: message } as object,
 				};
 			}

@@ -10,10 +10,16 @@ import type { ExecutionState } from "../src/services/execution-state.js";
 import type { ResolvedSandboxConfig } from "../src/sandbox/config.js";
 import { TAU_PERSISTED_STATE_TYPE } from "../src/shared/state.js";
 
-const { createAgentSessionMock, applyAgentToolAllowlistMock, createdSessions } = vi.hoisted(() => ({
+const {
+	createAgentSessionMock,
+	applyAgentToolAllowlistMock,
+	createdSessions,
+	resourceLoaderOptions,
+} = vi.hoisted(() => ({
 	createAgentSessionMock: vi.fn(),
 	applyAgentToolAllowlistMock: vi.fn(),
 	createdSessions: [] as FakeAgentSession[],
+	resourceLoaderOptions: [] as Array<{ readonly cwd: unknown; readonly agentDir: unknown }>,
 }));
 
 vi.mock("@mariozechner/pi-coding-agent", async () => {
@@ -22,6 +28,10 @@ vi.mock("@mariozechner/pi-coding-agent", async () => {
 	);
 
 	class FakeDefaultResourceLoader {
+		constructor(options: { readonly cwd: unknown; readonly agentDir: unknown }) {
+			resourceLoaderOptions.push({ cwd: options.cwd, agentDir: options.agentDir });
+		}
+
 		async reload(): Promise<void> {}
 	}
 
@@ -187,6 +197,7 @@ describe("AgentWorker structured-output wiring", () => {
 		createAgentSessionMock.mockReset();
 		applyAgentToolAllowlistMock.mockClear();
 		createdSessions.length = 0;
+		resourceLoaderOptions.length = 0;
 		createAgentSessionMock.mockImplementation(async () => ({
 			session: makeSession(createdSessions.length + 1, TEST_MODEL) as unknown as AgentSession,
 		}));
@@ -214,6 +225,9 @@ describe("AgentWorker structured-output wiring", () => {
 		);
 
 		expect(createdSessions).toHaveLength(1);
+		expect(resourceLoaderOptions[0]?.cwd).toBe(process.cwd());
+		expect(resourceLoaderOptions[0]?.agentDir).toEqual(expect.any(String));
+		expect(resourceLoaderOptions[0]?.agentDir).not.toBe("");
 		expect(createdSessions[0]?.agent.streamFn).toBe(toolOnlyStreamFn);
 		expect(applyAgentToolAllowlistMock).toHaveBeenCalledTimes(1);
 	});
