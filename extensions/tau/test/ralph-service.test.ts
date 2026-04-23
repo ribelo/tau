@@ -830,7 +830,18 @@ describe("ralph service behavior freeze", () => {
 		const controllerHarness = makePiHarness();
 		const childHarness = makePiHarness();
 		const executionProfile = makeExecutionProfile();
-		const promptModesLayer = Layer.succeed(
+		const controllerPromptModesLayer = Layer.succeed(
+			PromptModes,
+			PromptModes.of({
+				setup: Effect.void,
+				captureCurrentProfile: () => Effect.succeed(executionProfile.promptProfile),
+				captureCurrentExecutionProfile: () => Effect.succeed(executionProfile),
+				applyProfile: (nextProfile) =>
+					Effect.succeed({ applied: true as const, profile: nextProfile }),
+				applyExecutionProfile: () => Effect.die(new Error("stale controller pi")),
+			}),
+		);
+		const childPromptModesLayer = Layer.succeed(
 			PromptModes,
 			PromptModes.of({
 				setup: Effect.void,
@@ -845,10 +856,11 @@ describe("ralph service behavior freeze", () => {
 					}),
 			}),
 		);
-		const ralphRuntime = makeRalphRuntime(false, promptModesLayer);
-		runtimes.push(ralphRuntime);
-		initRalph(controllerHarness.pi, ralphRuntime.run);
-		initRalph(childHarness.pi, ralphRuntime.run);
+		const controllerRuntime = makeRalphRuntime(false, controllerPromptModesLayer);
+		const childRuntime = makeRalphRuntime(false, childPromptModesLayer);
+		runtimes.push(controllerRuntime, childRuntime);
+		initRalph(controllerHarness.pi, controllerRuntime.run);
+		initRalph(childHarness.pi, childRuntime.run);
 
 		const command = controllerHarness.commands.get("ralph");
 		expect(command).toBeDefined();
@@ -895,7 +907,18 @@ describe("ralph service behavior freeze", () => {
 		const controllerHarness = makePiHarness();
 		const childHarness = makePiHarness();
 		const executionProfile = makeExecutionProfile();
-		const promptModesLayer = Layer.succeed(
+		const controllerPromptModesLayer = Layer.succeed(
+			PromptModes,
+			PromptModes.of({
+				setup: Effect.void,
+				captureCurrentProfile: () => Effect.succeed(executionProfile.promptProfile),
+				captureCurrentExecutionProfile: () => Effect.succeed(executionProfile),
+				applyProfile: (nextProfile) =>
+					Effect.succeed({ applied: true as const, profile: nextProfile }),
+				applyExecutionProfile: () => Effect.die(new Error("stale controller pi")),
+			}),
+		);
+		const childPromptModesLayer = Layer.succeed(
 			PromptModes,
 			PromptModes.of({
 				setup: Effect.void,
@@ -910,10 +933,11 @@ describe("ralph service behavior freeze", () => {
 					}),
 			}),
 		);
-		const ralphRuntime = makeRalphRuntime(false, promptModesLayer);
-		runtimes.push(ralphRuntime);
-		initRalph(controllerHarness.pi, ralphRuntime.run);
-		initRalph(childHarness.pi, ralphRuntime.run);
+		const controllerRuntime = makeRalphRuntime(false, controllerPromptModesLayer);
+		const childRuntime = makeRalphRuntime(false, childPromptModesLayer);
+		runtimes.push(controllerRuntime, childRuntime);
+		initRalph(controllerHarness.pi, controllerRuntime.run);
+		initRalph(childHarness.pi, childRuntime.run);
 
 		const command = controllerHarness.commands.get("ralph");
 		expect(command).toBeDefined();
@@ -961,7 +985,18 @@ describe("ralph service behavior freeze", () => {
 		const controllerHarness = makePiHarness();
 		const childHarness = makePiHarness();
 		const executionProfile = makeExecutionProfile();
-		const promptModesLayer = Layer.succeed(
+		const controllerPromptModesLayer = Layer.succeed(
+			PromptModes,
+			PromptModes.of({
+				setup: Effect.void,
+				captureCurrentProfile: () => Effect.succeed(executionProfile.promptProfile),
+				captureCurrentExecutionProfile: () => Effect.succeed(executionProfile),
+				applyProfile: (nextProfile) =>
+					Effect.succeed({ applied: true as const, profile: nextProfile }),
+				applyExecutionProfile: () => Effect.die(new Error("stale controller pi")),
+			}),
+		);
+		const childPromptModesLayer = Layer.succeed(
 			PromptModes,
 			PromptModes.of({
 				setup: Effect.void,
@@ -976,10 +1011,11 @@ describe("ralph service behavior freeze", () => {
 					}),
 			}),
 		);
-		const ralphRuntime = makeRalphRuntime(false, promptModesLayer);
-		runtimes.push(ralphRuntime);
-		initRalph(controllerHarness.pi, ralphRuntime.run);
-		initRalph(childHarness.pi, ralphRuntime.run);
+		const controllerRuntime = makeRalphRuntime(false, controllerPromptModesLayer);
+		const childRuntime = makeRalphRuntime(false, childPromptModesLayer);
+		runtimes.push(controllerRuntime, childRuntime);
+		initRalph(controllerHarness.pi, controllerRuntime.run);
+		initRalph(childHarness.pi, childRuntime.run);
 
 		const command = controllerHarness.commands.get("ralph");
 		expect(command).toBeDefined();

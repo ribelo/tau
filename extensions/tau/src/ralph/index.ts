@@ -64,6 +64,15 @@ const STATUS_ICONS: Record<LoopStatus, string> = {
 
 type RalphPromptDispatcher = (prompt: string) => void;
 
+type RalphExecutionProfileApplyResult = {
+	readonly applied: boolean;
+	readonly reason?: string;
+};
+
+type RalphExecutionProfileApplier = (
+	profile: ExecutionProfile,
+) => Promise<RalphExecutionProfileApplyResult>;
+
 type ReplacementSessionContext = ExtensionCommandContext & {
 	readonly sendUserMessage: (
 		content: Parameters<ExtensionAPI["sendUserMessage"]>[0],
@@ -95,9 +104,11 @@ type RalphCommandBoundaryHandle = RalphCommandBoundary & {
 };
 
 const RALPH_PROMPT_DISPATCHERS_GLOBAL = "__tau_ralph_prompt_dispatchers";
+const RALPH_EXECUTION_PROFILE_APPLIERS_GLOBAL = "__tau_ralph_execution_profile_appliers";
 
 type RalphGlobalState = typeof globalThis & {
 	[RALPH_PROMPT_DISPATCHERS_GLOBAL]?: Map<string, RalphPromptDispatcher>;
+	[RALPH_EXECUTION_PROFILE_APPLIERS_GLOBAL]?: Map<string, RalphExecutionProfileApplier>;
 };
 
 function getRalphPromptDispatchers(): Map<string, RalphPromptDispatcher> {
@@ -126,6 +137,34 @@ function unregisterRalphPromptDispatcher(sessionFile: string | undefined): void 
 		return;
 	}
 	getRalphPromptDispatchers().delete(sessionFile);
+}
+
+function getRalphExecutionProfileAppliers(): Map<string, RalphExecutionProfileApplier> {
+	const globalState = globalThis as RalphGlobalState;
+	const existing = globalState[RALPH_EXECUTION_PROFILE_APPLIERS_GLOBAL];
+	if (existing) {
+		return existing;
+	}
+	const registry = new Map<string, RalphExecutionProfileApplier>();
+	globalState[RALPH_EXECUTION_PROFILE_APPLIERS_GLOBAL] = registry;
+	return registry;
+}
+
+function registerRalphExecutionProfileApplier(
+	sessionFile: string | undefined,
+	applier: RalphExecutionProfileApplier,
+): void {
+	if (sessionFile === undefined) {
+		return;
+	}
+	getRalphExecutionProfileAppliers().set(sessionFile, applier);
+}
+
+function unregisterRalphExecutionProfileApplier(sessionFile: string | undefined): void {
+	if (sessionFile === undefined) {
+		return;
+	}
+	getRalphExecutionProfileAppliers().delete(sessionFile);
 }
 
 function isMaxIterationsReached(
@@ -647,6 +686,37 @@ export default function initRalph(
 		});
 	};
 
+	const applyExecutionProfileInContext = (
+		profile: ExecutionProfile,
+		profileContext: Pick<ExtensionContext, "model" | "modelRegistry" | "ui">,
+	): Promise<RalphExecutionProfileApplyResult> =>
+		withPromptModes((promptModes) =>
+			promptModes
+				.applyExecutionProfile(profile, profileContext, {
+					notifyOnSuccess: false,
+					persist: false,
+					ephemeral: true,
+				})
+				.pipe(
+					Effect.map((applyResult) =>
+						applyResult.applied
+							? { applied: true as const }
+							: { applied: false as const, reason: applyResult.reason },
+					),
+				),
+		).catch((error) => ({
+			applied: false as const,
+			reason: formatCommandBoundaryError(error),
+		}));
+
+	const syncExecutionProfileApplier = (
+		ctx: Pick<ExtensionContext, "sessionManager" | "model" | "modelRegistry" | "ui">,
+	): void => {
+		registerRalphExecutionProfileApplier(sessionFileFromContext(ctx), (profile) =>
+			applyExecutionProfileInContext(profile, ctx),
+		);
+	};
+
 	const commandBoundaryFromContext = (
 		ctx: ExtensionCommandContext,
 	): RalphCommandBoundaryHandle => {
@@ -704,32 +774,26 @@ export default function initRalph(
 		const applyExecutionProfile: RalphCommandBoundary["applyExecutionProfile"] = Effect.fn(
 			"RalphCommandBoundary.applyExecutionProfile",
 		)(function* (profile) {
+			const targetSessionFile = currentSessionFile;
+			if (targetSessionFile !== undefined) {
+				const applier = getRalphExecutionProfileAppliers().get(targetSessionFile);
+				if (applier) {
+					return yield* Effect.promise(() => applier(profile));
+				}
+			}
+
 			const profileContext = activeContext;
-			const result = yield* Effect.tryPromise(() =>
-				withPromptModes((promptModes) =>
-					promptModes
-						.applyExecutionProfile(profile, profileContext, {
-							notifyOnSuccess: false,
-							persist: false,
-							ephemeral: true,
-						})
-						.pipe(
-							Effect.map((applyResult) =>
-								applyResult.applied
-									? { applied: true as const }
-									: { applied: false as const, reason: applyResult.reason },
-							),
-						),
-				),
-			).pipe(
-				Effect.catch((error) =>
-					Effect.succeed({
-						applied: false as const,
-						reason: formatCommandBoundaryError(error),
-					}),
-				),
-			);
-			return result;
+			const liveSessionFile = sessionFileFromContextIfLive(profileContext);
+			if (targetSessionFile === undefined || liveSessionFile === targetSessionFile) {
+				return yield* Effect.promise(() =>
+					applyExecutionProfileInContext(profile, profileContext),
+				);
+			}
+
+			return {
+				applied: false as const,
+				reason: `no execution profile applier is registered for ${targetSessionFile}`,
+			};
 		});
 
 		const sendFollowUp: RalphCommandBoundary["sendFollowUp"] = Effect.fn(
@@ -1479,6 +1543,7 @@ export default function initRalph(
 	pi.on("session_start", async (_event, ctx) => {
 		try {
 			syncPromptDispatcher(ctx);
+			syncExecutionProfileApplier(ctx);
 			await withRalph((ralph) =>
 				ralph.syncCurrentLoopFromSession(ctx.cwd, sessionFileFromContext(ctx)),
 			);
@@ -1506,6 +1571,7 @@ export default function initRalph(
 	pi.on("session_switch", async (_event, ctx) => {
 		try {
 			syncPromptDispatcher(ctx);
+			syncExecutionProfileApplier(ctx);
 			await withRalph((ralph) =>
 				ralph.syncCurrentLoopFromSession(ctx.cwd, sessionFileFromContext(ctx)),
 			);
@@ -1522,6 +1588,7 @@ export default function initRalph(
 	pi.on("session_fork", async (_event, ctx) => {
 		try {
 			syncPromptDispatcher(ctx);
+			syncExecutionProfileApplier(ctx);
 			await withRalph((ralph) =>
 				ralph.syncCurrentLoopFromSession(ctx.cwd, sessionFileFromContext(ctx)),
 			);
@@ -1538,6 +1605,7 @@ export default function initRalph(
 	pi.on("session_shutdown", async (_event, ctx) => {
 		try {
 			unregisterRalphPromptDispatcher(sessionFileFromContext(ctx));
+			unregisterRalphExecutionProfileApplier(sessionFileFromContext(ctx));
 			await withRalph((ralph) =>
 				ralph.persistOwnedLoopOnShutdown(ctx.cwd, sessionFileFromContext(ctx)),
 			);
