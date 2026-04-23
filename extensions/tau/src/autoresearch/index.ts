@@ -8,7 +8,12 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
-import { truncateTail, formatSize, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@mariozechner/pi-coding-agent";
+import {
+	truncateTail,
+	formatSize,
+	DEFAULT_MAX_BYTES,
+	DEFAULT_MAX_LINES,
+} from "@mariozechner/pi-coding-agent";
 import type { TruncationResult } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { matchesKey, Text } from "@mariozechner/pi-tui";
@@ -16,10 +21,7 @@ import { Cause, Effect, Option } from "effect";
 
 import { Sandbox } from "../services/sandbox.js";
 import { PromptModes } from "../services/prompt-modes.js";
-import {
-	LoopEngine,
-	type LoopEngineService,
-} from "../services/loop-engine.js";
+import { LoopEngine, type LoopEngineService } from "../services/loop-engine.js";
 import {
 	AutoresearchLoopRunner,
 	type AutoresearchLoopRunnerService,
@@ -63,10 +65,7 @@ import {
 	renderAutoresearchTaskDocument,
 } from "./task-contract.js";
 import { atomicWriteFileStringSync } from "../shared/atomic-write.js";
-import {
-	AutoresearchValidationError,
-	AutoresearchGitError,
-} from "./errors.js";
+import { AutoresearchValidationError, AutoresearchGitError } from "./errors.js";
 import {
 	formatNum,
 	formatElapsed,
@@ -77,7 +76,13 @@ import {
 	EXPERIMENT_MAX_LINES,
 } from "./helpers.js";
 import { renderRunExperimentResult } from "./run-experiment-render.js";
-import { renderWidget, renderExpandedHeader, renderDashboardLines, renderOverlayRunningLine, renderOverlayFooter } from "./dashboard.js";
+import {
+	renderWidget,
+	renderExpandedHeader,
+	renderDashboardLines,
+	renderOverlayRunningLine,
+	renderOverlayFooter,
+} from "./dashboard.js";
 import { shouldCloseAutoresearchOverlay } from "./overlay-input.js";
 import type { ExperimentResult } from "./schema.js";
 import { computeConfidence, findBestResult } from "./state.js";
@@ -293,10 +298,7 @@ function isUnknownRecordOrNull(value: unknown): value is Record<string, unknown>
 
 function isRunOutcome(value: unknown): value is AutoresearchRunOutcome {
 	return (
-		value === "keep" ||
-		value === "discard" ||
-		value === "crash" ||
-		value === "checks_failed"
+		value === "keep" || value === "discard" || value === "crash" || value === "checks_failed"
 	);
 }
 
@@ -411,7 +413,10 @@ function parsePersistedRunRecord(content: string, runFile: string): PersistedAut
 	return parsed;
 }
 
-function listRunRecordsForTask(cwd: string, taskId: string): ReadonlyArray<PersistedAutoresearchRun> {
+function listRunRecordsForTask(
+	cwd: string,
+	taskId: string,
+): ReadonlyArray<PersistedAutoresearchRun> {
 	const runsRoot = path.resolve(cwd, loopRunsDirectory(taskId));
 	if (!fs.existsSync(runsRoot)) {
 		return [];
@@ -440,7 +445,10 @@ function listRunRecordsForTask(cwd: string, taskId: string): ReadonlyArray<Persi
 async function executeBenchmarkAsync(
 	input: ExecuteBenchmarkInput & { readonly checksCommand?: Option.Option<string> },
 	onUpdate:
-		| ((result: { content: Array<{ type: "text"; text: string }>; details: BenchmarkProgress }) => void)
+		| ((result: {
+				content: Array<{ type: "text"; text: string }>;
+				details: BenchmarkProgress;
+		  }) => void)
 		| undefined,
 	ops: BashOperations,
 ): Promise<RunDetails> {
@@ -489,7 +497,11 @@ async function executeBenchmarkAsync(
 		}, 1000);
 	}
 
-	const benchmarkOptions: { onData: (data: Buffer) => void; timeout?: number; signal?: AbortSignal } = {
+	const benchmarkOptions: {
+		onData: (data: Buffer) => void;
+		timeout?: number;
+		signal?: AbortSignal;
+	} = {
 		onData: handleData,
 	};
 	if (timeoutSeconds > 0) {
@@ -525,7 +537,11 @@ async function executeBenchmarkAsync(
 	if (benchmarkPassed && resolvedChecksCommand !== null) {
 		const checksChunks: Buffer[] = [];
 		const ct0 = Date.now();
-		const checksOptions: { onData: (data: Buffer) => void; timeout?: number; signal?: AbortSignal } = {
+		const checksOptions: {
+			onData: (data: Buffer) => void;
+			timeout?: number;
+			signal?: AbortSignal;
+		} = {
 			onData: (data) => checksChunks.push(data),
 		};
 		if (checksTimeoutSeconds > 0) {
@@ -562,7 +578,10 @@ async function executeBenchmarkAsync(
 	const totalLines = fullOutput.split("\n").length;
 	let fullOutputPath: string | undefined;
 	if (totalBytes > EXPERIMENT_MAX_BYTES || totalLines > EXPERIMENT_MAX_LINES) {
-		fullOutputPath = path.join(os.tmpdir(), `pi-experiment-${randomBytes(8).toString("hex")}.log`);
+		fullOutputPath = path.join(
+			os.tmpdir(),
+			`pi-experiment-${randomBytes(8).toString("hex")}.log`,
+		);
 		fs.writeFileSync(fullOutputPath, fullOutput);
 	}
 
@@ -710,9 +729,9 @@ async function finalizeKeepInWorkspace(
 				firstLine.length > 0
 					? `Git: committed — ${firstLine}`
 					: `Git: committed ${sha.trim()}`,
-				commit: sha.trim().slice(0, 7),
-				warning: null,
-			};
+			commit: sha.trim().slice(0, 7),
+			warning: null,
+		};
 	} catch (error) {
 		return {
 			note: "Git: keep requested but commit did not complete.",
@@ -797,7 +816,9 @@ function buildRunExperimentText(details: RunDetails): string {
 		if (details.parsedPrimary !== null) {
 			text += ` ${details.metricName}=${formatNum(details.parsedPrimary, details.metricUnit)}`;
 		}
-		const secondary = Object.entries(details.parsedMetrics).filter(([k]) => k !== details.metricName);
+		const secondary = Object.entries(details.parsedMetrics).filter(
+			([k]) => k !== details.metricName,
+		);
 		for (const [name, value] of secondary) {
 			text += ` ${name}=${formatNum(value, "")}`;
 		}
@@ -860,18 +881,20 @@ export default function initAutoresearch(
 		ctx: ExtensionContext,
 	): Promise<{ readonly applied: true } | { readonly applied: false; readonly reason: string }> =>
 		withPromptModes((promptModes) =>
-			promptModes.applyExecutionProfile(profile, ctx, {
-				notifyOnSuccess: false,
-				persist: false,
-				ephemeral: true,
-			}).pipe(
-				Effect.map((result) =>
-					result.applied
-						? ({ applied: true } as const)
-						: ({ applied: false, reason: result.reason } as const),
+			promptModes
+				.applyExecutionProfile(profile, ctx, {
+					notifyOnSuccess: false,
+					persist: false,
+					ephemeral: true,
+				})
+				.pipe(
+					Effect.map((result) =>
+						result.applied
+							? ({ applied: true } as const)
+							: ({ applied: false, reason: result.reason } as const),
+					),
 				),
-		),
-	);
+		);
 
 	const withAutoresearchLoopRunner = <A, E>(
 		f: (service: AutoresearchLoopRunnerService) => Effect.Effect<A, E, never>,
@@ -914,7 +937,8 @@ export default function initAutoresearch(
 		state: AutoresearchLoopPersistedState,
 	): AutoresearchViewData => {
 		const runRecords = [...listRunRecordsForTask(cwd, state.taskId)].sort(
-			(left: PersistedAutoresearchRun, right: PersistedAutoresearchRun) => left.runNumber - right.runNumber,
+			(left: PersistedAutoresearchRun, right: PersistedAutoresearchRun) =>
+				left.runNumber - right.runNumber,
 		);
 		const phaseOrder = new Map<string, number>();
 		for (const run of runRecords) {
@@ -953,7 +977,9 @@ export default function initAutoresearch(
 
 		const secondaryMetricNames = Array.from(
 			new Set(
-				results.flatMap((result) => Object.keys(result.metrics)).filter((name) => name !== state.autoresearch.metricName),
+				results
+					.flatMap((result) => Object.keys(result.metrics))
+					.filter((name) => name !== state.autoresearch.metricName),
 			),
 		);
 		const secondaryMetrics = secondaryMetricNames.map((name) => ({
@@ -969,7 +995,8 @@ export default function initAutoresearch(
 		const pendingRun =
 			pendingRunId === null
 				? null
-				: (runRecords.find((run: PersistedAutoresearchRun) => run.runId === pendingRunId) ?? null);
+				: (runRecords.find((run: PersistedAutoresearchRun) => run.runId === pendingRunId) ??
+					null);
 
 		return {
 			autoresearchMode: state.lifecycle === "active",
@@ -979,7 +1006,8 @@ export default function initAutoresearch(
 			bestMetric: best?.result.metric ?? null,
 			bestDirection: state.autoresearch.metricDirection,
 			currentSegment,
-			currentSegmentRunCount: results.filter((result) => result.segment === currentSegment).length,
+			currentSegmentRunCount: results.filter((result) => result.segment === currentSegment)
+				.length,
 			totalRunCount: results.length,
 			currentSegmentKeptCount: results.filter(
 				(result) => result.segment === currentSegment && result.status === "keep",
@@ -992,17 +1020,24 @@ export default function initAutoresearch(
 			).length,
 			bestPrimaryMetric: best?.result.metric ?? null,
 			bestRunNumber: best?.result.runNumber ?? null,
-			confidence: computeConfidence(results, currentSegment, state.autoresearch.metricDirection),
+			confidence: computeConfidence(
+				results,
+				currentSegment,
+				state.autoresearch.metricDirection,
+			),
 			secondaryMetrics,
 			runningExperiment:
 				pendingRun === null
 					? null
 					: {
-						startedAt: Date.parse(pendingRun.createdAt),
-						command: pendingRun.benchmark.command,
-						runDirectory: path.resolve(cwd, loopRunDirectory(state.taskId, pendingRun.runId)),
-						runNumber: pendingRun.runNumber,
-					},
+							startedAt: Date.parse(pendingRun.createdAt),
+							command: pendingRun.benchmark.command,
+							runDirectory: path.resolve(
+								cwd,
+								loopRunDirectory(state.taskId, pendingRun.runId),
+							),
+							runNumber: pendingRun.runNumber,
+						},
 			results,
 			maxExperiments: Option.match(state.autoresearch.maxIterations, {
 				onNone: () => null,
@@ -1053,7 +1088,14 @@ export default function initAutoresearch(
 						const header = renderExpandedHeader(currentView, width, theme);
 						const body = renderDashboardLines(currentView, width, theme, 0);
 						if (currentView.runningExperiment !== null) {
-							body.push(renderOverlayRunningLine(currentView, theme, width, state.spinnerFrame));
+							body.push(
+								renderOverlayRunningLine(
+									currentView,
+									theme,
+									width,
+									state.spinnerFrame,
+								),
+							);
 						}
 						const viewportRows = Math.max(4, terminalRows - 4);
 						const maxScroll = Math.max(0, body.length - viewportRows);
@@ -1061,11 +1103,20 @@ export default function initAutoresearch(
 							scrollOffset = maxScroll;
 						}
 						const visible = body.slice(scrollOffset, scrollOffset + viewportRows);
-						const footer = renderOverlayFooter(width, scrollOffset, viewportRows, body.length, theme);
+						const footer = renderOverlayFooter(
+							width,
+							scrollOffset,
+							viewportRows,
+							body.length,
+							theme,
+						);
 						return [
 							header,
 							...visible,
-							...Array.from({ length: Math.max(0, viewportRows - visible.length) }, () => ""),
+							...Array.from(
+								{ length: Math.max(0, viewportRows - visible.length) },
+								() => "",
+							),
 							footer,
 						];
 					},
@@ -1074,8 +1125,12 @@ export default function initAutoresearch(
 						const totalRows =
 							currentView === undefined
 								? 0
-								: renderDashboardLines(currentView, process.stdout.columns ?? 120, theme, 0).length +
-									(currentView.runningExperiment === null ? 0 : 1);
+								: renderDashboardLines(
+										currentView,
+										process.stdout.columns ?? 120,
+										theme,
+										0,
+									).length + (currentView.runningExperiment === null ? 0 : 1);
 						const terminalRows = process.stdout.rows ?? 40;
 						const viewportRows = Math.max(4, terminalRows - 4);
 						const maxScroll = Math.max(0, totalRows - viewportRows);
@@ -1133,10 +1188,7 @@ export default function initAutoresearch(
 		atomicWriteFileStringSync(statePath, encodeLoopPersistedStateJsonSync(state));
 	};
 
-	const loadPhaseSnapshotForState = (
-		cwd: string,
-		state: AutoresearchLoopPersistedState,
-	) => {
+	const loadPhaseSnapshotForState = (cwd: string, state: AutoresearchLoopPersistedState) => {
 		const phaseId = Option.match(state.autoresearch.phaseId, {
 			onNone: () => {
 				throw new AutoresearchValidationError({
@@ -1156,11 +1208,7 @@ export default function initAutoresearch(
 		return decodeAutoresearchPhaseSnapshotJsonSync(content);
 	};
 
-	const loadPhaseSnapshot = (
-		cwd: string,
-		taskId: string,
-		phaseId: string,
-	) => {
+	const loadPhaseSnapshot = (cwd: string, taskId: string, phaseId: string) => {
 		const snapshotPath = path.resolve(cwd, loopPhaseFile(taskId, phaseId));
 		if (!fs.existsSync(snapshotPath)) {
 			throw new LoopContractValidationError({
@@ -1261,7 +1309,11 @@ export default function initAutoresearch(
 	const makeRunId = (runNumber: number): string =>
 		`run-${String(runNumber).padStart(4, "0")}-${Date.now()}`;
 
-	const readRunRecord = (cwd: string, taskId: string, runId: string): PersistedAutoresearchRun => {
+	const readRunRecord = (
+		cwd: string,
+		taskId: string,
+		runId: string,
+	): PersistedAutoresearchRun => {
 		const runPath = path.resolve(cwd, loopRunDirectory(taskId, runId), RUN_RECORD_FILE);
 		if (!fs.existsSync(runPath)) {
 			throw new LoopContractValidationError({
@@ -1425,7 +1477,7 @@ export default function initAutoresearch(
 			"2. Make any necessary edits for that experiment.",
 			"3. Call autoresearch_run exactly once.",
 			"4. Inspect the run result and checks output.",
-			"5. Call autoresearch_done exactly once with status, description, metrics, and asi including at least {\"hypothesis\": \"...\"}.",
+			'5. Call autoresearch_done exactly once with status, description, metrics, and asi including at least {"hypothesis": "..."}.',
 			"",
 			"Do not start a second trial in this session. If you cannot safely run a trial, explain why and stop.",
 		];
@@ -1438,18 +1490,24 @@ export default function initAutoresearch(
 		void withAutoresearchLoopRunner((runner) => {
 			const loopProgram = Effect.gen(function* () {
 				while (true) {
-					const persisted = requireAutoresearchLoopState(readCanonicalLoopState(ctx.cwd, taskId));
+					const persisted = requireAutoresearchLoopState(
+						readCanonicalLoopState(ctx.cwd, taskId),
+					);
 					if (persisted.lifecycle !== "active") {
 						return;
 					}
-					const maxIterations = Option.getOrUndefined(persisted.autoresearch.maxIterations);
+					const maxIterations = Option.getOrUndefined(
+						persisted.autoresearch.maxIterations,
+					);
 
 					if (
 						maxIterations !== undefined &&
 						persisted.autoresearch.runCount >= maxIterations &&
 						Option.isNone(persisted.autoresearch.pendingRunId)
 					) {
-						yield* Effect.promise(() => withLoopEngine((engine) => engine.stopLoop(ctx.cwd, taskId)));
+						yield* Effect.promise(() =>
+							withLoopEngine((engine) => engine.stopLoop(ctx.cwd, taskId)),
+						);
 						if (ctx.hasUI) {
 							yield* Effect.sync(() => {
 								ctx.ui.notify(
@@ -1477,7 +1535,9 @@ export default function initAutoresearch(
 						return;
 					}
 					if (waitResult._tag === "timed_out") {
-						yield* Effect.promise(() => withLoopEngine((engine) => engine.pauseLoop(ctx.cwd, taskId)));
+						yield* Effect.promise(() =>
+							withLoopEngine((engine) => engine.pauseLoop(ctx.cwd, taskId)),
+						);
 						if (ctx.hasUI) {
 							yield* Effect.sync(() => {
 								ctx.ui.notify(
@@ -1490,13 +1550,17 @@ export default function initAutoresearch(
 						return;
 					}
 
-					const afterTurn = requireAutoresearchLoopState(readCanonicalLoopState(ctx.cwd, taskId));
+					const afterTurn = requireAutoresearchLoopState(
+						readCanonicalLoopState(ctx.cwd, taskId),
+					);
 					if (afterTurn.lifecycle !== "active") {
 						return;
 					}
 
 					if (Option.isSome(afterTurn.autoresearch.pendingRunId)) {
-						yield* Effect.promise(() => withLoopEngine((engine) => engine.pauseLoop(ctx.cwd, taskId)));
+						yield* Effect.promise(() =>
+							withLoopEngine((engine) => engine.pauseLoop(ctx.cwd, taskId)),
+						);
 						if (ctx.hasUI) {
 							yield* Effect.sync(() => {
 								ctx.ui.notify(
@@ -1520,7 +1584,10 @@ export default function initAutoresearch(
 					const error = Cause.squash(cause);
 					return Effect.promise(async () => {
 						if (ctx.hasUI) {
-							ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+							ctx.ui.notify(
+								error instanceof Error ? error.message : String(error),
+								"error",
+							);
 						}
 						await updateAutoresearchUI(ctx.cwd, ctx);
 					});
@@ -1637,9 +1704,14 @@ export default function initAutoresearch(
 			"Call autoresearch_done after autoresearch_run to finalize the pending trial.",
 		],
 		parameters: Type.Object({
-			timeout: Type.Optional(Type.Number({ description: "Benchmark timeout in seconds (default 600)." })),
+			timeout: Type.Optional(
+				Type.Number({ description: "Benchmark timeout in seconds (default 600)." }),
+			),
 			checks_timeout: Type.Optional(
-				Type.Number({ description: "Checks timeout in seconds when checks_command is set (default 300)." }),
+				Type.Number({
+					description:
+						"Checks timeout in seconds when checks_command is set (default 300).",
+				}),
 			),
 		}),
 
@@ -1657,7 +1729,10 @@ export default function initAutoresearch(
 				if (persisted.lifecycle !== "active") {
 					return {
 						content: [
-							{ type: "text", text: `Error: autoresearch task ${persisted.taskId} is ${persisted.lifecycle}.` },
+							{
+								type: "text",
+								text: `Error: autoresearch task ${persisted.taskId} is ${persisted.lifecycle}.`,
+							},
 						],
 						details: {},
 						isError: true,
@@ -1693,8 +1768,8 @@ export default function initAutoresearch(
 					};
 				}
 
-				const existingChildRun = listRunRecordsForTask(ctx.cwd, persisted.taskId).find((run) =>
-					sessionRefMatches(run.childSession, active.child),
+				const existingChildRun = listRunRecordsForTask(ctx.cwd, persisted.taskId).find(
+					(run) => sessionRefMatches(run.childSession, active.child),
 				);
 				if (existingChildRun !== undefined) {
 					return {
@@ -1713,12 +1788,17 @@ export default function initAutoresearch(
 
 				const ops = getSandboxedBashOperations(ctx, false);
 				if (!ops) {
-					throw new AutoresearchValidationError({ reason: "Sandbox bash operations are not available." });
+					throw new AutoresearchValidationError({
+						reason: "Sandbox bash operations are not available.",
+					});
 				}
 
 				const runNumber = persisted.autoresearch.runCount + 1;
 				const runId = makeRunId(runNumber);
-				const runDirectory = path.resolve(ctx.cwd, loopRunDirectory(persisted.taskId, runId));
+				const runDirectory = path.resolve(
+					ctx.cwd,
+					loopRunDirectory(persisted.taskId, runId),
+				);
 				runDirectoryToCleanup = runDirectory;
 
 				previousState = persisted;
@@ -1846,7 +1926,12 @@ export default function initAutoresearch(
 					error instanceof LoopOwnershipValidationError
 				) {
 					return {
-						content: [{ type: "text", text: `Error: ${"reason" in error ? String(error.reason) : String(error)}` }],
+						content: [
+							{
+								type: "text",
+								text: `Error: ${"reason" in error ? String(error.reason) : String(error)}`,
+							},
+						],
 						details: {},
 						isError: true,
 					};
@@ -1864,7 +1949,7 @@ export default function initAutoresearch(
 		},
 
 		renderResult(result, options, theme) {
-		return renderRunExperimentResult(result, options, theme);
+			return renderRunExperimentResult(result, options, theme);
 		},
 	});
 
@@ -1910,7 +1995,12 @@ export default function initAutoresearch(
 				const runRecord = readRunRecord(ctx.cwd, persisted.taskId, pendingRunId);
 				if (runRecord.finalized !== null) {
 					return {
-						content: [{ type: "text", text: `Error: run ${pendingRunId} is already finalized.` }],
+						content: [
+							{
+								type: "text",
+								text: `Error: run ${pendingRunId} is already finalized.`,
+							},
+						],
 						details: {},
 						isError: true,
 					};
@@ -1928,35 +2018,47 @@ export default function initAutoresearch(
 					};
 				}
 
-				const finalizedAsi = params.asi === undefined ? null : isRecord(params.asi) ? params.asi : null;
+				const finalizedAsi =
+					params.asi === undefined ? null : isRecord(params.asi) ? params.asi : null;
 				if (params.asi !== undefined && !isRecord(params.asi)) {
 					return {
-						content: [{ type: "text", text: "Error: asi must be a JSON object when provided." }],
+						content: [
+							{
+								type: "text",
+								text: "Error: asi must be a JSON object when provided.",
+							},
+						],
 						details: {},
 						isError: true,
 					};
 				}
 
-				const phaseSnapshot = loadPhaseSnapshot(ctx.cwd, persisted.taskId, runRecord.phaseId);
+				const phaseSnapshot = loadPhaseSnapshot(
+					ctx.cwd,
+					persisted.taskId,
+					runRecord.phaseId,
+				);
 				const workDir = resolveWorkspaceScopeWorkDir(ctx.cwd, phaseSnapshot.scope.root);
 				const ops = getSandboxedBashOperations(ctx, false);
 				if (!ops) {
-					throw new AutoresearchValidationError({ reason: "Sandbox bash operations are not available." });
+					throw new AutoresearchValidationError({
+						reason: "Sandbox bash operations are not available.",
+					});
 				}
 
 				const gitResult =
 					params.status === "keep"
 						? await finalizeKeepInWorkspace(
-							workDir,
-							runRecord,
-							{
-								description: params.description,
-								status: params.status,
-								metrics: params.metrics,
-								asi: finalizedAsi,
-							},
-							ops,
-						)
+								workDir,
+								runRecord,
+								{
+									description: params.description,
+									status: params.status,
+									metrics: params.metrics,
+									asi: finalizedAsi,
+								},
+								ops,
+							)
 						: await finalizeNonKeepInWorkspace(workDir, params.status, ops);
 
 				const finalizedRun: PersistedAutoresearchRun = {
@@ -1992,7 +2094,9 @@ export default function initAutoresearch(
 							type: "text",
 							text:
 								`Finalized run ${pendingRunId} as ${params.status}. Pending trial cleared for task ${persisted.taskId}. Child session ownership cleared. Next trial will start automatically if the task remains active. ${gitResult.note}` +
-								(gitResult.warning === null ? "" : `\nWarning: ${gitResult.warning}`),
+								(gitResult.warning === null
+									? ""
+									: `\nWarning: ${gitResult.warning}`),
 						},
 					],
 					details: {
@@ -2015,7 +2119,12 @@ export default function initAutoresearch(
 					error instanceof LoopOwnershipValidationError
 				) {
 					return {
-						content: [{ type: "text", text: `Error: ${"reason" in error ? String(error.reason) : String(error)}` }],
+						content: [
+							{
+								type: "text",
+								text: `Error: ${"reason" in error ? String(error.reason) : String(error)}`,
+							},
+						],
 						details: {},
 						isError: true,
 					};
@@ -2058,7 +2167,10 @@ export default function initAutoresearch(
 			const resolveScopedTaskId = async (): Promise<string | null> => {
 				const session = commandSessionRef(ctx);
 				if (Option.isNone(session)) {
-					ctx.ui.notify("Autoresearch commands require an interactive session file.", "error");
+					ctx.ui.notify(
+						"Autoresearch commands require an interactive session file.",
+						"error",
+					);
 					return null;
 				}
 
@@ -2066,7 +2178,10 @@ export default function initAutoresearch(
 					engine.resolveOwnedLoop(ctx.cwd, session.value),
 				);
 				if (Option.isNone(owned) || !isAutoresearchLoopState(owned.value)) {
-					ctx.ui.notify("No autoresearch loop is owned by the current session.", "warning");
+					ctx.ui.notify(
+						"No autoresearch loop is owned by the current session.",
+						"warning",
+					);
 					return null;
 				}
 				return owned.value.taskId;
@@ -2078,51 +2193,60 @@ export default function initAutoresearch(
 					return;
 				}
 
-					switch (command) {
-						case "create": {
-							assertNoLegacyAutoresearchLayout(ctx.cwd);
-							const taskId = requireTaskId(rest[0], "/autoresearch create <task-id> [goal]");
-							if (taskId === null) {
-								return;
-							}
-							const executionProfile = await captureCurrentExecutionProfile(ctx);
-							if (executionProfile === null) {
-								ctx.ui.notify("Could not capture the current execution profile for this autoresearch task.", "error");
-								return;
-							}
+				switch (command) {
+					case "create": {
+						assertNoLegacyAutoresearchLayout(ctx.cwd);
+						const taskId = requireTaskId(
+							rest[0],
+							"/autoresearch create <task-id> [goal]",
+						);
+						if (taskId === null) {
+							return;
+						}
+						const executionProfile = await captureCurrentExecutionProfile(ctx);
+						if (executionProfile === null) {
+							ctx.ui.notify(
+								"Could not capture the current execution profile for this autoresearch task.",
+								"error",
+							);
+							return;
+						}
 
-							const goalText = rest.slice(1).join(" ");
-							const taskPath = loopTaskFile(taskId);
-							const taskAbsolutePath = path.resolve(ctx.cwd, taskPath);
-							const taskContent = fs.existsSync(taskAbsolutePath)
-								? fs.readFileSync(taskAbsolutePath, "utf-8")
-								: createDefaultTaskDocument(taskId, goalText);
-							const contract = parseAutoresearchTaskDocument(taskContent, taskPath);
+						const goalText = rest.slice(1).join(" ");
+						const taskPath = loopTaskFile(taskId);
+						const taskAbsolutePath = path.resolve(ctx.cwd, taskPath);
+						const taskContent = fs.existsSync(taskAbsolutePath)
+							? fs.readFileSync(taskAbsolutePath, "utf-8")
+							: createDefaultTaskDocument(taskId, goalText);
+						const contract = parseAutoresearchTaskDocument(taskContent, taskPath);
 
-							await withLoopEngine((engine) =>
-								engine.createLoop(ctx.cwd, {
-									kind: "autoresearch",
-									taskId,
-									title: contract.title,
-									taskContent: goalText,
-									benchmarkCommand: contract.benchmark.command,
-									checksCommand: contract.benchmark.checksCommand,
-									metricName: contract.metric.name,
-									metricUnit: contract.metric.unit,
-									metricDirection: contract.metric.direction,
-									scopeRoot: contract.scope.root,
-									scopePaths: contract.scope.paths,
-									offLimits: contract.scope.offLimits,
-									constraints: contract.constraints,
-									maxIterations: Option.map(
-										contract.limits,
-										(value) => value.maxIterations,
-									),
-									executionProfile,
-								}),
+						await withLoopEngine((engine) =>
+							engine.createLoop(ctx.cwd, {
+								kind: "autoresearch",
+								taskId,
+								title: contract.title,
+								taskContent: goalText,
+								benchmarkCommand: contract.benchmark.command,
+								checksCommand: contract.benchmark.checksCommand,
+								metricName: contract.metric.name,
+								metricUnit: contract.metric.unit,
+								metricDirection: contract.metric.direction,
+								scopeRoot: contract.scope.root,
+								scopePaths: contract.scope.paths,
+								offLimits: contract.scope.offLimits,
+								constraints: contract.constraints,
+								maxIterations: Option.map(
+									contract.limits,
+									(value) => value.maxIterations,
+								),
+								executionProfile,
+							}),
 						);
 
-						ctx.ui.notify(`Created autoresearch task "${taskId}" at ${taskPath}`, "info");
+						ctx.ui.notify(
+							`Created autoresearch task "${taskId}" at ${taskPath}`,
+							"info",
+						);
 						await updateAutoresearchUI(ctx.cwd, ctx);
 						return;
 					}
@@ -2134,7 +2258,10 @@ export default function initAutoresearch(
 						}
 						const session = commandSessionRef(ctx);
 						if (Option.isNone(session)) {
-							ctx.ui.notify("Autoresearch start requires an interactive session file.", "error");
+							ctx.ui.notify(
+								"Autoresearch start requires an interactive session file.",
+								"error",
+							);
 							return;
 						}
 						const executionProfile = await captureCurrentExecutionProfile(ctx);
@@ -2171,7 +2298,10 @@ export default function initAutoresearch(
 						if (autoresearch.lifecycle === "paused") {
 							const session = commandSessionRef(ctx);
 							if (Option.isNone(session)) {
-								ctx.ui.notify("Autoresearch resume requires an interactive session file.", "error");
+								ctx.ui.notify(
+									"Autoresearch resume requires an interactive session file.",
+									"error",
+								);
 								return;
 							}
 							const executionProfile = await captureCurrentExecutionProfile(ctx);
@@ -2263,16 +2393,22 @@ export default function initAutoresearch(
 						const loops = await withLoopEngine((engine) =>
 							engine.listLoops(ctx.cwd, archived),
 						);
-						const autoresearchLoops = loops.filter((loop) => isAutoresearchLoopState(loop));
+						const autoresearchLoops = loops.filter((loop) =>
+							isAutoresearchLoopState(loop),
+						);
 						if (autoresearchLoops.length === 0) {
 							ctx.ui.notify(
-								archived ? "No archived autoresearch loops." : "No autoresearch loops found.",
+								archived
+									? "No archived autoresearch loops."
+									: "No autoresearch loops found.",
 								"info",
 							);
 							return;
 						}
 
-						const heading = archived ? "Archived autoresearch loops" : "Autoresearch loops";
+						const heading = archived
+							? "Archived autoresearch loops"
+							: "Autoresearch loops";
 						ctx.ui.notify(
 							`${heading}:\n${autoresearchLoops.map((loop) => formatAutoresearchLoopState(loop)).join("\n")}`,
 							"info",
@@ -2349,7 +2485,10 @@ export default function initAutoresearch(
 					return;
 				}
 				if (error instanceof LoopOwnershipValidationError) {
-					ctx.ui.notify(`Ownership error for "${error.taskId}": ${error.reason}`, "error");
+					ctx.ui.notify(
+						`Ownership error for "${error.taskId}": ${error.reason}`,
+						"error",
+					);
 					return;
 				}
 				if (error instanceof LoopAmbiguousOwnershipError) {
@@ -2372,7 +2511,7 @@ export default function initAutoresearch(
 		},
 	});
 
-	pi.registerShortcut("ctrl+x", {
+	pi.registerShortcut("ctrl+alt+x", {
 		description: "Toggle autoresearch dashboard",
 		async handler(ctx): Promise<void> {
 			const sessionId = getSessionKey(ctx);
@@ -2386,7 +2525,7 @@ export default function initAutoresearch(
 		},
 	});
 
-	pi.registerShortcut("ctrl+shift+x", {
+	pi.registerShortcut("ctrl+alt+shift+x", {
 		description: "Show autoresearch dashboard overlay",
 		handler(ctx): Promise<void> {
 			return openFullscreenOverlay(ctx.cwd, ctx);
@@ -2396,7 +2535,9 @@ export default function initAutoresearch(
 	pi.on("agent_end", async (event, ctx) => {
 		const sessionFile = ctx.sessionManager.getSessionFile?.();
 		if (sessionFile !== undefined) {
-			await withAutoresearchLoopRunner((runner) => runner.resolveAgentEnd(sessionFile, event));
+			await withAutoresearchLoopRunner((runner) =>
+				runner.resolveAgentEnd(sessionFile, event),
+			);
 		}
 
 		try {
@@ -2469,7 +2610,9 @@ export default function initAutoresearch(
 	pi.on("session_shutdown", async (event, ctx) => {
 		const sessionFile = ctx.sessionManager.getSessionFile?.();
 		if (sessionFile !== undefined) {
-			await withAutoresearchLoopRunner((runner) => runner.resolveAgentEnd(sessionFile, event));
+			await withAutoresearchLoopRunner((runner) =>
+				runner.resolveAgentEnd(sessionFile, event),
+			);
 
 			const loops = await withLoopEngine((engine) => engine.listLoops(ctx.cwd, false));
 			for (const loop of loops) {

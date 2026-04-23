@@ -56,7 +56,11 @@ type PiHarness = {
 	readonly commands: Map<string, RegisteredCommand>;
 	readonly shortcuts: Map<string, (ctx: ExtensionContext) => void | Promise<void>>;
 	readonly sentUserMessages: SentUserMessage[];
-	readonly fire: (event: string, payload: unknown, ctx: ExtensionContext) => Promise<readonly unknown[]>;
+	readonly fire: (
+		event: string,
+		payload: unknown,
+		ctx: ExtensionContext,
+	) => Promise<readonly unknown[]>;
 };
 
 const plainTheme = {
@@ -330,7 +334,9 @@ describe("autoresearch adapter", () => {
 		expect(text).toContain(".pi/loops/phases/improve-local-pdp-web-vitals/");
 		expect(text).toContain("autoresearch_run exactly once");
 		expect(text).toContain("autoresearch_done exactly once");
-		expect(context.statusUpdates.at(-1)).toContain("autoresearch: improve-local-pdp-web-vitals");
+		expect(context.statusUpdates.at(-1)).toContain(
+			"autoresearch: improve-local-pdp-web-vitals",
+		);
 		expect(renderWidgetUpdate(context.widgetUpdates.at(-1))).toContain("autoresearch 0 runs");
 		context.setSessionFile(controllerSession);
 		await command?.handler("stop improve-local-pdp-web-vitals", context.ctx);
@@ -366,7 +372,9 @@ describe("autoresearch adapter", () => {
 		expect(text).toContain('Continue autoresearch task "improve-local-pdp-web-vitals"');
 		expect(text).toContain("autoresearch_run exactly once");
 		expect(text).toContain("autoresearch_done exactly once");
-		expect(context.statusUpdates.at(-1)).toContain("autoresearch: improve-local-pdp-web-vitals");
+		expect(context.statusUpdates.at(-1)).toContain(
+			"autoresearch: improve-local-pdp-web-vitals",
+		);
 		expect(renderWidgetUpdate(context.widgetUpdates.at(-1))).toContain("autoresearch 0 runs");
 		await command?.handler("stop improve-local-pdp-web-vitals", context.ctx);
 	});
@@ -393,13 +401,15 @@ describe("autoresearch adapter", () => {
 
 		await piHarness.fire("session_switch", { type: "session_switch" }, context.ctx);
 
-		expect(context.statusUpdates.at(-1)).toContain("autoresearch: improve-local-pdp-web-vitals");
-		expect(renderWidgetUpdate(context.widgetUpdates.at(-1))).toContain("ctrl+x expand");
+		expect(context.statusUpdates.at(-1)).toContain(
+			"autoresearch: improve-local-pdp-web-vitals",
+		);
+		expect(renderWidgetUpdate(context.widgetUpdates.at(-1))).toContain("ctrl+alt+x expand");
 		context.setSessionFile(controllerSession);
 		await command?.handler("stop improve-local-pdp-web-vitals", context.ctx);
 	});
 
-	it("registers ctrl+x and ctrl+shift+x autoresearch shortcuts", async () => {
+	it("registers autoresearch dashboard shortcuts", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 
@@ -410,15 +420,15 @@ describe("autoresearch adapter", () => {
 		runtimes.push(runtime);
 		initAutoresearch(piHarness.pi, runtime.run);
 
-		expect(piHarness.shortcuts.has("ctrl+x")).toBe(true);
-		expect(piHarness.shortcuts.has("ctrl+shift+x")).toBe(true);
+		expect(piHarness.shortcuts.has("ctrl+alt+x")).toBe(true);
+		expect(piHarness.shortcuts.has("ctrl+alt+shift+x")).toBe(true);
 
 		const command = piHarness.commands.get("autoresearch");
 		expect(command).toBeDefined();
 		await command?.handler("create improve-local-pdp-web-vitals", context.ctx);
 		await command?.handler("start improve-local-pdp-web-vitals", context.ctx);
 
-		const toggle = piHarness.shortcuts.get("ctrl+x");
+		const toggle = piHarness.shortcuts.get("ctrl+alt+x");
 		expect(toggle).toBeDefined();
 		await toggle?.(context.ctx);
 

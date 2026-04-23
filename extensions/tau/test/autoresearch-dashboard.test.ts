@@ -72,8 +72,8 @@ describe("autoresearch widget rendering", () => {
 		expect(rendered).toContain("conf: 2.1x");
 		expect(rendered).toContain("ttfb_ms: 510ms +2.0%");
 		expect(rendered).toContain("Improve local PDP web vitals");
-		expect(rendered).toContain("ctrl+x expand");
-		expect(rendered).toContain("ctrl+shift+x fullscreen");
+		expect(rendered).toContain("ctrl+alt+x expand");
+		expect(rendered).toContain("ctrl+alt+shift+x fullscreen");
 	});
 
 	it("keeps the compact summary visible while a later run is active", () => {

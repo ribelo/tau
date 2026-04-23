@@ -3,22 +3,38 @@ import type { Theme } from "@mariozechner/pi-coding-agent";
 import type { ExperimentResult } from "./schema.js";
 import type { AutoresearchViewData } from "../services/autoresearch.js";
 import { formatNum, formatElapsed } from "./helpers.js";
-import { currentResults, findBaselineMetric, findBaselineRunNumber, findBaselineSecondary, findBestResult } from "./state.js";
+import {
+	currentResults,
+	findBaselineMetric,
+	findBaselineRunNumber,
+	findBaselineSecondary,
+	findBestResult,
+} from "./state.js";
 
-export function renderExpandedHeader(viewData: AutoresearchViewData, width: number, theme: Theme): string {
+export function renderExpandedHeader(
+	viewData: AutoresearchViewData,
+	width: number,
+	theme: Theme,
+): string {
 	const label = viewData.name ? ` autoresearch: ${viewData.name} ` : " autoresearch ";
 	const status = viewData.autoresearchMode
 		? viewData.totalRunCount === 0
-				? "baseline pending"
-				: "mode on"
+			? "baseline pending"
+			: "mode on"
 		: viewData.currentSegmentRunCount > 0 &&
 			  viewData.maxExperiments != null &&
 			  viewData.currentSegmentRunCount >= viewData.maxExperiments
 			? "segment complete"
 			: "mode off";
-	const hint = theme.fg("dim", ` ctrl+x collapse  ctrl+shift+x overlay${status ? `  ${status}` : ""} `);
+	const hint = theme.fg(
+		"dim",
+		` ctrl+alt+x collapse  ctrl+alt+shift+x overlay${status ? `  ${status}` : ""} `,
+	);
 	const fillWidth = Math.max(0, width - visibleWidth(label) - visibleWidth(hint));
-	return truncateToWidth(theme.fg("accent", label) + theme.fg("dim", "-".repeat(fillWidth)) + hint, width);
+	return truncateToWidth(
+		theme.fg("accent", label) + theme.fg("dim", "-".repeat(fillWidth)) + hint,
+		width,
+	);
 }
 
 export function renderCompactRunningLine(
@@ -40,7 +56,11 @@ export function renderCompactRunningLine(
 	return truncateToWidth(parts.join(""), width);
 }
 
-export function renderCompactSummary(viewData: AutoresearchViewData, width: number, theme: Theme): string {
+export function renderCompactSummary(
+	viewData: AutoresearchViewData,
+	width: number,
+	theme: Theme,
+): string {
 	const current = currentResults(viewData.results, viewData.currentSegment);
 	const discarded = current.filter((result) => result.status === "discard").length;
 	const baseline = findBaselineMetric(viewData.results, viewData.currentSegment);
@@ -71,7 +91,12 @@ export function renderCompactSummary(viewData: AutoresearchViewData, width: numb
 	if (displayVal !== null) {
 		parts.push(theme.fg("dim", " | "));
 		parts.push(
-			theme.fg("warning", theme.bold(`★ ${viewData.metricName}: ${formatNum(displayVal, viewData.metricUnit)}`)),
+			theme.fg(
+				"warning",
+				theme.bold(
+					`★ ${viewData.metricName}: ${formatNum(displayVal, viewData.metricUnit)}`,
+				),
+			),
 		);
 		if (viewData.bestRunNumber !== null) {
 			parts.push(theme.fg("dim", ` #${viewData.bestRunNumber}`));
@@ -86,12 +111,19 @@ export function renderCompactSummary(viewData: AutoresearchViewData, width: numb
 	) {
 		const pct = ((viewData.bestPrimaryMetric - baseline) / baseline) * 100;
 		const sign = pct > 0 ? "+" : "";
-		const color = isImprovement(viewData.bestPrimaryMetric, baseline, viewData.bestDirection) ? "success" : "error";
+		const color = isImprovement(viewData.bestPrimaryMetric, baseline, viewData.bestDirection)
+			? "success"
+			: "error";
 		parts.push(theme.fg(color, ` (${sign}${pct.toFixed(1)}%)`));
 	}
 
 	if (viewData.confidence !== null) {
-		const confColor = viewData.confidence >= 2.0 ? "success" : viewData.confidence >= 1.0 ? "warning" : "error";
+		const confColor =
+			viewData.confidence >= 2.0
+				? "success"
+				: viewData.confidence >= 1.0
+					? "warning"
+					: "error";
 		parts.push(theme.fg("dim", " | "));
 		parts.push(theme.fg(confColor, `conf: ${viewData.confidence.toFixed(1)}x`));
 	}
@@ -114,7 +146,7 @@ export function renderCompactSummary(viewData: AutoresearchViewData, width: numb
 		parts.push(theme.fg("dim", ` | ${viewData.name}`));
 	}
 
-	parts.push(theme.fg("dim", "  (ctrl+x expand • ctrl+shift+x fullscreen)"));
+	parts.push(theme.fg("dim", "  (ctrl+alt+x expand • ctrl+alt+shift+x fullscreen)"));
 	return truncateToWidth(parts.join(""), width);
 }
 
@@ -125,7 +157,10 @@ export function renderWidget(
 	expanded: boolean,
 ): string {
 	if (expanded) {
-		return [renderExpandedHeader(viewData, width, theme), ...renderDashboardLines(viewData, width, theme, 8)].join("\n");
+		return [
+			renderExpandedHeader(viewData, width, theme),
+			...renderDashboardLines(viewData, width, theme, 8),
+		].join("\n");
 	}
 
 	if (viewData.runningExperiment && viewData.totalRunCount === 0) {
@@ -163,7 +198,11 @@ export function renderDashboardLines(
 	const checksFailed = current.filter((r) => r.status === "checks_failed").length;
 	const baseline = findBaselineMetric(results, viewData.currentSegment);
 	const baselineRunNumber = findBaselineRunNumber(results, viewData.currentSegment);
-	const baselineSecondary = findBaselineSecondary(results, viewData.currentSegment, viewData.secondaryMetrics);
+	const baselineSecondary = findBaselineSecondary(
+		results,
+		viewData.currentSegment,
+		viewData.secondaryMetrics,
+	);
 	const best = findBestResult(results, viewData.currentSegment, viewData.bestDirection);
 
 	const lines = [
@@ -178,7 +217,10 @@ export function renderDashboardLines(
 	];
 	if (results.length > current.length) {
 		lines.push(
-			truncateToWidth(`Archived from earlier segments: ${results.length - current.length} runs`, width),
+			truncateToWidth(
+				`Archived from earlier segments: ${results.length - current.length} runs`,
+				width,
+			),
 		);
 	}
 	if (viewData.runningExperiment) {
@@ -195,8 +237,8 @@ export function renderDashboardLines(
 				? "baseline pending"
 				: "mode on"
 			: viewData.currentSegmentRunCount > 0 &&
-			  viewData.maxExperiments != null &&
-			  viewData.currentSegmentRunCount >= viewData.maxExperiments
+				  viewData.maxExperiments != null &&
+				  viewData.currentSegmentRunCount >= viewData.maxExperiments
 				? "segment complete"
 				: "mode off";
 		lines.push(truncateToWidth(`Mode: ${status}`, width));
@@ -235,7 +277,9 @@ export function renderDashboardLines(
 
 	const visible = maxRows > 0 ? results.slice(-maxRows) : results;
 	if (visible.length < results.length) {
-		lines.push(theme.fg("dim", `... ${results.length - visible.length} earlier runs hidden ...`));
+		lines.push(
+			theme.fg("dim", `... ${results.length - visible.length} earlier runs hidden ...`),
+		);
 	}
 	for (const result of visible) {
 		lines.push(renderResultRow(result, viewData, baselineSecondary, width, theme));
@@ -244,7 +288,9 @@ export function renderDashboardLines(
 }
 
 function renderTableHeader(viewData: AutoresearchViewData, width: number, theme: Theme): string {
-	const secondaryHeader = viewData.secondaryMetrics.map((metric) => truncateToWidth(metric.name, 10)).join(" ");
+	const secondaryHeader = viewData.secondaryMetrics
+		.map((metric) => truncateToWidth(metric.name, 10))
+		.join(" ");
 	return truncateToWidth(
 		`${theme.fg("muted", "#".padEnd(4))}${theme.fg("muted", "commit".padEnd(10))}${theme.fg("warning", viewData.metricName.padEnd(12))}${secondaryHeader ? `${theme.fg("muted", secondaryHeader)} ` : ""}${theme.fg("muted", "status".padEnd(14))}${theme.fg("muted", "description")}`,
 		width,
@@ -290,7 +336,11 @@ function renderResultRow(
 	return truncateToWidth(line, width);
 }
 
-function renderSecondaryCell(value: number | undefined, unit: string, baseline: number | undefined): string {
+function renderSecondaryCell(
+	value: number | undefined,
+	unit: string,
+	baseline: number | undefined,
+): string {
 	if (value === undefined) return "-";
 	const formatted = formatNum(value, unit);
 	if (baseline === undefined || baseline === 0 || baseline === value) return formatted;
@@ -340,7 +390,10 @@ export function renderOverlayRunningLine(
 		? formatElapsed(Date.now() - viewData.runningExperiment.startedAt)
 		: "0s";
 	return truncateToWidth(
-		theme.fg("warning", `${spinner} running ${elapsed} ${viewData.runningExperiment?.command ?? ""}`),
+		theme.fg(
+			"warning",
+			`${spinner} running ${elapsed} ${viewData.runningExperiment?.command ?? ""}`,
+		),
 		width,
 	);
 }
