@@ -324,4 +324,44 @@ describe("initAgent", () => {
 		expect(spawnCalls[0]?.cwd).toBe(process.cwd());
 		expect(spawnCalls[0]?.parentSessionFile).toBeUndefined();
 	});
+
+	it("guards throwing harness context property accessors", async () => {
+		const registeredTools: RegisteredTool[] = [];
+		const spawnCalls: ControlSpawnOptions[] = [];
+		const runtime = makeRuntimeWithSpawnCalls(spawnCalls);
+
+		const pi = makePiStub(registeredTools);
+		initAgent(pi, runtime, "agent tool");
+
+		const tool = registeredTools[0];
+		expect(tool).toBeDefined();
+
+		const context: Parameters<RegisteredTool["execute"]>[4] = {
+			get cwd(): unknown {
+				throw new TypeError(
+					'The "path" argument must be of type string. Received undefined',
+				);
+			},
+			hasUI: false,
+			model: TEST_MODEL,
+			modelRegistry: {},
+			get sessionManager(): Parameters<RegisteredTool["execute"]>[4]["sessionManager"] {
+				throw new TypeError(
+					'The "path" argument must be of type string. Received undefined',
+				);
+			},
+		};
+
+		await tool?.execute(
+			"tool-call-1",
+			{ action: "spawn", agent: "librarian", message: "hi" },
+			undefined,
+			undefined,
+			context,
+		);
+
+		expect(spawnCalls).toHaveLength(1);
+		expect(spawnCalls[0]?.cwd).toBe(process.cwd());
+		expect(spawnCalls[0]?.parentSessionFile).toBeUndefined();
+	});
 });

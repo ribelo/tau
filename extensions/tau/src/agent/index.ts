@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { Api, Model } from "@mariozechner/pi-ai";
 import { Effect } from "effect";
 import { renderAgentCall, renderAgentResult } from "./render.js";
 import { createUiApprovalBroker } from "./approval-broker.js";
@@ -14,29 +15,50 @@ function nonEmptyString(value: unknown): string | undefined {
 	return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function callStringGetter(getter: () => unknown): string | undefined {
+function readContextValue<T>(getter: () => T): T | undefined {
 	try {
-		return nonEmptyString(getter());
+		return getter();
 	} catch {
 		return undefined;
 	}
 }
 
+type SessionManagerContext = {
+	readonly getCwd: () => string;
+	readonly getSessionFile: () => string | undefined;
+};
+
+function readSessionString(
+	ctx: { readonly sessionManager: SessionManagerContext },
+	read: (sessionManager: SessionManagerContext) => string | undefined,
+): string | undefined {
+	const sessionManager = readContextValue(() => ctx.sessionManager);
+	if (sessionManager === undefined) {
+		return undefined;
+	}
+
+	return nonEmptyString(readContextValue(() => read(sessionManager)));
+}
+
 function resolveAgentContextCwd(ctx: {
 	readonly cwd: unknown;
-	readonly sessionManager: { readonly getCwd: () => unknown };
+	readonly sessionManager: SessionManagerContext;
 }): string {
 	return (
-		callStringGetter(() => ctx.sessionManager.getCwd()) ??
-		nonEmptyString(ctx.cwd) ??
+		readSessionString(ctx, (sessionManager) => sessionManager.getCwd()) ??
+		nonEmptyString(readContextValue(() => ctx.cwd)) ??
 		process.cwd()
 	);
 }
 
 function resolveParentSessionFile(ctx: {
-	readonly sessionManager: { readonly getSessionFile: () => unknown };
+	readonly sessionManager: SessionManagerContext;
 }): string | undefined {
-	return callStringGetter(() => ctx.sessionManager.getSessionFile());
+	return readSessionString(ctx, (sessionManager) => sessionManager.getSessionFile());
+}
+
+function readContextModel(ctx: { readonly model: Model<Api> | undefined }): Model<Api> | undefined {
+	return readContextValue(() => ctx.model);
 }
 
 export interface AgentToolHandle {
@@ -70,9 +92,12 @@ export default function initAgent(
 			parameters: AgentParams,
 
 			async execute(toolCallId, params, signal, onUpdate, ctx) {
+				const maybeUi = readContextValue(() => ctx.ui);
 				const approvalBroker =
-					ctx.hasUI && ctx.ui && typeof ctx.ui.confirm === "function"
-						? createUiApprovalBroker(ctx.ui)
+					readContextValue(() => ctx.hasUI) === true &&
+					maybeUi !== undefined &&
+					typeof maybeUi.confirm === "function"
+						? createUiApprovalBroker(maybeUi)
 						: undefined;
 
 				const resolveParentExecution = () =>
@@ -81,7 +106,8 @@ export default function initAgent(
 							const executionState = yield* ExecutionState;
 							const state = executionState.getSnapshot();
 							const mode = resolveSessionMode(state);
-							const model = readModelId(ctx.model);
+							const parentModel = readContextModel(ctx);
+							const model = readModelId(parentModel);
 							if (model === undefined) {
 								throw new Error(
 									"Cannot spawn agent: current session has no active model",
@@ -117,9 +143,9 @@ export default function initAgent(
 					() => ({
 						parentSessionFile: resolveParentSessionFile(ctx),
 						parentAgentId: undefined,
-						parentModel: ctx.model,
+						parentModel: readContextModel(ctx),
 						resolveParentExecution,
-						modelRegistry: ctx.modelRegistry,
+						modelRegistry: readContextValue(() => ctx.modelRegistry),
 						cwd: resolveAgentContextCwd(ctx),
 						approvalBroker,
 					}),

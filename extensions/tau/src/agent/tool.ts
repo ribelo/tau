@@ -142,7 +142,7 @@ export interface AgentToolContext {
 	parentAgentId?: AgentId | undefined;
 	parentModel: Model<Api> | undefined;
 	resolveParentExecution: () => Promise<ParentExecutionContext>;
-	modelRegistry: ModelRegistry;
+	modelRegistry: ModelRegistry | undefined;
 	cwd: string;
 	approvalBroker: ApprovalBroker | undefined;
 }
