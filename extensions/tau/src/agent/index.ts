@@ -14,11 +14,29 @@ function nonEmptyString(value: unknown): string | undefined {
 	return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function callStringGetter(getter: () => unknown): string | undefined {
+	try {
+		return nonEmptyString(getter());
+	} catch {
+		return undefined;
+	}
+}
+
 function resolveAgentContextCwd(ctx: {
 	readonly cwd: unknown;
 	readonly sessionManager: { readonly getCwd: () => unknown };
 }): string {
-	return nonEmptyString(ctx.sessionManager.getCwd()) ?? nonEmptyString(ctx.cwd) ?? process.cwd();
+	return (
+		callStringGetter(() => ctx.sessionManager.getCwd()) ??
+		nonEmptyString(ctx.cwd) ??
+		process.cwd()
+	);
+}
+
+function resolveParentSessionFile(ctx: {
+	readonly sessionManager: { readonly getSessionFile: () => unknown };
+}): string | undefined {
+	return callStringGetter(() => ctx.sessionManager.getSessionFile());
 }
 
 export interface AgentToolHandle {
@@ -97,7 +115,7 @@ export default function initAgent(
 				const toolDef = createAgentToolDef(
 					(effect) => runtime.runPromise(effect),
 					() => ({
-						parentSessionFile: ctx.sessionManager.getSessionFile(),
+						parentSessionFile: resolveParentSessionFile(ctx),
 						parentAgentId: undefined,
 						parentModel: ctx.model,
 						resolveParentExecution,

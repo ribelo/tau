@@ -282,4 +282,46 @@ describe("initAgent", () => {
 		expect(spawnCalls).toHaveLength(1);
 		expect(spawnCalls[0]?.cwd).toBe(process.cwd());
 	});
+
+	it("does not call unsafe path-based session getters in cwd-less harness contexts", async () => {
+		const registeredTools: RegisteredTool[] = [];
+		const spawnCalls: ControlSpawnOptions[] = [];
+		const runtime = makeRuntimeWithSpawnCalls(spawnCalls);
+
+		const pi = makePiStub(registeredTools);
+		initAgent(pi, runtime, "agent tool");
+
+		const tool = registeredTools[0];
+		expect(tool).toBeDefined();
+
+		await tool?.execute(
+			"tool-call-1",
+			{ action: "spawn", agent: "librarian", message: "hi" },
+			undefined,
+			undefined,
+			{
+				cwd: undefined,
+				hasUI: false,
+				model: TEST_MODEL,
+				modelRegistry: {},
+				sessionManager: {
+					getCwd: () => {
+						throw new TypeError(
+							'The "path" argument must be of type string. Received undefined',
+						);
+					},
+					getSessionId: () => "session-uuid",
+					getSessionFile: () => {
+						throw new TypeError(
+							'The "path" argument must be of type string. Received undefined',
+						);
+					},
+				},
+			},
+		);
+
+		expect(spawnCalls).toHaveLength(1);
+		expect(spawnCalls[0]?.cwd).toBe(process.cwd());
+		expect(spawnCalls[0]?.parentSessionFile).toBeUndefined();
+	});
 });
