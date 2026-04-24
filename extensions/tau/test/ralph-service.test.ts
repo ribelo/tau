@@ -16,6 +16,7 @@ import type {
 
 import initRalph from "../src/ralph/index.js";
 import { RalphRepoLive } from "../src/ralph/repo.js";
+import { TAU_PERSISTED_STATE_TYPE } from "../src/shared/state.js";
 import {
 	decodeLoopPersistedStateJsonSync,
 	encodeLoopPersistedStateJsonSync,
@@ -60,6 +61,10 @@ type ContextHarness = {
 	readonly ctx: ExtensionCommandContext;
 	readonly notifications: Notifications;
 	readonly newSessionCalls: ReadonlyArray<unknown>;
+	readonly appendedCustomEntries: ReadonlyArray<{
+		readonly customType: string;
+		readonly data: unknown;
+	}>;
 	readonly switchSessionCalls: readonly string[];
 	readonly disposeCommandContext: () => void;
 	readonly setSessionFile: (next: string) => void;
@@ -95,6 +100,8 @@ type ReplacementSessionContextForTest = ExtensionCommandContext & {
 	readonly sendMessage: () => Promise<void>;
 	readonly sendUserMessage: () => Promise<void>;
 };
+
+type SetupSessionManagerForTest = Pick<SessionManager, "getSessionFile" | "appendCustomEntry">;
 
 const STALE_EXTENSION_CONTEXT_MESSAGE =
 	"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().";
@@ -291,9 +298,12 @@ function writeLoopState(
 function makeContext(
 	cwd: string,
 	newSessionPlan: readonly NewSessionPlan[] = [{ cancelled: false }],
+	initialEntries: readonly unknown[] = [],
 ): ContextHarness {
 	const notifications: Notifications = [];
 	const newSessionCalls: unknown[] = [];
+	const appendedCustomEntries: Array<{ readonly customType: string; readonly data: unknown }> =
+		[];
 	const switchSessionCalls: string[] = [];
 	let sessionFile = path.join(cwd, ".pi", "sessions", "controller.session.json");
 	let sessionCounter = 0;
@@ -324,7 +334,7 @@ function makeContext(
 				getAll: () => [],
 			},
 			sessionManager: {
-				getEntries: () => [],
+				getEntries: () => [...initialEntries],
 				getBranch: () => [],
 				getSessionId: () => "replacement-session",
 				getSessionFile: () => targetSessionFile,
@@ -372,8 +382,12 @@ function makeContext(
 						plan.sessionFile ??
 						path.join(cwd, ".pi", "sessions", `child-${sessionCounter}.session.json`);
 					if (sessionOptions.setup) {
-						const setupSessionManager: Pick<SessionManager, "getSessionFile"> = {
+						const setupSessionManager: SetupSessionManagerForTest = {
 							getSessionFile: () => nextSessionFile,
+							appendCustomEntry: (customType: string, data?: unknown) => {
+								appendedCustomEntries.push({ customType, data });
+								return `custom-${appendedCustomEntries.length}`;
+							},
 						};
 						await sessionOptions.setup(setupSessionManager as SessionManager);
 					}
@@ -421,7 +435,7 @@ function makeContext(
 		get sessionManager() {
 			throwIfInactive();
 			return {
-				getEntries: () => [],
+				getEntries: () => [...initialEntries],
 				getBranch: () => [],
 				getSessionId: () => "test-session",
 				getSessionFile: () => sessionFile,
@@ -474,8 +488,12 @@ function makeContext(
 					plan.sessionFile ??
 					path.join(cwd, ".pi", "sessions", `child-${sessionCounter}.session.json`);
 				if (sessionOptions.setup) {
-					const setupSessionManager: Pick<SessionManager, "getSessionFile"> = {
+					const setupSessionManager: SetupSessionManagerForTest = {
 						getSessionFile: () => targetSessionFile,
+						appendCustomEntry: (customType: string, data?: unknown) => {
+							appendedCustomEntries.push({ customType, data });
+							return `custom-${appendedCustomEntries.length}`;
+						},
 					};
 					await sessionOptions.setup(setupSessionManager as SessionManager);
 				}
@@ -511,6 +529,7 @@ function makeContext(
 		ctx,
 		notifications,
 		newSessionCalls,
+		appendedCustomEntries,
 		switchSessionCalls,
 		disposeCommandContext: () => {
 			disposed = true;
@@ -976,6 +995,57 @@ describe("ralph service behavior freeze", () => {
 		const finalState = readLoopState(cwd, "stale-guard-loop");
 		expect(finalState.status).toBe("paused");
 		expect(Option.isNone(finalState.activeIterationSessionFile)).toBe(true);
+	});
+
+	it("copies the controller sandbox session override into Ralph iteration sessions", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const piHarness = makePiHarness();
+		const ralphRuntime = makeRalphRuntime(false);
+		runtimes.push(ralphRuntime);
+		initRalph(piHarness.pi, ralphRuntime.run);
+
+		const command = piHarness.commands.get("ralph");
+		expect(command).toBeDefined();
+		if (!command) {
+			throw new Error("missing ralph command");
+		}
+
+		const context = makeContext(
+			cwd,
+			[{ cancelled: false }],
+			[
+				{
+					type: "custom",
+					customType: TAU_PERSISTED_STATE_TYPE,
+					data: {
+						sandbox: {
+							sessionOverride: { preset: "full-access" },
+							systemPromptInjected: true,
+							lastCommunicatedHash: "old-hash",
+						},
+					},
+				},
+			],
+		);
+
+		const startPromise = Promise.resolve(
+			command.handler("start sandbox-copy-loop", context.ctx),
+		);
+		await waitFor(() => context.appendedCustomEntries.length === 1);
+
+		expect(context.appendedCustomEntries[0]).toEqual({
+			customType: TAU_PERSISTED_STATE_TYPE,
+			data: {
+				sandbox: {
+					sessionOverride: { preset: "full-access" },
+				},
+			},
+		});
+
+		await piHarness.fire("session_shutdown", { type: "session_shutdown" }, context.ctx);
+		await expect(startPromise).resolves.toBeUndefined();
 	});
 
 	it("creates the resumed iteration session through the controller replacement context", async () => {

@@ -76,7 +76,11 @@ function makePiStub(): {
 	readonly tools: ToolDefinition[];
 	readonly commands: Map<string, RegisteredCommand>;
 	readonly sentMessages: SentMessage[];
-	readonly fire: (event: string, payload: unknown, ctx?: ExtensionContext) => Promise<readonly unknown[]>;
+	readonly fire: (
+		event: string,
+		payload: unknown,
+		ctx?: ExtensionContext,
+	) => Promise<readonly unknown[]>;
 } {
 	const eventHandlers = new Map<string, EventHandler[]>();
 	const tools: ToolDefinition[] = [];
@@ -170,7 +174,11 @@ function makeContext(cwd: string): ExtensionContext {
 function makeRunTauStub(): {
 	readonly pi: ExtensionAPI;
 	readonly tools: ToolDefinition[];
-	readonly fire: (event: string, payload: unknown, ctx?: ExtensionContext) => Promise<readonly unknown[]>;
+	readonly fire: (
+		event: string,
+		payload: unknown,
+		ctx?: ExtensionContext,
+	) => Promise<readonly unknown[]>;
 } {
 	const eventHandlers = new Map<string, EventHandler[]>();
 	const tools: ToolDefinition[] = [];
@@ -224,19 +232,19 @@ function makeRunTauStub(): {
 
 describe("memory tool runtime", () => {
 	let tempHome: string;
-	let originalHome: string | undefined;
+	let originalTauMemoryDir: string | undefined;
 
 	beforeEach(async () => {
 		tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "tau-memory-tool-runtime-"));
-		originalHome = process.env["HOME"];
-		process.env["HOME"] = tempHome;
+		originalTauMemoryDir = process.env["TAU_MEMORY_DIR"];
+		process.env["TAU_MEMORY_DIR"] = path.join(tempHome, ".pi", "agent", "tau", "memories");
 	});
 
 	afterEach(async () => {
-		if (originalHome === undefined) {
-			delete process.env["HOME"];
+		if (originalTauMemoryDir === undefined) {
+			delete process.env["TAU_MEMORY_DIR"];
 		} else {
-			process.env["HOME"] = originalHome;
+			process.env["TAU_MEMORY_DIR"] = originalTauMemoryDir;
 		}
 		await fs.rm(tempHome, { recursive: true, force: true });
 	});
@@ -244,16 +252,19 @@ describe("memory tool runtime", () => {
 	it("returns promptly even after tool_result handlers run during an active agent", async () => {
 		const { pi, tools, fire } = makePiStub();
 		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
-		const runEffect = <A, E>(effect: Effect.Effect<A, E, CuratedMemory>) => runtime.runPromise(effect);
+		const runEffect = <A, E>(effect: Effect.Effect<A, E, CuratedMemory>) =>
+			runtime.runPromise(effect);
 		const cwd = path.join(tempHome, "workspace");
 		await fs.mkdir(cwd, { recursive: true });
 		await fs.mkdir(path.join(cwd, ".pi"), { recursive: true });
 		await fs.writeFile(path.join(cwd, ".pi", "settings.json"), "{}", "utf8");
 
 		try {
-			const memory = await runEffect(Effect.gen(function* () {
-				return yield* CuratedMemory;
-			}));
+			const memory = await runEffect(
+				Effect.gen(function* () {
+					return yield* CuratedMemory;
+				}),
+			);
 			await runtime.runPromise(Effect.scoped(memory.setup));
 
 			initMemory(pi, runEffect);
@@ -305,7 +316,11 @@ describe("memory tool runtime", () => {
 			expect(firstContent.text).not.toContain("<memory_snapshot>");
 			expect(result.details.entry).toBeDefined();
 			expect(result.details.entry?.content).toBe("tau-memory-runtime-hang-repro");
-			expect(parseMemoryEntries(await fs.readFile(globalMemoryPath(tempHome), "utf8")).map((entry) => entry.content)).toEqual(["tau-memory-runtime-hang-repro"]);
+			expect(
+				parseMemoryEntries(await fs.readFile(globalMemoryPath(tempHome), "utf8")).map(
+					(entry) => entry.content,
+				),
+			).toEqual(["tau-memory-runtime-hang-repro"]);
 
 			await expect(
 				Promise.race([
@@ -340,16 +355,19 @@ describe("memory tool runtime", () => {
 	it("updates and removes memory entries by id through the tool interface", async () => {
 		const { pi, tools } = makePiStub();
 		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
-		const runEffect = <A, E>(effect: Effect.Effect<A, E, CuratedMemory>) => runtime.runPromise(effect);
+		const runEffect = <A, E>(effect: Effect.Effect<A, E, CuratedMemory>) =>
+			runtime.runPromise(effect);
 		const cwd = path.join(tempHome, "workspace-id-api");
 		await fs.mkdir(cwd, { recursive: true });
 		await fs.mkdir(path.join(cwd, ".pi"), { recursive: true });
 		await fs.writeFile(path.join(cwd, ".pi", "settings.json"), "{}", "utf8");
 
 		try {
-			const memory = await runEffect(Effect.gen(function* () {
-				return yield* CuratedMemory;
-			}));
+			const memory = await runEffect(
+				Effect.gen(function* () {
+					return yield* CuratedMemory;
+				}),
+			);
 			await runtime.runPromise(Effect.scoped(memory.setup));
 
 			initMemory(pi, runEffect);
@@ -406,8 +424,13 @@ describe("memory tool runtime", () => {
 			)) as MemoryToolExecutionResult;
 
 			expect(removed.details.entry?.id).toBe(entryId);
-			expect(removed.content[0]).toEqual({ type: "text", text: expect.stringContaining("Removed entry from global memory.") });
-			expect(parseMemoryEntries(await fs.readFile(globalMemoryPath(tempHome), "utf8"))).toEqual([]);
+			expect(removed.content[0]).toEqual({
+				type: "text",
+				text: expect.stringContaining("Removed entry from global memory."),
+			});
+			expect(
+				parseMemoryEntries(await fs.readFile(globalMemoryPath(tempHome), "utf8")),
+			).toEqual([]);
 		} finally {
 			await runtime.dispose();
 		}
@@ -416,16 +439,19 @@ describe("memory tool runtime", () => {
 	it("requires summary hooks and rejects summary/content duplication through the tool interface", async () => {
 		const { pi, tools } = makePiStub();
 		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
-		const runEffect = <A, E>(effect: Effect.Effect<A, E, CuratedMemory>) => runtime.runPromise(effect);
+		const runEffect = <A, E>(effect: Effect.Effect<A, E, CuratedMemory>) =>
+			runtime.runPromise(effect);
 		const cwd = path.join(tempHome, "workspace-tool-contract");
 		await fs.mkdir(cwd, { recursive: true });
 		await fs.mkdir(path.join(cwd, ".pi"), { recursive: true });
 		await fs.writeFile(path.join(cwd, ".pi", "settings.json"), "{}", "utf8");
 
 		try {
-			const memory = await runEffect(Effect.gen(function* () {
-				return yield* CuratedMemory;
-			}));
+			const memory = await runEffect(
+				Effect.gen(function* () {
+					return yield* CuratedMemory;
+				}),
+			);
 			await runtime.runPromise(Effect.scoped(memory.setup));
 
 			initMemory(pi, runEffect);
@@ -471,7 +497,8 @@ describe("memory tool runtime", () => {
 	it("keeps newly saved memory out of the active-session system prompt until session_start", async () => {
 		const { pi, tools, fire } = makePiStub();
 		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
-		const runEffect = <A, E>(effect: Effect.Effect<A, E, CuratedMemory>) => runtime.runPromise(effect);
+		const runEffect = <A, E>(effect: Effect.Effect<A, E, CuratedMemory>) =>
+			runtime.runPromise(effect);
 		const cwd = path.join(tempHome, "workspace-fresh-memory");
 		const previousCwd = process.cwd();
 		await fs.mkdir(cwd, { recursive: true });
@@ -480,9 +507,11 @@ describe("memory tool runtime", () => {
 		process.chdir(cwd);
 
 		try {
-			const memory = await runEffect(Effect.gen(function* () {
-				return yield* CuratedMemory;
-			}));
+			const memory = await runEffect(
+				Effect.gen(function* () {
+					return yield* CuratedMemory;
+				}),
+			);
 			await runtime.runPromise(Effect.scoped(memory.setup));
 
 			initMemory(pi, runEffect);
@@ -515,7 +544,11 @@ describe("memory tool runtime", () => {
 				undefined,
 				ctx,
 			);
-			expect(parseMemoryEntries(await fs.readFile(projectMemoryPath(cwd), "utf8")).map((entry) => entry.content)).toEqual(["tau-project-memory-next-agent-start"]);
+			expect(
+				parseMemoryEntries(await fs.readFile(projectMemoryPath(cwd), "utf8")).map(
+					(entry) => entry.content,
+				),
+			).toEqual(["tau-project-memory-next-agent-start"]);
 
 			const nextStart = await fire(
 				"before_agent_start",
@@ -556,11 +589,17 @@ describe("memory tool runtime", () => {
 			);
 
 			expect(reloadedStart[0]).toEqual({ systemPrompt: expect.stringContaining(summary) });
-			expect(reloadedStart[0]).toEqual({ systemPrompt: expect.not.stringContaining("tau-project-memory-next-agent-start") });
+			expect(reloadedStart[0]).toEqual({
+				systemPrompt: expect.not.stringContaining("tau-project-memory-next-agent-start"),
+			});
 			// Memory index format now includes entry summaries with scope/type, not file paths
-			expect(reloadedStart[0]).toEqual({ systemPrompt: expect.stringContaining('scope="project"') });
+			expect(reloadedStart[0]).toEqual({
+				systemPrompt: expect.stringContaining('scope="project"'),
+			});
 			// Prompt guidance tells the model to use read action
-			expect(reloadedStart[0]).toEqual({ systemPrompt: expect.stringContaining("action `read`") });
+			expect(reloadedStart[0]).toEqual({
+				systemPrompt: expect.stringContaining("action `read`"),
+			});
 		} finally {
 			process.chdir(previousCwd);
 			await runtime.dispose();
@@ -575,7 +614,11 @@ describe("memory tool runtime", () => {
 		const ctx = makeContext(cwd);
 
 		try {
-			for (let attempts = 0; attempts < 50 && !tools.some((tool) => tool.name === "memory"); attempts++) {
+			for (
+				let attempts = 0;
+				attempts < 50 && !tools.some((tool) => tool.name === "memory");
+				attempts++
+			) {
 				await new Promise((resolve) => setTimeout(resolve, 20));
 			}
 
@@ -607,7 +650,10 @@ describe("memory tool runtime", () => {
 					ctx,
 				),
 				new Promise<never>((_, reject) =>
-					setTimeout(() => reject(new Error("full runtime memory execute timed out")), 1500),
+					setTimeout(
+						() => reject(new Error("full runtime memory execute timed out")),
+						1500,
+					),
 				),
 			]);
 
@@ -664,20 +710,34 @@ describe("memory tool runtime", () => {
 	it("registers /memories and sends all scopes in one view payload", async () => {
 		const { pi, commands, sentMessages } = makePiStub();
 		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
-		const runEffect = <A, E>(effect: Effect.Effect<A, E, CuratedMemory>) => runtime.runPromise(effect);
+		const runEffect = <A, E>(effect: Effect.Effect<A, E, CuratedMemory>) =>
+			runtime.runPromise(effect);
 		const cwd = path.join(tempHome, "workspace-memories-command");
 		await fs.mkdir(cwd, { recursive: true });
 		await fs.mkdir(path.join(cwd, ".pi"), { recursive: true });
 		await fs.writeFile(path.join(cwd, ".pi", "settings.json"), "{}", "utf8");
 
 		try {
-			const memory = await runEffect(Effect.gen(function* () {
-				return yield* CuratedMemory;
-			}));
+			const memory = await runEffect(
+				Effect.gen(function* () {
+					return yield* CuratedMemory;
+				}),
+			);
 			await runtime.runPromise(Effect.scoped(memory.setup));
-			await runEffect(memory.add("project", hook("project memory preview"), "project memory preview", cwd));
-			await runEffect(memory.add("global", hook("global memory preview"), "global memory preview", cwd));
-			await runEffect(memory.add("user", hook("user memory preview"), "user memory preview", cwd));
+			await runEffect(
+				memory.add(
+					"project",
+					hook("project memory preview"),
+					"project memory preview",
+					cwd,
+				),
+			);
+			await runEffect(
+				memory.add("global", hook("global memory preview"), "global memory preview", cwd),
+			);
+			await runEffect(
+				memory.add("user", hook("user memory preview"), "user memory preview", cwd),
+			);
 
 			initMemory(pi, runEffect);
 
@@ -709,7 +769,8 @@ describe("memory tool runtime", () => {
 	it("surfaces persisted entries that still need summary repair in /memories payload", async () => {
 		const { pi, commands, sentMessages } = makePiStub();
 		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
-		const runEffect = <A, E>(effect: Effect.Effect<A, E, CuratedMemory>) => runtime.runPromise(effect);
+		const runEffect = <A, E>(effect: Effect.Effect<A, E, CuratedMemory>) =>
+			runtime.runPromise(effect);
 		const cwd = path.join(tempHome, "workspace-memories-repair");
 		await fs.mkdir(cwd, { recursive: true });
 		await fs.mkdir(path.join(cwd, ".pi"), { recursive: true });
@@ -730,9 +791,11 @@ describe("memory tool runtime", () => {
 		);
 
 		try {
-			const memory = await runEffect(Effect.gen(function* () {
-				return yield* CuratedMemory;
-			}));
+			const memory = await runEffect(
+				Effect.gen(function* () {
+					return yield* CuratedMemory;
+				}),
+			);
 			await runtime.runPromise(Effect.scoped(memory.setup));
 
 			initMemory(pi, runEffect);
@@ -760,7 +823,8 @@ describe("memory tool runtime", () => {
 	it("surfaces descriptive /memories errors when a memory file is invalid", async () => {
 		const { pi, commands } = makePiStub();
 		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
-		const runEffect = <A, E>(effect: Effect.Effect<A, E, CuratedMemory>) => runtime.runPromise(effect);
+		const runEffect = <A, E>(effect: Effect.Effect<A, E, CuratedMemory>) =>
+			runtime.runPromise(effect);
 		const cwd = path.join(tempHome, "workspace-memories-invalid");
 		await fs.mkdir(cwd, { recursive: true });
 		await fs.mkdir(path.join(cwd, ".pi"), { recursive: true });
@@ -780,9 +844,11 @@ describe("memory tool runtime", () => {
 		const notifications: Array<{ readonly message: string; readonly level: string }> = [];
 
 		try {
-			const memory = await runEffect(Effect.gen(function* () {
-				return yield* CuratedMemory;
-			}));
+			const memory = await runEffect(
+				Effect.gen(function* () {
+					return yield* CuratedMemory;
+				}),
+			);
 			await runtime.runPromise(Effect.scoped(memory.setup));
 
 			initMemory(pi, runEffect);
@@ -790,21 +856,18 @@ describe("memory tool runtime", () => {
 			const command = commands.get("memories");
 			expect(command).toBeDefined();
 
-			await command!.handler(
-				"",
-				{
-					...makeContext(cwd),
-					ui: {
-						setWidget: () => undefined,
-						setFooter: () => () => undefined,
-						setEditorComponent: () => undefined,
-						notify: (message: string, level: string) => {
-							notifications.push({ message, level });
-						},
-						setStatus: () => undefined,
+			await command!.handler("", {
+				...makeContext(cwd),
+				ui: {
+					setWidget: () => undefined,
+					setFooter: () => () => undefined,
+					setEditorComponent: () => undefined,
+					notify: (message: string, level: string) => {
+						notifications.push({ message, level });
 					},
-				} as unknown as ExtensionContext,
-			);
+					setStatus: () => undefined,
+				},
+			} as unknown as ExtensionContext);
 
 			expect(notifications).toEqual([
 				{
@@ -820,16 +883,19 @@ describe("memory tool runtime", () => {
 	it("returns a clear model-facing error when a memory scope would overflow", async () => {
 		const { pi, tools } = makePiStub();
 		const runtime = ManagedRuntime.make(CuratedMemoryLive.pipe(Layer.provide(PiAPILive(pi))));
-		const runEffect = <A, E>(effect: Effect.Effect<A, E, CuratedMemory>) => runtime.runPromise(effect);
+		const runEffect = <A, E>(effect: Effect.Effect<A, E, CuratedMemory>) =>
+			runtime.runPromise(effect);
 		const cwd = path.join(tempHome, "workspace-memory-overflow");
 		await fs.mkdir(cwd, { recursive: true });
 		await fs.mkdir(path.join(cwd, ".pi"), { recursive: true });
 		await fs.writeFile(path.join(cwd, ".pi", "settings.json"), "{}", "utf8");
 
 		try {
-			const memory = await runEffect(Effect.gen(function* () {
-				return yield* CuratedMemory;
-			}));
+			const memory = await runEffect(
+				Effect.gen(function* () {
+					return yield* CuratedMemory;
+				}),
+			);
 			await runtime.runPromise(Effect.scoped(memory.setup));
 			await runEffect(memory.add("user", "overflow setup", "u".repeat(24_000), cwd));
 

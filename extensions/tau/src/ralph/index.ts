@@ -22,6 +22,7 @@ import { RalphContractValidationError } from "./errors.js";
 import { RALPH_TASKS_DIR } from "./paths.js";
 import { sanitizeLoopName, type LoopState, type LoopStatus } from "./schema.js";
 import { setToolEnabled } from "../shared/tool-activation.js";
+import { loadPersistedState, TAU_PERSISTED_STATE_TYPE } from "../shared/state.js";
 
 const INVALID_STATE_HINT =
 	"Ralph state is invalid and could not be decoded. Repair or remove invalid files under .pi/loops (or reset with /ralph nuke --yes).";
@@ -301,6 +302,42 @@ function sessionFileFromContextIfLive(
 		}
 		throw error;
 	}
+}
+
+function readInheritedSandboxState(
+	ctx: Pick<ExtensionContext, "sessionManager">,
+): { readonly sandbox: { readonly sessionOverride: Record<string, unknown> } } | undefined {
+	const sandbox = loadPersistedState(ctx).sandbox;
+	if (typeof sandbox !== "object" || sandbox === null) {
+		return undefined;
+	}
+
+	const sessionOverride = sandbox["sessionOverride"];
+	if (typeof sessionOverride !== "object" || sessionOverride === null) {
+		return undefined;
+	}
+	const sessionOverrideRecord = sessionOverride as Record<string, unknown>;
+
+	const nextSessionOverride: Record<string, unknown> = {};
+	const preset = sessionOverrideRecord["preset"];
+	if (preset === "read-only" || preset === "workspace-write" || preset === "full-access") {
+		nextSessionOverride["preset"] = preset;
+	}
+
+	const subagent = sessionOverrideRecord["subagent"];
+	if (typeof subagent === "boolean") {
+		nextSessionOverride["subagent"] = subagent;
+	}
+
+	if (Object.keys(nextSessionOverride).length === 0) {
+		return undefined;
+	}
+
+	return {
+		sandbox: {
+			sessionOverride: nextSessionOverride,
+		},
+	};
 }
 
 function formatLoop(loop: LoopState): string {
@@ -754,11 +791,18 @@ export default function initRalph(
 			"RalphCommandBoundary.newSession",
 		)(function* (options) {
 			let createdSessionFile: string | undefined;
+			const inheritedSandboxState = readInheritedSandboxState(activeContext);
 			const result = yield* Effect.tryPromise(() =>
 				sessionControl().newSession({
 					parentSession: options.parentSession,
 					setup: async (sessionManager) => {
 						createdSessionFile = sessionManager.getSessionFile();
+						if (inheritedSandboxState !== undefined) {
+							sessionManager.appendCustomEntry(
+								TAU_PERSISTED_STATE_TYPE,
+								inheritedSandboxState,
+							);
+						}
 					},
 					withSession: async (replacementCtx) => {
 						bindReplacementContext(replacementCtx, createdSessionFile);
