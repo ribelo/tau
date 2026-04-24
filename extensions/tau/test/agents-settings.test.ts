@@ -11,7 +11,7 @@ import {
 	preloadRalphOwnedSessionCache,
 } from "../src/agents-menu/state.js";
 import { encodeLoopPersistedStateJsonSync } from "../src/loops/schema.js";
-import { makeExecutionProfile } from "./ralph-test-helpers.js";
+import { makeExecutionProfile, makeSandboxProfile } from "./ralph-test-helpers.js";
 
 async function makeWorkspace(): Promise<string> {
 	return fs.mkdtemp(path.join(os.tmpdir(), "tau-agents-settings-"));
@@ -29,12 +29,7 @@ async function writeRalphState(
 	const statePath = path.join(workspace, ".pi", "loops", "state", `${loopName}.json`);
 	await fs.mkdir(path.dirname(statePath), { recursive: true });
 	const status = input.status ?? "active";
-	const lifecycle =
-		status === "active"
-			? "active"
-			: status === "paused"
-				? "paused"
-				: "completed";
+	const lifecycle = status === "active" ? "active" : status === "paused" ? "paused" : "completed";
 	await fs.writeFile(
 		statePath,
 		encodeLoopPersistedStateJsonSync({
@@ -47,9 +42,7 @@ async function writeRalphState(
 			updatedAt: "2026-01-01T00:00:00.000Z",
 			startedAt: Option.some("2026-01-01T00:00:00.000Z"),
 			completedAt:
-				status === "completed"
-					? Option.some("2026-01-01T01:00:00.000Z")
-					: Option.none(),
+				status === "completed" ? Option.some("2026-01-01T01:00:00.000Z") : Option.none(),
 			archivedAt: Option.none(),
 			ownership: {
 				controller: Option.some({
@@ -60,9 +53,9 @@ async function writeRalphState(
 					input.activeIterationSessionFile === undefined
 						? Option.none()
 						: Option.some({
-							sessionId: input.activeIterationSessionFile,
-							sessionFile: input.activeIterationSessionFile,
-						}),
+								sessionId: input.activeIterationSessionFile,
+								sessionFile: input.activeIterationSessionFile,
+							}),
 			},
 			ralph: {
 				iteration: 1,
@@ -73,6 +66,7 @@ async function writeRalphState(
 				lastReflectionAt: 0,
 				pendingDecision: Option.none(),
 				pinnedExecutionProfile: makeExecutionProfile(),
+				sandboxProfile: makeSandboxProfile(),
 			},
 		}),
 		"utf8",
@@ -115,7 +109,7 @@ describe("agent selection settings", () => {
 		const settingsPath = getAgentSettingsPath(workspace);
 
 		await fs.mkdir(path.dirname(settingsPath), { recursive: true });
-		await fs.writeFile(settingsPath, "{\n  \"tau\":", "utf8");
+		await fs.writeFile(settingsPath, '{\n  "tau":', "utf8");
 
 		const store = new AgentSelectionStore();
 		await store.activate(workspace, ["deep", "finder", "smart"]);
@@ -223,7 +217,12 @@ describe("agent selection settings", () => {
 	it("applies the default Ralph agent allowlist for Ralph-owned sessions", async () => {
 		const workspace = await makeWorkspace();
 		cleanup.add(workspace);
-		const controllerSession = path.join(workspace, ".pi", "sessions", "controller.session.json");
+		const controllerSession = path.join(
+			workspace,
+			".pi",
+			"sessions",
+			"controller.session.json",
+		);
 
 		await writeRalphState(workspace, "loop-a", {
 			controllerSessionFile: controllerSession,
@@ -248,11 +247,20 @@ describe("agent selection settings", () => {
 		await fs.mkdir(path.dirname(settingsPath), { recursive: true });
 		await fs.writeFile(
 			settingsPath,
-			JSON.stringify({ tau: { ralph: { agents: { enabled: ["finder", "oracle"] } } } }, null, 2),
+			JSON.stringify(
+				{ tau: { ralph: { agents: { enabled: ["finder", "oracle"] } } } },
+				null,
+				2,
+			),
 			"utf8",
 		);
 		await writeRalphState(workspace, "loop-b", {
-			controllerSessionFile: path.join(workspace, ".pi", "sessions", "controller.session.json"),
+			controllerSessionFile: path.join(
+				workspace,
+				".pi",
+				"sessions",
+				"controller.session.json",
+			),
 			activeIterationSessionFile: iterationSession,
 		});
 
@@ -269,7 +277,12 @@ describe("agent selection settings", () => {
 		const workspace = await makeWorkspace();
 		cleanup.add(workspace);
 		const settingsPath = getAgentSettingsPath(workspace);
-		const controllerSession = path.join(workspace, ".pi", "sessions", "controller.session.json");
+		const controllerSession = path.join(
+			workspace,
+			".pi",
+			"sessions",
+			"controller.session.json",
+		);
 
 		await fs.mkdir(path.dirname(settingsPath), { recursive: true });
 		await fs.writeFile(
@@ -292,7 +305,12 @@ describe("agent selection settings", () => {
 	it("ignores completed Ralph loops when computing session restrictions", async () => {
 		const workspace = await makeWorkspace();
 		cleanup.add(workspace);
-		const controllerSession = path.join(workspace, ".pi", "sessions", "controller.session.json");
+		const controllerSession = path.join(
+			workspace,
+			".pi",
+			"sessions",
+			"controller.session.json",
+		);
 
 		await writeRalphState(workspace, "loop-d", {
 			controllerSessionFile: controllerSession,
@@ -311,12 +329,21 @@ describe("agent selection settings", () => {
 		const workspace = await makeWorkspace();
 		cleanup.add(workspace);
 		const settingsPath = getAgentSettingsPath(workspace);
-		const controllerSession = path.join(workspace, ".pi", "sessions", "controller.session.json");
+		const controllerSession = path.join(
+			workspace,
+			".pi",
+			"sessions",
+			"controller.session.json",
+		);
 
 		await fs.mkdir(path.dirname(settingsPath), { recursive: true });
 		await fs.writeFile(
 			settingsPath,
-			JSON.stringify({ tau: { agents: { enabled: ["deep", "finder", "librarian"] } } }, null, 2),
+			JSON.stringify(
+				{ tau: { agents: { enabled: ["deep", "finder", "librarian"] } } },
+				null,
+				2,
+			),
 			"utf8",
 		);
 		await writeRalphState(workspace, "loop-e", {
@@ -324,11 +351,11 @@ describe("agent selection settings", () => {
 		});
 
 		const store = new AgentSelectionStore();
-		const enabled = await store.resolveEnabledAgentsForSession(
-			workspace,
-			controllerSession,
-			["deep", "finder", "librarian"],
-		);
+		const enabled = await store.resolveEnabledAgentsForSession(workspace, controllerSession, [
+			"deep",
+			"finder",
+			"librarian",
+		]);
 
 		expect(enabled).toEqual(["finder", "librarian"]);
 		expect(store.isDisabledForSession(workspace, controllerSession, "deep")).toBe(true);

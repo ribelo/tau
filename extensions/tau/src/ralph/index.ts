@@ -23,6 +23,13 @@ import { RALPH_TASKS_DIR } from "./paths.js";
 import { sanitizeLoopName, type LoopState, type LoopStatus } from "./schema.js";
 import { setToolEnabled } from "../shared/tool-activation.js";
 import { loadPersistedState, TAU_PERSISTED_STATE_TYPE } from "../shared/state.js";
+import {
+	computeEffectiveConfig,
+	type ResolvedSandboxConfig,
+	type SandboxConfig,
+	type SandboxPreset,
+} from "../sandbox/config.js";
+import { discoverWorkspaceRoot } from "../sandbox/workspace-root.js";
 
 const INVALID_STATE_HINT =
 	"Ralph state is invalid and could not be decoded. Repair or remove invalid files under .pi/loops (or reset with /ralph nuke --yes).";
@@ -304,9 +311,9 @@ function sessionFileFromContextIfLive(
 	}
 }
 
-function readInheritedSandboxState(
+function readSandboxSessionOverride(
 	ctx: Pick<ExtensionContext, "sessionManager">,
-): { readonly sandbox: { readonly sessionOverride: Record<string, unknown> } } | undefined {
+): SandboxConfig | undefined {
 	const sandbox = loadPersistedState(ctx).sandbox;
 	if (typeof sandbox !== "object" || sandbox === null) {
 		return undefined;
@@ -318,24 +325,74 @@ function readInheritedSandboxState(
 	}
 	const sessionOverrideRecord = sessionOverride as Record<string, unknown>;
 
-	const nextSessionOverride: Record<string, unknown> = {};
+	const nextSessionOverride: SandboxConfig = {};
 	const preset = sessionOverrideRecord["preset"];
 	if (preset === "read-only" || preset === "workspace-write" || preset === "full-access") {
-		nextSessionOverride["preset"] = preset;
+		nextSessionOverride.preset = preset;
 	}
 
 	const subagent = sessionOverrideRecord["subagent"];
 	if (typeof subagent === "boolean") {
-		nextSessionOverride["subagent"] = subagent;
+		nextSessionOverride.subagent = subagent;
+	}
+
+	const approvalTimeoutSeconds = sessionOverrideRecord["approvalTimeoutSeconds"];
+	if (
+		typeof approvalTimeoutSeconds === "number" &&
+		Number.isFinite(approvalTimeoutSeconds) &&
+		Number.isInteger(approvalTimeoutSeconds) &&
+		approvalTimeoutSeconds > 0
+	) {
+		nextSessionOverride.approvalTimeoutSeconds = approvalTimeoutSeconds;
 	}
 
 	if (Object.keys(nextSessionOverride).length === 0) {
 		return undefined;
 	}
 
+	return nextSessionOverride;
+}
+
+function readCliSandboxOverride(pi: ExtensionAPI): SandboxConfig | undefined {
+	const sandboxMode = pi.getFlag("sandbox-mode");
+	if (typeof sandboxMode !== "string") {
+		return undefined;
+	}
+
+	const modeMap: Record<string, SandboxPreset> = {
+		"read-only": "read-only",
+		readonly: "read-only",
+		"workspace-write": "workspace-write",
+		agent: "workspace-write",
+		"full-access": "full-access",
+		full: "full-access",
+	};
+	const preset = modeMap[sandboxMode.toLowerCase()];
+	return preset === undefined ? undefined : { preset };
+}
+
+function captureSandboxProfile(
+	pi: ExtensionAPI,
+	ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+): ResolvedSandboxConfig {
+	const sessionOverride = readSandboxSessionOverride(ctx);
+	const cliOverride = readCliSandboxOverride(pi);
+	return computeEffectiveConfig({
+		workspaceRoot: discoverWorkspaceRoot(ctx.cwd),
+		sessionOverride: { ...sessionOverride, ...cliOverride },
+	});
+}
+
+function sandboxSessionStateFromProfile(profile: ResolvedSandboxConfig): {
+	readonly sandbox: { readonly sessionOverride: SandboxConfig };
+} {
 	return {
 		sandbox: {
-			sessionOverride: nextSessionOverride,
+			sessionOverride: {
+				preset: profile.preset,
+				subagent: profile.subagent,
+				approvalTimeoutSeconds: profile.approvalTimeoutSeconds,
+			},
 		},
 	};
 }
@@ -791,18 +848,15 @@ export default function initRalph(
 			"RalphCommandBoundary.newSession",
 		)(function* (options) {
 			let createdSessionFile: string | undefined;
-			const inheritedSandboxState = readInheritedSandboxState(activeContext);
 			const result = yield* Effect.tryPromise(() =>
 				sessionControl().newSession({
 					parentSession: options.parentSession,
 					setup: async (sessionManager) => {
 						createdSessionFile = sessionManager.getSessionFile();
-						if (inheritedSandboxState !== undefined) {
-							sessionManager.appendCustomEntry(
-								TAU_PERSISTED_STATE_TYPE,
-								inheritedSandboxState,
-							);
-						}
+						sessionManager.appendCustomEntry(
+							TAU_PERSISTED_STATE_TYPE,
+							sandboxSessionStateFromProfile(options.sandboxProfile),
+						);
 					},
 					withSession: async (replacementCtx) => {
 						bindReplacementContext(replacementCtx, createdSessionFile);
@@ -1070,6 +1124,7 @@ export default function initRalph(
 							);
 							return;
 						}
+						const sandboxProfile = captureSandboxProfile(pi, ctx);
 
 						const controllerSessionFile = sessionFileFromContext(ctx);
 						const start = await withRalph((ralph) =>
@@ -1077,6 +1132,7 @@ export default function initRalph(
 								loopName,
 								taskFile,
 								executionProfile,
+								sandboxProfile,
 								maxIterations: parsed.value.maxIterations,
 								itemsPerIteration: parsed.value.itemsPerIteration,
 								reflectEvery: parsed.value.reflectEvery,

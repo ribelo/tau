@@ -4,7 +4,11 @@ import { Option } from "effect";
 import { RalphContractValidationError } from "../src/ralph/errors.js";
 import { loopOwnsSessionFile } from "../src/ralph/repo.js";
 import { decodeLoopStateSync, sanitizeLoopName } from "../src/ralph/schema.js";
-import { makeExecutionProfile, makePromptProfile } from "./ralph-test-helpers.js";
+import {
+	makeExecutionProfile,
+	makePromptProfile,
+	makeSandboxProfile,
+} from "./ralph-test-helpers.js";
 
 describe("ralph fresh-session helpers", () => {
 	it("preserves uppercase letters when sanitizing loop names", () => {
@@ -30,6 +34,7 @@ describe("ralph fresh-session helpers", () => {
 			activeIterationSessionFile: null,
 			pendingDecision: null,
 			executionProfile: makeExecutionProfile(),
+			sandboxProfile: makeSandboxProfile(),
 		});
 
 		expect(Option.isNone(state.completedAt)).toBe(true);
@@ -60,6 +65,7 @@ describe("ralph fresh-session helpers", () => {
 				activeIterationSessionFile: null,
 				pendingDecision: null,
 				executionProfile: makeExecutionProfile(),
+				sandboxProfile: makeSandboxProfile(),
 			}),
 		).toThrow(RalphContractValidationError);
 	});
@@ -81,6 +87,7 @@ describe("ralph fresh-session helpers", () => {
 			activeIterationSessionFile: "/tmp/iteration.session",
 			pendingDecision: null,
 			executionProfile: makeExecutionProfile(),
+			sandboxProfile: makeSandboxProfile(),
 		});
 
 		const legacyNormalized = decodeLoopStateSync({

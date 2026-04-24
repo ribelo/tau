@@ -1,10 +1,7 @@
 import { Cause, Effect, Option } from "effect";
 import { describe, expect, it } from "vitest";
 
-import {
-	LoopContractValidationError,
-	LoopOwnershipValidationError,
-} from "../src/loops/errors.js";
+import { LoopContractValidationError, LoopOwnershipValidationError } from "../src/loops/errors.js";
 import {
 	decodeAutoresearchPhaseSnapshot,
 	decodeLoopPersistedState,
@@ -14,7 +11,7 @@ import {
 	type EncodedLoopPersistedState,
 	validateLoopOwnership,
 } from "../src/loops/schema.js";
-import { makeExecutionProfile } from "./ralph-test-helpers.js";
+import { makeExecutionProfile, makeSandboxProfile } from "./ralph-test-helpers.js";
 
 const encodedRalphState: EncodedLoopPersistedState = {
 	taskId: "schema-loop",
@@ -46,6 +43,7 @@ const encodedRalphState: EncodedLoopPersistedState = {
 		lastReflectionAt: 0,
 		pendingDecision: null,
 		pinnedExecutionProfile: makeExecutionProfile(),
+		sandboxProfile: makeSandboxProfile(),
 	},
 };
 

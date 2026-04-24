@@ -23,7 +23,11 @@ import { LoopRepoLive } from "../src/loops/repo.js";
 import { LoopEngineLive } from "../src/services/loop-engine.js";
 import { PromptModes } from "../src/services/prompt-modes.js";
 import { Ralph, RalphLive } from "../src/services/ralph.js";
-import { makeExecutionProfile, makePromptModesStubLayer } from "./ralph-test-helpers.js";
+import {
+	makeExecutionProfile,
+	makePromptModesStubLayer,
+	makeSandboxProfile,
+} from "./ralph-test-helpers.js";
 
 type EventHandler = (event: unknown, ctx: ExtensionContext) => unknown;
 
@@ -74,7 +78,11 @@ type PiHarness = {
 	readonly commands: Map<string, RegisteredCommand>;
 	readonly tools: Map<string, ToolDefinition>;
 	readonly sentUserMessages: SentUserMessage[];
-	readonly fire: (event: string, payload: unknown, ctx: ExtensionContext) => Promise<readonly unknown[]>;
+	readonly fire: (
+		event: string,
+		payload: unknown,
+		ctx: ExtensionContext,
+	) => Promise<readonly unknown[]>;
 };
 
 function makeTempDir(): string {
@@ -116,7 +124,10 @@ function readLoopState(cwd: string, loopName: string) {
 		startedAt: Option.getOrElse(state.startedAt, () => state.createdAt),
 		completedAt: state.completedAt,
 		lastReflectionAt: state.ralph.lastReflectionAt,
-		controllerSessionFile: Option.map(state.ownership.controller, (controller) => controller.sessionFile),
+		controllerSessionFile: Option.map(
+			state.ownership.controller,
+			(controller) => controller.sessionFile,
+		),
 		activeIterationSessionFile: Option.map(state.ownership.child, (child) => child.sessionFile),
 		pendingDecision: state.ralph.pendingDecision,
 		executionProfile: state.ralph.pinnedExecutionProfile,
@@ -136,12 +147,7 @@ function writeLoopState(
 	const filePath = loopStatePath(cwd, loopName);
 	fs.mkdirSync(path.dirname(filePath), { recursive: true });
 	const status = input.status ?? "active";
-	const lifecycle =
-		status === "active"
-			? "active"
-			: status === "paused"
-				? "paused"
-				: "completed";
+	const lifecycle = status === "active" ? "active" : status === "paused" ? "paused" : "completed";
 	const taskFile = path.join(".pi", "loops", "tasks", `${loopName}.md`);
 	fs.mkdirSync(path.join(cwd, path.dirname(taskFile)), { recursive: true });
 	fs.writeFileSync(path.join(cwd, taskFile), "# Task\n", "utf-8");
@@ -156,7 +162,8 @@ function writeLoopState(
 			createdAt: "2026-01-01T00:00:00.000Z",
 			updatedAt: "2026-01-01T00:00:00.000Z",
 			startedAt: Option.some("2026-01-01T00:00:00.000Z"),
-			completedAt: status === "completed" ? Option.some("2026-01-01T01:00:00.000Z") : Option.none(),
+			completedAt:
+				status === "completed" ? Option.some("2026-01-01T01:00:00.000Z") : Option.none(),
 			archivedAt: Option.none(),
 			ownership: {
 				controller: Option.some({
@@ -167,9 +174,9 @@ function writeLoopState(
 					input.activeIterationSessionFile === undefined
 						? Option.none()
 						: Option.some({
-							sessionId: input.activeIterationSessionFile,
-							sessionFile: input.activeIterationSessionFile,
-						}),
+								sessionId: input.activeIterationSessionFile,
+								sessionFile: input.activeIterationSessionFile,
+							}),
 			},
 			ralph: {
 				iteration: input.iteration ?? 1,
@@ -180,6 +187,7 @@ function writeLoopState(
 				lastReflectionAt: 0,
 				pendingDecision: Option.none(),
 				pinnedExecutionProfile: makeExecutionProfile(),
+				sandboxProfile: makeSandboxProfile(),
 			},
 		}),
 		"utf-8",
@@ -406,7 +414,12 @@ describe("ralph adapter boundary freeze", () => {
 		context.setSessionFile(iterationSession);
 
 		writeLoopState(cwd, "owned-loop", {
-			controllerSessionFile: path.join(cwd, ".pi", "sessions", "controller-owned.session.json"),
+			controllerSessionFile: path.join(
+				cwd,
+				".pi",
+				"sessions",
+				"controller-owned.session.json",
+			),
 			activeIterationSessionFile: iterationSession,
 			iteration: 3,
 			status: "active",
@@ -458,7 +471,12 @@ describe("ralph adapter boundary freeze", () => {
 		context.setSessionFile(iterationSession);
 
 		writeLoopState(cwd, "close-loop", {
-			controllerSessionFile: path.join(cwd, ".pi", "sessions", "controller-close.session.json"),
+			controllerSessionFile: path.join(
+				cwd,
+				".pi",
+				"sessions",
+				"controller-close.session.json",
+			),
 			activeIterationSessionFile: iterationSession,
 			iteration: 5,
 			status: "active",
@@ -494,11 +512,21 @@ describe("ralph adapter boundary freeze", () => {
 		context.ctx.ui.notify = () => {
 			throw new Error("notify should not be called without UI");
 		};
-		const iterationSession = path.join(cwd, ".pi", "sessions", "iteration-headless.session.json");
+		const iterationSession = path.join(
+			cwd,
+			".pi",
+			"sessions",
+			"iteration-headless.session.json",
+		);
 		context.setSessionFile(iterationSession);
 
 		writeLoopState(cwd, "headless-finish-loop", {
-			controllerSessionFile: path.join(cwd, ".pi", "sessions", "controller-headless.session.json"),
+			controllerSessionFile: path.join(
+				cwd,
+				".pi",
+				"sessions",
+				"controller-headless.session.json",
+			),
 			activeIterationSessionFile: iterationSession,
 			iteration: 2,
 			status: "active",
@@ -553,6 +581,7 @@ describe("ralph adapter boundary freeze", () => {
 					activeIterationSessionFile: null,
 					pendingDecision: null,
 					executionProfile: makeExecutionProfile(),
+					sandboxProfile: makeSandboxProfile(),
 				},
 				null,
 				2,
@@ -593,6 +622,7 @@ describe("ralph adapter boundary freeze", () => {
 					loopName: "ui-loop",
 					taskFile: path.join(".pi", "ralph", "tasks", "ui-loop.md"),
 					executionProfile: makeExecutionProfile(),
+					sandboxProfile: makeSandboxProfile(),
 					maxIterations: 50,
 					itemsPerIteration: 0,
 					reflectEvery: 0,
@@ -619,10 +649,7 @@ describe("ralph adapter boundary freeze", () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 
-		const context = makeContext(cwd, [
-			{ cancelled: true },
-			{ cancelled: true },
-		]);
+		const context = makeContext(cwd, [{ cancelled: true }, { cancelled: true }]);
 		const piHarness = makePiHarness();
 		const ralphRuntime = makeRalphRuntime();
 		runtimes.push(ralphRuntime);
@@ -635,7 +662,12 @@ describe("ralph adapter boundary freeze", () => {
 
 		const activeOwnedSession = context.getSessionFile();
 		writeLoopState(cwd, "tool-owned-loop", {
-			controllerSessionFile: path.join(cwd, ".pi", "sessions", "controller-tool-owned.session.json"),
+			controllerSessionFile: path.join(
+				cwd,
+				".pi",
+				"sessions",
+				"controller-tool-owned.session.json",
+			),
 			activeIterationSessionFile: activeOwnedSession,
 			iteration: 7,
 			status: "active",

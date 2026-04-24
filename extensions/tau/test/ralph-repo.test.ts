@@ -8,7 +8,7 @@ import { NodeFileSystem } from "@effect/platform-node";
 
 import { RalphRepo, RalphRepoLive } from "../src/ralph/repo.js";
 import type { LoopState } from "../src/ralph/schema.js";
-import { makeExecutionProfile } from "./ralph-test-helpers.js";
+import { makeExecutionProfile, makeSandboxProfile } from "./ralph-test-helpers.js";
 
 const ralphRepoLayer = RalphRepoLive.pipe(Layer.provide(NodeFileSystem.layer));
 
@@ -33,6 +33,7 @@ function makeLoopState(loopName: string): LoopState {
 		activeIterationSessionFile: Option.some(`/tmp/${loopName}-iteration.session.json`),
 		pendingDecision: Option.none(),
 		executionProfile: makeExecutionProfile(),
+		sandboxProfile: makeSandboxProfile(),
 	};
 }
 
@@ -100,10 +101,18 @@ describe("ralph repo", () => {
 			}).pipe(Effect.provide(ralphRepoLayer)),
 		);
 
-		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "state", "sleepy-loop.json"))).toBe(false);
-		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "archive", "state", "sleepy-loop.json"))).toBe(true);
-		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "tasks", "sleepy-loop.md"))).toBe(false);
-		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "archive", "tasks", "sleepy-loop.md"))).toBe(true);
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "state", "sleepy-loop.json"))).toBe(
+			false,
+		);
+		expect(
+			fs.existsSync(path.join(cwd, ".pi", "loops", "archive", "state", "sleepy-loop.json")),
+		).toBe(true);
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "tasks", "sleepy-loop.md"))).toBe(
+			false,
+		);
+		expect(
+			fs.existsSync(path.join(cwd, ".pi", "loops", "archive", "tasks", "sleepy-loop.md")),
+		).toBe(true);
 	});
 
 	it("archives loop task files when loop names start with the archive prefix", async () => {
@@ -126,8 +135,12 @@ describe("ralph repo", () => {
 			}).pipe(Effect.provide(ralphRepoLayer)),
 		);
 
-		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "tasks", "archive-loop.md"))).toBe(false);
-		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "archive", "tasks", "archive-loop.md"))).toBe(true);
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "tasks", "archive-loop.md"))).toBe(
+			false,
+		);
+		expect(
+			fs.existsSync(path.join(cwd, ".pi", "loops", "archive", "tasks", "archive-loop.md")),
+		).toBe(true);
 	});
 
 	it("fails fast when legacy flat layout is detected in root", async () => {
@@ -160,7 +173,11 @@ describe("ralph repo", () => {
 		tempDirs.push(cwd);
 
 		fs.mkdirSync(path.join(cwd, ".pi", "ralph", "archive"), { recursive: true });
-		fs.writeFileSync(path.join(cwd, ".pi", "ralph", "archive", "legacy-loop.state.json"), "{}", "utf-8");
+		fs.writeFileSync(
+			path.join(cwd, ".pi", "ralph", "archive", "legacy-loop.state.json"),
+			"{}",
+			"utf-8",
+		);
 
 		await expect(
 			Effect.runPromise(
@@ -205,7 +222,9 @@ describe("ralph repo", () => {
 		);
 
 		expect(Option.isNone(result.completed)).toBe(true);
-		expect(Option.isSome(result.paused) && Option.getOrUndefined(result.paused)?.name).toBe("paused-loop");
+		expect(Option.isSome(result.paused) && Option.getOrUndefined(result.paused)?.name).toBe(
+			"paused-loop",
+		);
 	});
 
 	it("findLoopBySessionFile prefers active over paused when loops share a controller session", async () => {

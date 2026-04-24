@@ -24,7 +24,11 @@ import { LoopRepoLive } from "../src/loops/repo.js";
 import { LoopEngineLive } from "../src/services/loop-engine.js";
 import { PromptModes } from "../src/services/prompt-modes.js";
 import { Ralph, RalphLive } from "../src/services/ralph.js";
-import { makeExecutionProfile, makePromptModesStubLayer } from "./ralph-test-helpers.js";
+import {
+	makeExecutionProfile,
+	makePromptModesStubLayer,
+	makeSandboxProfile,
+} from "./ralph-test-helpers.js";
 
 type EventHandler = (event: unknown, ctx: ExtensionContext) => unknown;
 
@@ -130,6 +134,7 @@ function encodeStateForStorage(state: ParsedLoopState): string {
 			lastReflectionAt: state.lastReflectionAt,
 			pendingDecision: state.pendingDecision,
 			pinnedExecutionProfile: state.executionProfile,
+			sandboxProfile: state.sandboxProfile,
 		},
 	});
 }
@@ -153,10 +158,14 @@ function readState(cwd: string, name: string, archived = false) {
 		startedAt: Option.getOrElse(state.startedAt, () => state.createdAt),
 		completedAt: state.completedAt,
 		lastReflectionAt: state.ralph.lastReflectionAt,
-		controllerSessionFile: Option.map(state.ownership.controller, (controller) => controller.sessionFile),
+		controllerSessionFile: Option.map(
+			state.ownership.controller,
+			(controller) => controller.sessionFile,
+		),
 		activeIterationSessionFile: Option.map(state.ownership.child, (child) => child.sessionFile),
 		pendingDecision: state.ralph.pendingDecision,
 		executionProfile: state.ralph.pinnedExecutionProfile,
+		sandboxProfile: state.ralph.sandboxProfile,
 	};
 }
 
@@ -166,7 +175,8 @@ function makeContext(
 	newSessionCancelled: readonly boolean[] = [true],
 	options?: { readonly idle?: boolean; readonly sessionFile?: string },
 ): ExtensionCommandContext {
-	let sessionFile = options?.sessionFile ?? path.join(cwd, ".pi", "sessions", "controller.session.json");
+	let sessionFile =
+		options?.sessionFile ?? path.join(cwd, ".pi", "sessions", "controller.session.json");
 	let newSessionCount = 0;
 	const idle = options?.idle ?? true;
 
@@ -211,7 +221,12 @@ function makeContext(
 			const cancelled = newSessionCancelled[newSessionCount] ?? false;
 			newSessionCount += 1;
 			if (!cancelled) {
-				sessionFile = path.join(cwd, ".pi", "sessions", `child-${newSessionCount}.session.json`);
+				sessionFile = path.join(
+					cwd,
+					".pi",
+					"sessions",
+					`child-${newSessionCount}.session.json`,
+				);
 			}
 			return { cancelled };
 		},
@@ -333,9 +348,13 @@ describe("ralph store behavior freeze", () => {
 		expect(state.taskFile).toBe(path.join(".pi", "loops", "tasks", "alpha-loop.md"));
 		expect(state.iteration).toBe(0);
 		expect(state.status).toBe("paused");
-		expect(Option.getOrUndefined(state.controllerSessionFile)).toContain("controller.session.json");
+		expect(Option.getOrUndefined(state.controllerSessionFile)).toContain(
+			"controller.session.json",
+		);
 		expect(fs.readFileSync(taskPath(cwd, "alpha-loop"), "utf-8")).toContain("# Task");
-		expect(notifications.some((entry) => entry.message.includes("Started loop \"alpha-loop\""))).toBe(true);
+		expect(
+			notifications.some((entry) => entry.message.includes('Started loop "alpha-loop"')),
+		).toBe(true);
 	});
 
 	it("/ralph start rejects extra positional arguments instead of starting the wrong loop", async () => {
@@ -352,12 +371,15 @@ describe("ralph store behavior freeze", () => {
 		expect(command).toBeDefined();
 
 		const context = makeContext(cwd, notifications, [true]);
-		await command?.handler("start erg-9iks --max-iterations 12 --items-per-iteration 2 2", context);
+		await command?.handler(
+			"start erg-9iks --max-iterations 12 --items-per-iteration 2 2",
+			context,
+		);
 
 		expect(fs.existsSync(taskPath(cwd, "erg-9iks"))).toBe(false);
 		expect(fs.existsSync(taskPath(cwd, "2"))).toBe(false);
 		expect(
-			notifications.some((entry) => entry.message.includes("unexpected extra argument \"2\"")),
+			notifications.some((entry) => entry.message.includes('unexpected extra argument "2"')),
 		).toBe(true);
 	});
 
@@ -380,7 +402,9 @@ describe("ralph store behavior freeze", () => {
 		expect(fs.existsSync(taskPath(cwd, "erg-9iks"))).toBe(false);
 		expect(fs.existsSync(taskPath(cwd, "2"))).toBe(false);
 		expect(
-			notifications.some((entry) => entry.message.includes("unknown option \"--itemsPerIteration\"")),
+			notifications.some((entry) =>
+				entry.message.includes('unknown option "--itemsPerIteration"'),
+			),
 		).toBe(true);
 	});
 
@@ -413,10 +437,16 @@ describe("ralph store behavior freeze", () => {
 					startedAt: "2026-01-01T00:00:00.000Z",
 					completedAt: null,
 					lastReflectionAt: 0,
-					controllerSessionFile: path.join(cwd, ".pi", "sessions", "controller.session.json"),
+					controllerSessionFile: path.join(
+						cwd,
+						".pi",
+						"sessions",
+						"controller.session.json",
+					),
 					activeIterationSessionFile: null,
 					pendingDecision: null,
 					executionProfile: makeExecutionProfile(),
+					sandboxProfile: makeSandboxProfile(),
 				}),
 			),
 			"utf-8",
@@ -467,10 +497,16 @@ describe("ralph store behavior freeze", () => {
 					startedAt: "2026-01-01T00:00:00.000Z",
 					completedAt: null,
 					lastReflectionAt: 0,
-					controllerSessionFile: path.join(cwd, ".pi", "sessions", "controller.session.json"),
+					controllerSessionFile: path.join(
+						cwd,
+						".pi",
+						"sessions",
+						"controller.session.json",
+					),
 					activeIterationSessionFile: null,
 					pendingDecision: null,
 					executionProfile: makeExecutionProfile(),
+					sandboxProfile: makeSandboxProfile(),
 				}),
 			),
 			"utf-8",
@@ -484,7 +520,9 @@ describe("ralph store behavior freeze", () => {
 		expect(state.status).toBe("paused");
 		expect(state.iteration).toBe(12);
 		expect(state.maxIterations).toBe(24);
-		expect(notifications.some((entry) => entry.message.includes("Resuming: limit-loop"))).toBe(true);
+		expect(notifications.some((entry) => entry.message.includes("Resuming: limit-loop"))).toBe(
+			true,
+		);
 	});
 
 	it("/ralph resume reopens completed loops without iteration reset", async () => {
@@ -516,10 +554,16 @@ describe("ralph store behavior freeze", () => {
 					startedAt: "2026-01-01T00:00:00.000Z",
 					completedAt: "2026-01-01T02:00:00.000Z",
 					lastReflectionAt: 0,
-					controllerSessionFile: path.join(cwd, ".pi", "sessions", "controller.session.json"),
+					controllerSessionFile: path.join(
+						cwd,
+						".pi",
+						"sessions",
+						"controller.session.json",
+					),
 					activeIterationSessionFile: null,
 					pendingDecision: null,
 					executionProfile: makeExecutionProfile(),
+					sandboxProfile: makeSandboxProfile(),
 				}),
 			),
 			"utf-8",
@@ -534,7 +578,9 @@ describe("ralph store behavior freeze", () => {
 		expect(state.iteration).toBe(9);
 		expect(state.maxIterations).toBe(12);
 		expect(Option.isNone(state.completedAt)).toBe(true);
-		expect(notifications.some((entry) => entry.message.includes("Resuming: done-loop"))).toBe(true);
+		expect(notifications.some((entry) => entry.message.includes("Resuming: done-loop"))).toBe(
+			true,
+		);
 		expect(
 			notifications.some((entry) => entry.message.includes('Loop "done-loop" is completed.')),
 		).toBe(false);
@@ -569,10 +615,16 @@ describe("ralph store behavior freeze", () => {
 					startedAt: "2026-01-01T00:00:00.000Z",
 					completedAt: "2026-01-01T02:00:00.000Z",
 					lastReflectionAt: 0,
-					controllerSessionFile: path.join(cwd, ".pi", "sessions", "controller.session.json"),
+					controllerSessionFile: path.join(
+						cwd,
+						".pi",
+						"sessions",
+						"controller.session.json",
+					),
 					activeIterationSessionFile: null,
 					pendingDecision: null,
 					executionProfile: makeExecutionProfile(),
+					sandboxProfile: makeSandboxProfile(),
 				}),
 			),
 			"utf-8",
@@ -592,7 +644,9 @@ describe("ralph store behavior freeze", () => {
 			),
 		).toBe(true);
 		expect(
-			notifications.some((entry) => entry.message.includes('Loop "legacy-limit-loop" is completed.')),
+			notifications.some((entry) =>
+				entry.message.includes('Loop "legacy-limit-loop" is completed.'),
+			),
 		).toBe(false);
 	});
 
@@ -625,10 +679,16 @@ describe("ralph store behavior freeze", () => {
 					startedAt: "2026-01-01T00:00:00.000Z",
 					completedAt: "2026-01-01T02:00:00.000Z",
 					lastReflectionAt: 0,
-					controllerSessionFile: path.join(cwd, ".pi", "sessions", "controller.session.json"),
+					controllerSessionFile: path.join(
+						cwd,
+						".pi",
+						"sessions",
+						"controller.session.json",
+					),
 					activeIterationSessionFile: null,
 					pendingDecision: null,
 					executionProfile: makeExecutionProfile(),
+					sandboxProfile: makeSandboxProfile(),
 				}),
 			),
 			"utf-8",
@@ -643,7 +703,9 @@ describe("ralph store behavior freeze", () => {
 		expect(state.iteration).toBe(12);
 		expect(state.maxIterations).toBe(24);
 		expect(Option.isNone(state.completedAt)).toBe(true);
-		expect(notifications.some((entry) => entry.message.includes("Resuming: legacy-limit-loop"))).toBe(true);
+		expect(
+			notifications.some((entry) => entry.message.includes("Resuming: legacy-limit-loop")),
+		).toBe(true);
 	});
 
 	it("/ralph status distinguishes max-iterations stop from completed loops", async () => {
@@ -675,10 +737,16 @@ describe("ralph store behavior freeze", () => {
 					startedAt: "2026-01-01T00:00:00.000Z",
 					completedAt: null,
 					lastReflectionAt: 0,
-					controllerSessionFile: path.join(cwd, ".pi", "sessions", "controller.session.json"),
+					controllerSessionFile: path.join(
+						cwd,
+						".pi",
+						"sessions",
+						"controller.session.json",
+					),
 					activeIterationSessionFile: null,
 					pendingDecision: null,
 					executionProfile: makeExecutionProfile(),
+					sandboxProfile: makeSandboxProfile(),
 				}),
 			),
 			"utf-8",
@@ -699,10 +767,16 @@ describe("ralph store behavior freeze", () => {
 					startedAt: "2026-01-01T00:00:00.000Z",
 					completedAt: "2026-01-01T02:00:00.000Z",
 					lastReflectionAt: 0,
-					controllerSessionFile: path.join(cwd, ".pi", "sessions", "controller.session.json"),
+					controllerSessionFile: path.join(
+						cwd,
+						".pi",
+						"sessions",
+						"controller.session.json",
+					),
 					activeIterationSessionFile: null,
 					pendingDecision: null,
 					executionProfile: makeExecutionProfile(),
+					sandboxProfile: makeSandboxProfile(),
 				}),
 			),
 			"utf-8",
@@ -712,7 +786,8 @@ describe("ralph store behavior freeze", () => {
 		await command?.handler("status", context);
 
 		const statusMessage =
-			notifications.find((entry) => entry.message.startsWith("Ralph loops:\n"))?.message ?? "";
+			notifications.find((entry) => entry.message.startsWith("Ralph loops:\n"))?.message ??
+			"";
 		expect(statusMessage).toContain("limit-loop: ⚠ max iterations reached (iteration 12/12)");
 		expect(statusMessage).toContain("done-loop: ✓ completed (iteration 9/12)");
 	});
@@ -758,7 +833,9 @@ describe("ralph store behavior freeze", () => {
 		await command?.handler("create tau-6vi.1", context);
 
 		expect(sentUserMessages).toHaveLength(1);
-		expect(sentUserMessages[0]?.prompt).toContain("If the target corresponds to a backlog item, inspect it first with `backlog show <id>`");
+		expect(sentUserMessages[0]?.prompt).toContain(
+			"If the target corresponds to a backlog item, inspect it first with `backlog show <id>`",
+		);
 		expect(sentUserMessages[0]?.prompt).toContain(".pi/loops/tasks/tau-6vi.1.md");
 		expect(sentUserMessages[0]?.prompt).toContain("/ralph start tau-6vi.1");
 	});
@@ -780,7 +857,9 @@ describe("ralph store behavior freeze", () => {
 		await command?.handler("create docs/tasks/refactor.md", context);
 
 		expect(sentUserMessages).toHaveLength(1);
-		expect(sentUserMessages[0]?.prompt).toContain("Write the task file at `docs/tasks/refactor.md`");
+		expect(sentUserMessages[0]?.prompt).toContain(
+			"Write the task file at `docs/tasks/refactor.md`",
+		);
 		expect(sentUserMessages[0]?.prompt).toContain("/ralph start docs/tasks/refactor.md");
 	});
 
@@ -845,8 +924,12 @@ describe("ralph store behavior freeze", () => {
 
 		expect(sentUserMessages).toHaveLength(2);
 		expect(sentUserMessages[0]?.prompt).toContain("Create a Ralph task file for `tau-6vi.1`.");
-		expect(sentUserMessages[0]?.prompt).toContain("Example backlog flow: `/ralph create foo-31z` should inspect `backlog show foo-31z`");
-		expect(sentUserMessages[1]?.prompt).toContain("Write the task file at `docs/tasks/my task.md`");
+		expect(sentUserMessages[0]?.prompt).toContain(
+			"Example backlog flow: `/ralph create foo-31z` should inspect `backlog show foo-31z`",
+		);
+		expect(sentUserMessages[1]?.prompt).toContain(
+			"Write the task file at `docs/tasks/my task.md`",
+		);
 		expect(sentUserMessages[1]?.prompt).toContain('/ralph start "docs/tasks/my task.md"');
 	});
 
@@ -869,12 +952,18 @@ describe("ralph store behavior freeze", () => {
 		expect(sentUserMessages).toHaveLength(1);
 		expect(sentUserMessages[0]?.prompt).toContain("Create a Ralph task file for this request:");
 		expect(sentUserMessages[0]?.prompt).toContain("`my-feature`");
-		expect(sentUserMessages[0]?.prompt).toContain("Pick the best short name for the loop and task file.");
-		expect(sentUserMessages[0]?.prompt).toContain("Do not mirror the full request text into the file name.");
+		expect(sentUserMessages[0]?.prompt).toContain(
+			"Pick the best short name for the loop and task file.",
+		);
+		expect(sentUserMessages[0]?.prompt).toContain(
+			"Do not mirror the full request text into the file name.",
+		);
 		expect(sentUserMessages[0]?.prompt).not.toContain("backlog show my-feature");
 		expect(sentUserMessages[0]?.prompt).not.toContain(".pi/loops/tasks/my-feature.md");
 		expect(sentUserMessages[0]?.prompt).not.toContain("/ralph start my-feature");
-		expect(notifications.some((entry) => entry.message.includes("choose a short name"))).toBe(true);
+		expect(notifications.some((entry) => entry.message.includes("choose a short name"))).toBe(
+			true,
+		);
 	});
 
 	it("/ralph create does not turn long free-form requests into long task file paths", async () => {
@@ -897,8 +986,12 @@ describe("ralph store behavior freeze", () => {
 		);
 
 		expect(sentUserMessages).toHaveLength(1);
-		expect(sentUserMessages[0]?.prompt).toContain("Pick the best short name for the loop and task file.");
-		expect(sentUserMessages[0]?.prompt).toContain("Write the task file at `.pi/loops/tasks/<chosen-name>.md` using apply_patch.");
+		expect(sentUserMessages[0]?.prompt).toContain(
+			"Pick the best short name for the loop and task file.",
+		);
+		expect(sentUserMessages[0]?.prompt).toContain(
+			"Write the task file at `.pi/loops/tasks/<chosen-name>.md` using apply_patch.",
+		);
 		expect(sentUserMessages[0]?.prompt).not.toContain(
 			".pi/loops/tasks/make_ralph_task_from_all_still_open_tasks_you_listed_in_previous_message.md",
 		);
@@ -921,18 +1014,19 @@ describe("ralph store behavior freeze", () => {
 		await ralphRuntime.run(
 			Effect.gen(function* () {
 				const ralph = yield* Ralph;
-					yield* ralph.startLoopState(cwd, {
-						loopName: "pausable-loop",
-						taskFile: path.join(".pi", "loops", "tasks", "pausable-loop.md"),
-						executionProfile: makeExecutionProfile(),
-						maxIterations: 50,
+				yield* ralph.startLoopState(cwd, {
+					loopName: "pausable-loop",
+					taskFile: path.join(".pi", "loops", "tasks", "pausable-loop.md"),
+					executionProfile: makeExecutionProfile(),
+					sandboxProfile: makeSandboxProfile(),
+					maxIterations: 50,
 					itemsPerIteration: 0,
 					reflectEvery: 0,
 					reflectInstructions: "reflect",
 					controllerSessionFile: Option.some(controllerSessionFile),
 					defaultTaskTemplate: "# Task\n",
 				});
-			})
+			}),
 		);
 
 		const context = makeContext(cwd, notifications);
@@ -940,7 +1034,11 @@ describe("ralph store behavior freeze", () => {
 
 		const pausedState = readState(cwd, "pausable-loop");
 		expect(pausedState.status).toBe("paused");
-		expect(notifications.some((entry) => entry.message.includes("Paused Ralph loop: pausable-loop"))).toBe(true);
+		expect(
+			notifications.some((entry) =>
+				entry.message.includes("Paused Ralph loop: pausable-loop"),
+			),
+		).toBe(true);
 
 		await ralphRuntime.run(
 			Effect.gen(function* () {
@@ -949,13 +1047,17 @@ describe("ralph store behavior freeze", () => {
 					loopName: "pausable-loop",
 					maxIterations: Option.none(),
 				});
-			})
+			}),
 		);
 		await command?.handler("stop", context);
 
 		const stoppedState = readState(cwd, "pausable-loop");
 		expect(stoppedState.status).toBe("completed");
-		expect(notifications.some((entry) => entry.message.includes("Stopped Ralph loop: pausable-loop"))).toBe(true);
+		expect(
+			notifications.some((entry) =>
+				entry.message.includes("Stopped Ralph loop: pausable-loop"),
+			),
+		).toBe(true);
 	});
 
 	it("/ralph stop ends a paused loop after the documented ESC-style flow", async () => {
@@ -975,28 +1077,37 @@ describe("ralph store behavior freeze", () => {
 		await ralphRuntime.run(
 			Effect.gen(function* () {
 				const ralph = yield* Ralph;
-					yield* ralph.startLoopState(cwd, {
-						loopName: "esc-stop-loop",
-						taskFile: path.join(".pi", "loops", "tasks", "esc-stop-loop.md"),
-						executionProfile: makeExecutionProfile(),
-						maxIterations: 50,
+				yield* ralph.startLoopState(cwd, {
+					loopName: "esc-stop-loop",
+					taskFile: path.join(".pi", "loops", "tasks", "esc-stop-loop.md"),
+					executionProfile: makeExecutionProfile(),
+					sandboxProfile: makeSandboxProfile(),
+					maxIterations: 50,
 					itemsPerIteration: 0,
 					reflectEvery: 0,
 					reflectInstructions: "reflect",
-					controllerSessionFile: Option.some(path.join(cwd, ".pi", "sessions", "controller.session.json")),
+					controllerSessionFile: Option.some(
+						path.join(cwd, ".pi", "sessions", "controller.session.json"),
+					),
 					defaultTaskTemplate: "# Task\n",
 				});
 				const paused = yield* ralph.pauseCurrentLoop(cwd);
 				expect(paused.status).toBe("paused");
-			})
+			}),
 		);
 
-		const context = makeContext(cwd, notifications, [true], { sessionFile: iterationSessionFile });
+		const context = makeContext(cwd, notifications, [true], {
+			sessionFile: iterationSessionFile,
+		});
 		await command?.handler("stop", context);
 
 		const stoppedState = readState(cwd, "esc-stop-loop");
 		expect(stoppedState.status).toBe("completed");
-		expect(notifications.some((entry) => entry.message.includes("Stopped Ralph loop: esc-stop-loop"))).toBe(true);
+		expect(
+			notifications.some((entry) =>
+				entry.message.includes("Stopped Ralph loop: esc-stop-loop"),
+			),
+		).toBe(true);
 	});
 
 	it("/ralph stop prefers the paused loop owned by the current session over unrelated active loops", async () => {
@@ -1030,10 +1141,16 @@ describe("ralph store behavior freeze", () => {
 					startedAt: "2026-01-01T00:00:00.000Z",
 					completedAt: null,
 					lastReflectionAt: 0,
-					controllerSessionFile: path.join(cwd, ".pi", "sessions", "controller.session.json"),
+					controllerSessionFile: path.join(
+						cwd,
+						".pi",
+						"sessions",
+						"controller.session.json",
+					),
 					activeIterationSessionFile: pausedSessionFile,
 					pendingDecision: null,
 					executionProfile: makeExecutionProfile(),
+					sandboxProfile: makeSandboxProfile(),
 				}),
 			),
 			"utf-8",
@@ -1057,6 +1174,7 @@ describe("ralph store behavior freeze", () => {
 					activeIterationSessionFile: null,
 					pendingDecision: null,
 					executionProfile: makeExecutionProfile(),
+					sandboxProfile: makeSandboxProfile(),
 				}),
 			),
 			"utf-8",
@@ -1067,7 +1185,11 @@ describe("ralph store behavior freeze", () => {
 
 		expect(readState(cwd, "owned-paused").status).toBe("completed");
 		expect(readState(cwd, "other-active").status).toBe("active");
-		expect(notifications.some((entry) => entry.message.includes("Stopped Ralph loop: owned-paused"))).toBe(true);
+		expect(
+			notifications.some((entry) =>
+				entry.message.includes("Stopped Ralph loop: owned-paused"),
+			),
+		).toBe(true);
 	});
 
 	it("does not register the legacy ralph-stop command", async () => {
@@ -1114,6 +1236,7 @@ describe("ralph store behavior freeze", () => {
 					activeIterationSessionFile: null,
 					pendingDecision: null,
 					executionProfile: makeExecutionProfile(),
+					sandboxProfile: makeSandboxProfile(),
 				},
 				null,
 				2,

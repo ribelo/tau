@@ -4,6 +4,7 @@ import { Clock, Deferred, Effect, Layer, Option, Ref, Context } from "effect";
 import type { AgentEndEvent } from "@mariozechner/pi-coding-agent";
 
 import type { ExecutionProfile } from "../execution/schema.js";
+import type { ResolvedSandboxConfig } from "../sandbox/config.js";
 import {
 	LoopAmbiguousOwnershipError,
 	LoopContractValidationError,
@@ -60,6 +61,7 @@ export type RalphStartLoopInput = {
 	readonly loopName: string;
 	readonly taskFile: string;
 	readonly executionProfile: ExecutionProfile;
+	readonly sandboxProfile: ResolvedSandboxConfig;
 	readonly maxIterations: number;
 	readonly itemsPerIteration: number;
 	readonly reflectEvery: number;
@@ -182,12 +184,13 @@ export type RalphNukeLoopsResult = {
 export type RalphCommandBoundary = {
 	readonly cwd: string;
 	readonly getSessionFile: () => string | undefined;
-	readonly switchSession: (targetSessionFile: string) => Effect.Effect<{ readonly cancelled: boolean }, never, never>;
-	readonly newSession: (
-		options: {
-			readonly parentSession: string;
-		},
+	readonly switchSession: (
+		targetSessionFile: string,
 	) => Effect.Effect<{ readonly cancelled: boolean }, never, never>;
+	readonly newSession: (options: {
+		readonly parentSession: string;
+		readonly sandboxProfile: ResolvedSandboxConfig;
+	}) => Effect.Effect<{ readonly cancelled: boolean }, never, never>;
 	readonly applyExecutionProfile: (
 		profile: ExecutionProfile,
 	) => Effect.Effect<{ readonly applied: boolean; readonly reason?: string }, never, never>;
@@ -277,9 +280,10 @@ const extractLastAssistantSummary = (event: AgentEndEvent): AssistantSummary => 
 		.filter((content): content is { type: "text"; text: string } => content.type === "text")
 		.map((content) => content.text)
 		.join("\n");
-	const stopReason = "stopReason" in lastAssistant && isAssistantStopReason(lastAssistant.stopReason)
-		? Option.some(lastAssistant.stopReason)
-		: Option.none<AssistantStopReason>();
+	const stopReason =
+		"stopReason" in lastAssistant && isAssistantStopReason(lastAssistant.stopReason)
+			? Option.some(lastAssistant.stopReason)
+			: Option.none<AssistantStopReason>();
 	return {
 		text,
 		stopReason,
@@ -303,9 +307,7 @@ const toContractError = (entity: string, reason: string): RalphContractValidatio
 		reason,
 	});
 
-const loopEngineErrorToContract = (
-	error: LoopEngineError,
-): RalphContractValidationError => {
+const loopEngineErrorToContract = (error: LoopEngineError): RalphContractValidationError => {
 	if (error instanceof LoopContractValidationError) {
 		return toContractError(error.entity, error.reason);
 	}
@@ -373,7 +375,9 @@ function buildPrompt(state: LoopState, taskContent: string, isReflection: boolea
 
 	parts.push(`## Current Task (from ${state.taskFile})\n\n${taskContent}\n\n---`);
 	parts.push(`\n## Instructions\n`);
-	parts.push("User controls: ESC pauses the assistant. Run /ralph pause to keep the loop resumable. Run /ralph stop when idle to end the loop.\n");
+	parts.push(
+		"User controls: ESC pauses the assistant. Run /ralph pause to keep the loop resumable. Run /ralph stop when idle to end the loop.\n",
+	);
 	parts.push(
 		`You are in a Ralph loop (iteration ${state.iteration}${state.maxIterations > 0 ? ` of ${state.maxIterations}` : ""}).\n`,
 	);
@@ -388,9 +392,13 @@ function buildPrompt(state: LoopState, taskContent: string, isReflection: boolea
 	}
 
 	parts.push(`2. Update the task file (${state.taskFile}) with your progress`);
-	parts.push(`3. If the overall Ralph loop is complete, call ralph_finish with a short completion message`);
+	parts.push(
+		`3. If the overall Ralph loop is complete, call ralph_finish with a short completion message`,
+	);
 	parts.push(`4. If this iteration is done and Ralph should continue, call ralph_continue`);
-	parts.push(`5. Do not end this iteration with free text alone. End with exactly one Ralph loop tool.`);
+	parts.push(
+		`5. Do not end this iteration with free text alone. End with exactly one Ralph loop tool.`,
+	);
 
 	return parts.join("\n");
 }
@@ -445,7 +453,9 @@ export interface RalphService {
 		cwd: string,
 		sessionFile: string | undefined,
 	) => Effect.Effect<void, RalphContractValidationError, never>;
-	readonly existsRalphDirectory: (cwd: string) => Effect.Effect<boolean, RalphContractValidationError, never>;
+	readonly existsRalphDirectory: (
+		cwd: string,
+	) => Effect.Effect<boolean, RalphContractValidationError, never>;
 	readonly persistOwnedLoopOnShutdown: (
 		cwd: string,
 		sessionFile: string | undefined,
@@ -504,9 +514,9 @@ const isAtIterationLimit = (state: LoopState): boolean =>
 	state.maxIterations > 0 && state.iteration >= state.maxIterations;
 
 export const RalphLive = (config: RalphLiveConfig) =>
-		Layer.effect(
-			Ralph,
-			Effect.gen(function* () {
+	Layer.effect(
+		Ralph,
+		Effect.gen(function* () {
 			const rawRepo = yield* RalphRepo;
 			const repo = {
 				loadState: (cwd: string, name: string, archived?: boolean) =>
@@ -537,142 +547,142 @@ export const RalphLive = (config: RalphLiveConfig) =>
 			const loopEngine = yield* LoopEngine;
 			const currentLoopRef = yield* Ref.make<Option.Option<string>>(Option.none());
 
-			const waitForGlobalIterationSignal = Effect.fn(
-				"Ralph.waitForGlobalIterationSignal",
-			)(function* (iterationSessionFile: string) {
-				const deferred = yield* Deferred.make<IterationSignal>();
-				const queuedSignal = yield* Effect.sync(() => {
-					const bridge = getRalphIterationSignalBridge();
-					const existing = bridge.get(iterationSessionFile);
-					if (existing?._tag === "queued") {
-						bridge.delete(iterationSessionFile);
-						return existing.signal;
-					}
-					bridge.set(iterationSessionFile, {
-						_tag: "waiting",
-						deferred,
-					});
-					return undefined;
-				});
-
-				const awaitEvent =
-					queuedSignal !== undefined
-						? Effect.succeed(queuedSignal)
-						: Deferred.await(deferred).pipe(
-								Effect.ensuring(
-									Effect.sync(() => {
-										const bridge = getRalphIterationSignalBridge();
-										const existing = bridge.get(iterationSessionFile);
-										if (
-											existing?._tag === "waiting" &&
-											existing.deferred === deferred
-										) {
-											bridge.delete(iterationSessionFile);
-										}
-									}),
-								),
-							);
-
-				return { awaitEvent } as const;
-			});
-
-			const publishGlobalIterationSignal = Effect.fn(
-				"Ralph.publishGlobalIterationSignal",
-			)(function* (iterationSessionFile: string, signal: IterationSignal) {
-				const waitingDeferred = yield* Effect.sync(() => {
-					const bridge = getRalphIterationSignalBridge();
-					const existing = bridge.get(iterationSessionFile);
-					if (existing?._tag === "waiting") {
-						bridge.delete(iterationSessionFile);
-						return existing.deferred;
-					}
-					if (existing === undefined) {
+			const waitForGlobalIterationSignal = Effect.fn("Ralph.waitForGlobalIterationSignal")(
+				function* (iterationSessionFile: string) {
+					const deferred = yield* Deferred.make<IterationSignal>();
+					const queuedSignal = yield* Effect.sync(() => {
+						const bridge = getRalphIterationSignalBridge();
+						const existing = bridge.get(iterationSessionFile);
+						if (existing?._tag === "queued") {
+							bridge.delete(iterationSessionFile);
+							return existing.signal;
+						}
 						bridge.set(iterationSessionFile, {
-							_tag: "queued",
-							signal,
+							_tag: "waiting",
+							deferred,
 						});
-					}
-					return undefined;
-				});
+						return undefined;
+					});
 
-				if (waitingDeferred !== undefined) {
-					yield* Deferred.succeed(waitingDeferred, signal);
-				}
-			});
+					const awaitEvent =
+						queuedSignal !== undefined
+							? Effect.succeed(queuedSignal)
+							: Deferred.await(deferred).pipe(
+									Effect.ensuring(
+										Effect.sync(() => {
+											const bridge = getRalphIterationSignalBridge();
+											const existing = bridge.get(iterationSessionFile);
+											if (
+												existing?._tag === "waiting" &&
+												existing.deferred === deferred
+											) {
+												bridge.delete(iterationSessionFile);
+											}
+										}),
+									),
+								);
 
-			const setCurrentLoop = Effect.fn("Ralph.setCurrentLoop")(
-				function* (next: Option.Option<string>) {
-					yield* Ref.set(currentLoopRef, next);
+					return { awaitEvent } as const;
 				},
 			);
+
+			const publishGlobalIterationSignal = Effect.fn("Ralph.publishGlobalIterationSignal")(
+				function* (iterationSessionFile: string, signal: IterationSignal) {
+					const waitingDeferred = yield* Effect.sync(() => {
+						const bridge = getRalphIterationSignalBridge();
+						const existing = bridge.get(iterationSessionFile);
+						if (existing?._tag === "waiting") {
+							bridge.delete(iterationSessionFile);
+							return existing.deferred;
+						}
+						if (existing === undefined) {
+							bridge.set(iterationSessionFile, {
+								_tag: "queued",
+								signal,
+							});
+						}
+						return undefined;
+					});
+
+					if (waitingDeferred !== undefined) {
+						yield* Deferred.succeed(waitingDeferred, signal);
+					}
+				},
+			);
+
+			const setCurrentLoop = Effect.fn("Ralph.setCurrentLoop")(function* (
+				next: Option.Option<string>,
+			) {
+				yield* Ref.set(currentLoopRef, next);
+			});
 
 			const getCurrentLoop = Ref.get(currentLoopRef);
 
 			const clearCurrentLoop = setCurrentLoop(Option.none());
 
-			const syncCurrentLoopFromSession: RalphService["syncCurrentLoopFromSession"] = Effect.fn(
-				"Ralph.syncCurrentLoopFromSession",
-			)(function* (cwd, sessionFile) {
-				const scoped = yield* repo.findLoopBySessionFile(cwd, sessionFile);
-				if (Option.isSome(scoped)) {
-					yield* setCurrentLoop(Option.some(scoped.value.name));
-				}
-			});
-
-			const persistOwnedLoopOnShutdown: RalphService["persistOwnedLoopOnShutdown"] = Effect.fn(
-				"Ralph.persistOwnedLoopOnShutdown",
-			)(function* (cwd, sessionFile) {
-				const scoped = yield* repo.findLoopBySessionFile(cwd, sessionFile);
-				if (Option.isSome(scoped)) {
-					yield* repo.saveState(cwd, scoped.value);
-				}
-
-				if (sessionFile === undefined) {
-					return;
-				}
-
-				yield* publishGlobalIterationSignal(sessionFile, {
-					_tag: "session_shutdown",
+			const syncCurrentLoopFromSession: RalphService["syncCurrentLoopFromSession"] =
+				Effect.fn("Ralph.syncCurrentLoopFromSession")(function* (cwd, sessionFile) {
+					const scoped = yield* repo.findLoopBySessionFile(cwd, sessionFile);
+					if (Option.isSome(scoped)) {
+						yield* setCurrentLoop(Option.some(scoped.value.name));
+					}
 				});
+
+			const persistOwnedLoopOnShutdown: RalphService["persistOwnedLoopOnShutdown"] =
+				Effect.fn("Ralph.persistOwnedLoopOnShutdown")(function* (cwd, sessionFile) {
+					const scoped = yield* repo.findLoopBySessionFile(cwd, sessionFile);
+					if (Option.isSome(scoped)) {
+						yield* repo.saveState(cwd, scoped.value);
+					}
+
+					if (sessionFile === undefined) {
+						return;
+					}
+
+					yield* publishGlobalIterationSignal(sessionFile, {
+						_tag: "session_shutdown",
+					});
+				});
+
+			const markLoopPaused = Effect.fn("Ralph.markLoopPaused")(function* (
+				cwd: string,
+				state: LoopState,
+			) {
+				if (state.status === "active") {
+					yield* repo.saveState(cwd, state);
+					yield* mapLoopEngineError(loopEngine.pauseLoop(cwd, state.name));
+				} else {
+					const pausedState: LoopState = {
+						...state,
+						status: "paused",
+					};
+					yield* repo.saveState(cwd, pausedState);
+				}
+				yield* clearCurrentLoop;
 			});
 
-			const markLoopPaused = Effect.fn("Ralph.markLoopPaused")(
-				function* (cwd: string, state: LoopState) {
-					if (state.status === "active") {
-						yield* repo.saveState(cwd, state);
-						yield* mapLoopEngineError(loopEngine.pauseLoop(cwd, state.name));
-					} else {
-						const pausedState: LoopState = {
-							...state,
-							status: "paused",
-						};
-						yield* repo.saveState(cwd, pausedState);
-					}
-					yield* clearCurrentLoop;
-				},
-			);
-
-			const markLoopCompleted = Effect.fn("Ralph.markLoopCompleted")(
-				function* (cwd: string, state: LoopState) {
-					const completedAt = Option.some(yield* nowIso);
-					const nextState: LoopState = {
-						...state,
-						completedAt,
-						pendingDecision: Option.none(),
-						activeIterationSessionFile: Option.none(),
-					};
-					if (nextState.status === "active" || nextState.status === "paused") {
-						yield* repo.saveState(cwd, nextState);
-						yield* mapLoopEngineError(loopEngine.stopLoop(cwd, nextState.name));
-					} else {
-						yield* repo.saveState(cwd, {
-							...nextState,
-							status: "completed",
-						});
-					}
-					yield* clearCurrentLoop;
-				},
-			);
+			const markLoopCompleted = Effect.fn("Ralph.markLoopCompleted")(function* (
+				cwd: string,
+				state: LoopState,
+			) {
+				const completedAt = Option.some(yield* nowIso);
+				const nextState: LoopState = {
+					...state,
+					completedAt,
+					pendingDecision: Option.none(),
+					activeIterationSessionFile: Option.none(),
+				};
+				if (nextState.status === "active" || nextState.status === "paused") {
+					yield* repo.saveState(cwd, nextState);
+					yield* mapLoopEngineError(loopEngine.stopLoop(cwd, nextState.name));
+				} else {
+					yield* repo.saveState(cwd, {
+						...nextState,
+						status: "completed",
+					});
+				}
+				yield* clearCurrentLoop;
+			});
 
 			const startLoopState: RalphService["startLoopState"] = Effect.fn(
 				"Ralph.startLoopState",
@@ -709,6 +719,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 							reflectEvery: input.reflectEvery,
 							reflectInstructions: input.reflectInstructions,
 							executionProfile: input.executionProfile,
+							sandboxProfile: input.sandboxProfile,
 						}),
 					);
 				} else {
@@ -720,6 +731,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 						reflectEvery: input.reflectEvery,
 						reflectInstructions: input.reflectInstructions,
 						executionProfile: input.executionProfile,
+						sandboxProfile: input.sandboxProfile,
 						lastReflectionAt: 0,
 						activeIterationSessionFile: Option.none(),
 						pendingDecision: Option.none(),
@@ -741,11 +753,13 @@ export const RalphLive = (config: RalphLiveConfig) =>
 							error instanceof LoopLifecycleConflictError &&
 							error.actual === "paused"
 						) {
-							return loopEngine.stopLoop(cwd, input.loopName).pipe(
-								Effect.flatMap(() =>
-									loopEngine.startLoop(cwd, input.loopName, controller),
-								),
-							);
+							return loopEngine
+								.stopLoop(cwd, input.loopName)
+								.pipe(
+									Effect.flatMap(() =>
+										loopEngine.startLoop(cwd, input.loopName, controller),
+									),
+								);
 						}
 						return Effect.fail(error);
 					}),
@@ -805,7 +819,9 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					return fromSession;
 				}
 
-				const activeLoops = (yield* repo.listLoops(cwd)).filter((loop) => loop.status === "active");
+				const activeLoops = (yield* repo.listLoops(cwd)).filter(
+					(loop) => loop.status === "active",
+				);
 				const soleActiveLoop = activeLoops.length === 1 ? activeLoops[0] : undefined;
 				if (soleActiveLoop !== undefined) {
 					yield* setCurrentLoop(Option.some(soleActiveLoop.name));
@@ -846,7 +862,9 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					}
 				}
 
-				const active = (yield* repo.listLoops(cwd)).find((loop) => loop.status === "active");
+				const active = (yield* repo.listLoops(cwd)).find(
+					(loop) => loop.status === "active",
+				);
 				if (active === undefined) {
 					return {
 						status: "no_active_loop",
@@ -869,7 +887,9 @@ export const RalphLive = (config: RalphLiveConfig) =>
 				const maybeCurrentState = Option.isSome(currentLoop)
 					? yield* repo.loadState(cwd, currentLoop.value)
 					: Option.none<LoopState>();
-				const fallbackActive = (yield* repo.listLoops(cwd)).find((loop) => loop.status === "active");
+				const fallbackActive = (yield* repo.listLoops(cwd)).find(
+					(loop) => loop.status === "active",
+				);
 				const resolvedState = Option.isSome(maybeCurrentState)
 					? maybeCurrentState
 					: fallbackActive === undefined
@@ -950,10 +970,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 				}
 
 				if (requestedMaxIterations !== undefined) {
-					if (
-						requestedMaxIterations > 0 &&
-						requestedMaxIterations <= state.iteration
-					) {
+					if (requestedMaxIterations > 0 && requestedMaxIterations <= state.iteration) {
 						return {
 							status: "max_iterations_too_low",
 							loopName,
@@ -1002,7 +1019,11 @@ export const RalphLive = (config: RalphLiveConfig) =>
 
 				if (state.status === "paused") {
 					yield* mapLoopEngineError(
-						loopEngine.resumeLoop(cwd, loopName, sessionRefFromFile(controllerSessionFile)),
+						loopEngine.resumeLoop(
+							cwd,
+							loopName,
+							sessionRefFromFile(controllerSessionFile),
+						),
 					);
 				}
 				yield* setCurrentLoop(Option.some(loopName));
@@ -1107,7 +1128,9 @@ export const RalphLive = (config: RalphLiveConfig) =>
 			): Effect.Effect<LoopStepResult, RalphContractValidationError, never> =>
 				Effect.gen(function* () {
 					yield* markLoopPaused(cwd, state);
-					return kind === "blocked" ? blockedWithMessage(message) : stopWithMessage(message);
+					return kind === "blocked"
+						? blockedWithMessage(message)
+						: stopWithMessage(message);
 				});
 
 			const completeLoop = (
@@ -1172,11 +1195,11 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					"- If more work is needed in this iteration, continue working now and end with exactly one Ralph loop tool.",
 				].join("\n");
 
-			const waitForIterationSignal = Effect.fn("Ralph.waitForIterationSignal")(
-				function* (iterationSessionFile: string) {
-					return yield* waitForGlobalIterationSignal(iterationSessionFile);
-				},
-			);
+			const waitForIterationSignal = Effect.fn("Ralph.waitForIterationSignal")(function* (
+				iterationSessionFile: string,
+			) {
+				return yield* waitForGlobalIterationSignal(iterationSessionFile);
+			});
 
 			const runSingleIteration = (
 				boundary: RalphCommandBoundary,
@@ -1232,7 +1255,10 @@ export const RalphLive = (config: RalphLiveConfig) =>
 						);
 					}
 
-					const child = yield* boundary.newSession({ parentSession: controllerSession });
+					const child = yield* boundary.newSession({
+						parentSession: controllerSession,
+						sandboxProfile: state.sandboxProfile,
+					});
 					if (child.cancelled) {
 						return yield* pauseLoop(
 							boundary.cwd,
@@ -1243,7 +1269,10 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					}
 
 					const afterSessionOption = yield* repo.loadState(boundary.cwd, loopName);
-					if (Option.isNone(afterSessionOption) || afterSessionOption.value.status !== "active") {
+					if (
+						Option.isNone(afterSessionOption) ||
+						afterSessionOption.value.status !== "active"
+					) {
 						return stoppedWithoutMessage;
 					}
 
@@ -1260,7 +1289,9 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					}
 					afterSession.activeIterationSessionFile = Option.none();
 					clearPendingDecision(afterSession);
-					const executionProfileApplied = yield* boundary.applyExecutionProfile(afterSession.executionProfile);
+					const executionProfileApplied = yield* boundary.applyExecutionProfile(
+						afterSession.executionProfile,
+					);
 					if (!executionProfileApplied.applied) {
 						return yield* pauseLoop(
 							boundary.cwd,
@@ -1279,7 +1310,10 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					);
 					yield* setCurrentLoop(Option.some(loopName));
 
-					const taskContent = yield* repo.readTaskFile(boundary.cwd, afterSession.taskFile);
+					const taskContent = yield* repo.readTaskFile(
+						boundary.cwd,
+						afterSession.taskFile,
+					);
 					if (Option.isNone(taskContent)) {
 						return yield* pauseLoop(
 							boundary.cwd,
@@ -1312,7 +1346,10 @@ export const RalphLive = (config: RalphLiveConfig) =>
 						const signal = yield* pendingSignal.awaitEvent;
 
 						const afterTurnOption = yield* repo.loadState(boundary.cwd, loopName);
-						if (Option.isNone(afterTurnOption) || afterTurnOption.value.status !== "active") {
+						if (
+							Option.isNone(afterTurnOption) ||
+							afterTurnOption.value.status !== "active"
+						) {
 							return stoppedWithoutMessage;
 						}
 
@@ -1354,7 +1391,9 @@ export const RalphLive = (config: RalphLiveConfig) =>
 
 						if (
 							assistant.hasUsableAssistantMessage &&
-							(stopReason === undefined || stopReason === "stop" || stopReason === "length")
+							(stopReason === undefined ||
+								stopReason === "stop" ||
+								stopReason === "length")
 						) {
 							if (missingDecisionNudged) {
 								return yield* pauseLoop(
@@ -1366,7 +1405,9 @@ export const RalphLive = (config: RalphLiveConfig) =>
 							}
 							missingDecisionNudged = true;
 							pendingSignal = yield* waitForIterationSignal(iterationSessionFile);
-							const nudgeDispatch = yield* boundary.sendFollowUp(buildMissingDecisionNudge());
+							const nudgeDispatch = yield* boundary.sendFollowUp(
+								buildMissingDecisionNudge(),
+							);
 							if (!nudgeDispatch.dispatched) {
 								return yield* pauseLoop(
 									boundary.cwd,
@@ -1477,52 +1518,54 @@ export const RalphLive = (config: RalphLiveConfig) =>
 				} satisfies RalphContinueResult;
 			});
 
-			const recordFinish: RalphService["recordFinish"] = Effect.fn(
-				"Ralph.recordFinish",
-			)(function* (cwd, sessionFile, message) {
-				const trimmedMessage = message.trim();
-				if (trimmedMessage.length === 0) {
-					return { text: "Finish message must not be empty." } satisfies RalphFinishResult;
-				}
+			const recordFinish: RalphService["recordFinish"] = Effect.fn("Ralph.recordFinish")(
+				function* (cwd, sessionFile, message) {
+					const trimmedMessage = message.trim();
+					if (trimmedMessage.length === 0) {
+						return {
+							text: "Finish message must not be empty.",
+						} satisfies RalphFinishResult;
+					}
 
-				const stateOption = yield* repo.findLoopBySessionFile(cwd, sessionFile);
-				if (Option.isNone(stateOption)) {
-					return { text: "No active Ralph loop." } satisfies RalphFinishResult;
-				}
+					const stateOption = yield* repo.findLoopBySessionFile(cwd, sessionFile);
+					if (Option.isNone(stateOption)) {
+						return { text: "No active Ralph loop." } satisfies RalphFinishResult;
+					}
 
-				const state = stateOption.value;
-				if (state.status !== "active") {
-					return { text: "Ralph loop is not active." } satisfies RalphFinishResult;
-				}
-				if (!optionContains(state.activeIterationSessionFile, sessionFile)) {
-					return { text: "No active Ralph loop." } satisfies RalphFinishResult;
-				}
-				if (Option.isSome(state.pendingDecision)) {
+					const state = stateOption.value;
+					if (state.status !== "active") {
+						return { text: "Ralph loop is not active." } satisfies RalphFinishResult;
+					}
+					if (!optionContains(state.activeIterationSessionFile, sessionFile)) {
+						return { text: "No active Ralph loop." } satisfies RalphFinishResult;
+					}
+					if (Option.isSome(state.pendingDecision)) {
+						return {
+							text: "A Ralph decision is already recorded for this iteration.",
+						} satisfies RalphFinishResult;
+					}
+
+					const timestamp = yield* nowIso;
+					setPendingDecision(state, {
+						kind: "finish",
+						requestedAt: timestamp,
+						message: trimmedMessage,
+					});
+					if (yield* config.hasActiveSubagents()) {
+						state.activeIterationSessionFile = Option.none();
+						yield* markLoopPaused(cwd, state);
+						return {
+							text: "Finish recorded. Subagents are still active, so completion is blocked until they finish. Run /ralph resume when they are done.",
+						} satisfies RalphFinishResult;
+					}
+
+					yield* repo.saveState(cwd, state);
+					yield* setCurrentLoop(Option.some(state.name));
 					return {
-						text: "A Ralph decision is already recorded for this iteration.",
+						text: `Finish recorded for iteration ${state.iteration}.`,
 					} satisfies RalphFinishResult;
-				}
-
-				const timestamp = yield* nowIso;
-				setPendingDecision(state, {
-					kind: "finish",
-					requestedAt: timestamp,
-					message: trimmedMessage,
-				});
-				if (yield* config.hasActiveSubagents()) {
-					state.activeIterationSessionFile = Option.none();
-					yield* markLoopPaused(cwd, state);
-					return {
-						text: "Finish recorded. Subagents are still active, so completion is blocked until they finish. Run /ralph resume when they are done.",
-					} satisfies RalphFinishResult;
-				}
-
-				yield* repo.saveState(cwd, state);
-				yield* setCurrentLoop(Option.some(state.name));
-				return {
-					text: `Finish recorded for iteration ${state.iteration}.`,
-				} satisfies RalphFinishResult;
-			});
+				},
+			);
 
 			const handleAgentEnd: RalphService["handleAgentEnd"] = Effect.fn(
 				"Ralph.handleAgentEnd",
@@ -1566,7 +1609,10 @@ export const RalphLive = (config: RalphLiveConfig) =>
 				}
 
 				const state = ownedActiveState.value;
-				if (Option.isSome(state.pendingDecision) && state.pendingDecision.value.kind === "finish") {
+				if (
+					Option.isSome(state.pendingDecision) &&
+					state.pendingDecision.value.kind === "finish"
+				) {
 					const message = state.pendingDecision.value.message;
 					clearPendingDecision(state);
 					state.activeIterationSessionFile = Option.none();

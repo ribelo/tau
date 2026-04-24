@@ -2,10 +2,8 @@ import { Effect, Option, Schema } from "effect";
 
 import type { ExecutionProfile } from "../execution/schema.js";
 import { ExecutionProfileSchema } from "../execution/schema.js";
-import {
-	LoopContractValidationError,
-	LoopOwnershipValidationError,
-} from "./errors.js";
+import { SandboxConfigRequired as SandboxProfileSchema } from "../schemas/config.js";
+import { LoopContractValidationError, LoopOwnershipValidationError } from "./errors.js";
 
 const NonNegativeIntSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 const OptionalStringSchema = Schema.OptionFromNullOr(Schema.String);
@@ -99,25 +97,32 @@ export function sanitizePhaseId(value: string): string {
 
 export const LoopTaskIdSchema = Schema.NonEmptyString.check(Schema.isMaxLength(120)).check(
 	Schema.makeFilter(
-		(value) =>
-			value === sanitizeLoopTaskId(value) ||
-			"expected a sanitized loop task id",
+		(value) => value === sanitizeLoopTaskId(value) || "expected a sanitized loop task id",
 	),
 );
 export type LoopTaskId = Schema.Schema.Type<typeof LoopTaskIdSchema>;
 
 export const PhaseIdSchema = Schema.NonEmptyString.check(Schema.isMaxLength(120)).check(
 	Schema.makeFilter(
-		(value) =>
-			value === sanitizePhaseId(value) || "expected a sanitized phase id",
+		(value) => value === sanitizePhaseId(value) || "expected a sanitized phase id",
 	),
 );
 export type PhaseId = Schema.Schema.Type<typeof PhaseIdSchema>;
 
-export const LoopKindSchema = Schema.Literals(["ralph", "autoresearch", "blocked_manual_resolution"]);
+export const LoopKindSchema = Schema.Literals([
+	"ralph",
+	"autoresearch",
+	"blocked_manual_resolution",
+]);
 export type LoopKind = Schema.Schema.Type<typeof LoopKindSchema>;
 
-export const LoopLifecycleSchema = Schema.Literals(["draft", "active", "paused", "completed", "archived"]);
+export const LoopLifecycleSchema = Schema.Literals([
+	"draft",
+	"active",
+	"paused",
+	"completed",
+	"archived",
+]);
 export type LoopLifecycle = Schema.Schema.Type<typeof LoopLifecycleSchema>;
 
 export const MetricDirectionSchema = Schema.Literals(["lower", "higher"]);
@@ -159,6 +164,7 @@ const RalphLoopStateDetailsSchema = Schema.Struct({
 	lastReflectionAt: NonNegativeIntSchema,
 	pendingDecision: OptionalRalphPendingDecisionSchema,
 	pinnedExecutionProfile: ExecutionProfileSchema,
+	sandboxProfile: SandboxProfileSchema,
 });
 export type RalphLoopStateDetails = Schema.Schema.Type<typeof RalphLoopStateDetailsSchema>;
 
@@ -217,13 +223,11 @@ export type BlockedManualResolutionLoopState = Schema.Schema.Type<
 	typeof BlockedManualResolutionLoopStateSchema
 >;
 
-export const LoopPersistedStateSchema = Schema.Union(
-	[
-		RalphLoopPersistedStateSchema,
-		AutoresearchLoopPersistedStateSchema,
-		BlockedManualResolutionLoopStateSchema,
-	],
-);
+export const LoopPersistedStateSchema = Schema.Union([
+	RalphLoopPersistedStateSchema,
+	AutoresearchLoopPersistedStateSchema,
+	BlockedManualResolutionLoopStateSchema,
+]);
 export type LoopPersistedState = Schema.Schema.Type<typeof LoopPersistedStateSchema>;
 export type EncodedLoopPersistedState = Schema.Codec.Encoded<typeof LoopPersistedStateSchema>;
 
@@ -255,9 +259,7 @@ export const AutoresearchPhaseSnapshotSchema = Schema.Struct({
 	constraints: Schema.Array(Schema.NonEmptyString),
 	pinnedExecutionProfile: ExecutionProfileSchema,
 });
-export type AutoresearchPhaseSnapshot = Schema.Schema.Type<
-	typeof AutoresearchPhaseSnapshotSchema
->;
+export type AutoresearchPhaseSnapshot = Schema.Schema.Type<typeof AutoresearchPhaseSnapshotSchema>;
 export type EncodedAutoresearchPhaseSnapshot = Schema.Codec.Encoded<
 	typeof AutoresearchPhaseSnapshotSchema
 >;
@@ -318,9 +320,7 @@ export const encodeLoopPersistedState = (
 export const decodeLoopPersistedStateJson = (
 	input: string,
 ): Effect.Effect<LoopPersistedState, LoopContractValidationError, never> =>
-	parseJsonUnknown(input, "loops.state.json").pipe(
-		Effect.flatMap(decodeLoopPersistedState),
-	);
+	parseJsonUnknown(input, "loops.state.json").pipe(Effect.flatMap(decodeLoopPersistedState));
 
 export const decodeLoopPersistedStateJsonWithMigration = (
 	input: string,
@@ -332,9 +332,7 @@ export const decodeLoopPersistedStateJsonWithMigration = (
 export const encodeLoopPersistedStateJson = (
 	state: LoopPersistedState,
 ): Effect.Effect<string, LoopContractValidationError, never> =>
-	encodeLoopPersistedState(state).pipe(
-		Effect.map((encoded) => JSON.stringify(encoded, null, 2)),
-	);
+	encodeLoopPersistedState(state).pipe(Effect.map((encoded) => JSON.stringify(encoded, null, 2)));
 
 export function decodeLoopPersistedStateSync(value: unknown): LoopPersistedState {
 	try {
@@ -354,9 +352,7 @@ export function decodeLoopPersistedStateSyncWithMigration(
 	};
 }
 
-export function encodeLoopPersistedStateSync(
-	state: LoopPersistedState,
-): EncodedLoopPersistedState {
+export function encodeLoopPersistedStateSync(state: LoopPersistedState): EncodedLoopPersistedState {
 	try {
 		return encodeLoopPersistedStateSchemaSync(state);
 	} catch (error) {
@@ -407,9 +403,7 @@ export const encodeAutoresearchPhaseSnapshotJson = (
 		Effect.map((encoded) => JSON.stringify(encoded, null, 2)),
 	);
 
-export function decodeAutoresearchPhaseSnapshotSync(
-	value: unknown,
-): AutoresearchPhaseSnapshot {
+export function decodeAutoresearchPhaseSnapshotSync(value: unknown): AutoresearchPhaseSnapshot {
 	try {
 		return decodePhaseSnapshotSchemaSync(value);
 	} catch (error) {
@@ -431,7 +425,9 @@ export function decodeAutoresearchPhaseSnapshotJsonSync(input: string): Autorese
 	return decodeAutoresearchPhaseSnapshotSync(parseJsonUnknownSync(input));
 }
 
-export function encodeAutoresearchPhaseSnapshotJsonSync(snapshot: AutoresearchPhaseSnapshot): string {
+export function encodeAutoresearchPhaseSnapshotJsonSync(
+	snapshot: AutoresearchPhaseSnapshot,
+): string {
 	return JSON.stringify(encodeAutoresearchPhaseSnapshotSync(snapshot), null, 2);
 }
 
@@ -452,13 +448,13 @@ export const validateLoopOwnership = (
 			Option.isSome(state.ownership.child) &&
 			Option.isSome(state.ownership.controller) &&
 			(state.ownership.child.value.sessionId === state.ownership.controller.value.sessionId ||
-				state.ownership.child.value.sessionFile === state.ownership.controller.value.sessionFile)
+				state.ownership.child.value.sessionFile ===
+					state.ownership.controller.value.sessionFile)
 		) {
 			return yield* Effect.fail(
 				new LoopOwnershipValidationError({
 					taskId: state.taskId,
-					reason:
-						"controller and child sessions must be different identities",
+					reason: "controller and child sessions must be different identities",
 				}),
 			);
 		}
@@ -467,8 +463,7 @@ export const validateLoopOwnership = (
 			return yield* Effect.fail(
 				new LoopOwnershipValidationError({
 					taskId: state.taskId,
-					reason:
-						"blocked manual-resolution loops cannot keep an active child session",
+					reason: "blocked manual-resolution loops cannot keep an active child session",
 				}),
 			);
 		}
@@ -480,8 +475,7 @@ export const validateLoopOwnership = (
 			return yield* Effect.fail(
 				new LoopOwnershipValidationError({
 					taskId: state.taskId,
-					reason:
-						"completed or archived loops cannot keep an active child session",
+					reason: "completed or archived loops cannot keep an active child session",
 				}),
 			);
 		}
@@ -496,9 +490,7 @@ export function isLoopStateKind(
 	return state.kind === kind;
 }
 
-export function getPinnedExecutionProfile(
-	state: LoopPersistedState,
-): ExecutionProfile | null {
+export function getPinnedExecutionProfile(state: LoopPersistedState): ExecutionProfile | null {
 	if (state.kind === "ralph") {
 		return state.ralph.pinnedExecutionProfile;
 	}

@@ -22,6 +22,7 @@ import {
 	makeExecutionProfile,
 	makeExecutionProfileForPrompt,
 	makePromptProfile,
+	makeSandboxProfile,
 } from "./ralph-test-helpers.js";
 
 function makeTempDir(): string {
@@ -47,6 +48,7 @@ function makeState(loopName: string, sessionFile: string): LoopState {
 		activeIterationSessionFile: Option.some(sessionFile),
 		pendingDecision: Option.none<RalphPendingDecision>(),
 		executionProfile: makeExecutionProfile(),
+		sandboxProfile: makeSandboxProfile(),
 	};
 }
 
@@ -132,7 +134,9 @@ describe("ralph core service", () => {
 		if (Option.isSome(result.saved) && Option.isSome(result.saved.value.pendingDecision)) {
 			expect(result.saved.value.pendingDecision.value.kind).toBe("finish");
 			if (result.saved.value.pendingDecision.value.kind === "finish") {
-				expect(result.saved.value.pendingDecision.value.message).toBe("Task fully complete.");
+				expect(result.saved.value.pendingDecision.value.message).toBe(
+					"Task fully complete.",
+				);
 			}
 		}
 	});
@@ -174,7 +178,12 @@ describe("ralph core service", () => {
 				yield* ralph.startLoopState(cwd, {
 					loopName: "visible-loop",
 					taskFile: path.join(".pi", "loops", "tasks", "visible-loop.md"),
-					executionProfile: makeExecutionProfile({ mode: "smart", model: "anthropic/claude-opus-4-5", thinking: "medium" }),
+					executionProfile: makeExecutionProfile({
+						mode: "smart",
+						model: "anthropic/claude-opus-4-5",
+						thinking: "medium",
+					}),
+					sandboxProfile: makeSandboxProfile(),
 					maxIterations: 50,
 					itemsPerIteration: 0,
 					reflectEvery: 0,
@@ -207,6 +216,7 @@ describe("ralph core service", () => {
 					loopName: "recoverable-loop",
 					taskFile: path.join(".pi", "loops", "tasks", "recoverable-loop.md"),
 					executionProfile: makeExecutionProfile(),
+					sandboxProfile: makeSandboxProfile(),
 					maxIterations: 50,
 					itemsPerIteration: 0,
 					reflectEvery: 0,
@@ -250,7 +260,11 @@ describe("ralph core service", () => {
 					controllerSessionFile: Option.some(controllerSessionFile),
 					activeIterationSessionFile: Option.none(),
 				});
-				yield* repo.writeTaskFile(cwd, path.join(".pi", "loops", "tasks", `${loopName}.md`), "# Task\n");
+				yield* repo.writeTaskFile(
+					cwd,
+					path.join(".pi", "loops", "tasks", `${loopName}.md`),
+					"# Task\n",
+				);
 
 				const followUpStarted = yield* Deferred.make<void>();
 				const releaseFollowUp = yield* Deferred.make<void>();
@@ -311,9 +325,9 @@ describe("ralph core service", () => {
 		if (Option.isSome(result.afterHandledEnd)) {
 			expect(result.afterHandledEnd.value.status).toBe("active");
 			expect(Option.isNone(result.afterHandledEnd.value.pendingDecision)).toBe(true);
-			expect(Option.getOrUndefined(result.afterHandledEnd.value.activeIterationSessionFile)).toBe(
-				iterationSessionFile,
-			);
+			expect(
+				Option.getOrUndefined(result.afterHandledEnd.value.activeIterationSessionFile),
+			).toBe(iterationSessionFile);
 		}
 		expect(result.done.text).toContain("Iteration 1 complete. Continue recorded.");
 		expect(Option.isSome(result.afterDone)).toBe(true);
@@ -356,7 +370,11 @@ describe("ralph core service", () => {
 					activeIterationSessionFile: Option.none(),
 					executionProfile: pinnedExecutionProfile,
 				});
-				yield* repo.writeTaskFile(cwd, path.join(".pi", "loops", "tasks", `${loopName}.md`), "# Task\n");
+				yield* repo.writeTaskFile(
+					cwd,
+					path.join(".pi", "loops", "tasks", `${loopName}.md`),
+					"# Task\n",
+				);
 
 				const appliedProfiles: ExecutionProfile[] = [];
 				let sessionFile = controllerSessionFile;
@@ -378,7 +396,10 @@ describe("ralph core service", () => {
 					newSession: () =>
 						Effect.sync(() => {
 							newSessionCount += 1;
-							sessionFile = newSessionCount === 1 ? iterationSessionFileA : iterationSessionFileB;
+							sessionFile =
+								newSessionCount === 1
+									? iterationSessionFileA
+									: iterationSessionFileB;
 							return { cancelled: false } as const;
 						}),
 					applyExecutionProfile: (profile) =>
@@ -405,11 +426,19 @@ describe("ralph core service", () => {
 				const runFiber = yield* Effect.forkDetach(ralph.runLoop(boundary, loopName));
 				yield* Deferred.await(startedA);
 				yield* ralph.recordContinue(cwd, iterationSessionFileA);
-				yield* ralph.handleAgentEnd(cwd, iterationSessionFileA, makeAgentEndEvent("worked"));
+				yield* ralph.handleAgentEnd(
+					cwd,
+					iterationSessionFileA,
+					makeAgentEndEvent("worked"),
+				);
 				yield* Deferred.succeed(releaseA, undefined);
 				yield* Deferred.await(startedB);
 				yield* ralph.recordContinue(cwd, iterationSessionFileB);
-				yield* ralph.handleAgentEnd(cwd, iterationSessionFileB, makeAgentEndEvent("worked again"));
+				yield* ralph.handleAgentEnd(
+					cwd,
+					iterationSessionFileB,
+					makeAgentEndEvent("worked again"),
+				);
 				yield* Deferred.succeed(releaseB, undefined);
 				yield* Fiber.join(runFiber);
 
@@ -482,7 +511,9 @@ describe("ralph core service", () => {
 							Effect.sync(() => {
 								newSessionCount += 1;
 								sessionFile =
-									newSessionCount === 1 ? iterationSessionFileA : iterationSessionFileB;
+									newSessionCount === 1
+										? iterationSessionFileA
+										: iterationSessionFileB;
 								return { cancelled: false } as const;
 							}),
 						applyExecutionProfile: () => Effect.succeed({ applied: true as const }),
@@ -536,9 +567,9 @@ describe("ralph core service", () => {
 			expect(Option.isSome(afterContinue)).toBe(true);
 			if (Option.isSome(afterContinue)) {
 				expect(afterContinue.value.iteration).toBe(2);
-				expect(
-					Option.getOrUndefined(afterContinue.value.activeIterationSessionFile),
-				).toBe(iterationSessionFileB);
+				expect(Option.getOrUndefined(afterContinue.value.activeIterationSessionFile)).toBe(
+					iterationSessionFileB,
+				);
 				expect(Option.isNone(afterContinue.value.pendingDecision)).toBe(true);
 			}
 
@@ -546,7 +577,11 @@ describe("ralph core service", () => {
 				Effect.gen(function* () {
 					const ralph = yield* Ralph;
 					yield* ralph.recordFinish(cwd, iterationSessionFileB, "done");
-					yield* ralph.handleAgentEnd(cwd, iterationSessionFileB, makeAgentEndEvent("done"));
+					yield* ralph.handleAgentEnd(
+						cwd,
+						iterationSessionFileB,
+						makeAgentEndEvent("done"),
+					);
 				}),
 			);
 			resolveReleaseB();
@@ -680,10 +715,18 @@ describe("ralph core service", () => {
 
 		expect(beforeNuke.archived.status).toBe("archived");
 		expect(beforeNuke.cleaned.cleanedLoops).toEqual(["done-a", "done-b"]);
-		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "state", "sleepy-loop.json"))).toBe(false);
-		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "tasks", "sleepy-loop.md"))).toBe(false);
-		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "archive", "state", "sleepy-loop.json"))).toBe(true);
-		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "archive", "tasks", "sleepy-loop.md"))).toBe(true);
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "state", "sleepy-loop.json"))).toBe(
+			false,
+		);
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "tasks", "sleepy-loop.md"))).toBe(
+			false,
+		);
+		expect(
+			fs.existsSync(path.join(cwd, ".pi", "loops", "archive", "state", "sleepy-loop.json")),
+		).toBe(true);
+		expect(
+			fs.existsSync(path.join(cwd, ".pi", "loops", "archive", "tasks", "sleepy-loop.md")),
+		).toBe(true);
 		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "state", "done-a.json"))).toBe(false);
 		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "tasks", "done-a.md"))).toBe(false);
 		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "state", "done-b.json"))).toBe(false);

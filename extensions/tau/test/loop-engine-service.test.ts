@@ -11,16 +11,10 @@ import {
 	parseAutoresearchTaskDocument,
 	renderAutoresearchTaskDocument,
 } from "../src/autoresearch/task-contract.js";
-import {
-	LoopAmbiguousOwnershipError,
-	LoopOwnershipValidationError,
-} from "../src/loops/errors.js";
-import type {
-	LoopPersistedState,
-	LoopSessionRef,
-} from "../src/loops/schema.js";
+import { LoopAmbiguousOwnershipError, LoopOwnershipValidationError } from "../src/loops/errors.js";
+import type { LoopPersistedState, LoopSessionRef } from "../src/loops/schema.js";
 import { LoopEngine, LoopEngineLive } from "../src/services/loop-engine.js";
-import { makeExecutionProfile } from "./ralph-test-helpers.js";
+import { makeExecutionProfile, makeSandboxProfile } from "./ralph-test-helpers.js";
 
 const loopEngineLayer = LoopEngineLive.pipe(
 	Layer.provideMerge(LoopRepoLive),
@@ -63,6 +57,7 @@ function makeInvalidState(taskId: string, child: LoopSessionRef): LoopPersistedS
 			lastReflectionAt: 0,
 			pendingDecision: Option.none(),
 			pinnedExecutionProfile: makeExecutionProfile(),
+			sandboxProfile: makeSandboxProfile(),
 		},
 	};
 }
@@ -97,6 +92,7 @@ describe("loop engine service", () => {
 					reflectEvery: 5,
 					reflectInstructions: "reflect",
 					executionProfile: makeExecutionProfile(),
+					sandboxProfile: makeSandboxProfile(),
 				});
 
 				const started = yield* engine.startLoop(cwd, "engine-loop", controller);
@@ -136,9 +132,9 @@ describe("loop engine service", () => {
 		expect(
 			fs.existsSync(path.join(cwd, ".pi", "loops", "archive", "state", "engine-loop.json")),
 		).toBe(true);
-		expect(
-			fs.existsSync(path.join(cwd, ".pi", "loops", "state", "engine-loop.json")),
-		).toBe(false);
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "state", "engine-loop.json"))).toBe(
+			false,
+		);
 	});
 
 	it("writes strict autoresearch task docs and materializes phase snapshots on start", async () => {
@@ -413,6 +409,7 @@ describe("loop engine service", () => {
 					reflectEvery: 5,
 					reflectInstructions: "reflect",
 					executionProfile: makeExecutionProfile(),
+					sandboxProfile: makeSandboxProfile(),
 				});
 				yield* engine.createLoop(cwd, {
 					kind: "ralph",
@@ -424,6 +421,7 @@ describe("loop engine service", () => {
 					reflectEvery: 5,
 					reflectInstructions: "reflect",
 					executionProfile: makeExecutionProfile(),
+					sandboxProfile: makeSandboxProfile(),
 				});
 				yield* engine.startLoop(cwd, "ambiguous-a", shared);
 				yield* engine.pauseLoop(cwd, "ambiguous-a");
@@ -500,8 +498,13 @@ describe("loop engine service", () => {
 					reflectEvery: 2,
 					reflectInstructions: "reflect",
 					executionProfile: makeExecutionProfile(),
+					sandboxProfile: makeSandboxProfile(),
 				});
-				yield* engine.startLoop(cwd, "clean-ralph", makeSession("c-ralph", "c-ralph.session.json"));
+				yield* engine.startLoop(
+					cwd,
+					"clean-ralph",
+					makeSession("c-ralph", "c-ralph.session.json"),
+				);
 				yield* engine.stopLoop(cwd, "clean-ralph");
 
 				yield* engine.createLoop(cwd, {

@@ -12,7 +12,7 @@ import type {
 	LoopPersistedState,
 	LoopSessionRef,
 } from "../src/loops/schema.js";
-import { makeExecutionProfile } from "./ralph-test-helpers.js";
+import { makeExecutionProfile, makeSandboxProfile } from "./ralph-test-helpers.js";
 
 const loopRepoLayer = LoopRepoLive.pipe(Layer.provide(NodeFileSystem.layer));
 
@@ -56,6 +56,7 @@ function makeLoopState(taskId: string): LoopPersistedState {
 			lastReflectionAt: 0,
 			pendingDecision: Option.none(),
 			pinnedExecutionProfile: makeExecutionProfile(),
+			sandboxProfile: makeSandboxProfile(),
 		},
 	};
 }
@@ -113,12 +114,8 @@ describe("loop repo", () => {
 		if (Option.isSome(loaded)) {
 			expect(loaded.value).toEqual(loopState);
 		}
-		expect(
-			fs.existsSync(path.join(cwd, ".pi", "loops", "state", "repo-loop.json")),
-		).toBe(true);
-		expect(
-			fs.existsSync(path.join(cwd, ".pi", "loops", "tasks", "repo-loop.md")),
-		).toBe(true);
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "state", "repo-loop.json"))).toBe(true);
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "tasks", "repo-loop.md"))).toBe(true);
 	});
 
 	it("migrates legacy state files missing ralph.pendingDecision on load", async () => {
@@ -205,7 +202,14 @@ describe("loop repo", () => {
 		}
 		expect(
 			fs.existsSync(
-				path.join(cwd, ".pi", "loops", "phases", snapshot.taskId, `${snapshot.phaseId}.json`),
+				path.join(
+					cwd,
+					".pi",
+					"loops",
+					"phases",
+					snapshot.taskId,
+					`${snapshot.phaseId}.json`,
+				),
 			),
 		).toBe(true);
 	});
@@ -231,7 +235,13 @@ describe("loop repo", () => {
 					cwd,
 					{
 						...loopState,
-						taskFile: path.join(".pi", "loops", "archive", "tasks", `${loopState.taskId}.md`),
+						taskFile: path.join(
+							".pi",
+							"loops",
+							"archive",
+							"tasks",
+							`${loopState.taskId}.md`,
+						),
 						lifecycle: "archived",
 						archivedAt: Option.some("2026-01-01T01:00:00.000Z"),
 					},
@@ -241,18 +251,14 @@ describe("loop repo", () => {
 			}).pipe(Effect.provide(loopRepoLayer)),
 		);
 
-		expect(
-			fs.existsSync(path.join(cwd, ".pi", "loops", "state", "archive-loop.json")),
-		).toBe(false);
-		expect(
-			fs.existsSync(path.join(cwd, ".pi", "loops", "tasks", "archive-loop.md")),
-		).toBe(false);
-		expect(
-			fs.existsSync(path.join(cwd, ".pi", "loops", "phases", "archive-loop")),
-		).toBe(false);
-		expect(
-			fs.existsSync(path.join(cwd, ".pi", "loops", "runs", "archive-loop")),
-		).toBe(false);
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "state", "archive-loop.json"))).toBe(
+			false,
+		);
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "tasks", "archive-loop.md"))).toBe(
+			false,
+		);
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "phases", "archive-loop"))).toBe(false);
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "runs", "archive-loop"))).toBe(false);
 
 		expect(
 			fs.existsSync(path.join(cwd, ".pi", "loops", "archive", "state", "archive-loop.json")),
@@ -262,12 +268,29 @@ describe("loop repo", () => {
 		).toBe(true);
 		expect(
 			fs.existsSync(
-				path.join(cwd, ".pi", "loops", "archive", "phases", "archive-loop", "phase-001.json"),
+				path.join(
+					cwd,
+					".pi",
+					"loops",
+					"archive",
+					"phases",
+					"archive-loop",
+					"phase-001.json",
+				),
 			),
 		).toBe(true);
 		expect(
 			fs.existsSync(
-				path.join(cwd, ".pi", "loops", "archive", "runs", "archive-loop", "run-001", "benchmark.log"),
+				path.join(
+					cwd,
+					".pi",
+					"loops",
+					"archive",
+					"runs",
+					"archive-loop",
+					"run-001",
+					"benchmark.log",
+				),
 			),
 		).toBe(true);
 	});

@@ -5,8 +5,10 @@ import {
 	ExecutionProfileSchema,
 	makeExecutionProfile,
 } from "../execution/schema.js";
+import { SandboxConfigRequired as SandboxProfileSchema } from "../schemas/config.js";
 import { PromptModeProfileSchema } from "../prompt/profile.js";
 import { RalphContractValidationError } from "./errors.js";
+import { DEFAULT_SANDBOX_CONFIG } from "../sandbox/config.js";
 
 const NonNegativeIntSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 const OptionalStringSchema = Schema.OptionFromNullOr(Schema.String);
@@ -46,8 +48,7 @@ export type LoopStatus = Schema.Schema.Type<typeof LoopStatusSchema>;
 
 export const LoopNameSchema = Schema.NonEmptyString.check(Schema.isMaxLength(120)).check(
 	Schema.makeFilter(
-		(value) =>
-			value === sanitizeLoopName(value) || "expected a sanitized ralph loop name",
+		(value) => value === sanitizeLoopName(value) || "expected a sanitized ralph loop name",
 	),
 );
 export type LoopName = Schema.Schema.Type<typeof LoopNameSchema>;
@@ -72,6 +73,7 @@ const LoopStateSharedFields = {
 export const LoopStateSchema = Schema.Struct({
 	...LoopStateSharedFields,
 	executionProfile: Schema.mutableKey(ExecutionProfileSchema),
+	sandboxProfile: Schema.mutableKey(SandboxProfileSchema),
 });
 export type LoopState = Schema.Schema.Type<typeof LoopStateSchema>;
 export type EncodedLoopState = Schema.Codec.Encoded<typeof LoopStateSchema>;
@@ -115,7 +117,9 @@ const decodeLoopStateSchemaSync = Schema.decodeUnknownSync(LoopStateSchema);
 const decodeLegacyLoopStateSchemaSync = Schema.decodeUnknownSync(LegacyLoopStateSchema);
 const encodeLoopStateSchemaSync = Schema.encodeUnknownSync(LoopStateSchema);
 
-const parseJsonUnknown = (input: string): Effect.Effect<unknown, RalphContractValidationError, never> =>
+const parseJsonUnknown = (
+	input: string,
+): Effect.Effect<unknown, RalphContractValidationError, never> =>
 	Effect.try({
 		try: () => JSON.parse(input) as unknown,
 		catch: (error) => toContractValidationError("ralph.loop_state.json", error),
@@ -139,6 +143,7 @@ function legacyLoopStateToCanonical(state: LegacyLoopState): LoopState {
 			promptProfile: state.promptProfile,
 			policy: DEFAULT_EXECUTION_POLICY,
 		}),
+		sandboxProfile: DEFAULT_SANDBOX_CONFIG,
 	};
 }
 
@@ -170,9 +175,7 @@ export const encodeLoopState = (
 	state: LoopState,
 ): Effect.Effect<EncodedLoopState, RalphContractValidationError, never> =>
 	encodeLoopStateSchema(state).pipe(
-		Effect.mapError((error) =>
-			toContractValidationError("ralph.loop_state", error),
-		),
+		Effect.mapError((error) => toContractValidationError("ralph.loop_state", error)),
 	);
 
 export const decodeLoopStateJson = (
@@ -183,9 +186,7 @@ export const decodeLoopStateJson = (
 export const encodeLoopStateJson = (
 	state: LoopState,
 ): Effect.Effect<string, RalphContractValidationError, never> =>
-	encodeLoopState(state).pipe(
-		Effect.map((encoded) => JSON.stringify(encoded, null, 2)),
-	);
+	encodeLoopState(state).pipe(Effect.map((encoded) => JSON.stringify(encoded, null, 2)));
 
 export function decodeLoopStateSync(value: unknown): LoopState {
 	return decodeLoopStateCompatSync(value);

@@ -17,6 +17,7 @@ import type {
 import initRalph from "../src/ralph/index.js";
 import { RalphRepoLive } from "../src/ralph/repo.js";
 import { TAU_PERSISTED_STATE_TYPE } from "../src/shared/state.js";
+import { DEFAULT_SANDBOX_CONFIG, type ResolvedSandboxConfig } from "../src/sandbox/config.js";
 import {
 	decodeLoopPersistedStateJsonSync,
 	encodeLoopPersistedStateJsonSync,
@@ -220,8 +221,17 @@ function readLoopState(cwd: string, loopName: string) {
 		activeIterationSessionFile: Option.map(state.ownership.child, (child) => child.sessionFile),
 		pendingDecision: state.ralph.pendingDecision,
 		executionProfile: state.ralph.pinnedExecutionProfile,
+		sandboxProfile: state.ralph.sandboxProfile,
 	};
 }
+
+const FULL_ACCESS_SANDBOX_PROFILE: ResolvedSandboxConfig = {
+	...DEFAULT_SANDBOX_CONFIG,
+	preset: "full-access",
+	filesystemMode: "danger-full-access",
+	networkMode: "allow-all",
+	approvalPolicy: "never",
+};
 
 function writeLoopState(
 	cwd: string,
@@ -231,6 +241,7 @@ function writeLoopState(
 		readonly iteration?: number;
 		readonly controllerSessionFile: string;
 		readonly activeIterationSessionFile?: string;
+		readonly sandboxProfile?: ResolvedSandboxConfig;
 		readonly pendingDecision?:
 			| {
 					readonly kind: "continue";
@@ -289,6 +300,7 @@ function writeLoopState(
 						? Option.none()
 						: Option.some(input.pendingDecision),
 				pinnedExecutionProfile: makeExecutionProfile(),
+				sandboxProfile: input.sandboxProfile ?? DEFAULT_SANDBOX_CONFIG,
 			},
 		}),
 		"utf-8",
@@ -997,7 +1009,7 @@ describe("ralph service behavior freeze", () => {
 		expect(Option.isNone(finalState.activeIterationSessionFile)).toBe(true);
 	});
 
-	it("copies the controller sandbox session override into Ralph iteration sessions", async () => {
+	it("stores the start sandbox profile and copies it into Ralph iteration sessions", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 
@@ -1021,7 +1033,11 @@ describe("ralph service behavior freeze", () => {
 					customType: TAU_PERSISTED_STATE_TYPE,
 					data: {
 						sandbox: {
-							sessionOverride: { preset: "full-access" },
+							sessionOverride: {
+								preset: "full-access",
+								subagent: false,
+								approvalTimeoutSeconds: 60,
+							},
 							systemPromptInjected: true,
 							lastCommunicatedHash: "old-hash",
 						},
@@ -1039,10 +1055,17 @@ describe("ralph service behavior freeze", () => {
 			customType: TAU_PERSISTED_STATE_TYPE,
 			data: {
 				sandbox: {
-					sessionOverride: { preset: "full-access" },
+					sessionOverride: {
+						preset: "full-access",
+						subagent: false,
+						approvalTimeoutSeconds: 60,
+					},
 				},
 			},
 		});
+
+		const state = readLoopState(cwd, "sandbox-copy-loop");
+		expect(state.sandboxProfile).toEqual(FULL_ACCESS_SANDBOX_PROFILE);
 
 		await piHarness.fire("session_shutdown", { type: "session_shutdown" }, context.ctx);
 		await expect(startPromise).resolves.toBeUndefined();
@@ -1108,15 +1131,30 @@ describe("ralph service behavior freeze", () => {
 			controllerSessionFile,
 			iteration: 3,
 			status: "paused",
+			sandboxProfile: FULL_ACCESS_SANDBOX_PROFILE,
 		});
 
-		const context = makeContext(cwd, [
-			{
-				cancelled: false,
-				sessionFile: childSessionFile,
-				updateContextSessionFile: false,
-			},
-		]);
+		const context = makeContext(
+			cwd,
+			[
+				{
+					cancelled: false,
+					sessionFile: childSessionFile,
+					updateContextSessionFile: false,
+				},
+			],
+			[
+				{
+					type: "custom",
+					customType: TAU_PERSISTED_STATE_TYPE,
+					data: {
+						sandbox: {
+							sessionOverride: { preset: "read-only" },
+						},
+					},
+				},
+			],
+		);
 		context.setSessionFile(path.join(cwd, ".pi", "sessions", "other.session.json"));
 
 		const resumePromise = Promise.resolve(
@@ -1124,6 +1162,18 @@ describe("ralph service behavior freeze", () => {
 		);
 		await waitFor(() => context.switchSessionCalls.includes(controllerSessionFile));
 		await waitFor(() => childHarness.sentUserMessages.length === 1);
+		expect(context.appendedCustomEntries).toContainEqual({
+			customType: TAU_PERSISTED_STATE_TYPE,
+			data: {
+				sandbox: {
+					sessionOverride: {
+						preset: "full-access",
+						subagent: false,
+						approvalTimeoutSeconds: 60,
+					},
+				},
+			},
+		});
 		expect(controllerHarness.sentUserMessages).toHaveLength(0);
 
 		await childHarness.fire("session_shutdown", { type: "session_shutdown" }, childContext.ctx);
