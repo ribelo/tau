@@ -254,6 +254,7 @@ type AssistantStopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
 type AssistantSummary = {
 	readonly text: string;
 	readonly stopReason: Option.Option<AssistantStopReason>;
+	readonly errorMessage: Option.Option<string>;
 	readonly hasUsableAssistantMessage: boolean;
 };
 
@@ -275,6 +276,7 @@ const extractLastAssistantSummary = (event: AgentEndEvent): AssistantSummary => 
 		return {
 			text: "",
 			stopReason: Option.none(),
+			errorMessage: Option.none(),
 			hasUsableAssistantMessage: false,
 		};
 	}
@@ -286,12 +288,71 @@ const extractLastAssistantSummary = (event: AgentEndEvent): AssistantSummary => 
 		"stopReason" in lastAssistant && isAssistantStopReason(lastAssistant.stopReason)
 			? Option.some(lastAssistant.stopReason)
 			: Option.none<AssistantStopReason>();
+	const errorMessage =
+		"errorMessage" in lastAssistant && typeof lastAssistant.errorMessage === "string"
+			? Option.some(lastAssistant.errorMessage)
+			: Option.none<string>();
 	return {
 		text,
 		stopReason,
+		errorMessage,
 		hasUsableAssistantMessage: true,
 	};
 };
+
+const AUTO_RECOVERABLE_ERROR_PATTERNS = [
+	/overloaded/i,
+	/provider.?returned.?error/i,
+	/rate.?limit/i,
+	/too many requests/i,
+	/\b429\b/,
+	/\b50[0234]\b/,
+	/service.?unavailable/i,
+	/server.?error/i,
+	/internal.?error/i,
+	/network.?error/i,
+	/connection.?error/i,
+	/connection.?refused/i,
+	/connection.?lost/i,
+	/other side closed/i,
+	/fetch failed/i,
+	/upstream.?connect/i,
+	/reset before headers/i,
+	/socket hang up/i,
+	/ended without/i,
+	/http2 request did not get a response/i,
+	/timed? out/i,
+	/timeout/i,
+	/terminated/i,
+	/retry delay/i,
+	/prompt is too long/i,
+	/request_too_large/i,
+	/input is too long for requested model/i,
+	/exceeds the context window/i,
+	/input token count.*exceeds the maximum/i,
+	/maximum prompt length is \d+/i,
+	/reduce the length of the messages/i,
+	/maximum context length is \d+ tokens/i,
+	/exceeds the limit of \d+/i,
+	/exceeds the available context size/i,
+	/greater than the context length/i,
+	/context window exceeds limit/i,
+	/exceeded model token limit/i,
+	/too large for model with \d+ maximum context length/i,
+	/model_context_window_exceeded/i,
+	/prompt too long; exceeded (?:max )?context length/i,
+	/context[_ ]length[_ ]exceeded/i,
+	/too many tokens/i,
+	/token limit exceeded/i,
+];
+
+function isAutomaticallyRecoverableAssistantError(summary: AssistantSummary): boolean {
+	if (Option.isNone(summary.errorMessage)) {
+		return false;
+	}
+	const message = summary.errorMessage.value;
+	return AUTO_RECOVERABLE_ERROR_PATTERNS.some((pattern) => pattern.test(message));
+}
 
 const optionContains = (option: Option.Option<string>, value: string | undefined): boolean => {
 	if (value === undefined) {
@@ -1448,13 +1509,24 @@ export const RalphLive = (config: RalphLiveConfig) =>
 								"stopped",
 							);
 						}
+						if (stopReason === "error") {
+							if (isAutomaticallyRecoverableAssistantError(assistant)) {
+								pendingSignal = yield* waitForIterationSignal(iterationSessionFile);
+								continue;
+							}
+							return yield* pauseLoop(
+								boundary.cwd,
+								afterTurn,
+								`Iteration ${afterTurn.iteration} ended with stop reason ${stopReason}. Ralph paused. Use /ralph resume ${loopName} to continue.`,
+								"stopped",
+							);
+						}
 
 						if (
 							assistant.hasUsableAssistantMessage &&
 							(stopReason === undefined ||
 								stopReason === "stop" ||
-								stopReason === "length" ||
-								stopReason === "error")
+								stopReason === "length")
 						) {
 							if (missingDecisionNudged) {
 								return yield* pauseLoop(

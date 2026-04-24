@@ -646,6 +646,7 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 function agentEndPayload(
 	text: string,
 	stopReason: "stop" | "length" | "toolUse" | "error" | "aborted" | undefined = "stop",
+	errorMessage?: string,
 ) {
 	return {
 		type: "agent_end",
@@ -654,6 +655,7 @@ function agentEndPayload(
 				role: "assistant",
 				content: [{ type: "text", text }],
 				...(stopReason === undefined ? {} : { stopReason }),
+				...(errorMessage === undefined ? {} : { errorMessage }),
 			},
 		],
 	};
@@ -1544,7 +1546,7 @@ describe("ralph service behavior freeze", () => {
 		).toBe(true);
 	});
 
-	it("nudges after a recoverable assistant error instead of pausing the Ralph loop", async () => {
+	it("waits through an automatically recoverable assistant error instead of nudging or pausing", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 
@@ -1570,11 +1572,16 @@ describe("ralph service behavior freeze", () => {
 
 		await piHarness.fire(
 			"agent_end",
-			agentEndPayload("apply_patch failed, retrying", "error"),
+			agentEndPayload(
+				"provider returned error, retrying",
+				"error",
+				"Provider returned error: 503 service unavailable",
+			),
 			context.ctx,
 		);
-		await waitFor(() => piHarness.sentUserMessages.length === 2);
+		await new Promise((resolve) => setTimeout(resolve, 50));
 		expect(startResolved).toBe(false);
+		expect(piHarness.sentUserMessages).toHaveLength(1);
 
 		const afterError = readLoopState(cwd, "recoverable-error-loop");
 		expect(afterError.status).toBe("active");
@@ -1596,6 +1603,46 @@ describe("ralph service behavior freeze", () => {
 		expect(
 			context.notifications.some((entry) => entry.message.includes("stop reason error")),
 		).toBe(false);
+	});
+
+	it("pauses on a non-retryable assistant error", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const piHarness = makePiHarness();
+		const ralphRuntime = makeRalphRuntime(false);
+		runtimes.push(ralphRuntime);
+		initRalph(piHarness.pi, ralphRuntime.run);
+
+		const command = piHarness.commands.get("ralph");
+		expect(command).toBeDefined();
+		if (!command) {
+			throw new Error("missing ralph command");
+		}
+
+		const context = makeContext(cwd, [{ cancelled: false }]);
+		const startPromise = Promise.resolve(
+			command.handler("start terminal-error-loop --max-iterations 1", context.ctx),
+		);
+		await waitFor(() => piHarness.sentUserMessages.length === 1);
+
+		await piHarness.fire(
+			"agent_end",
+			agentEndPayload(
+				"content filter blocked",
+				"error",
+				"Provider finish_reason: content_filter",
+			),
+			context.ctx,
+		);
+		await startPromise;
+
+		const state = readLoopState(cwd, "terminal-error-loop");
+		expect(state.status).toBe("paused");
+		expect(piHarness.sentUserMessages).toHaveLength(1);
+		expect(
+			context.notifications.some((entry) => entry.message.includes("stop reason error")),
+		).toBe(true);
 	});
 
 	it("nudges when stopReason is missing before pausing on a repeated missed Ralph decision", async () => {
