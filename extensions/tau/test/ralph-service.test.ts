@@ -319,6 +319,7 @@ function makeContext(
 	cwd: string,
 	newSessionPlan: readonly NewSessionPlan[] = [{ cancelled: false }],
 	initialEntries: readonly unknown[] = [],
+	replacementEntries: readonly unknown[] = initialEntries,
 ): ContextHarness {
 	const notifications: Notifications = [];
 	const newSessionCalls: unknown[] = [];
@@ -354,7 +355,7 @@ function makeContext(
 				getAll: () => [],
 			},
 			sessionManager: {
-				getEntries: () => [...initialEntries],
+				getEntries: () => [...replacementEntries],
 				getBranch: () => [],
 				getSessionId: () => "replacement-session",
 				getSessionFile: () => targetSessionFile,
@@ -1158,6 +1159,17 @@ describe("ralph service behavior freeze", () => {
 					data: {
 						sandbox: {
 							sessionOverride: { preset: "read-only" },
+						},
+					},
+				},
+			],
+			[
+				{
+					type: "custom",
+					customType: TAU_PERSISTED_STATE_TYPE,
+					data: {
+						sandbox: {
+							sessionOverride: { preset: "full-access" },
 						},
 					},
 				},

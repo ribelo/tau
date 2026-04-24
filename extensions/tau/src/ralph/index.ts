@@ -816,6 +816,7 @@ export default function initRalph(
 	): RalphCommandBoundaryHandle => {
 		let currentSessionFile = sessionFileFromContext(ctx);
 		let activeContext: RalphSessionContext = ctx;
+		const initialSandboxProfile = captureSandboxProfile(pi, ctx);
 		const sessionControl = (): SessionReplacementCommandContext =>
 			activeContext as SessionReplacementCommandContext;
 
@@ -894,9 +895,7 @@ export default function initRalph(
 			};
 		});
 
-		const captureBoundarySandboxProfile = Effect.sync(() =>
-			captureSandboxProfile(pi, activeContext),
-		);
+		const captureBoundarySandboxProfile = Effect.succeed(initialSandboxProfile);
 
 		const sendFollowUp: RalphCommandBoundary["sendFollowUp"] = Effect.fn(
 			"RalphCommandBoundary.sendFollowUp",
