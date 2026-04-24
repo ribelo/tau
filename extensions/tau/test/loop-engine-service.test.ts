@@ -14,7 +14,11 @@ import {
 import { LoopAmbiguousOwnershipError, LoopOwnershipValidationError } from "../src/loops/errors.js";
 import type { LoopPersistedState, LoopSessionRef } from "../src/loops/schema.js";
 import { LoopEngine, LoopEngineLive } from "../src/services/loop-engine.js";
-import { makeExecutionProfile, makeSandboxProfile } from "./ralph-test-helpers.js";
+import {
+	makeExecutionProfile,
+	makeSandboxProfile,
+	makeRalphMetrics,
+} from "./ralph-test-helpers.js";
 
 const loopEngineLayer = LoopEngineLive.pipe(
 	Layer.provideMerge(LoopRepoLive),
@@ -58,6 +62,7 @@ function makeInvalidState(taskId: string, child: LoopSessionRef): LoopPersistedS
 			pendingDecision: Option.none(),
 			pinnedExecutionProfile: makeExecutionProfile(),
 			sandboxProfile: Option.some(makeSandboxProfile()),
+			metrics: makeRalphMetrics(),
 		},
 	};
 }

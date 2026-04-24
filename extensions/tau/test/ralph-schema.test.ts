@@ -10,7 +10,11 @@ import {
 	encodeLoopStateJson,
 	LoopNameSchema,
 } from "../src/ralph/schema.js";
-import { makeExecutionProfile, makeSandboxProfile } from "./ralph-test-helpers.js";
+import {
+	makeExecutionProfile,
+	makeSandboxProfile,
+	makeRalphMetrics,
+} from "./ralph-test-helpers.js";
 
 const encodedLoopState: EncodedLoopState = {
 	name: "schema-loop",
@@ -29,6 +33,12 @@ const encodedLoopState: EncodedLoopState = {
 	pendingDecision: null,
 	executionProfile: makeExecutionProfile(),
 	sandboxProfile: makeSandboxProfile(),
+	metrics: {
+		totalTokens: 0,
+		totalCostUsd: 0,
+		activeDurationMs: 0,
+		activeStartedAt: null,
+	},
 };
 
 describe("ralph schema", () => {

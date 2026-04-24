@@ -8,6 +8,7 @@ import {
 	makeExecutionProfile,
 	makePromptProfile,
 	makeSandboxProfile,
+	makeRalphMetrics,
 } from "./ralph-test-helpers.js";
 
 describe("ralph fresh-session helpers", () => {

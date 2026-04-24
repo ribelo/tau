@@ -19,6 +19,7 @@ import { RalphRepo } from "../ralph/repo.js";
 import { RALPH_TASKS_DIR } from "../ralph/paths.js";
 import { RalphContractValidationError } from "../ralph/errors.js";
 import type { LoopState, RalphPendingDecision } from "../ralph/schema.js";
+import type { RalphLoopMetrics } from "../ralph/schema.js";
 import { StorageError } from "../shared/atomic-write.js";
 import { LoopEngine } from "./loop-engine.js";
 
@@ -514,6 +515,57 @@ const clearPendingDecision = (state: LoopState): void => {
 const isAtIterationLimit = (state: LoopState): boolean =>
 	state.maxIterations > 0 && state.iteration >= state.maxIterations;
 
+function activeStartedAtMillis(metrics: RalphLoopMetrics): number | undefined {
+	if (Option.isNone(metrics.activeStartedAt)) {
+		return undefined;
+	}
+	const millis = Date.parse(metrics.activeStartedAt.value);
+	return Number.isFinite(millis) ? millis : undefined;
+}
+
+function stopActiveTimer(metrics: RalphLoopMetrics, nowMillis: number): RalphLoopMetrics {
+	const startedAt = activeStartedAtMillis(metrics);
+	if (startedAt === undefined) {
+		return {
+			...metrics,
+			activeStartedAt: Option.none(),
+		};
+	}
+	return {
+		...metrics,
+		activeDurationMs: metrics.activeDurationMs + Math.max(0, nowMillis - startedAt),
+		activeStartedAt: Option.none(),
+	};
+}
+
+function addAgentEndUsage(metrics: RalphLoopMetrics, event: AgentEndEvent): RalphLoopMetrics {
+	let totalTokens = 0;
+	let totalCostUsd = 0;
+	for (const message of event.messages) {
+		if (message.role !== "assistant") {
+			continue;
+		}
+		if (message.stopReason === "aborted" || message.stopReason === "error") {
+			continue;
+		}
+		const { usage } = message;
+		if (usage === undefined) {
+			continue;
+		}
+		totalTokens +=
+			usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+		totalCostUsd += usage.cost.total;
+	}
+	if (totalTokens === 0 && totalCostUsd === 0) {
+		return metrics;
+	}
+	return {
+		...metrics,
+		totalTokens: metrics.totalTokens + totalTokens,
+		totalCostUsd: metrics.totalCostUsd + totalCostUsd,
+	};
+}
+
 export const RalphLive = (config: RalphLiveConfig) =>
 	Layer.effect(
 		Ralph,
@@ -649,6 +701,8 @@ export const RalphLive = (config: RalphLiveConfig) =>
 				cwd: string,
 				state: LoopState,
 			) {
+				const nowMillis = yield* Clock.currentTimeMillis;
+				state.metrics = stopActiveTimer(state.metrics, nowMillis);
 				if (state.status === "active") {
 					yield* repo.saveState(cwd, state);
 					yield* mapLoopEngineError(loopEngine.pauseLoop(cwd, state.name));
@@ -666,9 +720,11 @@ export const RalphLive = (config: RalphLiveConfig) =>
 				cwd: string,
 				state: LoopState,
 			) {
-				const completedAt = Option.some(yield* nowIso);
+				const nowMillis = yield* Clock.currentTimeMillis;
+				const completedAt = Option.some(new Date(nowMillis).toISOString());
 				const nextState: LoopState = {
 					...state,
+					metrics: stopActiveTimer(state.metrics, nowMillis),
 					completedAt,
 					pendingDecision: Option.none(),
 					activeIterationSessionFile: Option.none(),
@@ -844,10 +900,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 						} satisfies RalphPauseCurrentLoopResult;
 					}
 					if (stateOption.value.status === "active") {
-						yield* mapLoopEngineError(
-							loopEngine.pauseLoop(cwd, stateOption.value.name),
-						);
-						yield* clearCurrentLoop;
+						yield* markLoopPaused(cwd, stateOption.value);
 						return {
 							status: "paused",
 							loopName: stateOption.value.name,
@@ -872,8 +925,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					} satisfies RalphPauseCurrentLoopResult;
 				}
 
-				yield* mapLoopEngineError(loopEngine.pauseLoop(cwd, active.name));
-				yield* clearCurrentLoop;
+				yield* markLoopPaused(cwd, active);
 				return {
 					status: "paused",
 					loopName: active.name,
@@ -911,8 +963,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					} satisfies RalphStopLoopResult;
 				}
 
-				yield* mapLoopEngineError(loopEngine.stopLoop(cwd, state.name));
-				yield* clearCurrentLoop;
+				yield* markLoopCompleted(cwd, state);
 				return {
 					status: "stopped",
 					loopName: state.name,
@@ -1012,9 +1063,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 				if (Option.isSome(currentLoop) && currentLoop.value !== loopName) {
 					const currentState = yield* repo.loadState(cwd, currentLoop.value);
 					if (Option.isSome(currentState) && currentState.value.status === "active") {
-						yield* mapLoopEngineError(
-							loopEngine.pauseLoop(cwd, currentState.value.name),
-						);
+						yield* markLoopPaused(cwd, currentState.value);
 					}
 				}
 
@@ -1044,7 +1093,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 						} satisfies RalphCancelLoopResult;
 					}
 					if (state.value.status === "active") {
-						yield* mapLoopEngineError(loopEngine.pauseLoop(cwd, loopName));
+						yield* markLoopPaused(cwd, state.value);
 					}
 
 					const currentLoop = yield* getCurrentLoop;
@@ -1592,6 +1641,15 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					optionContains(stateOption.value.activeIterationSessionFile, sessionFile)
 						? Option.some(stateOption.value)
 						: Option.none<LoopState>();
+
+				if (Option.isSome(ownedActiveState)) {
+					const state = ownedActiveState.value;
+					const nextMetrics = addAgentEndUsage(state.metrics, event);
+					if (nextMetrics !== state.metrics) {
+						state.metrics = nextMetrics;
+						yield* repo.saveState(cwd, state);
+					}
+				}
 
 				const pending = yield* Effect.sync(() => {
 					const bridge = getRalphIterationSignalBridge();

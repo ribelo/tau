@@ -404,6 +404,38 @@ function formatLoop(loop: LoopState): string {
 	return `${loop.name}: ${status.icon} ${status.label} (iteration ${iter})`;
 }
 
+function formatTokenCount(tokens: number): string {
+	if (tokens < 1_000) return `${tokens}`;
+	if (tokens < 1_000_000) return `${(tokens / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
+	return `${(tokens / 1_000_000).toFixed(2).replace(/\.00$/, "")}m`;
+}
+
+function formatCostUsd(cost: number): string {
+	return `$${cost.toFixed(cost >= 1 ? 2 : 4)}`;
+}
+
+function formatDuration(ms: number): string {
+	const totalSeconds = Math.floor(ms / 1_000);
+	const hours = Math.floor(totalSeconds / 3_600);
+	const minutes = Math.floor((totalSeconds % 3_600) / 60);
+	const seconds = totalSeconds % 60;
+	if (hours > 0) return `${hours}h ${minutes}m`;
+	if (minutes > 0) return `${minutes}m ${seconds}s`;
+	return `${seconds}s`;
+}
+
+function activeRuntimeMs(state: LoopState, nowMs: number): number {
+	const activeStartedAt = Option.getOrUndefined(state.metrics.activeStartedAt);
+	if (activeStartedAt === undefined) {
+		return state.metrics.activeDurationMs;
+	}
+	const startedMs = Date.parse(activeStartedAt);
+	if (!Number.isFinite(startedMs)) {
+		return state.metrics.activeDurationMs;
+	}
+	return state.metrics.activeDurationMs + Math.max(0, nowMs - startedMs);
+}
+
 type ArgsParseFailure = {
 	readonly ok: false;
 	readonly error: string;
@@ -1021,6 +1053,7 @@ export default function initRalph(
 		const { theme } = ctx.ui;
 		const maxStr = state.maxIterations > 0 ? `/${state.maxIterations}` : "";
 		const status = describeLoopStatus(state);
+		const runtimeMs = activeRuntimeMs(state, Date.now());
 
 		ctx.ui.setStatus(
 			"ralph",
@@ -1032,6 +1065,11 @@ export default function initRalph(
 			theme.fg("muted", `Loop: ${state.name}`),
 			theme.fg("dim", `Status: ${status.icon} ${status.label}`),
 			theme.fg("dim", `Iteration: ${state.iteration}${maxStr}`),
+			theme.fg("dim", `Runtime: ${formatDuration(runtimeMs)}`),
+			theme.fg(
+				"dim",
+				`Usage: ${formatTokenCount(state.metrics.totalTokens)} tokens · ${formatCostUsd(state.metrics.totalCostUsd)}`,
+			),
 			theme.fg("dim", `Task: ${state.taskFile}`),
 		];
 

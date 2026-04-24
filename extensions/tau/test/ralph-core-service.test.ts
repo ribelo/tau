@@ -23,6 +23,7 @@ import {
 	makeExecutionProfileForPrompt,
 	makePromptProfile,
 	makeSandboxProfile,
+	makeRalphMetrics,
 } from "./ralph-test-helpers.js";
 
 function makeTempDir(): string {
@@ -49,12 +50,27 @@ function makeState(loopName: string, sessionFile: string): LoopState {
 		pendingDecision: Option.none<RalphPendingDecision>(),
 		executionProfile: makeExecutionProfile(),
 		sandboxProfile: Option.some(makeSandboxProfile()),
+		metrics: makeRalphMetrics(),
 	};
 }
 
 function makeAgentEndEvent(
 	text: string,
 	stopReason: "stop" | "length" | "toolUse" | "error" | "aborted" = "stop",
+	usage = {
+		input: 10,
+		output: 5,
+		cacheRead: 2,
+		cacheWrite: 1,
+		totalTokens: 18,
+		cost: {
+			input: 0.01,
+			output: 0.02,
+			cacheRead: 0.001,
+			cacheWrite: 0.002,
+			total: 0.033,
+		},
+	},
 ): AgentEndEvent {
 	const event: unknown = {
 		type: "agent_end",
@@ -62,6 +78,7 @@ function makeAgentEndEvent(
 			{
 				role: "assistant",
 				content: [{ type: "text", text }],
+				usage,
 				stopReason,
 			},
 		],
@@ -138,6 +155,73 @@ describe("ralph core service", () => {
 					"Task fully complete.",
 				);
 			}
+		}
+	});
+
+	it("accumulates Ralph usage from iteration agent_end events", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+		const sessionFile = path.join(cwd, ".pi", "sessions", "usage.session.json");
+
+		const saved = await Effect.runPromise(
+			Effect.gen(function* () {
+				const repo = yield* RalphRepo;
+				const ralph = yield* Ralph;
+				yield* repo.saveState(cwd, makeState("usage-loop", sessionFile));
+				yield* ralph.handleAgentEnd(
+					cwd,
+					sessionFile,
+					makeAgentEndEvent("done", "stop", {
+						input: 100,
+						output: 50,
+						cacheRead: 25,
+						cacheWrite: 5,
+						totalTokens: 180,
+						cost: {
+							input: 0.1,
+							output: 0.2,
+							cacheRead: 0.01,
+							cacheWrite: 0.02,
+							total: 0.33,
+						},
+					}),
+				);
+				return yield* repo.loadState(cwd, "usage-loop");
+			}).pipe(Effect.provide(ralphLayer)),
+		);
+
+		expect(Option.isSome(saved)).toBe(true);
+		if (Option.isSome(saved)) {
+			expect(saved.value.metrics.totalTokens).toBe(180);
+			expect(saved.value.metrics.totalCostUsd).toBe(0.33);
+		}
+	});
+
+	it("accumulates active runtime only while the loop is active", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+		const sessionFile = path.join(cwd, ".pi", "sessions", "runtime.session.json");
+		const state = makeState("runtime-loop", sessionFile);
+		state.metrics = {
+			...state.metrics,
+			activeStartedAt: Option.some(new Date(Date.now() - 60_000).toISOString()),
+		};
+
+		const saved = await Effect.runPromise(
+			Effect.gen(function* () {
+				const repo = yield* RalphRepo;
+				const ralph = yield* Ralph;
+				yield* repo.saveState(cwd, state);
+				yield* ralph.syncCurrentLoopFromSession(cwd, sessionFile);
+				yield* ralph.pauseCurrentLoop(cwd);
+				return yield* repo.loadState(cwd, "runtime-loop");
+			}).pipe(Effect.provide(ralphLayer)),
+		);
+
+		expect(Option.isSome(saved)).toBe(true);
+		if (Option.isSome(saved)) {
+			expect(saved.value.metrics.activeDurationMs).toBeGreaterThanOrEqual(50_000);
+			expect(Option.isNone(saved.value.metrics.activeStartedAt)).toBe(true);
 		}
 	});
 

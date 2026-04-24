@@ -14,6 +14,7 @@ import type {
 import { RALPH_ARCHIVE_TASKS_DIR, RALPH_DIR } from "./paths.js";
 import { RalphContractValidationError } from "./errors.js";
 import type { LoopState } from "./schema.js";
+import { emptyRalphLoopMetrics } from "./schema.js";
 
 const isPlatformReasonTag = (error: unknown, tag: string): boolean => {
 	if (typeof error !== "object" || error === null) {
@@ -156,6 +157,7 @@ function toLoopState(state: RalphLoopPersistedState): LoopState {
 		activeIterationSessionFile: ownershipFile(state.ownership.child),
 		pendingDecision: state.ralph.pendingDecision,
 		sandboxProfile: state.ralph.sandboxProfile,
+		metrics: state.ralph.metrics,
 	};
 }
 
@@ -244,6 +246,7 @@ function toPersistedState(
 			pendingDecision: state.pendingDecision,
 			pinnedExecutionProfile: state.executionProfile,
 			sandboxProfile: state.sandboxProfile,
+			metrics: state.metrics ?? existingValue?.ralph.metrics ?? emptyRalphLoopMetrics(),
 		},
 	};
 }

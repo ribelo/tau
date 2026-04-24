@@ -28,6 +28,7 @@ import {
 	makeExecutionProfile,
 	makePromptModesStubLayer,
 	makeSandboxProfile,
+	makeRalphMetrics,
 } from "./ralph-test-helpers.js";
 
 type EventHandler = (event: unknown, ctx: ExtensionContext) => unknown;
@@ -135,6 +136,7 @@ function encodeStateForStorage(state: ParsedLoopState): string {
 			pendingDecision: state.pendingDecision,
 			pinnedExecutionProfile: state.executionProfile,
 			sandboxProfile: state.sandboxProfile,
+			metrics: state.metrics,
 		},
 	});
 }
@@ -166,6 +168,7 @@ function readState(cwd: string, name: string, archived = false) {
 		pendingDecision: state.ralph.pendingDecision,
 		executionProfile: state.ralph.pinnedExecutionProfile,
 		sandboxProfile: state.ralph.sandboxProfile,
+		metrics: state.ralph.metrics,
 	};
 }
 

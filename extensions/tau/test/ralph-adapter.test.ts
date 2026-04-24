@@ -27,6 +27,7 @@ import {
 	makeExecutionProfile,
 	makePromptModesStubLayer,
 	makeSandboxProfile,
+	makeRalphMetrics,
 } from "./ralph-test-helpers.js";
 
 type EventHandler = (event: unknown, ctx: ExtensionContext) => unknown;
@@ -142,6 +143,7 @@ function writeLoopState(
 		readonly activeIterationSessionFile?: string;
 		readonly status?: "active" | "paused" | "completed";
 		readonly iteration?: number;
+		readonly metrics?: ReturnType<typeof makeRalphMetrics>;
 	},
 ): void {
 	const filePath = loopStatePath(cwd, loopName);
@@ -188,6 +190,7 @@ function writeLoopState(
 				pendingDecision: Option.none(),
 				pinnedExecutionProfile: makeExecutionProfile(),
 				sandboxProfile: Option.some(makeSandboxProfile()),
+				metrics: input.metrics ?? makeRalphMetrics(),
 			},
 		}),
 		"utf-8",
@@ -615,23 +618,15 @@ describe("ralph adapter boundary freeze", () => {
 		const ralphRuntime = makeRalphRuntime();
 		runtimes.push(ralphRuntime);
 
-		await ralphRuntime.run(
-			Effect.gen(function* () {
-				const ralph = yield* Ralph;
-				yield* ralph.startLoopState(cwd, {
-					loopName: "ui-loop",
-					taskFile: path.join(".pi", "ralph", "tasks", "ui-loop.md"),
-					executionProfile: makeExecutionProfile(),
-					sandboxProfile: makeSandboxProfile(),
-					maxIterations: 50,
-					itemsPerIteration: 0,
-					reflectEvery: 0,
-					reflectInstructions: "reflect",
-					controllerSessionFile: Option.some(controllerSession),
-					defaultTaskTemplate: "# Task\n",
-				});
-			}),
-		);
+		writeLoopState(cwd, "ui-loop", {
+			controllerSessionFile: controllerSession,
+			metrics: {
+				totalTokens: 1_500,
+				totalCostUsd: 1.25,
+				activeDurationMs: 120_000,
+				activeStartedAt: Option.none(),
+			},
+		});
 
 		context.setSessionFile(unrelatedSession);
 		const piHarness = makePiHarness();
@@ -640,7 +635,12 @@ describe("ralph adapter boundary freeze", () => {
 		await piHarness.fire("session_start", { type: "session_start" }, context.ctx);
 
 		expect(context.widgetUpdates.at(-1)).toEqual(
-			expect.arrayContaining(["Ralph Wiggum", "Loop: ui-loop"]),
+			expect.arrayContaining([
+				"Ralph Wiggum",
+				"Loop: ui-loop",
+				"Runtime: 2m 0s",
+				"Usage: 1.5k tokens · $1.25",
+			]),
 		);
 		expect(context.statusUpdates.at(-1)).toContain("ui-loop");
 	});

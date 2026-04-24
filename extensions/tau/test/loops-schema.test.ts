@@ -11,7 +11,11 @@ import {
 	type EncodedLoopPersistedState,
 	validateLoopOwnership,
 } from "../src/loops/schema.js";
-import { makeExecutionProfile, makeSandboxProfile } from "./ralph-test-helpers.js";
+import {
+	makeExecutionProfile,
+	makeSandboxProfile,
+	makeRalphMetrics,
+} from "./ralph-test-helpers.js";
 
 const encodedRalphState: EncodedLoopPersistedState = {
 	taskId: "schema-loop",
@@ -44,6 +48,12 @@ const encodedRalphState: EncodedLoopPersistedState = {
 		pendingDecision: null,
 		pinnedExecutionProfile: makeExecutionProfile(),
 		sandboxProfile: makeSandboxProfile(),
+		metrics: {
+			totalTokens: 0,
+			totalCostUsd: 0,
+			activeDurationMs: 0,
+			activeStartedAt: null,
+		},
 	},
 };
 
@@ -62,10 +72,11 @@ describe("loops schema", () => {
 		expect(reencoded).toEqual(encodedRalphState);
 	});
 
-	it("migrates legacy ralph payloads missing pendingDecision and sandboxProfile", async () => {
+	it("migrates legacy ralph payloads missing pendingDecision, sandboxProfile, and metrics", async () => {
 		const {
 			pendingDecision: _pendingDecision,
 			sandboxProfile: _sandboxProfile,
+			metrics: _metrics,
 			...legacyRalph
 		} = encodedRalphState.ralph;
 		const legacyState = {
@@ -79,6 +90,10 @@ describe("loops schema", () => {
 		if (decoded.state.kind === "ralph") {
 			expect(Option.isNone(decoded.state.ralph.pendingDecision)).toBe(true);
 			expect(Option.isNone(decoded.state.ralph.sandboxProfile)).toBe(true);
+			expect(decoded.state.ralph.metrics.totalTokens).toBe(0);
+			expect(decoded.state.ralph.metrics.totalCostUsd).toBe(0);
+			expect(decoded.state.ralph.metrics.activeDurationMs).toBe(0);
+			expect(Option.isNone(decoded.state.ralph.metrics.activeStartedAt)).toBe(true);
 		}
 
 		const reencoded = await Effect.runPromise(encodeLoopPersistedState(decoded.state));
@@ -86,6 +101,12 @@ describe("loops schema", () => {
 		if (reencoded.kind === "ralph") {
 			expect(reencoded.ralph.pendingDecision).toBeNull();
 			expect(reencoded.ralph.sandboxProfile).toBeNull();
+			expect(reencoded.ralph.metrics).toEqual({
+				totalTokens: 0,
+				totalCostUsd: 0,
+				activeDurationMs: 0,
+				activeStartedAt: null,
+			});
 		}
 	});
 

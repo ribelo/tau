@@ -8,7 +8,11 @@ import { NodeFileSystem } from "@effect/platform-node";
 
 import { RalphRepo, RalphRepoLive } from "../src/ralph/repo.js";
 import type { LoopState } from "../src/ralph/schema.js";
-import { makeExecutionProfile, makeSandboxProfile } from "./ralph-test-helpers.js";
+import {
+	makeExecutionProfile,
+	makeSandboxProfile,
+	makeRalphMetrics,
+} from "./ralph-test-helpers.js";
 
 const ralphRepoLayer = RalphRepoLive.pipe(Layer.provide(NodeFileSystem.layer));
 
@@ -34,6 +38,7 @@ function makeLoopState(loopName: string): LoopState {
 		pendingDecision: Option.none(),
 		executionProfile: makeExecutionProfile(),
 		sandboxProfile: Option.some(makeSandboxProfile()),
+		metrics: makeRalphMetrics(),
 	};
 }
 

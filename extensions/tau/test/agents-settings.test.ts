@@ -11,7 +11,11 @@ import {
 	preloadRalphOwnedSessionCache,
 } from "../src/agents-menu/state.js";
 import { encodeLoopPersistedStateJsonSync } from "../src/loops/schema.js";
-import { makeExecutionProfile, makeSandboxProfile } from "./ralph-test-helpers.js";
+import {
+	makeExecutionProfile,
+	makeSandboxProfile,
+	makeRalphMetrics,
+} from "./ralph-test-helpers.js";
 
 async function makeWorkspace(): Promise<string> {
 	return fs.mkdtemp(path.join(os.tmpdir(), "tau-agents-settings-"));
@@ -67,6 +71,7 @@ async function writeRalphState(
 				pendingDecision: Option.none(),
 				pinnedExecutionProfile: makeExecutionProfile(),
 				sandboxProfile: Option.some(makeSandboxProfile()),
+				metrics: makeRalphMetrics(),
 			},
 		}),
 		"utf8",

@@ -30,7 +30,11 @@ import {
 	RalphLive,
 	resetRalphIterationSignalBridgeForTests,
 } from "../src/services/ralph.js";
-import { makeExecutionProfile, makePromptModesStubLayer } from "./ralph-test-helpers.js";
+import {
+	makeExecutionProfile,
+	makePromptModesStubLayer,
+	makeRalphMetrics,
+} from "./ralph-test-helpers.js";
 
 type EventHandler = (event: unknown, ctx: ExtensionContext) => unknown;
 
@@ -309,6 +313,7 @@ function writeLoopState(
 						: Option.some(input.pendingDecision),
 				pinnedExecutionProfile: makeExecutionProfile(),
 				sandboxProfile: Option.some(input.sandboxProfile ?? DEFAULT_SANDBOX_CONFIG),
+				metrics: makeRalphMetrics(),
 			},
 		}),
 		"utf-8",

@@ -6,6 +6,7 @@ import { SandboxConfigRequired as SandboxProfileSchema } from "../schemas/config
 import { LoopContractValidationError, LoopOwnershipValidationError } from "./errors.js";
 
 const NonNegativeIntSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+const FiniteNumber = Schema.Number.check(Schema.isFinite());
 const OptionalStringSchema = Schema.OptionFromNullOr(Schema.String);
 
 const RalphContinueDecisionSchema = Schema.Struct({
@@ -78,6 +79,15 @@ function normalizeLoopPersistedState(value: unknown): NormalizeLoopPersistedStat
 	}
 	if (!("sandboxProfile" in nextRalph)) {
 		nextRalph["sandboxProfile"] = null;
+		migrated = true;
+	}
+	if (!("metrics" in nextRalph)) {
+		nextRalph["metrics"] = {
+			totalTokens: 0,
+			totalCostUsd: 0,
+			activeDurationMs: 0,
+			activeStartedAt: null,
+		};
 		migrated = true;
 	}
 
@@ -177,6 +187,12 @@ const RalphLoopStateDetailsSchema = Schema.Struct({
 	pendingDecision: OptionalRalphPendingDecisionSchema,
 	pinnedExecutionProfile: ExecutionProfileSchema,
 	sandboxProfile: Schema.OptionFromNullOr(SandboxProfileSchema),
+	metrics: Schema.Struct({
+		totalTokens: NonNegativeIntSchema,
+		totalCostUsd: FiniteNumber.check(Schema.isGreaterThanOrEqualTo(0)),
+		activeDurationMs: NonNegativeIntSchema,
+		activeStartedAt: OptionalStringSchema,
+	}),
 });
 export type RalphLoopStateDetails = Schema.Schema.Type<typeof RalphLoopStateDetailsSchema>;
 

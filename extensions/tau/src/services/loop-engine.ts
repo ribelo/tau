@@ -2,6 +2,7 @@ import { Clock, Effect, Layer, Option, Context } from "effect";
 
 import type { ExecutionProfile } from "../execution/schema.js";
 import type { ResolvedSandboxConfig } from "../sandbox/config.js";
+import { emptyRalphLoopMetrics } from "../ralph/schema.js";
 import type { StorageError } from "../shared/atomic-write.js";
 import {
 	createAutoresearchPhaseSnapshot,
@@ -25,6 +26,7 @@ import {
 	encodeLoopPersistedStateJsonSync,
 	type BlockedManualResolutionLoopState,
 	type LoopPersistedState,
+	type RalphLoopStateDetails,
 	type LoopSessionRef,
 	type MetricDirection,
 	validateLoopOwnership,
@@ -34,6 +36,29 @@ const nowIso = Effect.gen(function* () {
 	const millis = yield* Clock.currentTimeMillis;
 	return new Date(millis).toISOString();
 });
+
+function stopRalphActiveTimer(
+	metrics: RalphLoopStateDetails["metrics"],
+	timestamp: string,
+): RalphLoopStateDetails["metrics"] {
+	if (Option.isNone(metrics.activeStartedAt)) {
+		return {
+			...metrics,
+			activeStartedAt: Option.none(),
+		};
+	}
+	const startedAt = Date.parse(metrics.activeStartedAt.value);
+	const endedAt = Date.parse(timestamp);
+	return {
+		...metrics,
+		activeDurationMs:
+			metrics.activeDurationMs +
+			(Number.isFinite(startedAt) && Number.isFinite(endedAt)
+				? Math.max(0, endedAt - startedAt)
+				: 0),
+		activeStartedAt: Option.none(),
+	};
+}
 
 export type LoopCreateRalphInput = {
 	readonly kind: "ralph";
@@ -462,6 +487,10 @@ export const LoopEngineLive = Layer.effect(
 									pendingDecision: Option.none(),
 									pinnedExecutionProfile: input.executionProfile,
 									sandboxProfile: Option.some(input.sandboxProfile),
+									metrics: {
+										...emptyRalphLoopMetrics(),
+										activeStartedAt: Option.some(timestamp),
+									},
 								},
 							}
 						: {
@@ -550,6 +579,12 @@ export const LoopEngineLive = Layer.effect(
 									...state.ralph,
 									iteration: restarted ? 0 : state.ralph.iteration,
 									pendingDecision: Option.none(),
+									metrics: {
+										...(restarted
+											? emptyRalphLoopMetrics()
+											: state.ralph.metrics),
+										activeStartedAt: Option.some(timestamp),
+									},
 								},
 							}
 						: {
@@ -626,6 +661,10 @@ export const LoopEngineLive = Layer.effect(
 								},
 								ralph: {
 									...state.ralph,
+									metrics: {
+										...state.ralph.metrics,
+										activeStartedAt: Option.some(timestamp),
+									},
 								},
 							}
 						: {
@@ -664,15 +703,30 @@ export const LoopEngineLive = Layer.effect(
 				yield* ensureLifecycle(state, ["active"], "active");
 
 				const timestamp = yield* nowIso;
-				const nextState: LoopPersistedState = {
-					...state,
-					lifecycle: "paused",
-					updatedAt: timestamp,
-					ownership: {
-						controller: state.ownership.controller,
-						child: Option.none(),
-					},
-				};
+				const nextState: LoopPersistedState =
+					state.kind === "ralph"
+						? {
+								...state,
+								lifecycle: "paused",
+								updatedAt: timestamp,
+								ownership: {
+									controller: state.ownership.controller,
+									child: Option.none(),
+								},
+								ralph: {
+									...state.ralph,
+									metrics: stopRalphActiveTimer(state.ralph.metrics, timestamp),
+								},
+							}
+						: {
+								...state,
+								lifecycle: "paused",
+								updatedAt: timestamp,
+								ownership: {
+									controller: state.ownership.controller,
+									child: Option.none(),
+								},
+							};
 
 				yield* validateLoopOwnership(nextState);
 				yield* repo.saveState(cwd, nextState);
@@ -701,6 +755,7 @@ export const LoopEngineLive = Layer.effect(
 								ralph: {
 									...state.ralph,
 									pendingDecision: Option.none(),
+									metrics: stopRalphActiveTimer(state.ralph.metrics, timestamp),
 								},
 							}
 						: {

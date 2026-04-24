@@ -31,6 +31,14 @@ export type RalphPendingDecision = Schema.Schema.Type<typeof RalphPendingDecisio
 
 const OptionalRalphPendingDecisionSchema = Schema.OptionFromNullOr(RalphPendingDecisionSchema);
 
+const RalphLoopMetricsSchema = Schema.Struct({
+	totalTokens: NonNegativeIntSchema,
+	totalCostUsd: Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0)),
+	activeDurationMs: NonNegativeIntSchema,
+	activeStartedAt: OptionalStringSchema,
+});
+export type RalphLoopMetrics = Schema.Schema.Type<typeof RalphLoopMetricsSchema>;
+
 export function sanitizeLoopName(name: string): string {
 	return name.replace(/[^a-zA-Z0-9_.-]/g, "_").replace(/_+/g, "_");
 }
@@ -73,6 +81,7 @@ export const LoopStateSchema = Schema.Struct({
 	...LoopStateSharedFields,
 	executionProfile: Schema.mutableKey(ExecutionProfileSchema),
 	sandboxProfile: Schema.mutableKey(Schema.OptionFromNullOr(SandboxProfileSchema)),
+	metrics: Schema.mutableKey(RalphLoopMetricsSchema),
 });
 export type LoopState = Schema.Schema.Type<typeof LoopStateSchema>;
 export type EncodedLoopState = Schema.Codec.Encoded<typeof LoopStateSchema>;
@@ -136,13 +145,19 @@ function normalizeLoopStateValue(value: unknown): unknown {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) {
 		return value;
 	}
-	if ("sandboxProfile" in value) {
-		return value;
+	const next: Record<string, unknown> = { ...value };
+	if (!("sandboxProfile" in next)) {
+		next["sandboxProfile"] = null;
 	}
-	return {
-		...value,
-		sandboxProfile: null,
-	};
+	if (!("metrics" in next)) {
+		next["metrics"] = {
+			totalTokens: 0,
+			totalCostUsd: 0,
+			activeDurationMs: 0,
+			activeStartedAt: null,
+		};
+	}
+	return next;
 }
 
 function legacyLoopStateToCanonical(state: LegacyLoopState): LoopState {
@@ -156,6 +171,16 @@ function legacyLoopStateToCanonical(state: LegacyLoopState): LoopState {
 			policy: DEFAULT_EXECUTION_POLICY,
 		}),
 		sandboxProfile: Option.none(),
+		metrics: emptyRalphLoopMetrics(),
+	};
+}
+
+export function emptyRalphLoopMetrics(): RalphLoopMetrics {
+	return {
+		totalTokens: 0,
+		totalCostUsd: 0,
+		activeDurationMs: 0,
+		activeStartedAt: Option.none(),
 	};
 }
 

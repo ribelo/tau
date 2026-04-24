@@ -12,7 +12,11 @@ import type {
 	LoopPersistedState,
 	LoopSessionRef,
 } from "../src/loops/schema.js";
-import { makeExecutionProfile, makeSandboxProfile } from "./ralph-test-helpers.js";
+import {
+	makeExecutionProfile,
+	makeSandboxProfile,
+	makeRalphMetrics,
+} from "./ralph-test-helpers.js";
 
 const loopRepoLayer = LoopRepoLive.pipe(Layer.provide(NodeFileSystem.layer));
 
@@ -57,6 +61,7 @@ function makeLoopState(taskId: string): LoopPersistedState {
 			pendingDecision: Option.none(),
 			pinnedExecutionProfile: makeExecutionProfile(),
 			sandboxProfile: Option.some(makeSandboxProfile()),
+			metrics: makeRalphMetrics(),
 		},
 	};
 }
