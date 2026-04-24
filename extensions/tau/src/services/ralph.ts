@@ -191,6 +191,7 @@ export type RalphCommandBoundary = {
 		readonly parentSession: string;
 		readonly sandboxProfile: ResolvedSandboxConfig;
 	}) => Effect.Effect<{ readonly cancelled: boolean }, never, never>;
+	readonly captureSandboxProfile: Effect.Effect<ResolvedSandboxConfig, never, never>;
 	readonly applyExecutionProfile: (
 		profile: ExecutionProfile,
 	) => Effect.Effect<{ readonly applied: boolean; readonly reason?: string }, never, never>;
@@ -731,7 +732,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 						reflectEvery: input.reflectEvery,
 						reflectInstructions: input.reflectInstructions,
 						executionProfile: input.executionProfile,
-						sandboxProfile: input.sandboxProfile,
+						sandboxProfile: Option.some(input.sandboxProfile),
 						lastReflectionAt: 0,
 						activeIterationSessionFile: Option.none(),
 						pendingDecision: Option.none(),
@@ -1255,9 +1256,16 @@ export const RalphLive = (config: RalphLiveConfig) =>
 						);
 					}
 
+					let sandboxProfile = Option.getOrUndefined(state.sandboxProfile);
+					if (sandboxProfile === undefined) {
+						sandboxProfile = yield* boundary.captureSandboxProfile;
+						state.sandboxProfile = Option.some(sandboxProfile);
+						yield* repo.saveState(boundary.cwd, state);
+					}
+
 					const child = yield* boundary.newSession({
 						parentSession: controllerSession,
-						sandboxProfile: state.sandboxProfile,
+						sandboxProfile,
 					});
 					if (child.cancelled) {
 						return yield* pauseLoop(

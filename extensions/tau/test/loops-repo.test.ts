@@ -56,7 +56,7 @@ function makeLoopState(taskId: string): LoopPersistedState {
 			lastReflectionAt: 0,
 			pendingDecision: Option.none(),
 			pinnedExecutionProfile: makeExecutionProfile(),
-			sandboxProfile: makeSandboxProfile(),
+			sandboxProfile: Option.some(makeSandboxProfile()),
 		},
 	};
 }

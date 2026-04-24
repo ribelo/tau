@@ -33,7 +33,7 @@ function makeLoopState(loopName: string): LoopState {
 		activeIterationSessionFile: Option.some(`/tmp/${loopName}-iteration.session.json`),
 		pendingDecision: Option.none(),
 		executionProfile: makeExecutionProfile(),
-		sandboxProfile: makeSandboxProfile(),
+		sandboxProfile: Option.some(makeSandboxProfile()),
 	};
 }
 

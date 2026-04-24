@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 
 import {
 	DEFAULT_EXECUTION_POLICY,
@@ -8,7 +8,6 @@ import {
 import { SandboxConfigRequired as SandboxProfileSchema } from "../schemas/config.js";
 import { PromptModeProfileSchema } from "../prompt/profile.js";
 import { RalphContractValidationError } from "./errors.js";
-import { DEFAULT_SANDBOX_CONFIG } from "../sandbox/config.js";
 
 const NonNegativeIntSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 const OptionalStringSchema = Schema.OptionFromNullOr(Schema.String);
@@ -73,7 +72,7 @@ const LoopStateSharedFields = {
 export const LoopStateSchema = Schema.Struct({
 	...LoopStateSharedFields,
 	executionProfile: Schema.mutableKey(ExecutionProfileSchema),
-	sandboxProfile: Schema.mutableKey(SandboxProfileSchema),
+	sandboxProfile: Schema.mutableKey(Schema.OptionFromNullOr(SandboxProfileSchema)),
 });
 export type LoopState = Schema.Schema.Type<typeof LoopStateSchema>;
 export type EncodedLoopState = Schema.Codec.Encoded<typeof LoopStateSchema>;
@@ -133,6 +132,19 @@ function parseJsonUnknownSync(input: string): unknown {
 	}
 }
 
+function normalizeLoopStateValue(value: unknown): unknown {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		return value;
+	}
+	if ("sandboxProfile" in value) {
+		return value;
+	}
+	return {
+		...value,
+		sandboxProfile: null,
+	};
+}
+
 function legacyLoopStateToCanonical(state: LegacyLoopState): LoopState {
 	return {
 		...state,
@@ -143,13 +155,13 @@ function legacyLoopStateToCanonical(state: LegacyLoopState): LoopState {
 			promptProfile: state.promptProfile,
 			policy: DEFAULT_EXECUTION_POLICY,
 		}),
-		sandboxProfile: DEFAULT_SANDBOX_CONFIG,
+		sandboxProfile: Option.none(),
 	};
 }
 
 function decodeLoopStateCompatSync(value: unknown): LoopState {
 	try {
-		return decodeLoopStateSchemaSync(value);
+		return decodeLoopStateSchemaSync(normalizeLoopStateValue(value));
 	} catch (canonicalError) {
 		try {
 			const legacy = decodeLegacyLoopStateSchemaSync(value);

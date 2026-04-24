@@ -894,6 +894,10 @@ export default function initRalph(
 			};
 		});
 
+		const captureBoundarySandboxProfile = Effect.sync(() =>
+			captureSandboxProfile(pi, activeContext),
+		);
+
 		const sendFollowUp: RalphCommandBoundary["sendFollowUp"] = Effect.fn(
 			"RalphCommandBoundary.sendFollowUp",
 		)(function* (prompt) {
@@ -939,6 +943,7 @@ export default function initRalph(
 			getActiveContext: () => activeContext,
 			switchSession,
 			newSession,
+			captureSandboxProfile: captureBoundarySandboxProfile,
 			applyExecutionProfile,
 			sendFollowUp,
 		};

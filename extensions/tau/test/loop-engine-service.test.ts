@@ -57,7 +57,7 @@ function makeInvalidState(taskId: string, child: LoopSessionRef): LoopPersistedS
 			lastReflectionAt: 0,
 			pendingDecision: Option.none(),
 			pinnedExecutionProfile: makeExecutionProfile(),
-			sandboxProfile: makeSandboxProfile(),
+			sandboxProfile: Option.some(makeSandboxProfile()),
 		},
 	};
 }

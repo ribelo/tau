@@ -62,8 +62,12 @@ describe("loops schema", () => {
 		expect(reencoded).toEqual(encodedRalphState);
 	});
 
-	it("migrates legacy ralph payloads missing pendingDecision", async () => {
-		const { pendingDecision: _pendingDecision, ...legacyRalph } = encodedRalphState.ralph;
+	it("migrates legacy ralph payloads missing pendingDecision and sandboxProfile", async () => {
+		const {
+			pendingDecision: _pendingDecision,
+			sandboxProfile: _sandboxProfile,
+			...legacyRalph
+		} = encodedRalphState.ralph;
 		const legacyState = {
 			...encodedRalphState,
 			ralph: legacyRalph,
@@ -74,12 +78,14 @@ describe("loops schema", () => {
 		expect(decoded.state.kind).toBe("ralph");
 		if (decoded.state.kind === "ralph") {
 			expect(Option.isNone(decoded.state.ralph.pendingDecision)).toBe(true);
+			expect(Option.isNone(decoded.state.ralph.sandboxProfile)).toBe(true);
 		}
 
 		const reencoded = await Effect.runPromise(encodeLoopPersistedState(decoded.state));
 		expect(reencoded.kind).toBe("ralph");
 		if (reencoded.kind === "ralph") {
 			expect(reencoded.ralph.pendingDecision).toBeNull();
+			expect(reencoded.ralph.sandboxProfile).toBeNull();
 		}
 	});
 

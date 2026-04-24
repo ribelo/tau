@@ -48,7 +48,7 @@ function makeState(loopName: string, sessionFile: string): LoopState {
 		activeIterationSessionFile: Option.some(sessionFile),
 		pendingDecision: Option.none<RalphPendingDecision>(),
 		executionProfile: makeExecutionProfile(),
-		sandboxProfile: makeSandboxProfile(),
+		sandboxProfile: Option.some(makeSandboxProfile()),
 	};
 }
 
@@ -283,6 +283,7 @@ describe("ralph core service", () => {
 							sessionFile = iterationSessionFile;
 							return { cancelled: false } as const;
 						}),
+					captureSandboxProfile: Effect.succeed(makeSandboxProfile()),
 					applyExecutionProfile: () => Effect.succeed({ applied: true as const }),
 					sendFollowUp: () =>
 						Effect.gen(function* () {
@@ -407,6 +408,7 @@ describe("ralph core service", () => {
 							appliedProfiles.push(profile);
 							return { applied: true } as const;
 						}),
+					captureSandboxProfile: Effect.succeed(makeSandboxProfile()),
 					sendFollowUp: () =>
 						Effect.gen(function* () {
 							if (followUpCount === 0) {
@@ -517,6 +519,7 @@ describe("ralph core service", () => {
 								return { cancelled: false } as const;
 							}),
 						applyExecutionProfile: () => Effect.succeed({ applied: true as const }),
+						captureSandboxProfile: Effect.succeed(makeSandboxProfile()),
 						sendFollowUp: () =>
 							Effect.promise(async () => {
 								if (followUpCount === 0) {

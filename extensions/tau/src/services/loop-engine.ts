@@ -461,7 +461,7 @@ export const LoopEngineLive = Layer.effect(
 									lastReflectionAt: 0,
 									pendingDecision: Option.none(),
 									pinnedExecutionProfile: input.executionProfile,
-									sandboxProfile: input.sandboxProfile,
+									sandboxProfile: Option.some(input.sandboxProfile),
 								},
 							}
 						: {

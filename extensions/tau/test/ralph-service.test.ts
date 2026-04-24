@@ -233,6 +233,14 @@ const FULL_ACCESS_SANDBOX_PROFILE: ResolvedSandboxConfig = {
 	approvalPolicy: "never",
 };
 
+const READ_ONLY_SANDBOX_PROFILE: ResolvedSandboxConfig = {
+	...DEFAULT_SANDBOX_CONFIG,
+	preset: "read-only",
+	filesystemMode: "read-only",
+	networkMode: "deny",
+	approvalPolicy: "on-request",
+};
+
 function writeLoopState(
 	cwd: string,
 	loopName: string,
@@ -300,7 +308,7 @@ function writeLoopState(
 						? Option.none()
 						: Option.some(input.pendingDecision),
 				pinnedExecutionProfile: makeExecutionProfile(),
-				sandboxProfile: input.sandboxProfile ?? DEFAULT_SANDBOX_CONFIG,
+				sandboxProfile: Option.some(input.sandboxProfile ?? DEFAULT_SANDBOX_CONFIG),
 			},
 		}),
 		"utf-8",
@@ -676,9 +684,12 @@ describe("ralph service behavior freeze", () => {
 		tempDirs.push(cwd);
 
 		const piHarness = makePiHarness();
+		const childHarness = makePiHarness();
 		const ralphRuntime = makeRalphRuntime(false);
-		runtimes.push(ralphRuntime);
+		const childRuntime = makeRalphRuntime(false);
+		runtimes.push(ralphRuntime, childRuntime);
 		initRalph(piHarness.pi, ralphRuntime.run);
+		initRalph(childHarness.pi, childRuntime.run);
 
 		const command = piHarness.commands.get("ralph");
 		const doneTool = piHarness.tools.get("ralph_continue");
@@ -743,9 +754,12 @@ describe("ralph service behavior freeze", () => {
 		tempDirs.push(cwd);
 
 		const piHarness = makePiHarness();
+		const childHarness = makePiHarness();
 		const ralphRuntime = makeRalphRuntime(false);
-		runtimes.push(ralphRuntime);
+		const childRuntime = makeRalphRuntime(false);
+		runtimes.push(ralphRuntime, childRuntime);
 		initRalph(piHarness.pi, ralphRuntime.run);
+		initRalph(childHarness.pi, childRuntime.run);
 
 		const command = piHarness.commands.get("ralph");
 		expect(command).toBeDefined();
@@ -1065,10 +1079,114 @@ describe("ralph service behavior freeze", () => {
 		});
 
 		const state = readLoopState(cwd, "sandbox-copy-loop");
-		expect(state.sandboxProfile).toEqual(FULL_ACCESS_SANDBOX_PROFILE);
+		expect(Option.getOrUndefined(state.sandboxProfile)).toEqual(FULL_ACCESS_SANDBOX_PROFILE);
 
 		await piHarness.fire("session_shutdown", { type: "session_shutdown" }, context.ctx);
 		await expect(startPromise).resolves.toBeUndefined();
+	});
+
+	it("migrates legacy loops without sandbox profiles from the current sandbox", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const piHarness = makePiHarness();
+		const childHarness = makePiHarness();
+		const ralphRuntime = makeRalphRuntime(false);
+		const childRuntime = makeRalphRuntime(false);
+		runtimes.push(ralphRuntime, childRuntime);
+		initRalph(piHarness.pi, ralphRuntime.run);
+		initRalph(childHarness.pi, childRuntime.run);
+
+		const command = piHarness.commands.get("ralph");
+		expect(command).toBeDefined();
+		if (!command) {
+			throw new Error("missing ralph command");
+		}
+
+		const controllerSessionFile = path.join(
+			cwd,
+			".pi",
+			"sessions",
+			"legacy-controller.session.json",
+		);
+		const childSessionFile = path.join(cwd, ".pi", "sessions", "legacy-child.session.json");
+		const childContext = makeContext(cwd);
+		childContext.setSessionFile(childSessionFile);
+		await childHarness.fire("session_start", { type: "session_start" }, childContext.ctx);
+		writeLoopState(cwd, "legacy-sandbox-loop", {
+			controllerSessionFile,
+			iteration: 2,
+			status: "paused",
+		});
+
+		const stateFile = loopStatePath(cwd, "legacy-sandbox-loop");
+		const raw = JSON.parse(fs.readFileSync(stateFile, "utf-8")) as unknown;
+		if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+			throw new Error("expected legacy loop state object");
+		}
+		const rawState = raw as { readonly ralph?: unknown };
+		if (
+			typeof rawState.ralph !== "object" ||
+			rawState.ralph === null ||
+			Array.isArray(rawState.ralph)
+		) {
+			throw new Error("expected legacy ralph details object");
+		}
+		const { sandboxProfile: _sandboxProfile, ...legacyRalph } = rawState.ralph as Record<
+			string,
+			unknown
+		>;
+		fs.writeFileSync(
+			stateFile,
+			JSON.stringify({ ...raw, ralph: legacyRalph }, null, 2),
+			"utf-8",
+		);
+
+		const context = makeContext(
+			cwd,
+			[
+				{
+					cancelled: false,
+					sessionFile: childSessionFile,
+					updateContextSessionFile: false,
+				},
+			],
+			[
+				{
+					type: "custom",
+					customType: TAU_PERSISTED_STATE_TYPE,
+					data: {
+						sandbox: {
+							sessionOverride: { preset: "read-only" },
+						},
+					},
+				},
+			],
+		);
+		context.setSessionFile(path.join(cwd, ".pi", "sessions", "other.session.json"));
+
+		const resumePromise = Promise.resolve(
+			command.handler("resume legacy-sandbox-loop", context.ctx),
+		);
+		await waitFor(() => context.appendedCustomEntries.length === 1);
+
+		expect(context.appendedCustomEntries[0]).toEqual({
+			customType: TAU_PERSISTED_STATE_TYPE,
+			data: {
+				sandbox: {
+					sessionOverride: {
+						preset: "read-only",
+						subagent: false,
+						approvalTimeoutSeconds: 60,
+					},
+				},
+			},
+		});
+
+		await childHarness.fire("session_shutdown", { type: "session_shutdown" }, childContext.ctx);
+		await expect(resumePromise).resolves.toBeUndefined();
+		const migrated = readLoopState(cwd, "legacy-sandbox-loop");
+		expect(Option.getOrUndefined(migrated.sandboxProfile)).toEqual(READ_ONLY_SANDBOX_PROFILE);
 	});
 
 	it("creates the resumed iteration session through the controller replacement context", async () => {

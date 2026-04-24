@@ -187,7 +187,7 @@ function writeLoopState(
 				lastReflectionAt: 0,
 				pendingDecision: Option.none(),
 				pinnedExecutionProfile: makeExecutionProfile(),
-				sandboxProfile: makeSandboxProfile(),
+				sandboxProfile: Option.some(makeSandboxProfile()),
 			},
 		}),
 		"utf-8",

@@ -66,17 +66,29 @@ function normalizeLoopPersistedState(value: unknown): NormalizeLoopPersistedStat
 	}
 
 	const ralph = value["ralph"];
-	if (!isRecord(ralph) || "pendingDecision" in ralph) {
+	if (!isRecord(ralph)) {
+		return { candidate: value, migrated: false };
+	}
+
+	let migrated = false;
+	const nextRalph: Record<string, unknown> = { ...ralph };
+	if (!("pendingDecision" in nextRalph)) {
+		nextRalph["pendingDecision"] = null;
+		migrated = true;
+	}
+	if (!("sandboxProfile" in nextRalph)) {
+		nextRalph["sandboxProfile"] = null;
+		migrated = true;
+	}
+
+	if (!migrated) {
 		return { candidate: value, migrated: false };
 	}
 
 	return {
 		candidate: {
 			...value,
-			ralph: {
-				...ralph,
-				pendingDecision: null,
-			},
+			ralph: nextRalph,
 		},
 		migrated: true,
 	};
@@ -164,7 +176,7 @@ const RalphLoopStateDetailsSchema = Schema.Struct({
 	lastReflectionAt: NonNegativeIntSchema,
 	pendingDecision: OptionalRalphPendingDecisionSchema,
 	pinnedExecutionProfile: ExecutionProfileSchema,
-	sandboxProfile: SandboxProfileSchema,
+	sandboxProfile: Schema.OptionFromNullOr(SandboxProfileSchema),
 });
 export type RalphLoopStateDetails = Schema.Schema.Type<typeof RalphLoopStateDetailsSchema>;
 
