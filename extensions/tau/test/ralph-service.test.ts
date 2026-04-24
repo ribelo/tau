@@ -1544,6 +1544,60 @@ describe("ralph service behavior freeze", () => {
 		).toBe(true);
 	});
 
+	it("nudges after a recoverable assistant error instead of pausing the Ralph loop", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const piHarness = makePiHarness();
+		const ralphRuntime = makeRalphRuntime(false);
+		runtimes.push(ralphRuntime);
+		initRalph(piHarness.pi, ralphRuntime.run);
+
+		const command = piHarness.commands.get("ralph");
+		expect(command).toBeDefined();
+		if (!command) {
+			throw new Error("missing ralph command");
+		}
+
+		const context = makeContext(cwd, [{ cancelled: false }]);
+		let startResolved = false;
+		const startPromise = Promise.resolve(
+			command.handler("start recoverable-error-loop --max-iterations 1", context.ctx),
+		).then(() => {
+			startResolved = true;
+		});
+		await waitFor(() => piHarness.sentUserMessages.length === 1);
+
+		await piHarness.fire(
+			"agent_end",
+			agentEndPayload("apply_patch failed, retrying", "error"),
+			context.ctx,
+		);
+		await waitFor(() => piHarness.sentUserMessages.length === 2);
+		expect(startResolved).toBe(false);
+
+		const afterError = readLoopState(cwd, "recoverable-error-loop");
+		expect(afterError.status).toBe("active");
+		expect(Option.isNone(afterError.pendingDecision)).toBe(true);
+
+		const doneTool = piHarness.tools.get("ralph_continue");
+		expect(doneTool).toBeDefined();
+		await doneTool?.execute("call-after-error", {}, undefined, undefined, context.ctx);
+		await piHarness.fire(
+			"agent_end",
+			agentEndPayload("apply_patch retry succeeded"),
+			context.ctx,
+		);
+		await startPromise;
+
+		const finalState = readLoopState(cwd, "recoverable-error-loop");
+		expect(finalState.status).toBe("paused");
+		expect(Option.isNone(finalState.pendingDecision)).toBe(true);
+		expect(
+			context.notifications.some((entry) => entry.message.includes("stop reason error")),
+		).toBe(false);
+	});
+
 	it("nudges when stopReason is missing before pausing on a repeated missed Ralph decision", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);

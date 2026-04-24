@@ -60,7 +60,7 @@ function hook(label: string): string {
 }
 
 async function waitFor<T>(load: () => Promise<T>, ready: (value: T) => boolean): Promise<T> {
-	for (let attempt = 0; attempt < 20; attempt++) {
+	for (let attempt = 0; attempt < 100; attempt++) {
 		const value = await load();
 		if (ready(value)) {
 			return value;

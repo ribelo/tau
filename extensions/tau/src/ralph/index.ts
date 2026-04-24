@@ -1643,6 +1643,8 @@ export default function initRalph(
 			instructions +=
 				"- If this iteration is done and Ralph should continue, call ralph_continue\n";
 			instructions +=
+				"- If a recoverable tool call fails, correct it and continue the iteration\n";
+			instructions +=
 				"- Do not end the iteration with free text alone; end with exactly one Ralph loop tool";
 
 			return {

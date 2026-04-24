@@ -401,6 +401,9 @@ function buildPrompt(state: LoopState, taskContent: string, isReflection: boolea
 	parts.push(
 		`5. Do not end this iteration with free text alone. End with exactly one Ralph loop tool.`,
 	);
+	parts.push(
+		`6. If a tool call fails with a recoverable input or usage error, correct the tool call and continue the iteration; do not treat that as a reason to pause or stop Ralph.`,
+	);
 
 	return parts.join("\n");
 }
@@ -1437,7 +1440,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 
 						const assistant = extractLastAssistantSummary(signal.event);
 						const stopReason = Option.getOrUndefined(assistant.stopReason);
-						if (stopReason === "error" || stopReason === "aborted") {
+						if (stopReason === "aborted") {
 							return yield* pauseLoop(
 								boundary.cwd,
 								afterTurn,
@@ -1450,7 +1453,8 @@ export const RalphLive = (config: RalphLiveConfig) =>
 							assistant.hasUsableAssistantMessage &&
 							(stopReason === undefined ||
 								stopReason === "stop" ||
-								stopReason === "length")
+								stopReason === "length" ||
+								stopReason === "error")
 						) {
 							if (missingDecisionNudged) {
 								return yield* pauseLoop(
