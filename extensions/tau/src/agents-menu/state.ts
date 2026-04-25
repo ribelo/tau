@@ -25,6 +25,13 @@ const DEFAULT_RALPH_ENABLED_AGENTS = ["finder", "librarian"] as const;
 const RALPH_SESSION_CACHE_KEY_DELIMITER = "\u0000";
 const ralphOwnedSessionCache = new Map<string, boolean>();
 
+export type RalphLoopMetadata = {
+	readonly loopName: string;
+	readonly enabledAgents: ReadonlyArray<string>;
+};
+
+const ralphLoopMetadataCache = new Map<string, RalphLoopMetadata>();
+
 function createProjectAgentState(
 	disabledAgents: Iterable<string>,
 	dirty: boolean,
@@ -167,6 +174,7 @@ function isNodeError(err: unknown, code: string): boolean {
 export function clearRalphOwnedSessionCache(cwd?: string): void {
 	if (cwd === undefined) {
 		ralphOwnedSessionCache.clear();
+		ralphLoopMetadataCache.clear();
 		return;
 	}
 
@@ -174,6 +182,11 @@ export function clearRalphOwnedSessionCache(cwd?: string): void {
 	for (const key of ralphOwnedSessionCache.keys()) {
 		if (key.startsWith(prefix)) {
 			ralphOwnedSessionCache.delete(key);
+		}
+	}
+	for (const key of ralphLoopMetadataCache.keys()) {
+		if (key.startsWith(prefix)) {
+			ralphLoopMetadataCache.delete(key);
 		}
 	}
 }
@@ -197,7 +210,6 @@ export async function preloadRalphOwnedSessionCache(
 	try {
 		entries = await fs.readdir(stateDir);
 	} catch (error: unknown) {
-		ralphOwnedSessionCache.set(cacheKey, false);
 		if (isNodeError(error, "ENOENT")) {
 			return false;
 		}
@@ -214,6 +226,12 @@ export async function preloadRalphOwnedSessionCache(
 			const state = decodeLoopPersistedStateJsonSync(raw);
 			if (stateOwnsSessionFile(sessionFile, state)) {
 				ralphOwnedSessionCache.set(cacheKey, true);
+				if (state.kind === "ralph") {
+					ralphLoopMetadataCache.set(cacheKey, {
+						loopName: state.taskId,
+						enabledAgents: state.ralph.capabilityContract.agents.enabledNames,
+					});
+				}
 				return true;
 			}
 		} catch {
@@ -221,7 +239,6 @@ export async function preloadRalphOwnedSessionCache(
 		}
 	}
 
-	ralphOwnedSessionCache.set(cacheKey, false);
 	return false;
 }
 
@@ -259,8 +276,29 @@ export function isRalphOwnedSession(cwd: string, sessionFile: string | undefined
 	return ralphOwnedSessionCache.get(cacheKey) ?? false;
 }
 
+export function getRalphLoopMetadata(
+	cwd: string,
+	sessionFile: string | undefined,
+): RalphLoopMetadata | undefined {
+	if (sessionFile === undefined) {
+		return undefined;
+	}
+	const cacheKey = makeRalphOwnedSessionCacheKey(cwd, sessionFile);
+	return ralphLoopMetadataCache.get(cacheKey);
+}
+
+export function setRalphLoopMetadata(
+	cwd: string,
+	sessionFile: string,
+	meta: RalphLoopMetadata,
+): void {
+	const cacheKey = makeRalphOwnedSessionCacheKey(cwd, sessionFile);
+	ralphOwnedSessionCache.set(cacheKey, true);
+	ralphLoopMetadataCache.set(cacheKey, meta);
+}
+
 function isDisabledByRalphPolicy(
-	ralphEnabledAgents: ReadonlyArray<string> | undefined,
+	_ralphEnabledAgents: ReadonlyArray<string> | undefined,
 	cwd: string,
 	sessionFile: string | undefined,
 	name: string,
@@ -269,7 +307,8 @@ function isDisabledByRalphPolicy(
 		return false;
 	}
 
-	const enabledAgents = ralphEnabledAgents ?? DEFAULT_RALPH_ENABLED_AGENTS;
+	const meta = getRalphLoopMetadata(cwd, sessionFile);
+	const enabledAgents = meta?.enabledAgents ?? _ralphEnabledAgents ?? DEFAULT_RALPH_ENABLED_AGENTS;
 	return !enabledAgents.includes(name);
 }
 

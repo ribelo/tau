@@ -122,6 +122,17 @@ type SessionReplacementCommandContext = Omit<
 
 type RalphSessionContext = ExtensionCommandContext | ReplacementSessionContext;
 
+type RalphToolActivationContext = {
+	readonly setActiveTools: ExtensionAPI["setActiveTools"];
+};
+
+function hasRalphToolActivationContext(
+	ctx: RalphSessionContext,
+): ctx is RalphSessionContext & RalphToolActivationContext {
+	const candidate = ctx as { readonly setActiveTools?: unknown };
+	return typeof candidate.setActiveTools === "function";
+}
+
 type RalphCommandBoundaryHandle = RalphCommandBoundary & {
 	readonly getActiveContext: () => RalphSessionContext;
 };
@@ -948,8 +959,14 @@ export default function initRalph(
 		)(function* (contract, target) {
 			return yield* Effect.sync(() => {
 				try {
+					if (!hasRalphToolActivationContext(activeContext)) {
+						return {
+							applied: false as const,
+							reason: "current session context cannot set active tools",
+						};
+					}
 					const tools = effectiveToolNames(contract, target);
-					pi.setActiveTools([...tools]);
+					activeContext.setActiveTools([...tools]);
 					return { applied: true as const };
 				} catch (error) {
 					return {

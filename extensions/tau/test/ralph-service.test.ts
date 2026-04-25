@@ -72,6 +72,7 @@ type ContextHarness = {
 		readonly data: unknown;
 	}>;
 	readonly switchSessionCalls: readonly string[];
+	readonly activeToolCalls: ReadonlyArray<ReadonlyArray<string>>;
 	readonly disposeCommandContext: () => void;
 	readonly setSessionFile: (next: string) => void;
 	readonly getSessionFile: () => string;
@@ -83,6 +84,10 @@ type PiHarness = {
 	readonly tools: Map<string, ToolDefinition>;
 	readonly sentUserMessages: SentUserMessage[];
 	readonly fire: (event: string, payload: unknown, ctx: ExtensionContext) => Promise<void>;
+};
+
+type PiHarnessOptions = {
+	readonly setActiveTools?: (tools: string[]) => void;
 };
 
 type NewSessionPlan = {
@@ -333,6 +338,7 @@ function makeContext(
 	const appendedCustomEntries: Array<{ readonly customType: string; readonly data: unknown }> =
 		[];
 	const switchSessionCalls: string[] = [];
+	const activeToolCalls: string[][] = [];
 	let sessionFile = path.join(cwd, ".pi", "sessions", "controller.session.json");
 	let sessionCounter = 0;
 	let disposed = false;
@@ -397,6 +403,16 @@ function makeContext(
 			hasPendingMessages: () => false,
 			shutdown: () => undefined,
 			getContextUsage: () => undefined,
+			getActiveTools: () => [...(activeToolCalls.at(-1) ?? [])],
+			setActiveTools: (tools: string[]) => {
+				throwIfDisposed();
+				activeToolCalls.push([...tools]);
+			},
+			getAllTools: () => [],
+			getCommands: () => [],
+			setModel: async () => true,
+			getThinkingLevel: () => "medium",
+			setThinkingLevel: () => undefined,
 			compact: () => undefined,
 			getSystemPrompt: () => "",
 			waitForIdle: async () => undefined,
@@ -502,6 +518,16 @@ function makeContext(
 		hasPendingMessages: () => false,
 		shutdown: () => undefined,
 		getContextUsage: () => undefined,
+		getActiveTools: () => [...(activeToolCalls.at(-1) ?? [])],
+		setActiveTools: (tools: string[]) => {
+			throwIfInactive();
+			activeToolCalls.push([...tools]);
+		},
+		getAllTools: () => [],
+		getCommands: () => [],
+		setModel: async () => true,
+		getThinkingLevel: () => "medium",
+		setThinkingLevel: () => undefined,
 		compact: () => undefined,
 		getSystemPrompt: () => "",
 		waitForIdle: async () => undefined,
@@ -559,6 +585,7 @@ function makeContext(
 		newSessionCalls,
 		appendedCustomEntries,
 		switchSessionCalls,
+		activeToolCalls,
 		disposeCommandContext: () => {
 			disposed = true;
 		},
@@ -569,7 +596,7 @@ function makeContext(
 	};
 }
 
-function makePiHarness(): PiHarness {
+function makePiHarness(options: PiHarnessOptions = {}): PiHarness {
 	const eventHandlers = new Map<string, EventHandler[]>();
 	const commands = new Map<string, RegisteredCommand>();
 	const tools = new Map<string, ToolDefinition>();
@@ -603,7 +630,7 @@ function makePiHarness(): PiHarness {
 		sendMessage: () => undefined,
 		appendEntry: () => undefined,
 		getActiveTools: () => [],
-		setActiveTools: () => undefined,
+		setActiveTools: options.setActiveTools ?? (() => undefined),
 		getAllTools: () => [],
 		getCommands: () => [],
 		setModel: async () => true,
@@ -959,7 +986,11 @@ describe("ralph service behavior freeze", () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 
-		const controllerHarness = makePiHarness();
+		const controllerHarness = makePiHarness({
+			setActiveTools: () => {
+				throw new Error(STALE_EXTENSION_CONTEXT_MESSAGE);
+			},
+		});
 		const childHarness = makePiHarness();
 		const executionProfile = makeExecutionProfile();
 		const controllerPromptModesLayer = Layer.succeed(
@@ -1214,7 +1245,11 @@ describe("ralph service behavior freeze", () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 
-		const controllerHarness = makePiHarness();
+		const controllerHarness = makePiHarness({
+			setActiveTools: () => {
+				throw new Error(STALE_EXTENSION_CONTEXT_MESSAGE);
+			},
+		});
 		const childHarness = makePiHarness();
 		const executionProfile = makeExecutionProfile();
 		const controllerPromptModesLayer = Layer.succeed(
@@ -1301,6 +1336,8 @@ describe("ralph service behavior freeze", () => {
 		);
 		await waitFor(() => context.switchSessionCalls.includes(controllerSessionFile));
 		await waitFor(() => childHarness.sentUserMessages.length === 1);
+		expect(context.activeToolCalls).toContainEqual([]);
+		expect(context.activeToolCalls).toContainEqual(["ralph_continue", "ralph_finish"]);
 		expect(context.appendedCustomEntries).toContainEqual({
 			customType: TAU_PERSISTED_STATE_TYPE,
 			data: {

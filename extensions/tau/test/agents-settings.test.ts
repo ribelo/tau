@@ -29,12 +29,14 @@ async function writeRalphState(
 		readonly controllerSessionFile: string;
 		readonly activeIterationSessionFile?: string;
 		readonly status?: "active" | "paused" | "completed";
+		readonly enabledAgents?: ReadonlyArray<string>;
 	},
 ): Promise<void> {
 	const statePath = path.join(workspace, ".pi", "loops", "state", `${loopName}.json`);
 	await fs.mkdir(path.dirname(statePath), { recursive: true });
 	const status = input.status ?? "active";
 	const lifecycle = status === "active" ? "active" : status === "paused" ? "paused" : "completed";
+	const contract = makeCapabilityContract();
 	await fs.writeFile(
 		statePath,
 		encodeLoopPersistedStateJsonSync({
@@ -73,7 +75,13 @@ async function writeRalphState(
 				pinnedExecutionProfile: makeExecutionProfile(),
 				sandboxProfile: Option.some(makeSandboxProfile()),
 				metrics: makeRalphMetrics(),
-				capabilityContract: makeCapabilityContract(),
+				capabilityContract: {
+					...contract,
+					agents: {
+						...contract.agents,
+						enabledNames: input.enabledAgents ?? ["finder", "librarian"],
+					},
+				},
 			},
 		}),
 		"utf8",
@@ -245,22 +253,11 @@ describe("agent selection settings", () => {
 		expect(store.isDisabledForSession(workspace, controllerSession, "smart")).toBe(true);
 	});
 
-	it("uses tau.ralph.agents.enabled when configured", async () => {
+	it("uses loop-state capabilityContract.agents.enabledNames for Ralph-owned sessions", async () => {
 		const workspace = await makeWorkspace();
 		cleanup.add(workspace);
-		const settingsPath = getAgentSettingsPath(workspace);
 		const iterationSession = path.join(workspace, ".pi", "sessions", "iteration.session.json");
 
-		await fs.mkdir(path.dirname(settingsPath), { recursive: true });
-		await fs.writeFile(
-			settingsPath,
-			JSON.stringify(
-				{ tau: { ralph: { agents: { enabled: ["finder", "oracle"] } } } },
-				null,
-				2,
-			),
-			"utf8",
-		);
 		await writeRalphState(workspace, "loop-b", {
 			controllerSessionFile: path.join(
 				workspace,
@@ -269,6 +266,7 @@ describe("agent selection settings", () => {
 				"controller.session.json",
 			),
 			activeIterationSessionFile: iterationSession,
+			enabledAgents: ["finder", "oracle"],
 		});
 
 		const store = new AgentSelectionStore();
@@ -280,7 +278,36 @@ describe("agent selection settings", () => {
 		expect(store.isDisabledForSession(workspace, iterationSession, "librarian")).toBe(true);
 	});
 
-	it("intersects Ralph allowlist with normal session agent settings", async () => {
+	it("rescans Ralph ownership after an early miss for a newly attached child session", async () => {
+		const workspace = await makeWorkspace();
+		cleanup.add(workspace);
+		const iterationSession = path.join(workspace, ".pi", "sessions", "late-child.session.json");
+
+		await expect(preloadRalphOwnedSessionCache(workspace, iterationSession)).resolves.toBe(
+			false,
+		);
+		await writeRalphState(workspace, "late-loop", {
+			controllerSessionFile: path.join(
+				workspace,
+				".pi",
+				"sessions",
+				"controller.session.json",
+			),
+			activeIterationSessionFile: iterationSession,
+			enabledAgents: ["finder"],
+		});
+
+		const store = new AgentSelectionStore();
+		const enabled = await store.resolveEnabledAgentsForSession(workspace, iterationSession, [
+			"finder",
+			"librarian",
+		]);
+
+		expect(enabled).toEqual(["finder"]);
+		expect(store.isDisabledForSession(workspace, iterationSession, "librarian")).toBe(true);
+	});
+
+	it("Ralph loop state overrides project settings for Ralph-owned sessions", async () => {
 		const workspace = await makeWorkspace();
 		cleanup.add(workspace);
 		const settingsPath = getAgentSettingsPath(workspace);
@@ -299,6 +326,7 @@ describe("agent selection settings", () => {
 		);
 		await writeRalphState(workspace, "loop-c", {
 			controllerSessionFile: controllerSession,
+			enabledAgents: ["librarian"],
 		});
 
 		const store = new AgentSelectionStore();
@@ -355,6 +383,7 @@ describe("agent selection settings", () => {
 		);
 		await writeRalphState(workspace, "loop-e", {
 			controllerSessionFile: controllerSession,
+			enabledAgents: ["finder", "librarian"],
 		});
 
 		const store = new AgentSelectionStore();

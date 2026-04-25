@@ -48,8 +48,8 @@ function makeTestLoop(overrides?: Partial<LoopState>): LoopState {
 		startedAt: new Date().toISOString(),
 		completedAt: Option.none(),
 		lastReflectionAt: 0,
-		controllerSessionFile: undefined,
-		activeIterationSessionFile: undefined,
+		controllerSessionFile: Option.none(),
+		activeIterationSessionFile: Option.none(),
 		pendingDecision: Option.none(),
 		sandboxProfile: Option.none(),
 		metrics: emptyRalphLoopMetrics(),
@@ -194,7 +194,7 @@ describe("ralph loop config service", () => {
 	it("refuses unsafe active-child edits", async () => {
 		const loop = makeTestLoop({
 			status: "active",
-			activeIterationSessionFile: "/tmp/session.json",
+			activeIterationSessionFile: Option.some("/tmp/session.json"),
 		});
 		const service = makeRalphLoopConfigService(makeMockRepo(loop));
 		const result = await service.mutate("/tmp", "test-loop", {
@@ -202,13 +202,31 @@ describe("ralph loop config service", () => {
 			activeNames: ["read"],
 		});
 		expect(result.status).toBe("refused");
-		expect(result.reason).toContain("active child session");
+		if (result.status === "refused") {
+			expect(result.reason).toContain("active child session");
+		}
+	});
+
+	it("allows contract mutations for active loops without a child session", async () => {
+		const loop = makeTestLoop({
+			status: "active",
+			activeIterationSessionFile: Option.none(),
+		});
+		const service = makeRalphLoopConfigService(makeMockRepo(loop));
+		const result = await service.mutate("/tmp", "test-loop", {
+			kind: "capabilityContractAgents",
+			enabledNames: ["finder"],
+		});
+
+		expect(result.status).toBe("updated");
+		const loaded = await service.loadLoop("/tmp", "test-loop");
+		expect(loaded.capabilityContract.agents.enabledNames).toEqual(["finder"]);
 	});
 
 	it("allows scalar mutations even with active child", async () => {
 		const loop = makeTestLoop({
 			status: "active",
-			activeIterationSessionFile: "/tmp/session.json",
+			activeIterationSessionFile: Option.some("/tmp/session.json"),
 		});
 		const service = makeRalphLoopConfigService(makeMockRepo(loop));
 		const result = await service.mutate("/tmp", "test-loop", {

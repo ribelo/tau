@@ -17,8 +17,10 @@ import {
 	AgentSelectionStore,
 	clearRalphOwnedSessionCache,
 	getAgentSettingsPath,
+	getRalphLoopMetadata,
 	isRalphOwnedSession,
 	preloadRalphOwnedSessionCache,
+	setRalphLoopMetadata,
 } from "./state.js";
 import { setToolActivationTransform } from "../shared/tool-activation.js";
 
@@ -377,7 +379,17 @@ class AgentsSelectorComponent extends Container implements Focusable {
 	}
 }
 
-export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHandle): void {
+export type RalphAgentConfigRunner = (
+	cwd: string,
+	loopName: string,
+	enabledNames: ReadonlyArray<string>,
+) => Promise<{ readonly ok: true } | { readonly ok: false; readonly reason: string }>;
+
+export default function initAgentsMenu(
+	pi: ExtensionAPI,
+	agentTool: AgentToolHandle,
+	configureRalphAgents?: RalphAgentConfigRunner,
+): void {
 	const syncForCwd = async (
 		cwd: string,
 		sessionFile: string | undefined,
@@ -474,9 +486,12 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 						return `${marker} ${name}: ${desc}`;
 					});
 					if (isRalphOwnedSession(ctx.cwd, sessionFile)) {
+						const meta = getRalphLoopMetadata(ctx.cwd, sessionFile);
 						lines.push(
 							"",
-							`Ralph policy active. Configure ${getAgentSettingsPath(ctx.cwd)} under tau.ralph.agents.enabled to change the Ralph allowlist.`,
+							meta
+								? `Ralph loop "${meta.loopName}" policy active. Agents are managed through /ralph configure.`
+								: "Ralph policy active. Configure agents through /ralph configure.",
 						);
 					}
 					ctx.ui.notify(lines.join("\n"), "info");
@@ -491,6 +506,29 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 						);
 						return;
 					}
+
+					const meta = getRalphLoopMetadata(ctx.cwd, sessionFile);
+					if (meta !== undefined && configureRalphAgents !== undefined) {
+						const next = new Set(meta.enabledAgents);
+						if (action === "enable") next.add(agentName);
+						else next.delete(agentName);
+						const result = await configureRalphAgents(ctx.cwd, meta.loopName, Array.from(next));
+						if (result.ok) {
+							setRalphLoopMetadata(ctx.cwd, sessionFile!, {
+								loopName: meta.loopName,
+								enabledAgents: Array.from(next),
+							});
+							ctx.ui.notify(
+								`Agent "${agentName}" ${action === "enable" ? "enabled" : "disabled"} for Ralph loop "${meta.loopName}".`,
+								"info",
+							);
+						} else {
+							ctx.ui.notify(`Failed to update Ralph agents: ${result.reason}`, "error");
+						}
+						syncAgentToolAvailability(pi, agentTool, registry, ctx.cwd, sessionFile);
+						return;
+					}
+
 					setAgentEnabledForCwd(ctx.cwd, agentName, action === "enable");
 					syncAgentToolAvailability(pi, agentTool, registry, ctx.cwd, sessionFile);
 					const state = action === "enable" ? "enabled" : "disabled";
@@ -513,7 +551,11 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 			}
 
 			// Interactive toggle selector using ctx.ui.custom
+				const loopMeta = getRalphLoopMetadata(ctx.cwd, sessionFile);
+				const isRalph = loopMeta !== undefined;
 				await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
+					let ralphEnabled = loopMeta?.enabledAgents ?? [];
+
 					const selector = new AgentsSelectorComponent(
 						allNames,
 						registry,
@@ -523,9 +565,29 @@ export default function initAgentsMenu(pi: ExtensionAPI, agentTool: AgentToolHan
 						agentSelections.isDirtyForCwd(ctx.cwd),
 						() => done(undefined as unknown as void),
 						(name, enabled) => {
-							setAgentEnabledForCwd(ctx.cwd, name, enabled);
+							if (isRalph && configureRalphAgents !== undefined && sessionFile !== undefined) {
+								const next = new Set(ralphEnabled);
+								if (enabled) next.add(name);
+								else next.delete(name);
+								ralphEnabled = Array.from(next);
+								setRalphLoopMetadata(ctx.cwd, sessionFile, {
+									loopName: loopMeta.loopName,
+									enabledAgents: ralphEnabled,
+								});
+								void configureRalphAgents(ctx.cwd, loopMeta.loopName, ralphEnabled).then((result) => {
+									if (!result.ok) {
+										ctx.ui.notify(`Failed to update Ralph agents: ${result.reason}`, "error");
+									}
+								});
+							} else {
+								setAgentEnabledForCwd(ctx.cwd, name, enabled);
+							}
 						},
 						() => {
+							if (isRalph) {
+								ctx.ui.notify("Ralph loop agents are saved automatically.", "info");
+								return;
+							}
 							void agentSelections.persistForCwd(ctx.cwd, allNames).then(
 								(settingsPath) => {
 									ctx.ui.notify(`Saved agent selection to ${settingsPath}`, "info");

@@ -270,7 +270,23 @@ export const startTau = (pi: ExtensionAPI) => {
 		const agentToolDescription = buildToolDescription(agentRegistry);
 		yield* Effect.sync(() => {
 			const agentToolHandle = initAgent(pi, agentRuntimeBridge, agentToolDescription);
-			initAgentsMenu(pi, agentToolHandle);
+			const configureRalphAgents: import("./agents-menu/index.js").RalphAgentConfigRunner = async (cwd, loopName, enabledNames) => {
+				try {
+					const result = await runRalph(Effect.gen(function* () {
+						const ralph = yield* Ralph;
+						return yield* ralph.configureLoopMany(cwd, loopName, [
+							{ kind: "capabilityContractAgents", enabledNames },
+						]);
+					}));
+					if (result.status === "refused") {
+						return { ok: false as const, reason: result.reason };
+					}
+					return { ok: true as const };
+				} catch (error) {
+					return { ok: false as const, reason: String(error) };
+				}
+			};
+			initAgentsMenu(pi, agentToolHandle, configureRalphAgents);
 
 			// The tau ManagedRuntime is created once per process in the extension
 			// factory and lives for the entire process lifetime. It backs every

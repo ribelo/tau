@@ -2,10 +2,8 @@ import { Effect, Option, Schema } from "effect";
 
 import type { ExecutionProfile } from "../execution/schema.js";
 import type { ResolvedSandboxConfig } from "../sandbox/config.js";
-import { RalphContractValidationError } from "../ralph/errors.js";
 import type { LoopState } from "./schema.js";
 import type { RalphRepoService } from "./repo.js";
-import type { RalphCapabilityContract } from "./contract.js";
 
 // ─── Error types ────────────────────────────────────────────────────────────
 
@@ -61,7 +59,7 @@ export type RalphConfigResult =
 const NonNegativeIntSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
 function isActiveChildPresent(state: LoopState): boolean {
-	return state.activeIterationSessionFile !== undefined;
+	return Option.isSome(state.activeIterationSessionFile);
 }
 
 function isActiveLoop(state: LoopState): boolean {
