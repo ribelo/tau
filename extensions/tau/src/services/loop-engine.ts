@@ -3,6 +3,7 @@ import { Clock, Effect, Layer, Option, Context } from "effect";
 import type { ExecutionProfile } from "../execution/schema.js";
 import type { ResolvedSandboxConfig } from "../sandbox/config.js";
 import { emptyRalphLoopMetrics } from "../ralph/schema.js";
+import { makeEmptyCapabilityContract, type RalphCapabilityContract } from "../ralph/contract.js";
 import type { StorageError } from "../shared/atomic-write.js";
 import {
 	createAutoresearchPhaseSnapshot,
@@ -71,6 +72,7 @@ export type LoopCreateRalphInput = {
 	readonly reflectInstructions: string;
 	readonly executionProfile: ExecutionProfile;
 	readonly sandboxProfile: ResolvedSandboxConfig;
+	readonly capabilityContract: RalphCapabilityContract | undefined;
 };
 
 export type LoopCreateAutoresearchInput = {
@@ -491,6 +493,8 @@ export const LoopEngineLive = Layer.effect(
 										...emptyRalphLoopMetrics(),
 										activeStartedAt: Option.some(timestamp),
 									},
+									capabilityContract:
+										input.capabilityContract ?? makeEmptyCapabilityContract(),
 								},
 							}
 						: {

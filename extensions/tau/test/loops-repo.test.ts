@@ -16,6 +16,7 @@ import {
 	makeExecutionProfile,
 	makeSandboxProfile,
 	makeRalphMetrics,
+	makeCapabilityContract,
 } from "./ralph-test-helpers.js";
 
 const loopRepoLayer = LoopRepoLive.pipe(Layer.provide(NodeFileSystem.layer));
@@ -62,6 +63,7 @@ function makeLoopState(taskId: string): LoopPersistedState {
 			pinnedExecutionProfile: makeExecutionProfile(),
 			sandboxProfile: Option.some(makeSandboxProfile()),
 			metrics: makeRalphMetrics(),
+			capabilityContract: makeCapabilityContract(),
 		},
 	};
 }

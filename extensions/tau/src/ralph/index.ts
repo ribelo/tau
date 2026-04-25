@@ -7,7 +7,18 @@ import type {
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { Text } from "@mariozechner/pi-tui";
+import {
+	Text,
+	SettingsList,
+	SelectList,
+	Container,
+	Spacer,
+	Input,
+	Key,
+	matchesKey,
+	type SelectItem,
+	type SettingItem,
+} from "@mariozechner/pi-tui";
 import { Effect, Option } from "effect";
 
 import type { ExecutionProfile } from "../execution/schema.js";
@@ -23,6 +34,10 @@ import { RALPH_TASKS_DIR } from "./paths.js";
 import { sanitizeLoopName, type LoopState, type LoopStatus } from "./schema.js";
 import { setToolEnabled } from "../shared/tool-activation.js";
 import { loadPersistedState, TAU_PERSISTED_STATE_TYPE } from "../shared/state.js";
+import { captureCapabilityContract, effectiveToolNames } from "./resolver.js";
+import type { RalphConfigMutation } from "./config-service.js";
+import { AgentRegistry } from "../agent/agent-registry.js";
+import { resolveEnabledAgentsForSessionAuthoritative } from "../agents-menu/index.js";
 import {
 	computeEffectiveConfig,
 	type ResolvedSandboxConfig,
@@ -752,6 +767,7 @@ Commands:
   /ralph archive <name>               Move loop to archive
   /ralph clean [--all]                Clean completed loops
   /ralph list --archived              Show archived loops
+  /ralph configure [name]             Interactive configuration for a Ralph loop
   /ralph nuke [--yes]                 Delete all Ralph loop data under .pi/loops
 
 Options:
@@ -927,6 +943,23 @@ export default function initRalph(
 			};
 		});
 
+		const applyCapabilityContract: RalphCommandBoundary["applyCapabilityContract"] = Effect.fn(
+			"RalphCommandBoundary.applyCapabilityContract",
+		)(function* (contract, target) {
+			return yield* Effect.sync(() => {
+				try {
+					const tools = effectiveToolNames(contract, target);
+					pi.setActiveTools([...tools]);
+					return { applied: true as const };
+				} catch (error) {
+					return {
+						applied: false as const,
+						reason: formatCommandBoundaryError(error),
+					};
+				}
+			});
+		});
+
 		const captureBoundarySandboxProfile = Effect.succeed(initialSandboxProfile);
 
 		const sendFollowUp: RalphCommandBoundary["sendFollowUp"] = Effect.fn(
@@ -976,6 +1009,7 @@ export default function initRalph(
 			newSession,
 			captureSandboxProfile: captureBoundarySandboxProfile,
 			applyExecutionProfile,
+			applyCapabilityContract,
 			sendFollowUp,
 		};
 	};
@@ -1168,7 +1202,23 @@ export default function initRalph(
 						}
 						const sandboxProfile = captureSandboxProfile(pi, ctx);
 
+						// Capture capability contract from current runtime before the session
+						// becomes Ralph-owned, so ambient Pi state is pinned.
+						const agentRegistry = await Effect.runPromise(AgentRegistry.load(ctx.cwd));
+						const availableAgents = agentRegistry.names();
 						const controllerSessionFile = sessionFileFromContext(ctx);
+						const enabledAgents = await resolveEnabledAgentsForSessionAuthoritative(
+							ctx.cwd,
+							controllerSessionFile,
+							availableAgents,
+						);
+						const capabilityContract = captureCapabilityContract({
+							activeTools: pi.getActiveTools(),
+							allTools: pi.getAllTools(),
+							agentRegistry,
+							enabledAgents,
+						});
+
 						const start = await withRalph((ralph) =>
 							ralph.startLoopState(ctx.cwd, {
 								loopName,
@@ -1184,6 +1234,7 @@ export default function initRalph(
 										? Option.none()
 										: Option.some(controllerSessionFile),
 								defaultTaskTemplate: DEFAULT_TEMPLATE,
+								capabilityContract,
 							}),
 						);
 
@@ -1445,6 +1496,333 @@ export default function initRalph(
 							`${label}:\n${loops.map((loop) => formatLoop(loop)).join("\n")}`,
 							"info",
 						);
+						return;
+					}
+
+					case "configure": {
+						if (!ctx.hasUI) {
+							ctx.ui.notify("/ralph configure requires an interactive UI.", "warning");
+							return;
+						}
+
+						const arg = rest.trim();
+						const loops = await listLoops(ctx.cwd);
+						// listLoops already returns only Ralph loops via RalphRepo.listLoops
+						const ralphLoops = loops;
+
+						let targetLoopName: string | undefined;
+
+						if (arg) {
+							targetLoopName = sanitizeLoopName(arg);
+						} else {
+							// Try current Ralph-owned loop
+							const sessionFile = sessionFileFromContext(ctx);
+							const owned = await withRalph((ralph) =>
+								ralph
+									.findLoopBySessionFile(ctx.cwd, sessionFile)
+									.pipe(Effect.map(Option.getOrUndefined)),
+							);
+							if (owned) {
+								targetLoopName = owned.name;
+							}
+						}
+
+						if (!targetLoopName) {
+							// Show selector of configurable Ralph loops
+							if (ralphLoops.length === 0) {
+								ctx.ui.notify("No Ralph loops found to configure.", "info");
+								return;
+							}
+							const items: SelectItem[] = ralphLoops.map((loop) => ({
+								value: loop.name,
+								label: `${loop.name} (${loop.status}, iter ${loop.iteration})`,
+								description: loop.taskFile,
+							}));
+							await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
+								const selector = new SelectList(items, Math.min(items.length + 2, 10), {
+									selectedPrefix: (text) => theme.fg("accent", text),
+									selectedText: (text) => theme.fg("accent", theme.bold(text)),
+									description: (text) => theme.fg("dim", text),
+									scrollInfo: (text) => theme.fg("muted", text),
+									noMatch: (text) => theme.fg("warning", text),
+								});
+								selector.onSelect = (item) => {
+									targetLoopName = item.value;
+									done(undefined as unknown as void);
+								};
+								selector.onCancel = () => done(undefined as unknown as void);
+								return selector;
+							});
+							if (!targetLoopName) return;
+						}
+
+						const loop = ralphLoops.find((l) => l.name === targetLoopName);
+						if (!loop) {
+							ctx.ui.notify(`Loop "${targetLoopName}" not found.`, "error");
+							return;
+						}
+
+						const state = loop;
+						const sandboxStr = Option.match(state.sandboxProfile, {
+							onNone: () => "default",
+							onSome: (s) => s.preset ?? "custom",
+						});
+						const ep = state.executionProfile;
+						const toolsActive = state.capabilityContract.tools.activeNames;
+						const agentsEnabled = state.capabilityContract.agents.enabledNames;
+
+						const buildItems = (): SettingItem[] => [
+							{
+								id: "maxIterations",
+								label: "Max iterations",
+								description: "Stop after N iterations (0 = unlimited)",
+								currentValue: String(state.maxIterations),
+							},
+							{
+								id: "itemsPerIteration",
+								label: "Items per iteration",
+								description: "Suggested work items per Ralph turn (0 = no hint)",
+								currentValue: String(state.itemsPerIteration),
+							},
+							{
+								id: "reflectEvery",
+								label: "Reflect every",
+								description: "Reflection checkpoint frequency in iterations (0 = off)",
+								currentValue: String(state.reflectEvery),
+							},
+							{
+								id: "tools",
+								label: "Active tools",
+								description: `User-configurable tools (${toolsActive.length} active). System-managed: ralph_continue, ralph_finish`,
+								currentValue: toolsActive.join(", ") || "none",
+							},
+							{
+								id: "agents",
+								label: "Enabled agents",
+								description: `Agents enabled for this loop (${agentsEnabled.length})`,
+								currentValue: agentsEnabled.join(", ") || "none",
+							},
+							{
+								id: "executionProfile",
+								label: "Execution profile",
+								description: "Pinned mode, model, and thinking level",
+								currentValue: `${ep.selector.mode} / ${ep.promptProfile.model ?? "default"} / ${ep.promptProfile.thinking ?? "default"}`,
+							},
+							{
+								id: "sandboxProfile",
+								label: "Sandbox profile",
+								description: "Pinned sandbox preset and overrides",
+								currentValue: sandboxStr,
+							},
+							{
+								id: "reflectInstructions",
+								label: "Reflection instructions",
+								description: "Custom prompt for reflection checkpoints",
+								currentValue:
+									state.reflectInstructions.slice(0, 40) +
+									(state.reflectInstructions.length > 40 ? "…" : ""),
+							},
+						];
+
+						const pendingMutations: RalphConfigMutation[] = [];
+						let dirty = false;
+
+						await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
+							const items = buildItems();
+							const settingsList = new SettingsList(
+								items,
+								Math.min(items.length + 2, 12),
+								{
+									label: (text, selected) =>
+										selected ? theme.fg("accent", theme.bold(text)) : text,
+									value: (text, selected) =>
+										selected ? theme.fg("accent", text) : theme.fg("dim", text),
+									description: (text) => theme.fg("muted", text),
+									cursor: theme.fg("accent", "> "),
+									hint: (text) => theme.fg("dim", text),
+								},
+								(id, _newValue) => {
+									if (id === "maxIterations" || id === "itemsPerIteration" || id === "reflectEvery") {
+										// For numeric fields, open an input submenu would be ideal.
+										// Since SettingsList cycles values or opens submenus, we use a simple prompt approach:
+										ctx.ui
+											.input(`Enter new value for ${id} (non-negative integer):`, String(state[id as keyof LoopState]))
+											.then((value) => {
+												if (value === undefined) return;
+												const num = Number.parseInt(value, 10);
+												if (Number.isInteger(num) && num >= 0) {
+													pendingMutations.push({ kind: id, value: num } as RalphConfigMutation);
+													dirty = true;
+													settingsList.updateValue(id, String(num));
+												} else {
+													ctx.ui.notify(`Invalid value: ${value}`, "error");
+												}
+											});
+									}
+									if (id === "tools") {
+										const available = state.capabilityContract.tools.availableSnapshot.map((t) => t.name);
+										const allItems: SelectItem[] = available.map((name) => ({
+											value: name,
+											label: name,
+											description: state.capabilityContract.tools.availableSnapshot.find((t) => t.name === name)?.description ?? "",
+										}));
+										ctx.ui
+											.custom<void>((_tui2, theme2, _kb2, done2) => {
+												const sel = new SelectList(
+													allItems,
+													Math.min(allItems.length + 2, 10),
+													{
+														selectedPrefix: (text) => theme2.fg("accent", text),
+														selectedText: (text) => theme2.fg("accent", theme2.bold(text)),
+														description: (text) => theme2.fg("dim", text),
+														scrollInfo: (text) => theme2.fg("muted", text),
+														noMatch: (text) => theme2.fg("warning", text),
+													},
+												);
+												const selected = new Set(toolsActive);
+												sel.onSelect = (item) => {
+													if (selected.has(item.value)) {
+														selected.delete(item.value);
+													} else {
+														selected.add(item.value);
+													}
+													sel.invalidate();
+												};
+												sel.onCancel = () => {
+													const next = Array.from(selected).sort();
+													pendingMutations.push({
+														kind: "capabilityContractTools",
+														activeNames: next,
+													});
+													dirty = true;
+													settingsList.updateValue("tools", next.join(", ") || "none");
+													done2(undefined as unknown as void);
+												};
+												return sel;
+											})
+												.catch(() => undefined);
+									}
+									if (id === "agents") {
+										const registry = state.capabilityContract.agents.registrySnapshot;
+										const allItems: SelectItem[] = registry.map((a) => ({
+											value: a.name,
+											label: a.name,
+											description: a.description,
+										}));
+										ctx.ui
+											.custom<void>((_tui2, theme2, _kb2, done2) => {
+												const sel = new SelectList(
+													allItems,
+													Math.min(allItems.length + 2, 10),
+													{
+														selectedPrefix: (text) => theme2.fg("accent", text),
+														selectedText: (text) => theme2.fg("accent", theme2.bold(text)),
+														description: (text) => theme2.fg("dim", text),
+														scrollInfo: (text) => theme2.fg("muted", text),
+														noMatch: (text) => theme2.fg("warning", text),
+													},
+												);
+												const selected = new Set(agentsEnabled);
+												sel.onSelect = (item) => {
+													if (selected.has(item.value)) {
+														selected.delete(item.value);
+													} else {
+														selected.add(item.value);
+													}
+													sel.invalidate();
+												};
+												sel.onCancel = () => {
+													const next = Array.from(selected).sort();
+													pendingMutations.push({
+														kind: "capabilityContractAgents",
+														enabledNames: next,
+													});
+													dirty = true;
+													settingsList.updateValue("agents", next.join(", ") || "none");
+													done2(undefined as unknown as void);
+												};
+												return sel;
+											})
+												.catch(() => undefined);
+									}
+									if (id === "executionProfile") {
+										// Recapture from current session
+										captureCurrentExecutionProfile(ctx).then((profile) => {
+											if (profile) {
+												pendingMutations.push({
+													kind: "executionProfile",
+													profile,
+												});
+												dirty = true;
+												settingsList.updateValue(
+													"executionProfile",
+													`${profile.selector.mode} / ${profile.promptProfile.model ?? "default"} / ${profile.promptProfile.thinking ?? "default"}`,
+												);
+												ctx.ui.notify("Execution profile recaptured from current session.", "info");
+											} else {
+												ctx.ui.notify("Could not capture current execution profile.", "error");
+											}
+										});
+									}
+									if (id === "sandboxProfile") {
+										const profile = captureSandboxProfile(pi, ctx);
+										pendingMutations.push({
+											kind: "sandboxProfile",
+											profile,
+										});
+										dirty = true;
+										settingsList.updateValue("sandboxProfile", profile.preset ?? "custom");
+										ctx.ui.notify("Sandbox profile recaptured from current session.", "info");
+									}
+									if (id === "reflectInstructions") {
+										ctx.ui
+											.editor("Reflection instructions", state.reflectInstructions)
+											.then((value) => {
+												if (value === undefined) return;
+												pendingMutations.push({
+													kind: "reflectInstructions",
+													value,
+												});
+												dirty = true;
+												settingsList.updateValue(
+													"reflectInstructions",
+													value.slice(0, 40) + (value.length > 40 ? "…" : ""),
+												);
+											});
+									}
+								},
+								() => {
+									// onCancel = save if dirty
+									if (dirty && pendingMutations.length > 0) {
+										withRalph((ralph) =>
+											ralph.configureLoopMany(ctx.cwd, targetLoopName!, pendingMutations),
+										)
+											.then((result) => {
+												if (result.status === "updated") {
+													ctx.ui.notify(
+														`Updated loop "${targetLoopName}" configuration.`,
+														"info",
+													);
+												} else if (result.status === "refused") {
+													ctx.ui.notify(
+														`Configuration refused: ${result.reason}`,
+														"warning",
+													);
+												}
+											})
+											.catch((error) => {
+												ctx.ui.notify(
+													String(error),
+													"error",
+												);
+											});
+									}
+									done(undefined as unknown as void);
+								},
+								{ enableSearch: true },
+							);
+								return settingsList;
+							});
 						return;
 					}
 

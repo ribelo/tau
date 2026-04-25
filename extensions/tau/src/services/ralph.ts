@@ -20,6 +20,13 @@ import { RALPH_TASKS_DIR } from "../ralph/paths.js";
 import { RalphContractValidationError } from "../ralph/errors.js";
 import type { LoopState, RalphPendingDecision } from "../ralph/schema.js";
 import type { RalphLoopMetrics } from "../ralph/schema.js";
+import type { RalphCapabilityContract } from "../ralph/contract.js";
+import {
+	makeRalphLoopConfigService,
+	type RalphConfigResult,
+	type RalphConfigError,
+	type RalphConfigMutation,
+} from "../ralph/config-service.js";
 import { StorageError } from "../shared/atomic-write.js";
 import { LoopEngine } from "./loop-engine.js";
 
@@ -69,6 +76,7 @@ export type RalphStartLoopInput = {
 	readonly reflectInstructions: string;
 	readonly controllerSessionFile: Option.Option<string>;
 	readonly defaultTaskTemplate: string;
+	readonly capabilityContract?: import("../ralph/contract.js").RalphCapabilityContract;
 };
 
 export type RalphStartLoopStateResult =
@@ -195,6 +203,10 @@ export type RalphCommandBoundary = {
 	readonly captureSandboxProfile: Effect.Effect<ResolvedSandboxConfig, never, never>;
 	readonly applyExecutionProfile: (
 		profile: ExecutionProfile,
+	) => Effect.Effect<{ readonly applied: boolean; readonly reason?: string }, never, never>;
+	readonly applyCapabilityContract: (
+		contract: RalphCapabilityContract,
+		target: "controller" | "child",
 	) => Effect.Effect<{ readonly applied: boolean; readonly reason?: string }, never, never>;
 	readonly sendFollowUp: (
 		prompt: string,
@@ -544,6 +556,26 @@ export interface RalphService {
 		sessionFile: string | undefined,
 		event: AgentEndEvent,
 	) => Effect.Effect<RalphAgentEndResult, RalphContractValidationError, never>;
+	readonly configureLoop: (
+		cwd: string,
+		loopName: string,
+		mutation: RalphConfigMutation,
+	) => Effect.Effect<RalphConfigResult, RalphConfigError, never>;
+	readonly configureLoopMany: (
+		cwd: string,
+		loopName: string,
+		mutations: ReadonlyArray<RalphConfigMutation>,
+	) => Effect.Effect<RalphConfigResult, RalphConfigError, never>;
+	readonly recaptureLoopExecutionProfile: (
+		cwd: string,
+		loopName: string,
+		profile: ExecutionProfile,
+	) => Effect.Effect<RalphConfigResult, RalphConfigError, never>;
+	readonly recaptureLoopSandboxProfile: (
+		cwd: string,
+		loopName: string,
+		profile: ResolvedSandboxConfig,
+	) => Effect.Effect<RalphConfigResult, RalphConfigError, never>;
 }
 
 export class Ralph extends Context.Service<Ralph, RalphService>()("Ralph") {}
@@ -841,6 +873,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 							reflectInstructions: input.reflectInstructions,
 							executionProfile: input.executionProfile,
 							sandboxProfile: input.sandboxProfile,
+							capabilityContract: input.capabilityContract,
 						}),
 					);
 				} else {
@@ -856,6 +889,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 						lastReflectionAt: 0,
 						activeIterationSessionFile: Option.none(),
 						pendingDecision: Option.none(),
+						capabilityContract: input.capabilityContract ?? existing.value.capabilityContract,
 					};
 					yield* repo.saveState(cwd, preparedState);
 				}
@@ -1359,6 +1393,19 @@ export const RalphLive = (config: RalphLiveConfig) =>
 						}
 					}
 
+					const controllerContractApplied = yield* boundary.applyCapabilityContract(
+						state.capabilityContract,
+						"controller",
+					);
+					if (!controllerContractApplied.applied) {
+						return yield* pauseLoop(
+							boundary.cwd,
+							state,
+							`Could not apply Ralph controller contract: ${controllerContractApplied.reason ?? "unknown error"}`,
+							"stopped",
+						);
+					}
+
 					if (yield* config.hasActiveSubagents()) {
 						state.activeIterationSessionFile = Option.none();
 						return yield* pauseLoop(
@@ -1410,6 +1457,18 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					}
 					afterSession.activeIterationSessionFile = Option.none();
 					clearPendingDecision(afterSession);
+					const childContractApplied = yield* boundary.applyCapabilityContract(
+						afterSession.capabilityContract,
+						"child",
+					);
+					if (!childContractApplied.applied) {
+						return yield* pauseLoop(
+							boundary.cwd,
+							afterSession,
+							`Could not apply Ralph child contract: ${childContractApplied.reason ?? "unknown error"}`,
+							"stopped",
+						);
+					}
 					const executionProfileApplied = yield* boundary.applyExecutionProfile(
 						afterSession.executionProfile,
 					);
@@ -1771,6 +1830,26 @@ export const RalphLive = (config: RalphLiveConfig) =>
 				} satisfies RalphAgentEndResult;
 			});
 
+			const configService = makeRalphLoopConfigService(rawRepo);
+
+			const configureLoop: RalphService["configureLoop"] = (cwd, loopName, mutation) =>
+				Effect.promise(() => configService.mutate(cwd, loopName, mutation));
+
+			const configureLoopMany: RalphService["configureLoopMany"] = (cwd, loopName, mutations) =>
+				Effect.promise(() => configService.mutateMany(cwd, loopName, mutations));
+
+			const recaptureLoopExecutionProfile: RalphService["recaptureLoopExecutionProfile"] = (
+				cwd,
+				loopName,
+				profile,
+			) => Effect.promise(() => configService.recaptureExecutionProfile(cwd, loopName, profile));
+
+			const recaptureLoopSandboxProfile: RalphService["recaptureLoopSandboxProfile"] = (
+				cwd,
+				loopName,
+				profile,
+			) => Effect.promise(() => configService.recaptureSandboxProfile(cwd, loopName, profile));
+
 			return Ralph.of({
 				startLoopState,
 				prepareLoopTask,
@@ -1791,6 +1870,10 @@ export const RalphLive = (config: RalphLiveConfig) =>
 				recordContinue,
 				recordFinish,
 				handleAgentEnd,
+				configureLoop,
+				configureLoopMany,
+				recaptureLoopExecutionProfile,
+				recaptureLoopSandboxProfile,
 			});
 		}),
 	);

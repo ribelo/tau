@@ -15,6 +15,7 @@ import {
 	makeExecutionProfile,
 	makeSandboxProfile,
 	makeRalphMetrics,
+	makeCapabilityContract,
 } from "./ralph-test-helpers.js";
 
 async function makeWorkspace(): Promise<string> {
@@ -72,6 +73,7 @@ async function writeRalphState(
 				pinnedExecutionProfile: makeExecutionProfile(),
 				sandboxProfile: Option.some(makeSandboxProfile()),
 				metrics: makeRalphMetrics(),
+				capabilityContract: makeCapabilityContract(),
 			},
 		}),
 		"utf8",

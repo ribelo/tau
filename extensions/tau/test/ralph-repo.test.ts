@@ -12,6 +12,7 @@ import {
 	makeExecutionProfile,
 	makeSandboxProfile,
 	makeRalphMetrics,
+	makeCapabilityContract,
 } from "./ralph-test-helpers.js";
 
 const ralphRepoLayer = RalphRepoLive.pipe(Layer.provide(NodeFileSystem.layer));
@@ -39,6 +40,7 @@ function makeLoopState(loopName: string): LoopState {
 		executionProfile: makeExecutionProfile(),
 		sandboxProfile: Option.some(makeSandboxProfile()),
 		metrics: makeRalphMetrics(),
+		capabilityContract: makeCapabilityContract(),
 	};
 }
 

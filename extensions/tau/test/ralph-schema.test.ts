@@ -14,6 +14,7 @@ import {
 	makeExecutionProfile,
 	makeSandboxProfile,
 	makeRalphMetrics,
+	makeCapabilityContract,
 } from "./ralph-test-helpers.js";
 
 const encodedLoopState: EncodedLoopState = {
@@ -39,6 +40,7 @@ const encodedLoopState: EncodedLoopState = {
 		activeDurationMs: 0,
 		activeStartedAt: null,
 	},
+	capabilityContract: makeCapabilityContract(),
 };
 
 describe("ralph schema", () => {

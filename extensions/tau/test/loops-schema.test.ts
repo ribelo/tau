@@ -15,6 +15,7 @@ import {
 	makeExecutionProfile,
 	makeSandboxProfile,
 	makeRalphMetrics,
+	makeCapabilityContract,
 } from "./ralph-test-helpers.js";
 
 const encodedRalphState: EncodedLoopPersistedState = {
@@ -54,6 +55,7 @@ const encodedRalphState: EncodedLoopPersistedState = {
 			activeDurationMs: 0,
 			activeStartedAt: null,
 		},
+		capabilityContract: makeCapabilityContract(),
 	},
 };
 
@@ -94,6 +96,7 @@ describe("loops schema", () => {
 			expect(decoded.state.ralph.metrics.totalCostUsd).toBe(0);
 			expect(decoded.state.ralph.metrics.activeDurationMs).toBe(0);
 			expect(Option.isNone(decoded.state.ralph.metrics.activeStartedAt)).toBe(true);
+			expect(decoded.state.ralph.capabilityContract.version).toBe("1");
 		}
 
 		const reencoded = await Effect.runPromise(encodeLoopPersistedState(decoded.state));

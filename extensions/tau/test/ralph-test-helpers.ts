@@ -9,6 +9,7 @@ import type { PromptModeProfile } from "../src/prompt/profile.js";
 import { DEFAULT_SANDBOX_CONFIG, type ResolvedSandboxConfig } from "../src/sandbox/config.js";
 import { PromptModes } from "../src/services/prompt-modes.js";
 import { emptyRalphLoopMetrics, type RalphLoopMetrics } from "../src/ralph/schema.js";
+import { makeEmptyCapabilityContract, type RalphCapabilityContract } from "../src/ralph/contract.js";
 
 export function makePromptProfile(overrides?: Partial<PromptModeProfile>): PromptModeProfile {
 	return {
@@ -62,4 +63,8 @@ export function makeSandboxProfile(): ResolvedSandboxConfig {
 
 export function makeRalphMetrics(): RalphLoopMetrics {
 	return emptyRalphLoopMetrics();
+}
+
+export function makeCapabilityContract(): RalphCapabilityContract {
+	return makeEmptyCapabilityContract();
 }

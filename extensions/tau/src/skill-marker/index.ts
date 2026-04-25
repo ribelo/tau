@@ -228,7 +228,7 @@ export function wrapAutocompleteProvider(
 	} else {
 		runtime.wrapper.setBase(provider);
 	}
-	return runtime.wrapper;
+	return runtime.wrapper as unknown as AutocompleteProvider;
 }
 
 export default function initSkillMarker(pi: ExtensionAPI, runtime: SkillMarkerRuntime) {

@@ -3,6 +3,10 @@ import { Effect, Option, Schema } from "effect";
 import type { ExecutionProfile } from "../execution/schema.js";
 import { ExecutionProfileSchema } from "../execution/schema.js";
 import { SandboxConfigRequired as SandboxProfileSchema } from "../schemas/config.js";
+import {
+	makeEmptyCapabilityContract,
+	RalphCapabilityContractSchema,
+} from "../ralph/contract.js";
 import { LoopContractValidationError, LoopOwnershipValidationError } from "./errors.js";
 
 const NonNegativeIntSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
@@ -88,6 +92,10 @@ function normalizeLoopPersistedState(value: unknown): NormalizeLoopPersistedStat
 			activeDurationMs: 0,
 			activeStartedAt: null,
 		};
+		migrated = true;
+	}
+	if (!("capabilityContract" in nextRalph)) {
+		nextRalph["capabilityContract"] = makeEmptyCapabilityContract();
 		migrated = true;
 	}
 
@@ -193,6 +201,7 @@ const RalphLoopStateDetailsSchema = Schema.Struct({
 		activeDurationMs: NonNegativeIntSchema,
 		activeStartedAt: OptionalStringSchema,
 	}),
+	capabilityContract: RalphCapabilityContractSchema,
 });
 export type RalphLoopStateDetails = Schema.Schema.Type<typeof RalphLoopStateDetailsSchema>;
 

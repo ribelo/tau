@@ -24,6 +24,7 @@ import {
 	makePromptProfile,
 	makeSandboxProfile,
 	makeRalphMetrics,
+	makeCapabilityContract,
 } from "./ralph-test-helpers.js";
 
 function makeTempDir(): string {
@@ -51,6 +52,7 @@ function makeState(loopName: string, sessionFile: string): LoopState {
 		executionProfile: makeExecutionProfile(),
 		sandboxProfile: Option.some(makeSandboxProfile()),
 		metrics: makeRalphMetrics(),
+		capabilityContract: makeCapabilityContract(),
 	};
 }
 
@@ -369,6 +371,7 @@ describe("ralph core service", () => {
 						}),
 					captureSandboxProfile: Effect.succeed(makeSandboxProfile()),
 					applyExecutionProfile: () => Effect.succeed({ applied: true as const }),
+					applyCapabilityContract: () => Effect.succeed({ applied: true as const }),
 					sendFollowUp: () =>
 						Effect.gen(function* () {
 							yield* Deferred.succeed(followUpStarted, undefined);
@@ -492,6 +495,7 @@ describe("ralph core service", () => {
 							appliedProfiles.push(profile);
 							return { applied: true } as const;
 						}),
+					applyCapabilityContract: () => Effect.succeed({ applied: true as const }),
 					captureSandboxProfile: Effect.succeed(makeSandboxProfile()),
 					sendFollowUp: () =>
 						Effect.gen(function* () {
@@ -603,6 +607,7 @@ describe("ralph core service", () => {
 								return { cancelled: false } as const;
 							}),
 						applyExecutionProfile: () => Effect.succeed({ applied: true as const }),
+					applyCapabilityContract: () => Effect.succeed({ applied: true as const }),
 						captureSandboxProfile: Effect.succeed(makeSandboxProfile()),
 						sendFollowUp: () =>
 							Effect.promise(async () => {

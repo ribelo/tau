@@ -7,6 +7,11 @@ import {
 } from "../execution/schema.js";
 import { SandboxConfigRequired as SandboxProfileSchema } from "../schemas/config.js";
 import { PromptModeProfileSchema } from "../prompt/profile.js";
+import {
+	makeEmptyCapabilityContract,
+	RalphCapabilityContractSchema,
+	type RalphCapabilityContract,
+} from "./contract.js";
 import { RalphContractValidationError } from "./errors.js";
 
 const NonNegativeIntSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
@@ -82,6 +87,7 @@ export const LoopStateSchema = Schema.Struct({
 	executionProfile: Schema.mutableKey(ExecutionProfileSchema),
 	sandboxProfile: Schema.mutableKey(Schema.OptionFromNullOr(SandboxProfileSchema)),
 	metrics: Schema.mutableKey(RalphLoopMetricsSchema),
+	capabilityContract: Schema.mutableKey(RalphCapabilityContractSchema),
 });
 export type LoopState = Schema.Schema.Type<typeof LoopStateSchema>;
 export type EncodedLoopState = Schema.Codec.Encoded<typeof LoopStateSchema>;
@@ -157,6 +163,9 @@ function normalizeLoopStateValue(value: unknown): unknown {
 			activeStartedAt: null,
 		};
 	}
+	if (!("capabilityContract" in next)) {
+		next["capabilityContract"] = makeEmptyCapabilityContract();
+	}
 	return next;
 }
 
@@ -172,6 +181,7 @@ function legacyLoopStateToCanonical(state: LegacyLoopState): LoopState {
 		}),
 		sandboxProfile: Option.none(),
 		metrics: emptyRalphLoopMetrics(),
+		capabilityContract: makeEmptyCapabilityContract(),
 	};
 }
 

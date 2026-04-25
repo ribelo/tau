@@ -3,9 +3,20 @@ import { fuzzyFilter } from "@mariozechner/pi-tui";
 
 export type SkillCandidate = { name: string; description: string };
 
+type AutocompleteOptions = { readonly signal: AbortSignal; readonly force?: boolean };
+type AutocompleteSuggestions = { items: AutocompleteItem[]; prefix: string };
+type AsyncCapableAutocompleteProvider = AutocompleteProvider & {
+	getSuggestions: (
+		lines: string[],
+		cursorLine: number,
+		cursorCol: number,
+		options: AutocompleteOptions,
+	) => Promise<AutocompleteSuggestions | null> | AutocompleteSuggestions | null;
+};
+
 const SKILL_AUTOCOMPLETE_REGEX = /(?:^|\s)(\$[a-z0-9-]*)$/;
 
-export class SkillMarkerAutocompleteProvider implements AutocompleteProvider {
+export class SkillMarkerAutocompleteProvider {
 	private base: AutocompleteProvider;
 	private getCandidates: () => SkillCandidate[];
 
@@ -18,11 +29,12 @@ export class SkillMarkerAutocompleteProvider implements AutocompleteProvider {
 		this.base = base;
 	}
 
-	getSuggestions(
+	async getSuggestions(
 		lines: string[],
 		cursorLine: number,
 		cursorCol: number,
-	): { items: AutocompleteItem[]; prefix: string } | null {
+		options: AutocompleteOptions,
+	): Promise<AutocompleteSuggestions | null> {
 		const currentLine = lines[cursorLine] ?? "";
 		const textBeforeCursor = currentLine.slice(0, cursorCol);
 		const m = textBeforeCursor.match(SKILL_AUTOCOMPLETE_REGEX);
@@ -31,6 +43,7 @@ export class SkillMarkerAutocompleteProvider implements AutocompleteProvider {
 			const query = prefix.slice(1);
 			const filtered = fuzzyFilter(this.getCandidates(), query, (c) => c.name).slice(0, 30);
 			if (filtered.length === 0) return null;
+
 			return {
 				items: filtered.map((c) => ({
 					value: c.name,
@@ -41,7 +54,12 @@ export class SkillMarkerAutocompleteProvider implements AutocompleteProvider {
 			};
 		}
 
-		return this.base.getSuggestions(lines, cursorLine, cursorCol);
+		return await (this.base as unknown as AsyncCapableAutocompleteProvider).getSuggestions(
+			lines,
+			cursorLine,
+			cursorCol,
+			options,
+		);
 	}
 
 	applyCompletion(

@@ -18,6 +18,7 @@ import {
 	makeExecutionProfile,
 	makeSandboxProfile,
 	makeRalphMetrics,
+	makeCapabilityContract,
 } from "./ralph-test-helpers.js";
 
 const loopEngineLayer = LoopEngineLive.pipe(
@@ -63,6 +64,7 @@ function makeInvalidState(taskId: string, child: LoopSessionRef): LoopPersistedS
 			pinnedExecutionProfile: makeExecutionProfile(),
 			sandboxProfile: Option.some(makeSandboxProfile()),
 			metrics: makeRalphMetrics(),
+			capabilityContract: makeCapabilityContract(),
 		},
 	};
 }
@@ -98,6 +100,7 @@ describe("loop engine service", () => {
 					reflectInstructions: "reflect",
 					executionProfile: makeExecutionProfile(),
 					sandboxProfile: makeSandboxProfile(),
+				capabilityContract: makeCapabilityContract(),
 				});
 
 				const started = yield* engine.startLoop(cwd, "engine-loop", controller);
@@ -415,6 +418,7 @@ describe("loop engine service", () => {
 					reflectInstructions: "reflect",
 					executionProfile: makeExecutionProfile(),
 					sandboxProfile: makeSandboxProfile(),
+				capabilityContract: makeCapabilityContract(),
 				});
 				yield* engine.createLoop(cwd, {
 					kind: "ralph",
@@ -427,6 +431,7 @@ describe("loop engine service", () => {
 					reflectInstructions: "reflect",
 					executionProfile: makeExecutionProfile(),
 					sandboxProfile: makeSandboxProfile(),
+				capabilityContract: makeCapabilityContract(),
 				});
 				yield* engine.startLoop(cwd, "ambiguous-a", shared);
 				yield* engine.pauseLoop(cwd, "ambiguous-a");
@@ -504,6 +509,7 @@ describe("loop engine service", () => {
 					reflectInstructions: "reflect",
 					executionProfile: makeExecutionProfile(),
 					sandboxProfile: makeSandboxProfile(),
+				capabilityContract: makeCapabilityContract(),
 				});
 				yield* engine.startLoop(
 					cwd,

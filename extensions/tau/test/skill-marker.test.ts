@@ -5,6 +5,7 @@ import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { SkillMarkerAutocompleteProvider } from "../src/skill-marker/autocomplete.js";
 import initSkillMarker, { createSkillMarkerRuntime } from "../src/skill-marker/index.js";
 
 type EventHandler = (event: unknown, ctx: unknown) => unknown;
@@ -142,6 +143,60 @@ describe("skill-marker", () => {
 			message: expect.objectContaining({
 				content: expect.stringContaining(skillPath),
 			}),
+		});
+	});
+
+	it("forwards autocomplete options to the wrapped provider when no skill marker matches", async () => {
+		const controller = new AbortController();
+		const base = {
+			getSuggestions: vi.fn(
+				async (
+					_lines: string[],
+					_cursorLine: number,
+					_cursorCol: number,
+					options?: { readonly signal: AbortSignal; readonly force?: boolean },
+				) => {
+					expect(options).toEqual({ signal: controller.signal, force: true });
+					return {
+						items: [{ value: "help", label: "help" }],
+						prefix: "/he",
+					};
+				},
+			),
+			applyCompletion: (
+				lines: string[],
+				cursorLine: number,
+				cursorCol: number,
+			) => ({
+				lines,
+				cursorLine,
+				cursorCol,
+			}),
+		};
+
+		const provider = new SkillMarkerAutocompleteProvider(
+			base as unknown as ConstructorParameters<typeof SkillMarkerAutocompleteProvider>[0],
+			() => [],
+		);
+
+		const result = await (
+			provider as unknown as {
+				getSuggestions: (
+					lines: string[],
+					cursorLine: number,
+					cursorCol: number,
+					options: { readonly signal: AbortSignal; readonly force?: boolean },
+				) => Promise<{ items: Array<{ value: string; label: string }>; prefix: string } | null>;
+			}
+		).getSuggestions(["/he"], 0, 3, {
+			signal: controller.signal,
+			force: true,
+		});
+
+		expect(base.getSuggestions).toHaveBeenCalledOnce();
+		expect(result).toEqual({
+			items: [{ value: "help", label: "help" }],
+			prefix: "/he",
 		});
 	});
 

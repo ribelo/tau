@@ -28,6 +28,7 @@ import {
 	makePromptModesStubLayer,
 	makeSandboxProfile,
 	makeRalphMetrics,
+	makeCapabilityContract,
 } from "./ralph-test-helpers.js";
 
 type EventHandler = (event: unknown, ctx: ExtensionContext) => unknown;
@@ -191,6 +192,7 @@ function writeLoopState(
 				pinnedExecutionProfile: makeExecutionProfile(),
 				sandboxProfile: Option.some(makeSandboxProfile()),
 				metrics: input.metrics ?? makeRalphMetrics(),
+				capabilityContract: makeCapabilityContract(),
 			},
 		}),
 		"utf-8",

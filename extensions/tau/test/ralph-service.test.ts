@@ -34,6 +34,7 @@ import {
 	makeExecutionProfile,
 	makePromptModesStubLayer,
 	makeRalphMetrics,
+	makeCapabilityContract,
 } from "./ralph-test-helpers.js";
 
 type EventHandler = (event: unknown, ctx: ExtensionContext) => unknown;
@@ -314,6 +315,7 @@ function writeLoopState(
 				pinnedExecutionProfile: makeExecutionProfile(),
 				sandboxProfile: Option.some(input.sandboxProfile ?? DEFAULT_SANDBOX_CONFIG),
 				metrics: makeRalphMetrics(),
+				capabilityContract: makeCapabilityContract(),
 			},
 		}),
 		"utf-8",

@@ -158,6 +158,7 @@ function toLoopState(state: RalphLoopPersistedState): LoopState {
 		pendingDecision: state.ralph.pendingDecision,
 		sandboxProfile: state.ralph.sandboxProfile,
 		metrics: state.ralph.metrics,
+		capabilityContract: state.ralph.capabilityContract,
 	};
 }
 
@@ -247,6 +248,7 @@ function toPersistedState(
 			pinnedExecutionProfile: state.executionProfile,
 			sandboxProfile: state.sandboxProfile,
 			metrics: state.metrics ?? existingValue?.ralph.metrics ?? emptyRalphLoopMetrics(),
+			capabilityContract: state.capabilityContract,
 		},
 	};
 }
