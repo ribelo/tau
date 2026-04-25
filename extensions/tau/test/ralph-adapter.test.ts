@@ -193,6 +193,7 @@ function writeLoopState(
 				sandboxProfile: Option.some(makeSandboxProfile()),
 				metrics: input.metrics ?? makeRalphMetrics(),
 				capabilityContract: makeCapabilityContract(),
+				deferredConfigMutations: [],
 			},
 		}),
 		"utf-8",

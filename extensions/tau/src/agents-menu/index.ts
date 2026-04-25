@@ -294,6 +294,10 @@ class AgentsSelectorComponent extends Container implements Focusable {
 		this.footerText.setText(this.getFooterText());
 	}
 
+	refreshView(): void {
+		this.refresh();
+	}
+
 	private updateList(): void {
 		this.listContainer.clear();
 
@@ -383,7 +387,10 @@ export type RalphAgentConfigRunner = (
 	cwd: string,
 	loopName: string,
 	enabledNames: ReadonlyArray<string>,
-) => Promise<{ readonly ok: true } | { readonly ok: false; readonly reason: string }>;
+) => Promise<
+	| { readonly ok: true; readonly status: "updated" | "no_change" | "deferred" }
+	| { readonly ok: false; readonly reason: string }
+>;
 
 export default function initAgentsMenu(
 	pi: ExtensionAPI,
@@ -509,19 +516,32 @@ export default function initAgentsMenu(
 
 					const meta = getRalphLoopMetadata(ctx.cwd, sessionFile);
 					if (meta !== undefined && configureRalphAgents !== undefined) {
-						const next = new Set(meta.enabledAgents);
+						const next = new Set(meta.deferredEnabledAgents ?? meta.enabledAgents);
 						if (action === "enable") next.add(agentName);
 						else next.delete(agentName);
-						const result = await configureRalphAgents(ctx.cwd, meta.loopName, Array.from(next));
+						const nextEnabled = Array.from(next);
+						const result = await configureRalphAgents(ctx.cwd, meta.loopName, nextEnabled);
 						if (result.ok) {
-							setRalphLoopMetadata(ctx.cwd, sessionFile!, {
-								loopName: meta.loopName,
-								enabledAgents: Array.from(next),
-							});
-							ctx.ui.notify(
-								`Agent "${agentName}" ${action === "enable" ? "enabled" : "disabled"} for Ralph loop "${meta.loopName}".`,
-								"info",
-							);
+							if (result.status === "deferred") {
+								setRalphLoopMetadata(ctx.cwd, sessionFile!, {
+									loopName: meta.loopName,
+									enabledAgents: meta.enabledAgents,
+									deferredEnabledAgents: nextEnabled,
+								});
+								ctx.ui.notify(
+									`Agent "${agentName}" ${action === "enable" ? "enable" : "disable"} queued for the next iteration of Ralph loop "${meta.loopName}".`,
+									"info",
+								);
+							} else {
+								setRalphLoopMetadata(ctx.cwd, sessionFile!, {
+									loopName: meta.loopName,
+									enabledAgents: nextEnabled,
+								});
+								ctx.ui.notify(
+									`Agent "${agentName}" ${action === "enable" ? "enabled" : "disabled"} for Ralph loop "${meta.loopName}".`,
+									"info",
+								);
+							}
 						} else {
 							ctx.ui.notify(`Failed to update Ralph agents: ${result.reason}`, "error");
 						}
@@ -555,8 +575,11 @@ export default function initAgentsMenu(
 				const isRalph = loopMeta !== undefined;
 				await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
 					let ralphEnabled = loopMeta?.enabledAgents ?? [];
+					let ralphDeferredEnabled = loopMeta?.deferredEnabledAgents;
+					let ralphConfigQueue: Promise<void> = Promise.resolve();
+					let selector: AgentsSelectorComponent;
 
-					const selector = new AgentsSelectorComponent(
+					selector = new AgentsSelectorComponent(
 						allNames,
 						registry,
 						ctx.cwd,
@@ -566,19 +589,43 @@ export default function initAgentsMenu(
 						() => done(undefined as unknown as void),
 						(name, enabled) => {
 							if (isRalph && configureRalphAgents !== undefined && sessionFile !== undefined) {
-								const next = new Set(ralphEnabled);
+								const next = new Set(ralphDeferredEnabled ?? ralphEnabled);
 								if (enabled) next.add(name);
 								else next.delete(name);
-								ralphEnabled = Array.from(next);
-								setRalphLoopMetadata(ctx.cwd, sessionFile, {
-									loopName: loopMeta.loopName,
-									enabledAgents: ralphEnabled,
-								});
-								void configureRalphAgents(ctx.cwd, loopMeta.loopName, ralphEnabled).then((result) => {
+								const nextEnabled = Array.from(next);
+								const previousDeferredEnabled = ralphDeferredEnabled;
+								ralphDeferredEnabled = nextEnabled;
+								ralphConfigQueue = ralphConfigQueue.then(async () => {
+									const result = await configureRalphAgents(ctx.cwd, loopMeta.loopName, nextEnabled);
 									if (!result.ok) {
+										ralphDeferredEnabled = previousDeferredEnabled;
 										ctx.ui.notify(`Failed to update Ralph agents: ${result.reason}`, "error");
+										selector.refreshView();
+										return;
 									}
+									if (result.status === "deferred") {
+										setRalphLoopMetadata(ctx.cwd, sessionFile, {
+											loopName: loopMeta.loopName,
+											enabledAgents: ralphEnabled,
+											deferredEnabledAgents: nextEnabled,
+										});
+										ctx.ui.notify(
+											`Agent "${name}" ${enabled ? "enable" : "disable"} queued for the next Ralph iteration.`,
+											"info",
+										);
+										selector.refreshView();
+										return;
+									}
+									ralphEnabled = nextEnabled;
+									ralphDeferredEnabled = undefined;
+									setRalphLoopMetadata(ctx.cwd, sessionFile, {
+										loopName: loopMeta.loopName,
+										enabledAgents: ralphEnabled,
+									});
+									selector.refreshView();
+									syncAgentToolAvailability(pi, agentTool, registry, ctx.cwd, sessionFile);
 								});
+								void ralphConfigQueue;
 							} else {
 								setAgentEnabledForCwd(ctx.cwd, name, enabled);
 							}

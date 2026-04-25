@@ -495,6 +495,7 @@ export const LoopEngineLive = Layer.effect(
 									},
 									capabilityContract:
 										input.capabilityContract ?? makeEmptyCapabilityContract(),
+									deferredConfigMutations: [],
 								},
 							}
 						: {

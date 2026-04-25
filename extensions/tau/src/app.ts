@@ -278,10 +278,7 @@ export const startTau = (pi: ExtensionAPI) => {
 							{ kind: "capabilityContractAgents", enabledNames },
 						]);
 					}));
-					if (result.status === "refused") {
-						return { ok: false as const, reason: result.reason };
-					}
-					return { ok: true as const };
+					return { ok: true as const, status: result.status };
 				} catch (error) {
 					return { ok: false as const, reason: String(error) };
 				}

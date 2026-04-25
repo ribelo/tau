@@ -159,6 +159,7 @@ function toLoopState(state: RalphLoopPersistedState): LoopState {
 		sandboxProfile: state.ralph.sandboxProfile,
 		metrics: state.ralph.metrics,
 		capabilityContract: state.ralph.capabilityContract,
+		deferredConfigMutations: state.ralph.deferredConfigMutations,
 	};
 }
 
@@ -249,6 +250,7 @@ function toPersistedState(
 			sandboxProfile: state.sandboxProfile,
 			metrics: state.metrics ?? existingValue?.ralph.metrics ?? emptyRalphLoopMetrics(),
 			capabilityContract: state.capabilityContract,
+			deferredConfigMutations: state.deferredConfigMutations,
 		},
 	};
 }

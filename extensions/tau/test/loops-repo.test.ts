@@ -64,6 +64,7 @@ function makeLoopState(taskId: string): LoopPersistedState {
 			sandboxProfile: Option.some(makeSandboxProfile()),
 			metrics: makeRalphMetrics(),
 			capabilityContract: makeCapabilityContract(),
+			deferredConfigMutations: [],
 		},
 	};
 }

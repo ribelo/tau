@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { Effect, Option } from "effect";
 
 import {
+	applyRalphConfigMutation,
 	makeRalphLoopConfigService,
 	RalphConfigLoopNotFoundError,
-	RalphConfigUnsafeEditError,
 } from "../src/ralph/config-service.js";
 import { emptyRalphLoopMetrics } from "../src/ralph/schema.js";
 import { makeEmptyCapabilityContract } from "../src/ralph/contract.js";
@@ -59,6 +59,7 @@ function makeTestLoop(overrides?: Partial<LoopState>): LoopState {
 			policy: { tools: { kind: "inherit" } },
 		},
 		capabilityContract: makeEmptyCapabilityContract(),
+		deferredConfigMutations: [],
 		...overrides,
 	};
 }
@@ -191,20 +192,51 @@ describe("ralph loop config service", () => {
 		expect(result.status).toBe("no_change");
 	});
 
-	it("refuses unsafe active-child edits", async () => {
+	it("defers active-child contract edits", async () => {
 		const loop = makeTestLoop({
 			status: "active",
 			activeIterationSessionFile: Option.some("/tmp/session.json"),
+			capabilityContract: {
+				version: "1",
+				tools: {
+					activeNames: [],
+					availableSnapshot: [],
+				},
+				agents: {
+					enabledNames: ["finder"],
+					registrySnapshot: [
+						{ name: "finder", description: "Find code" },
+						{ name: "oracle", description: "Deep reasoning" },
+					],
+				},
+			},
 		});
 		const service = makeRalphLoopConfigService(makeMockRepo(loop));
 		const result = await service.mutate("/tmp", "test-loop", {
-			kind: "capabilityContractTools",
-			activeNames: ["read"],
+			kind: "capabilityContractAgents",
+			enabledNames: ["finder", "oracle"],
 		});
-		expect(result.status).toBe("refused");
-		if (result.status === "refused") {
-			expect(result.reason).toContain("active child session");
+		expect(result.status).toBe("deferred");
+		const loaded = await service.loadLoop("/tmp", "test-loop");
+		expect(loaded.capabilityContract.agents.enabledNames).toEqual(["finder"]);
+		expect(loaded.deferredConfigMutations).toEqual([
+			{ kind: "capabilityContractAgents", enabledNames: ["finder", "oracle"] },
+		]);
+	});
+
+	it("applies deferred contract edits when the next iteration begins", () => {
+		const loop = makeTestLoop({
+			deferredConfigMutations: [
+				{ kind: "capabilityContractTools", activeNames: ["read", "bash"] },
+			],
+		});
+		let next = loop;
+		for (const mutation of loop.deferredConfigMutations) {
+			next = applyRalphConfigMutation(next, mutation);
 		}
+		next = { ...next, deferredConfigMutations: [] };
+		expect(next.capabilityContract.tools.activeNames).toEqual(["read", "bash"]);
+		expect(next.deferredConfigMutations).toEqual([]);
 	});
 
 	it("allows contract mutations for active loops without a child session", async () => {

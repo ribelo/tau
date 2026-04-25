@@ -41,6 +41,7 @@ const encodedLoopState: EncodedLoopState = {
 		activeStartedAt: null,
 	},
 	capabilityContract: makeCapabilityContract(),
+	deferredConfigMutations: [],
 };
 
 describe("ralph schema", () => {

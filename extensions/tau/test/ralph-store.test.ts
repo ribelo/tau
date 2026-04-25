@@ -139,6 +139,7 @@ function encodeStateForStorage(state: ParsedLoopState): string {
 			sandboxProfile: state.sandboxProfile,
 			metrics: state.metrics,
 			capabilityContract: state.capabilityContract ?? makeCapabilityContract(),
+			deferredConfigMutations: state.deferredConfigMutations ?? [],
 		},
 	});
 }
@@ -1306,6 +1307,7 @@ describe("ralph store behavior freeze", () => {
 				status: "completed" as const,
 				completedAt: Option.some("2026-01-01T00:00:00.000Z"),
 				capabilityContract: makeCapabilityContract(),
+				deferredConfigMutations: [],
 			};
 			fs.writeFileSync(
 				statePath(cwd, loopName),

@@ -28,7 +28,24 @@ const ralphOwnedSessionCache = new Map<string, boolean>();
 export type RalphLoopMetadata = {
 	readonly loopName: string;
 	readonly enabledAgents: ReadonlyArray<string>;
+	readonly deferredEnabledAgents?: ReadonlyArray<string>;
 };
+
+function findDeferredRalphEnabledAgents(
+	mutations: ReadonlyArray<{ readonly kind: string }>,
+): ReadonlyArray<string> | undefined {
+	for (let index = mutations.length - 1; index >= 0; index -= 1) {
+		const mutation = mutations[index];
+		if (
+			mutation?.kind === "capabilityContractAgents" &&
+			"enabledNames" in mutation &&
+			Array.isArray(mutation.enabledNames)
+		) {
+			return mutation.enabledNames.filter((value): value is string => typeof value === "string");
+		}
+	}
+	return undefined;
+}
 
 const ralphLoopMetadataCache = new Map<string, RalphLoopMetadata>();
 
@@ -227,9 +244,13 @@ export async function preloadRalphOwnedSessionCache(
 			if (stateOwnsSessionFile(sessionFile, state)) {
 				ralphOwnedSessionCache.set(cacheKey, true);
 				if (state.kind === "ralph") {
+					const deferredEnabledAgents = findDeferredRalphEnabledAgents(
+						state.ralph.deferredConfigMutations,
+					);
 					ralphLoopMetadataCache.set(cacheKey, {
 						loopName: state.taskId,
 						enabledAgents: state.ralph.capabilityContract.agents.enabledNames,
+						...(deferredEnabledAgents === undefined ? {} : { deferredEnabledAgents }),
 					});
 				}
 				return true;

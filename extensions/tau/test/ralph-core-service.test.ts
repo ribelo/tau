@@ -53,6 +53,7 @@ function makeState(loopName: string, sessionFile: string): LoopState {
 		sandboxProfile: Option.some(makeSandboxProfile()),
 		metrics: makeRalphMetrics(),
 		capabilityContract: makeCapabilityContract(),
+		deferredConfigMutations: [],
 	};
 }
 

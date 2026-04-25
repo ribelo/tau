@@ -82,6 +82,7 @@ async function writeRalphState(
 						enabledNames: input.enabledAgents ?? ["finder", "librarian"],
 					},
 				},
+				deferredConfigMutations: [],
 			},
 		}),
 		"utf8",

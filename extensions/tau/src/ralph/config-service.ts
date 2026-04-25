@@ -2,8 +2,11 @@ import { Effect, Option, Schema } from "effect";
 
 import type { ExecutionProfile } from "../execution/schema.js";
 import type { ResolvedSandboxConfig } from "../sandbox/config.js";
+import type { RalphConfigMutation } from "./config-mutation.js";
 import type { LoopState } from "./schema.js";
 import type { RalphRepoService } from "./repo.js";
+
+export type { RalphConfigMutation } from "./config-mutation.js";
 
 // ─── Error types ────────────────────────────────────────────────────────────
 
@@ -13,13 +16,6 @@ export class RalphConfigError {
 	constructor(props: { readonly reason: string; readonly entity?: string }) {
 		this.entity = props.entity ?? "ralph.config";
 		this.reason = props.reason;
-	}
-}
-
-export class RalphConfigUnsafeEditError extends RalphConfigError {
-	readonly _tag = "RalphConfigUnsafeEditError";
-	constructor(reason: string) {
-		super({ entity: "ralph.config.unsafe_edit", reason });
 	}
 }
 
@@ -39,20 +35,10 @@ export class RalphConfigInvalidFieldError extends RalphConfigError {
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-export type RalphConfigMutation =
-	| { readonly kind: "maxIterations"; readonly value: number }
-	| { readonly kind: "itemsPerIteration"; readonly value: number }
-	| { readonly kind: "reflectEvery"; readonly value: number }
-	| { readonly kind: "reflectInstructions"; readonly value: string }
-	| { readonly kind: "capabilityContractTools"; readonly activeNames: ReadonlyArray<string> }
-	| { readonly kind: "capabilityContractAgents"; readonly enabledNames: ReadonlyArray<string> }
-	| { readonly kind: "executionProfile"; readonly profile: ExecutionProfile }
-	| { readonly kind: "sandboxProfile"; readonly profile: ResolvedSandboxConfig };
-
 export type RalphConfigResult =
 	| { readonly status: "updated"; readonly loopName: string }
 	| { readonly status: "no_change"; readonly loopName: string }
-	| { readonly status: "refused"; readonly loopName: string; readonly reason: string };
+	| { readonly status: "deferred"; readonly loopName: string; readonly count: number };
 
 // ─── Pure helpers ───────────────────────────────────────────────────────────
 
@@ -66,10 +52,7 @@ function isActiveLoop(state: LoopState): boolean {
 	return state.status === "active";
 }
 
-function validateMutationSafety(
-	state: LoopState,
-	mutation: RalphConfigMutation,
-): void | RalphConfigUnsafeEditError {
+function shouldDeferMutation(state: LoopState, mutation: RalphConfigMutation): boolean {
 	// Scalar mutations are always safe even when active
 	if (
 		mutation.kind === "maxIterations" ||
@@ -77,21 +60,16 @@ function validateMutationSafety(
 		mutation.kind === "reflectEvery" ||
 		mutation.kind === "reflectInstructions"
 	) {
-		return undefined;
+		return false;
 	}
 
-	// Contract/execution/sandbox mutations are unsafe when a child is actively running
-	if (isActiveLoop(state) && isActiveChildPresent(state)) {
-		return new RalphConfigUnsafeEditError(
-			`Loop "${state.name}" has an active child session. ` +
-				`Finish the current iteration or pause the loop before changing ${mutation.kind}.`,
-		);
-	}
-
-	return undefined;
+	return isActiveLoop(state) && isActiveChildPresent(state);
 }
 
-function applyMutation(state: LoopState, mutation: RalphConfigMutation): LoopState {
+export function applyRalphConfigMutation(
+	state: LoopState,
+	mutation: RalphConfigMutation,
+): LoopState {
 	switch (mutation.kind) {
 		case "maxIterations": {
 			return { ...state, maxIterations: mutation.value };
@@ -138,6 +116,22 @@ function applyMutation(state: LoopState, mutation: RalphConfigMutation): LoopSta
 	}
 }
 
+function upsertConfigMutation(
+	mutations: ReadonlyArray<RalphConfigMutation>,
+	mutation: RalphConfigMutation,
+): ReadonlyArray<RalphConfigMutation> {
+	const next = mutations.filter((existing) => existing.kind !== mutation.kind);
+	return [...next, mutation];
+}
+
+function removeDeferredMutationKind(
+	mutations: ReadonlyArray<RalphConfigMutation>,
+	mutation: RalphConfigMutation,
+): ReadonlyArray<RalphConfigMutation> {
+	const next = mutations.filter((existing) => existing.kind !== mutation.kind);
+	return next.length === mutations.length ? mutations : next;
+}
+
 function statesEqual(a: LoopState, b: LoopState): boolean {
 	// Fast structural comparison for key fields; full deep equality not needed
 	if (
@@ -147,7 +141,8 @@ function statesEqual(a: LoopState, b: LoopState): boolean {
 		a.reflectInstructions !== b.reflectInstructions ||
 		a.executionProfile !== b.executionProfile ||
 		a.sandboxProfile !== b.sandboxProfile ||
-		a.capabilityContract !== b.capabilityContract
+		a.capabilityContract !== b.capabilityContract ||
+		a.deferredConfigMutations !== b.deferredConfigMutations
 	) {
 		return false;
 	}
@@ -282,19 +277,37 @@ export function makeRalphLoopConfigService(
 					throw validation;
 				}
 			}
-
-			const safety = validateMutationSafety(original, mutation);
-			if (safety !== undefined) {
-				return { status: "refused", loopName, reason: safety.reason };
-			}
 		}
 
 		let mutated = original;
+		let deferredCount = 0;
 		for (const mutation of mutations) {
-			mutated = applyMutation(mutated, mutation);
+			if (shouldDeferMutation(original, mutation)) {
+				mutated = {
+					...mutated,
+					deferredConfigMutations: upsertConfigMutation(
+						mutated.deferredConfigMutations,
+						mutation,
+					),
+				};
+				deferredCount += 1;
+			} else {
+				mutated = applyRalphConfigMutation(mutated, mutation);
+				mutated = {
+					...mutated,
+					deferredConfigMutations: removeDeferredMutationKind(
+						mutated.deferredConfigMutations,
+						mutation,
+					),
+				};
+			}
 		}
 
-		return writeIfChanged(cwd, original, mutated, loopName);
+		const result = await writeIfChanged(cwd, original, mutated, loopName);
+		if (deferredCount > 0 && result.status === "updated") {
+			return { status: "deferred", loopName, count: deferredCount };
+		}
+		return result;
 	};
 
 	const recaptureExecutionProfile = async (

@@ -65,6 +65,7 @@ function makeInvalidState(taskId: string, child: LoopSessionRef): LoopPersistedS
 			sandboxProfile: Option.some(makeSandboxProfile()),
 			metrics: makeRalphMetrics(),
 			capabilityContract: makeCapabilityContract(),
+			deferredConfigMutations: [],
 		},
 	};
 }

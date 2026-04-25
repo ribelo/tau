@@ -16,6 +16,7 @@ import type {
 
 import initRalph from "../src/ralph/index.js";
 import { RalphRepoLive } from "../src/ralph/repo.js";
+import type { LoopState } from "../src/ralph/schema.js";
 import { TAU_PERSISTED_STATE_TYPE } from "../src/shared/state.js";
 import { DEFAULT_SANDBOX_CONFIG, type ResolvedSandboxConfig } from "../src/sandbox/config.js";
 import {
@@ -232,6 +233,8 @@ function readLoopState(cwd: string, loopName: string) {
 		pendingDecision: state.ralph.pendingDecision,
 		executionProfile: state.ralph.pinnedExecutionProfile,
 		sandboxProfile: state.ralph.sandboxProfile,
+		capabilityContract: state.ralph.capabilityContract,
+		deferredConfigMutations: state.ralph.deferredConfigMutations,
 	};
 }
 
@@ -270,6 +273,7 @@ function writeLoopState(
 					readonly requestedAt: string;
 					readonly message: string;
 			  };
+		readonly deferredConfigMutations?: LoopState["deferredConfigMutations"];
 	},
 ): void {
 	const filePath = loopStatePath(cwd, loopName);
@@ -321,6 +325,7 @@ function writeLoopState(
 				sandboxProfile: Option.some(input.sandboxProfile ?? DEFAULT_SANDBOX_CONFIG),
 				metrics: makeRalphMetrics(),
 				capabilityContract: makeCapabilityContract(),
+				deferredConfigMutations: input.deferredConfigMutations ?? [],
 			},
 		}),
 		"utf-8",
@@ -1357,6 +1362,69 @@ describe("ralph service behavior freeze", () => {
 		expect(finalState.status).toBe("paused");
 		expect(finalState.iteration).toBe(4);
 		expect(Option.isNone(finalState.activeIterationSessionFile)).toBe(true);
+	});
+
+	it("applies deferred config before creating the next resumed iteration", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const piHarness = makePiHarness();
+		const childHarness = makePiHarness();
+		const ralphRuntime = makeRalphRuntime(false);
+		const childRuntime = makeRalphRuntime(false);
+		runtimes.push(ralphRuntime, childRuntime);
+		initRalph(piHarness.pi, ralphRuntime.run);
+		initRalph(childHarness.pi, childRuntime.run);
+
+		const command = piHarness.commands.get("ralph");
+		expect(command).toBeDefined();
+		if (!command) {
+			throw new Error("missing ralph command");
+		}
+
+		const controllerSessionFile = path.join(
+			cwd,
+			".pi",
+			"sessions",
+			"deferred-controller.session.json",
+		);
+		const childSessionFile = path.join(cwd, ".pi", "sessions", "deferred-child.session.json");
+		const childContext = makeContext(cwd);
+		childContext.setSessionFile(childSessionFile);
+		await childHarness.fire("session_start", { type: "session_start" }, childContext.ctx);
+
+		writeLoopState(cwd, "deferred-resume", {
+			controllerSessionFile,
+			activeIterationSessionFile: path.join(cwd, ".pi", "sessions", "old-child.session.json"),
+			iteration: 1,
+			status: "paused",
+			pendingDecision: {
+				kind: "continue",
+				requestedAt: "2026-01-01T00:00:00.000Z",
+			},
+			deferredConfigMutations: [
+				{ kind: "capabilityContractTools", activeNames: ["read", "bash"] },
+			],
+		});
+
+		const context = makeContext(cwd, [
+			{
+				cancelled: false,
+				sessionFile: childSessionFile,
+				updateContextSessionFile: false,
+			},
+		]);
+		context.setSessionFile(controllerSessionFile);
+
+		const resumePromise = Promise.resolve(command.handler("resume deferred-resume", context.ctx));
+		await waitFor(() => childHarness.sentUserMessages.length === 1);
+		await childHarness.fire("session_shutdown", { type: "session_shutdown" }, childContext.ctx);
+		await expect(resumePromise).resolves.toBeUndefined();
+
+		const finalState = readLoopState(cwd, "deferred-resume");
+		expect(finalState.capabilityContract.tools.activeNames).toEqual(["read", "bash"]);
+		expect(finalState.deferredConfigMutations).toEqual([]);
+		expect(finalState.iteration).toBe(2);
 	});
 
 	it("pauses /ralph start when subagents are active before creating the next iteration", async () => {

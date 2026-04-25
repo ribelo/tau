@@ -2160,8 +2160,11 @@ export default function initRalph(
 							);
 							if (result.status === "updated") {
 								ctx.ui.notify(`Updated loop "${resolvedLoopName}" configuration.`, "info");
-							} else if (result.status === "refused") {
-								ctx.ui.notify(`Configuration refused: ${result.reason}`, "warning");
+							} else if (result.status === "deferred") {
+								ctx.ui.notify(
+									`Queued ${result.count} loop configuration change(s) for the next iteration of "${resolvedLoopName}".`,
+									"info",
+								);
 							}
 						}
 						return;

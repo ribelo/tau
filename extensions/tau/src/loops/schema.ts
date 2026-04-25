@@ -7,6 +7,7 @@ import {
 	makeEmptyCapabilityContract,
 	RalphCapabilityContractSchema,
 } from "../ralph/contract.js";
+import { RalphConfigMutationListSchema } from "../ralph/config-mutation.js";
 import { LoopContractValidationError, LoopOwnershipValidationError } from "./errors.js";
 
 const NonNegativeIntSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
@@ -96,6 +97,10 @@ function normalizeLoopPersistedState(value: unknown): NormalizeLoopPersistedStat
 	}
 	if (!("capabilityContract" in nextRalph)) {
 		nextRalph["capabilityContract"] = makeEmptyCapabilityContract();
+		migrated = true;
+	}
+	if (!("deferredConfigMutations" in nextRalph)) {
+		nextRalph["deferredConfigMutations"] = [];
 		migrated = true;
 	}
 
@@ -202,6 +207,7 @@ const RalphLoopStateDetailsSchema = Schema.Struct({
 		activeStartedAt: OptionalStringSchema,
 	}),
 	capabilityContract: RalphCapabilityContractSchema,
+	deferredConfigMutations: RalphConfigMutationListSchema,
 });
 export type RalphLoopStateDetails = Schema.Schema.Type<typeof RalphLoopStateDetailsSchema>;
 

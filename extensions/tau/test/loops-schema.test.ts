@@ -56,6 +56,7 @@ const encodedRalphState: EncodedLoopPersistedState = {
 			activeStartedAt: null,
 		},
 		capabilityContract: makeCapabilityContract(),
+		deferredConfigMutations: [],
 	},
 };
 
@@ -74,11 +75,12 @@ describe("loops schema", () => {
 		expect(reencoded).toEqual(encodedRalphState);
 	});
 
-	it("migrates legacy ralph payloads missing pendingDecision, sandboxProfile, and metrics", async () => {
+	it("migrates legacy ralph payloads missing pendingDecision, sandboxProfile, metrics, and deferred config", async () => {
 		const {
 			pendingDecision: _pendingDecision,
 			sandboxProfile: _sandboxProfile,
 			metrics: _metrics,
+			deferredConfigMutations: _deferredConfigMutations,
 			...legacyRalph
 		} = encodedRalphState.ralph;
 		const legacyState = {
@@ -97,6 +99,7 @@ describe("loops schema", () => {
 			expect(decoded.state.ralph.metrics.activeDurationMs).toBe(0);
 			expect(Option.isNone(decoded.state.ralph.metrics.activeStartedAt)).toBe(true);
 			expect(decoded.state.ralph.capabilityContract.version).toBe("1");
+			expect(decoded.state.ralph.deferredConfigMutations).toEqual([]);
 		}
 
 		const reencoded = await Effect.runPromise(encodeLoopPersistedState(decoded.state));
@@ -110,6 +113,7 @@ describe("loops schema", () => {
 				activeDurationMs: 0,
 				activeStartedAt: null,
 			});
+			expect(reencoded.ralph.deferredConfigMutations).toEqual([]);
 		}
 	});
 

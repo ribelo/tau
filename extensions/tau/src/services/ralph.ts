@@ -22,6 +22,7 @@ import type { LoopState, RalphPendingDecision } from "../ralph/schema.js";
 import type { RalphLoopMetrics } from "../ralph/schema.js";
 import type { RalphCapabilityContract } from "../ralph/contract.js";
 import {
+	applyRalphConfigMutation,
 	makeRalphLoopConfigService,
 	type RalphConfigResult,
 	type RalphConfigError,
@@ -608,6 +609,17 @@ const clearPendingDecision = (state: LoopState): void => {
 	state.pendingDecision = Option.none();
 };
 
+const applyDeferredConfigMutations = (state: LoopState): LoopState => {
+	if (state.deferredConfigMutations.length === 0) {
+		return state;
+	}
+	let next = state;
+	for (const mutation of state.deferredConfigMutations) {
+		next = applyRalphConfigMutation(next, mutation);
+	}
+	return { ...next, deferredConfigMutations: [] };
+};
+
 const isAtIterationLimit = (state: LoopState): boolean =>
 	state.maxIterations > 0 && state.iteration >= state.maxIterations;
 
@@ -824,6 +836,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					completedAt,
 					pendingDecision: Option.none(),
 					activeIterationSessionFile: Option.none(),
+					deferredConfigMutations: [],
 				};
 				if (nextState.status === "active" || nextState.status === "paused") {
 					yield* repo.saveState(cwd, nextState);
@@ -1307,6 +1320,10 @@ export const RalphLive = (config: RalphLiveConfig) =>
 
 					const state = stateOption.value;
 					if (Option.isNone(state.pendingDecision)) {
+						const next = applyDeferredConfigMutations(state);
+						if (next !== state) {
+							yield* repo.saveState(boundary.cwd, next);
+						}
 						return continueLoop;
 					}
 
@@ -1324,7 +1341,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					clearPendingDecision(state);
 					state.activeIterationSessionFile = Option.none();
 					if (decision.kind === "continue") {
-						yield* repo.saveState(boundary.cwd, state);
+						yield* repo.saveState(boundary.cwd, applyDeferredConfigMutations(state));
 						return continueLoop;
 					}
 
