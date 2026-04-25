@@ -6,6 +6,7 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
+import { getSelectListTheme, getSettingsListTheme } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import {
 	Text,
@@ -14,8 +15,6 @@ import {
 	Container,
 	Spacer,
 	Input,
-	Key,
-	matchesKey,
 	type SelectItem,
 	type SettingItem,
 } from "@mariozechner/pi-tui";
@@ -35,7 +34,11 @@ import { sanitizeLoopName, type LoopState, type LoopStatus } from "./schema.js";
 import { setToolEnabled } from "../shared/tool-activation.js";
 import { loadPersistedState, TAU_PERSISTED_STATE_TYPE } from "../shared/state.js";
 import { captureCapabilityContract, effectiveToolNames } from "./resolver.js";
-import type { RalphCapabilityContract } from "./contract.js";
+import {
+	excludeRalphSystemControlTools,
+	isRalphSystemControlTool,
+	type RalphCapabilityContract,
+} from "./contract.js";
 import type { RalphConfigMutation } from "./config-service.js";
 import { AgentRegistry } from "../agent/agent-registry.js";
 import { resolveEnabledAgentsForSessionAuthoritative } from "../agents-menu/index.js";
@@ -85,6 +88,140 @@ const STATUS_ICONS: Record<LoopStatus, string> = {
 	paused: "⏸",
 	completed: "✓",
 };
+
+const SETTINGS_SUBMENU_MAX_VISIBLE = 10;
+
+const formatNameList = (names: ReadonlyArray<string>): string => names.join(", ") || "none";
+
+const sameStringSet = (left: ReadonlySet<string>, right: ReadonlySet<string>): boolean => {
+	if (left.size !== right.size) {
+		return false;
+	}
+	for (const value of left) {
+		if (!right.has(value)) {
+			return false;
+		}
+	}
+	return true;
+};
+
+class NumericInputSubmenu extends Container {
+	private readonly input: Input;
+
+	constructor(
+		title: string,
+		description: string,
+		currentValue: number,
+		onSubmit: (value: number) => void,
+		onCancel: () => void,
+	) {
+		super();
+		this.addChild(new Text(title, 0, 0));
+		this.addChild(new Spacer(1));
+		this.addChild(new Text(description, 0, 0));
+		this.addChild(new Spacer(1));
+		this.input = new Input();
+		this.input.setValue(String(currentValue));
+		this.input.onSubmit = (value) => {
+			const parsed = Number.parseInt(value, 10);
+			if (Number.isInteger(parsed) && parsed >= 0 && String(parsed) === value.trim()) {
+				onSubmit(parsed);
+			}
+		};
+		this.input.onEscape = onCancel;
+		this.addChild(this.input);
+		this.addChild(new Spacer(1));
+		this.addChild(new Text("Enter to save · Esc to go back", 0, 0));
+	}
+
+	handleInput(data: string): void {
+		this.input.handleInput(data);
+	}
+}
+
+class ToggleSettingsSubmenu extends Container {
+	private readonly settingsList: SettingsList;
+
+	constructor(
+		title: string,
+		description: string,
+		available: ReadonlyArray<{ readonly name: string; readonly description: string }>,
+		activeNames: ReadonlySet<string>,
+		onDone: (nextNames: ReadonlyArray<string>, changed: boolean) => void,
+	) {
+		super();
+		const selected = new Set(activeNames);
+		this.addChild(new Text(title, 0, 0));
+		this.addChild(new Spacer(1));
+		this.addChild(new Text(description, 0, 0));
+		this.addChild(new Spacer(1));
+
+		const items: SettingItem[] = available.map((item) => ({
+			id: item.name,
+			label: item.name,
+			description: item.description,
+			currentValue: selected.has(item.name) ? "enabled" : "disabled",
+			values: ["enabled", "disabled"],
+		}));
+
+		this.settingsList = new SettingsList(
+			items,
+			Math.min(items.length + 2, SETTINGS_SUBMENU_MAX_VISIBLE),
+			getSettingsListTheme(),
+			(id, newValue) => {
+				if (newValue === "enabled") {
+					selected.add(id);
+				} else {
+					selected.delete(id);
+				}
+			},
+			() => {
+				const changed = !sameStringSet(activeNames, selected);
+				onDone(Array.from(selected).sort(), changed);
+			},
+			{ enableSearch: true },
+		);
+		this.addChild(this.settingsList);
+		this.addChild(new Spacer(1));
+		this.addChild(new Text("Enter toggles · type to search · Esc saves and returns", 0, 0));
+	}
+
+	handleInput(data: string): void {
+		this.settingsList.handleInput(data);
+	}
+}
+
+class ActionSelectSubmenu extends Container {
+	private readonly selectList: SelectList;
+
+	constructor(
+		title: string,
+		description: string,
+		items: ReadonlyArray<SelectItem>,
+		onSelect: (value: string) => void,
+		onCancel: () => void,
+	) {
+		super();
+		this.addChild(new Text(title, 0, 0));
+		this.addChild(new Spacer(1));
+		this.addChild(new Text(description, 0, 0));
+		this.addChild(new Spacer(1));
+		this.selectList = new SelectList(
+			[...items],
+			Math.min(items.length + 2, SETTINGS_SUBMENU_MAX_VISIBLE),
+			getSelectListTheme(),
+		);
+		this.selectList.onSelect = (item) => onSelect(item.value);
+		this.selectList.onCancel = onCancel;
+		this.addChild(this.selectList);
+		this.addChild(new Spacer(1));
+		this.addChild(new Text("Enter to select · Esc to go back", 0, 0));
+	}
+
+	handleInput(data: string): void {
+		this.selectList.handleInput(data);
+	}
+}
 
 type RalphPromptDispatcher = (prompt: string) => void;
 
@@ -1692,268 +1829,291 @@ export default function initRalph(
 							ctx.ui.notify(`Loop "${targetLoopName}" not found.`, "error");
 							return;
 						}
+						const resolvedLoopName = loop.name;
 
 						const state = loop;
-						const sandboxStr = Option.match(state.sandboxProfile, {
+						let sandboxStr = Option.match(state.sandboxProfile, {
 							onNone: () => "default",
 							onSome: (s) => s.preset ?? "custom",
 						});
-						const ep = state.executionProfile;
-						const toolsActive = state.capabilityContract.tools.activeNames;
-						const agentsEnabled = state.capabilityContract.agents.enabledNames;
-
-						const buildItems = (): SettingItem[] => [
-							{
-								id: "maxIterations",
-								label: "Max iterations",
-								description: "Stop after N iterations (0 = unlimited)",
-								currentValue: String(state.maxIterations),
-							},
-							{
-								id: "itemsPerIteration",
-								label: "Items per iteration",
-								description: "Suggested work items per Ralph turn (0 = no hint)",
-								currentValue: String(state.itemsPerIteration),
-							},
-							{
-								id: "reflectEvery",
-								label: "Reflect every",
-								description: "Reflection checkpoint frequency in iterations (0 = off)",
-								currentValue: String(state.reflectEvery),
-							},
-							{
-								id: "tools",
-								label: "Active tools",
-								description: `User-configurable tools (${toolsActive.length} active). System-managed: ralph_continue, ralph_finish`,
-								currentValue: toolsActive.join(", ") || "none",
-							},
-							{
-								id: "agents",
-								label: "Enabled agents",
-								description: `Agents enabled for this loop (${agentsEnabled.length})`,
-								currentValue: agentsEnabled.join(", ") || "none",
-							},
-							{
-								id: "executionProfile",
-								label: "Execution profile",
-								description: "Pinned mode, model, and thinking level",
-								currentValue: `${ep.selector.mode} / ${ep.promptProfile.model ?? "default"} / ${ep.promptProfile.thinking ?? "default"}`,
-							},
-							{
-								id: "sandboxProfile",
-								label: "Sandbox profile",
-								description: "Pinned sandbox preset and overrides",
-								currentValue: sandboxStr,
-							},
-							{
-								id: "reflectInstructions",
-								label: "Reflection instructions",
-								description: "Custom prompt for reflection checkpoints",
-								currentValue:
-									state.reflectInstructions.slice(0, 40) +
-									(state.reflectInstructions.length > 40 ? "…" : ""),
-							},
+						let currentMaxIterations = state.maxIterations;
+						let currentItemsPerIteration = state.itemsPerIteration;
+						let currentReflectEvery = state.reflectEvery;
+						let currentReflectInstructions = state.reflectInstructions;
+						let executionProfileLabel = `${state.executionProfile.selector.mode} / ${state.executionProfile.promptProfile.model ?? "default"} / ${state.executionProfile.promptProfile.thinking ?? "default"}`;
+						let toolsActive = [
+							...excludeRalphSystemControlTools(state.capabilityContract.tools.activeNames),
 						];
+						let agentsEnabled = [...state.capabilityContract.agents.enabledNames];
+						let editReflectionInstructions = false;
 
 						const pendingMutations: RalphConfigMutation[] = [];
 						let dirty = false;
 
-						await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
-							const items = buildItems();
-							const settingsList = new SettingsList(
-								items,
-								Math.min(items.length + 2, 12),
+						const recordMutation = (mutation: RalphConfigMutation): void => {
+							const existingIndex = pendingMutations.findIndex(
+								(existing) => existing.kind === mutation.kind,
+							);
+							if (existingIndex === -1) {
+								pendingMutations.push(mutation);
+							} else {
+								pendingMutations.splice(existingIndex, 1, mutation);
+							}
+							dirty = true;
+						};
+
+						await ctx.ui.custom<void>((_tui, _theme, _keybindings, done) => {
+							let settingsList: SettingsList;
+							const closeConfigure = () => done(undefined as unknown as void);
+							const reflectionLabel = (): string =>
+								currentReflectInstructions.slice(0, 40) +
+								(currentReflectInstructions.length > 40 ? "…" : "");
+							const items: SettingItem[] = [
 								{
-									label: (text, selected) =>
-										selected ? theme.fg("accent", theme.bold(text)) : text,
-									value: (text, selected) =>
-										selected ? theme.fg("accent", text) : theme.fg("dim", text),
-									description: (text) => theme.fg("muted", text),
-									cursor: theme.fg("accent", "> "),
-									hint: (text) => theme.fg("dim", text),
+									id: "maxIterations",
+									label: "Max iterations",
+									description: "Stop after N iterations (0 = unlimited)",
+									currentValue: String(currentMaxIterations),
+									submenu: (_currentValue, submenuDone) =>
+										new NumericInputSubmenu(
+											"Max iterations",
+											"Enter a non-negative integer. Use 0 for unlimited.",
+											currentMaxIterations,
+											(value) => {
+												currentMaxIterations = value;
+												recordMutation({ kind: "maxIterations", value });
+												submenuDone(String(value));
+											},
+											() => submenuDone(),
+										),
 								},
-								(id, _newValue) => {
-									if (id === "maxIterations" || id === "itemsPerIteration" || id === "reflectEvery") {
-										// For numeric fields, open an input submenu would be ideal.
-										// Since SettingsList cycles values or opens submenus, we use a simple prompt approach:
-										ctx.ui
-											.input(`Enter new value for ${id} (non-negative integer):`, String(state[id as keyof LoopState]))
-											.then((value) => {
-												if (value === undefined) return;
-												const num = Number.parseInt(value, 10);
-												if (Number.isInteger(num) && num >= 0) {
-													pendingMutations.push({ kind: id, value: num } as RalphConfigMutation);
-													dirty = true;
-													settingsList.updateValue(id, String(num));
-												} else {
-													ctx.ui.notify(`Invalid value: ${value}`, "error");
-												}
-											});
-									}
-									if (id === "tools") {
-										const available = state.capabilityContract.tools.availableSnapshot.map((t) => t.name);
-										const allItems: SelectItem[] = available.map((name) => ({
-											value: name,
-											label: name,
-											description: state.capabilityContract.tools.availableSnapshot.find((t) => t.name === name)?.description ?? "",
-										}));
-										ctx.ui
-											.custom<void>((_tui2, theme2, _kb2, done2) => {
-												const sel = new SelectList(
-													allItems,
-													Math.min(allItems.length + 2, 10),
-													{
-														selectedPrefix: (text) => theme2.fg("accent", text),
-														selectedText: (text) => theme2.fg("accent", theme2.bold(text)),
-														description: (text) => theme2.fg("dim", text),
-														scrollInfo: (text) => theme2.fg("muted", text),
-														noMatch: (text) => theme2.fg("warning", text),
-													},
-												);
-												const selected = new Set(toolsActive);
-												sel.onSelect = (item) => {
-													if (selected.has(item.value)) {
-														selected.delete(item.value);
-													} else {
-														selected.add(item.value);
-													}
-													sel.invalidate();
-												};
-												sel.onCancel = () => {
-													const next = Array.from(selected).sort();
-													pendingMutations.push({
+								{
+									id: "itemsPerIteration",
+									label: "Items per iteration",
+									description: "Suggested work items per Ralph turn (0 = no hint)",
+									currentValue: String(currentItemsPerIteration),
+									submenu: (_currentValue, submenuDone) =>
+										new NumericInputSubmenu(
+											"Items per iteration",
+											"Enter a non-negative integer. Use 0 to omit the item-count hint.",
+											currentItemsPerIteration,
+											(value) => {
+												currentItemsPerIteration = value;
+												recordMutation({ kind: "itemsPerIteration", value });
+												submenuDone(String(value));
+											},
+											() => submenuDone(),
+										),
+								},
+								{
+									id: "reflectEvery",
+									label: "Reflect every",
+									description: "Reflection checkpoint frequency in iterations (0 = off)",
+									currentValue: String(currentReflectEvery),
+									submenu: (_currentValue, submenuDone) =>
+										new NumericInputSubmenu(
+											"Reflect every",
+											"Enter a non-negative integer. Use 0 to disable reflection checkpoints.",
+											currentReflectEvery,
+											(value) => {
+												currentReflectEvery = value;
+												recordMutation({ kind: "reflectEvery", value });
+												submenuDone(String(value));
+											},
+											() => submenuDone(),
+										),
+								},
+								{
+									id: "tools",
+									label: "Active tools",
+									description: `User-configurable tools (${toolsActive.length} active). System-managed: ralph_continue, ralph_finish`,
+									currentValue: formatNameList(toolsActive),
+									submenu: (_currentValue, submenuDone) =>
+										new ToggleSettingsSubmenu(
+											"Active tools",
+											"Toggle tools captured in this loop contract. Ralph control tools are managed by the loop runtime.",
+											state.capabilityContract.tools.availableSnapshot
+												.filter((tool) => !isRalphSystemControlTool(tool.name))
+												.map((tool) => ({
+													name: tool.name,
+													description: tool.description,
+												})),
+											new Set(toolsActive),
+											(next, changed) => {
+												toolsActive = [...next];
+												if (changed) {
+													recordMutation({
 														kind: "capabilityContractTools",
 														activeNames: next,
 													});
-													dirty = true;
-													settingsList.updateValue("tools", next.join(", ") || "none");
-													done2(undefined as unknown as void);
-												};
-												return sel;
-											})
-												.catch(() => undefined);
-									}
-									if (id === "agents") {
-										const registry = state.capabilityContract.agents.registrySnapshot;
-										const allItems: SelectItem[] = registry.map((a) => ({
-											value: a.name,
-											label: a.name,
-											description: a.description,
-										}));
-										ctx.ui
-											.custom<void>((_tui2, theme2, _kb2, done2) => {
-												const sel = new SelectList(
-													allItems,
-													Math.min(allItems.length + 2, 10),
-													{
-														selectedPrefix: (text) => theme2.fg("accent", text),
-														selectedText: (text) => theme2.fg("accent", theme2.bold(text)),
-														description: (text) => theme2.fg("dim", text),
-														scrollInfo: (text) => theme2.fg("muted", text),
-														noMatch: (text) => theme2.fg("warning", text),
-													},
-												);
-												const selected = new Set(agentsEnabled);
-												sel.onSelect = (item) => {
-													if (selected.has(item.value)) {
-														selected.delete(item.value);
-													} else {
-														selected.add(item.value);
-													}
-													sel.invalidate();
-												};
-												sel.onCancel = () => {
-													const next = Array.from(selected).sort();
-													pendingMutations.push({
+												}
+												submenuDone(formatNameList(next));
+											},
+										),
+								},
+								{
+									id: "agents",
+									label: "Enabled agents",
+									description: `Agents enabled for this loop (${agentsEnabled.length})`,
+									currentValue: formatNameList(agentsEnabled),
+									submenu: (_currentValue, submenuDone) =>
+										new ToggleSettingsSubmenu(
+											"Enabled agents",
+											"Toggle agents allowed by this loop contract.",
+											state.capabilityContract.agents.registrySnapshot.map((agent) => ({
+												name: agent.name,
+												description: agent.description,
+											})),
+											new Set(agentsEnabled),
+											(next, changed) => {
+												agentsEnabled = [...next];
+												if (changed) {
+													recordMutation({
 														kind: "capabilityContractAgents",
 														enabledNames: next,
 													});
-													dirty = true;
-													settingsList.updateValue("agents", next.join(", ") || "none");
-													done2(undefined as unknown as void);
-												};
-												return sel;
-											})
-												.catch(() => undefined);
-									}
-									if (id === "executionProfile") {
-										// Recapture from current session
-										captureCurrentExecutionProfile(ctx).then((profile) => {
-											if (profile) {
-												pendingMutations.push({
-													kind: "executionProfile",
-													profile,
-												});
-												dirty = true;
-												settingsList.updateValue(
-													"executionProfile",
-													`${profile.selector.mode} / ${profile.promptProfile.model ?? "default"} / ${profile.promptProfile.thinking ?? "default"}`,
-												);
-												ctx.ui.notify("Execution profile recaptured from current session.", "info");
-											} else {
-												ctx.ui.notify("Could not capture current execution profile.", "error");
-											}
-										});
-									}
-									if (id === "sandboxProfile") {
-										const profile = captureSandboxProfile(pi, ctx);
-										pendingMutations.push({
-											kind: "sandboxProfile",
-											profile,
-										});
-										dirty = true;
-										settingsList.updateValue("sandboxProfile", profile.preset ?? "custom");
-										ctx.ui.notify("Sandbox profile recaptured from current session.", "info");
-									}
-									if (id === "reflectInstructions") {
-										ctx.ui
-											.editor("Reflection instructions", state.reflectInstructions)
-											.then((value) => {
-												if (value === undefined) return;
-												pendingMutations.push({
-													kind: "reflectInstructions",
-													value,
-												});
-												dirty = true;
-												settingsList.updateValue(
-													"reflectInstructions",
-													value.slice(0, 40) + (value.length > 40 ? "…" : ""),
-												);
-											});
-									}
-								},
-								() => {
-									// onCancel = save if dirty
-									if (dirty && pendingMutations.length > 0) {
-										withRalph((ralph) =>
-											ralph.configureLoopMany(ctx.cwd, targetLoopName!, pendingMutations),
-										)
-											.then((result) => {
-												if (result.status === "updated") {
-													ctx.ui.notify(
-														`Updated loop "${targetLoopName}" configuration.`,
-														"info",
-													);
-												} else if (result.status === "refused") {
-													ctx.ui.notify(
-														`Configuration refused: ${result.reason}`,
-														"warning",
-													);
 												}
-											})
-											.catch((error) => {
-												ctx.ui.notify(
-													String(error),
-													"error",
-												);
-											});
-									}
-									done(undefined as unknown as void);
+												submenuDone(formatNameList(next));
+											},
+										),
 								},
+								{
+									id: "executionProfile",
+									label: "Execution profile",
+									description: "Pinned mode, model, and thinking level",
+									currentValue: executionProfileLabel,
+									submenu: (_currentValue, submenuDone) =>
+										new ActionSelectSubmenu(
+											"Execution profile",
+											`Current: ${executionProfileLabel}`,
+											[
+												{
+													value: "recapture",
+													label: "Recapture current session",
+													description: "Pin the current mode, model, and thinking level to this loop.",
+												},
+											],
+											(value) => {
+												if (value !== "recapture") {
+													submenuDone();
+													return;
+												}
+												void captureCurrentExecutionProfile(ctx).then((profile) => {
+													if (profile === null) {
+														ctx.ui.notify("Could not capture current execution profile.", "error");
+														submenuDone();
+														return;
+													}
+													executionProfileLabel = `${profile.selector.mode} / ${profile.promptProfile.model ?? "default"} / ${profile.promptProfile.thinking ?? "default"}`;
+													recordMutation({ kind: "executionProfile", profile });
+													ctx.ui.notify("Execution profile recaptured from current session.", "info");
+													submenuDone(executionProfileLabel);
+												});
+											},
+											() => submenuDone(),
+										),
+								},
+								{
+									id: "sandboxProfile",
+									label: "Sandbox profile",
+									description: "Pinned sandbox preset and overrides",
+									currentValue: sandboxStr,
+									submenu: (_currentValue, submenuDone) =>
+										new ActionSelectSubmenu(
+											"Sandbox profile",
+											`Current: ${sandboxStr}`,
+											[
+												{
+													value: "recapture",
+													label: "Recapture current session",
+													description: "Pin the current sandbox preset and overrides to this loop.",
+												},
+											],
+											(value) => {
+												if (value !== "recapture") {
+													submenuDone();
+													return;
+												}
+												const profile = captureSandboxProfile(pi, ctx);
+												sandboxStr = profile.preset ?? "custom";
+												recordMutation({ kind: "sandboxProfile", profile });
+												ctx.ui.notify("Sandbox profile recaptured from current session.", "info");
+												submenuDone(sandboxStr);
+											},
+											() => submenuDone(),
+										),
+								},
+								{
+									id: "reflectInstructions",
+									label: "Reflection instructions",
+									description: "Custom prompt for reflection checkpoints",
+									currentValue: reflectionLabel(),
+									submenu: (_currentValue, submenuDone) =>
+										new ActionSelectSubmenu(
+											"Reflection instructions",
+											"Open Pi's editor to edit the full multi-line reflection prompt.",
+											[
+												{
+													value: "edit",
+													label: "Edit in editor",
+													description: "Close this selector and open the full-screen editor.",
+												},
+											],
+											(value) => {
+												if (value === "edit") {
+													editReflectionInstructions = true;
+													submenuDone(reflectionLabel());
+													closeConfigure();
+													return;
+												}
+												submenuDone();
+											},
+											() => submenuDone(),
+										),
+								},
+							];
+							settingsList = new SettingsList(
+								items,
+								Math.min(items.length + 2, 12),
+								getSettingsListTheme(),
+								(_id, _newValue) => undefined,
+								closeConfigure,
 								{ enableSearch: true },
 							);
-								return settingsList;
-							});
+							const container = new Container();
+							container.addChild(new Text(`Configure Ralph loop: ${resolvedLoopName}`, 0, 0));
+							container.addChild(new Spacer(1));
+							container.addChild(settingsList);
+							container.addChild(new Spacer(1));
+							container.addChild(new Text("Enter opens a setting · type to search · Esc saves and closes", 0, 0));
+							return {
+								render: (width: number) => container.render(width),
+								invalidate: () => container.invalidate(),
+								handleInput: (data: string) => settingsList.handleInput(data),
+							};
+						});
+
+						if (editReflectionInstructions) {
+							const value = await ctx.ui.editor(
+								"Reflection instructions",
+								currentReflectInstructions,
+							);
+							if (value !== undefined) {
+								currentReflectInstructions = value;
+								recordMutation({ kind: "reflectInstructions", value });
+							}
+						}
+
+						if (dirty && pendingMutations.length > 0) {
+							const result = await withRalph((ralph) =>
+								ralph.configureLoopMany(ctx.cwd, resolvedLoopName, pendingMutations),
+							);
+							if (result.status === "updated") {
+								ctx.ui.notify(`Updated loop "${resolvedLoopName}" configuration.`, "info");
+							} else if (result.status === "refused") {
+								ctx.ui.notify(`Configuration refused: ${result.reason}`, "warning");
+							}
+						}
 						return;
 					}
 
