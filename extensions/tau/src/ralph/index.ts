@@ -15,6 +15,7 @@ import {
 	Container,
 	Spacer,
 	Input,
+	truncateToWidth,
 	type SelectItem,
 	type SettingItem,
 } from "@mariozechner/pi-tui";
@@ -91,7 +92,38 @@ const STATUS_ICONS: Record<LoopStatus, string> = {
 
 const SETTINGS_SUBMENU_MAX_VISIBLE = 10;
 
-const formatNameList = (names: ReadonlyArray<string>): string => names.join(", ") || "none";
+const isUnsafeTuiControlCode = (code: number): boolean =>
+	(code >= 0x00 && code <= 0x08) ||
+	code === 0x0b ||
+	code === 0x0c ||
+	(code >= 0x0e && code <= 0x1f) ||
+	(code >= 0x7f && code <= 0x9f);
+
+const stripUnsafeTuiControlCharacters = (value: string): string => {
+	let result = "";
+	for (const char of value) {
+		if (!isUnsafeTuiControlCode(char.charCodeAt(0))) {
+			result += char;
+		}
+	}
+	return result;
+};
+
+const normalizeDisplayLine = (value: string): string =>
+	stripUnsafeTuiControlCharacters(value)
+		.replace(/[\r\n\t]+/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+
+const formatDisplayPreview = (value: string, maxWidth: number): string => {
+	const normalized = normalizeDisplayLine(value);
+	return truncateToWidth(normalized.length > 0 ? normalized : "(empty)", maxWidth, "…");
+};
+
+const formatNameList = (names: ReadonlyArray<string>): string => {
+	const normalized = names.map(normalizeDisplayLine).filter((name) => name.length > 0);
+	return normalized.join(", ") || "none";
+};
 
 const sameStringSet = (left: ReadonlySet<string>, right: ReadonlySet<string>): boolean => {
 	if (left.size !== right.size) {
@@ -159,7 +191,7 @@ class ToggleSettingsSubmenu extends Container {
 		const items: SettingItem[] = available.map((item) => ({
 			id: item.name,
 			label: item.name,
-			description: item.description,
+			description: normalizeDisplayLine(item.description),
 			currentValue: selected.has(item.name) ? "enabled" : "disabled",
 			values: ["enabled", "disabled"],
 		}));
@@ -1866,8 +1898,7 @@ export default function initRalph(
 							let settingsList: SettingsList;
 							const closeConfigure = () => done(undefined as unknown as void);
 							const reflectionLabel = (): string =>
-								currentReflectInstructions.slice(0, 40) +
-								(currentReflectInstructions.length > 40 ? "…" : "");
+								formatDisplayPreview(currentReflectInstructions, 40);
 							const items: SettingItem[] = [
 								{
 									id: "maxIterations",
@@ -1936,7 +1967,7 @@ export default function initRalph(
 												.filter((tool) => !isRalphSystemControlTool(tool.name))
 												.map((tool) => ({
 													name: tool.name,
-													description: tool.description,
+													description: normalizeDisplayLine(tool.description),
 												})),
 											new Set(toolsActive),
 											(next, changed) => {
@@ -1962,7 +1993,7 @@ export default function initRalph(
 											"Toggle agents allowed by this loop contract.",
 											state.capabilityContract.agents.registrySnapshot.map((agent) => ({
 												name: agent.name,
-												description: agent.description,
+												description: normalizeDisplayLine(agent.description),
 											})),
 											new Set(agentsEnabled),
 											(next, changed) => {
