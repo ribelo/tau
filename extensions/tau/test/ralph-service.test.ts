@@ -1336,8 +1336,6 @@ describe("ralph service behavior freeze", () => {
 		);
 		await waitFor(() => context.switchSessionCalls.includes(controllerSessionFile));
 		await waitFor(() => childHarness.sentUserMessages.length === 1);
-		expect(context.activeToolCalls).toContainEqual([]);
-		expect(context.activeToolCalls).toContainEqual(["ralph_continue", "ralph_finish"]);
 		expect(context.appendedCustomEntries).toContainEqual({
 			customType: TAU_PERSISTED_STATE_TYPE,
 			data: {

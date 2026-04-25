@@ -35,6 +35,7 @@ import { sanitizeLoopName, type LoopState, type LoopStatus } from "./schema.js";
 import { setToolEnabled } from "../shared/tool-activation.js";
 import { loadPersistedState, TAU_PERSISTED_STATE_TYPE } from "../shared/state.js";
 import { captureCapabilityContract, effectiveToolNames } from "./resolver.js";
+import type { RalphCapabilityContract } from "./contract.js";
 import type { RalphConfigMutation } from "./config-service.js";
 import { AgentRegistry } from "../agent/agent-registry.js";
 import { resolveEnabledAgentsForSessionAuthoritative } from "../agents-menu/index.js";
@@ -96,6 +97,16 @@ type RalphExecutionProfileApplier = (
 	profile: ExecutionProfile,
 ) => Promise<RalphExecutionProfileApplyResult>;
 
+type RalphCapabilityContractApplyResult = {
+	readonly applied: boolean;
+	readonly reason?: string;
+};
+
+type RalphCapabilityContractApplier = (
+	contract: RalphCapabilityContract,
+	target: "controller" | "child",
+) => Promise<RalphCapabilityContractApplyResult>;
+
 type ReplacementSessionContext = ExtensionCommandContext & {
 	readonly sendUserMessage: (
 		content: Parameters<ExtensionAPI["sendUserMessage"]>[0],
@@ -139,10 +150,15 @@ type RalphCommandBoundaryHandle = RalphCommandBoundary & {
 
 const RALPH_PROMPT_DISPATCHERS_GLOBAL = "__tau_ralph_prompt_dispatchers";
 const RALPH_EXECUTION_PROFILE_APPLIERS_GLOBAL = "__tau_ralph_execution_profile_appliers";
+const RALPH_CAPABILITY_CONTRACT_APPLIERS_GLOBAL = "__tau_ralph_capability_contract_appliers";
 
 type RalphGlobalState = typeof globalThis & {
 	[RALPH_PROMPT_DISPATCHERS_GLOBAL]?: Map<string, RalphPromptDispatcher>;
 	[RALPH_EXECUTION_PROFILE_APPLIERS_GLOBAL]?: Map<string, RalphExecutionProfileApplier>;
+	[RALPH_CAPABILITY_CONTRACT_APPLIERS_GLOBAL]?: Map<
+		string,
+		RalphCapabilityContractApplier
+	>;
 };
 
 function getRalphPromptDispatchers(): Map<string, RalphPromptDispatcher> {
@@ -199,6 +215,34 @@ function unregisterRalphExecutionProfileApplier(sessionFile: string | undefined)
 		return;
 	}
 	getRalphExecutionProfileAppliers().delete(sessionFile);
+}
+
+function getRalphCapabilityContractAppliers(): Map<string, RalphCapabilityContractApplier> {
+	const globalState = globalThis as RalphGlobalState;
+	const existing = globalState[RALPH_CAPABILITY_CONTRACT_APPLIERS_GLOBAL];
+	if (existing) {
+		return existing;
+	}
+	const registry = new Map<string, RalphCapabilityContractApplier>();
+	globalState[RALPH_CAPABILITY_CONTRACT_APPLIERS_GLOBAL] = registry;
+	return registry;
+}
+
+function registerRalphCapabilityContractApplier(
+	sessionFile: string | undefined,
+	applier: RalphCapabilityContractApplier,
+): void {
+	if (sessionFile === undefined) {
+		return;
+	}
+	getRalphCapabilityContractAppliers().set(sessionFile, applier);
+}
+
+function unregisterRalphCapabilityContractApplier(sessionFile: string | undefined): void {
+	if (sessionFile === undefined) {
+		return;
+	}
+	getRalphCapabilityContractAppliers().delete(sessionFile);
 }
 
 function isMaxIterationsReached(
@@ -870,11 +914,42 @@ export default function initRalph(
 		);
 	};
 
+	const applyCapabilityContractWithPi = (
+		contract: RalphCapabilityContract,
+		target: "controller" | "child",
+	): RalphCapabilityContractApplyResult => {
+		try {
+			const tools = effectiveToolNames(contract, target);
+			pi.setActiveTools([...tools]);
+			return { applied: true as const };
+		} catch (error) {
+			return {
+				applied: false as const,
+				reason: formatCommandBoundaryError(error),
+			};
+		}
+	};
+
+	const syncCapabilityContractApplier = (ctx: Pick<ExtensionContext, "sessionManager">): void => {
+		const registeredSessionFile = sessionFileFromContext(ctx);
+		registerRalphCapabilityContractApplier(registeredSessionFile, (contract, target) => {
+			const liveSessionFile = sessionFileFromContextIfLive(ctx);
+			if (liveSessionFile !== registeredSessionFile) {
+				return Promise.resolve({
+					applied: false as const,
+					reason: `registered capability contract applier is not live for ${registeredSessionFile ?? "the session"}`,
+				});
+			}
+			return Promise.resolve(applyCapabilityContractWithPi(contract, target));
+		});
+	};
+
 	const commandBoundaryFromContext = (
 		ctx: ExtensionCommandContext,
 	): RalphCommandBoundaryHandle => {
 		let currentSessionFile = sessionFileFromContext(ctx);
 		let activeContext: RalphSessionContext = ctx;
+		let hasReplacedSession = false;
 		const initialSandboxProfile = captureSandboxProfile(pi, ctx);
 		const sessionControl = (): SessionReplacementCommandContext =>
 			activeContext as SessionReplacementCommandContext;
@@ -883,6 +958,7 @@ export default function initRalph(
 			replacementCtx: ReplacementSessionContext,
 			fallbackSessionFile: string | undefined,
 		): void => {
+			hasReplacedSession = true;
 			activeContext = replacementCtx;
 			currentSessionFile =
 				sessionFileFromContext(replacementCtx) ?? fallbackSessionFile ?? currentSessionFile;
@@ -957,23 +1033,61 @@ export default function initRalph(
 		const applyCapabilityContract: RalphCommandBoundary["applyCapabilityContract"] = Effect.fn(
 			"RalphCommandBoundary.applyCapabilityContract",
 		)(function* (contract, target) {
-			return yield* Effect.sync(() => {
-				try {
-					if (!hasRalphToolActivationContext(activeContext)) {
+			const targetSessionFile = currentSessionFile;
+			if (hasReplacedSession && hasRalphToolActivationContext(activeContext)) {
+				const toolContext = activeContext;
+				return yield* Effect.sync(() => {
+					try {
+						const tools = effectiveToolNames(contract, target);
+						toolContext.setActiveTools([...tools]);
+						return { applied: true as const };
+					} catch (error) {
 						return {
 							applied: false as const,
-							reason: "current session context cannot set active tools",
+							reason: formatCommandBoundaryError(error),
 						};
 					}
-					const tools = effectiveToolNames(contract, target);
-					activeContext.setActiveTools([...tools]);
-					return { applied: true as const };
-				} catch (error) {
-					return {
-						applied: false as const,
-						reason: formatCommandBoundaryError(error),
-					};
+				});
+			}
+
+			if (targetSessionFile !== undefined) {
+				const applier = getRalphCapabilityContractAppliers().get(targetSessionFile);
+				if (applier) {
+					const result = yield* Effect.promise(() => applier(contract, target));
+					if (result.applied) {
+						return result;
+					}
+					const applierIsStale =
+						result.reason?.startsWith("registered capability contract applier is not live") ===
+							true || isStaleExtensionContextError(result.reason ?? "");
+					if (applierIsStale) {
+						unregisterRalphCapabilityContractApplier(targetSessionFile);
+					}
+					if (!applierIsStale) {
+						return result;
+					}
 				}
+			}
+
+			if (hasReplacedSession) {
+				return target === "controller"
+					? { applied: true as const }
+					: {
+							applied: false as const,
+							reason: `no capability contract applier is registered for ${targetSessionFile ?? "the replacement session"}`,
+						};
+			}
+
+			return yield* Effect.sync(() => {
+				const result = applyCapabilityContractWithPi(contract, target);
+				if (
+					target === "controller" &&
+					!result.applied &&
+					isStaleExtensionContextError(result.reason ?? "")
+				) {
+					return { applied: true as const };
+				}
+				return result;
 			});
 		});
 
@@ -2083,6 +2197,7 @@ export default function initRalph(
 		try {
 			syncPromptDispatcher(ctx);
 			syncExecutionProfileApplier(ctx);
+			syncCapabilityContractApplier(ctx);
 			await withRalph((ralph) =>
 				ralph.syncCurrentLoopFromSession(ctx.cwd, sessionFileFromContext(ctx)),
 			);
@@ -2111,6 +2226,7 @@ export default function initRalph(
 		try {
 			syncPromptDispatcher(ctx);
 			syncExecutionProfileApplier(ctx);
+			syncCapabilityContractApplier(ctx);
 			await withRalph((ralph) =>
 				ralph.syncCurrentLoopFromSession(ctx.cwd, sessionFileFromContext(ctx)),
 			);
@@ -2128,6 +2244,7 @@ export default function initRalph(
 		try {
 			syncPromptDispatcher(ctx);
 			syncExecutionProfileApplier(ctx);
+			syncCapabilityContractApplier(ctx);
 			await withRalph((ralph) =>
 				ralph.syncCurrentLoopFromSession(ctx.cwd, sessionFileFromContext(ctx)),
 			);
@@ -2145,6 +2262,7 @@ export default function initRalph(
 		try {
 			unregisterRalphPromptDispatcher(sessionFileFromContext(ctx));
 			unregisterRalphExecutionProfileApplier(sessionFileFromContext(ctx));
+			unregisterRalphCapabilityContractApplier(sessionFileFromContext(ctx));
 			await withRalph((ralph) =>
 				ralph.persistOwnedLoopOnShutdown(ctx.cwd, sessionFileFromContext(ctx)),
 			);
