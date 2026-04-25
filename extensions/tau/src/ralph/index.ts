@@ -50,6 +50,7 @@ import {
 	type SandboxPreset,
 } from "../sandbox/config.js";
 import { discoverWorkspaceRoot } from "../sandbox/workspace-root.js";
+import { resolvePreset, SANDBOX_PRESET_NAMES } from "../shared/policy.js";
 
 const INVALID_STATE_HINT =
 	"Ralph state is invalid and could not be decoded. Repair or remove invalid files under .pi/loops (or reset with /ralph nuke --yes).";
@@ -123,6 +124,21 @@ const formatDisplayPreview = (value: string, maxWidth: number): string => {
 const formatNameList = (names: ReadonlyArray<string>): string => {
 	const normalized = names.map(normalizeDisplayLine).filter((name) => name.length > 0);
 	return normalized.join(", ") || "none";
+};
+
+const sandboxProfileForPreset = (
+	preset: SandboxPreset,
+	current: ResolvedSandboxConfig,
+): ResolvedSandboxConfig => {
+	const resolved = resolvePreset(preset);
+	return {
+		preset,
+		filesystemMode: resolved.filesystemMode,
+		networkMode: resolved.networkMode,
+		approvalPolicy: resolved.approvalPolicy,
+		approvalTimeoutSeconds: current.approvalTimeoutSeconds,
+		subagent: current.subagent,
+	};
 };
 
 const sameStringSet = (left: ReadonlySet<string>, right: ReadonlySet<string>): boolean => {
@@ -1864,10 +1880,9 @@ export default function initRalph(
 						const resolvedLoopName = loop.name;
 
 						const state = loop;
-						let sandboxStr = Option.match(state.sandboxProfile, {
-							onNone: () => "default",
-							onSome: (s) => s.preset ?? "custom",
-						});
+						let currentSandboxProfile =
+							Option.getOrUndefined(state.sandboxProfile) ?? captureSandboxProfile(pi, ctx);
+						let sandboxStr = currentSandboxProfile.preset;
 						let currentMaxIterations = state.maxIterations;
 						let currentItemsPerIteration = state.itemsPerIteration;
 						let currentReflectEvery = state.reflectEvery;
@@ -2047,32 +2062,17 @@ export default function initRalph(
 								{
 									id: "sandboxProfile",
 									label: "Sandbox profile",
-									description: "Pinned sandbox preset and overrides",
+									description:
+										"Pinned sandbox preset. Enter/Space cycles read-only, workspace-write, and full-access.",
 									currentValue: sandboxStr,
-									submenu: (_currentValue, submenuDone) =>
-										new ActionSelectSubmenu(
-											"Sandbox profile",
-											`Current: ${sandboxStr}`,
-											[
-												{
-													value: "recapture",
-													label: "Recapture current session",
-													description: "Pin the current sandbox preset and overrides to this loop.",
-												},
-											],
-											(value) => {
-												if (value !== "recapture") {
-													submenuDone();
-													return;
-												}
-												const profile = captureSandboxProfile(pi, ctx);
-												sandboxStr = profile.preset ?? "custom";
-												recordMutation({ kind: "sandboxProfile", profile });
-												ctx.ui.notify("Sandbox profile recaptured from current session.", "info");
-												submenuDone(sandboxStr);
-											},
-											() => submenuDone(),
-										),
+									values: [...SANDBOX_PRESET_NAMES],
+								},
+								{
+									id: "sandboxRecapture",
+									label: "Recapture sandbox",
+									description: "Pin the current session sandbox preset and overrides to this loop.",
+									currentValue: "current session",
+									values: ["current session"],
 								},
 								{
 									id: "reflectInstructions",
@@ -2107,7 +2107,26 @@ export default function initRalph(
 								items,
 								Math.min(items.length + 2, 12),
 								getSettingsListTheme(),
-								(_id, _newValue) => undefined,
+								(id, newValue) => {
+									if (id === "sandboxProfile") {
+										const preset = SANDBOX_PRESET_NAMES.find((candidate) => candidate === newValue);
+										if (preset === undefined) {
+											return;
+										}
+										currentSandboxProfile = sandboxProfileForPreset(preset, currentSandboxProfile);
+										sandboxStr = currentSandboxProfile.preset;
+										recordMutation({ kind: "sandboxProfile", profile: currentSandboxProfile });
+										settingsList.updateValue("sandboxProfile", sandboxStr);
+									}
+									if (id === "sandboxRecapture") {
+										currentSandboxProfile = captureSandboxProfile(pi, ctx);
+										sandboxStr = currentSandboxProfile.preset;
+										recordMutation({ kind: "sandboxProfile", profile: currentSandboxProfile });
+										settingsList.updateValue("sandboxProfile", sandboxStr);
+										settingsList.updateValue("sandboxRecapture", "current session");
+										ctx.ui.notify("Sandbox profile recaptured from current session.", "info");
+									}
+								},
 								closeConfigure,
 								{ enableSearch: true },
 							);
@@ -2116,7 +2135,7 @@ export default function initRalph(
 							container.addChild(new Spacer(1));
 							container.addChild(settingsList);
 							container.addChild(new Spacer(1));
-							container.addChild(new Text("Enter opens a setting · type to search · Esc saves and closes", 0, 0));
+							container.addChild(new Text("Enter/Space edits or cycles · type to search · Esc saves and closes", 0, 0));
 							return {
 								render: (width: number) => container.render(width),
 								invalidate: () => container.invalidate(),
