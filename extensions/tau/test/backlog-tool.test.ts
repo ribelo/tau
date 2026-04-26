@@ -72,6 +72,48 @@ describe("backlog tool", () => {
 		]);
 	});
 
+	it("finds epic children by id without paging through list output", async () => {
+		const workspaceRoot = await makeWorkspace();
+
+		await runBacklogCommand('create "Epic" --id tau-epic --type epic', workspaceRoot);
+		await runBacklogCommand('create "Visible cursor" --id tau-child-a --type bug', workspaceRoot);
+		await runBacklogCommand('create "Border titles" --id tau-child-b --type task', workspaceRoot);
+		await runBacklogCommand('create "Nested hotkeys" --id tau-grandchild --type task', workspaceRoot);
+		await runBacklogCommand('dep add tau-child-a tau-epic --type parent-child', workspaceRoot);
+		await runBacklogCommand('dep add tau-child-b tau-epic --type parent-child', workspaceRoot);
+		await runBacklogCommand('dep add tau-grandchild tau-child-b --type parent-child', workspaceRoot);
+
+		const directChildren = await runBacklogCommand("children tau-epic", workspaceRoot);
+		expect(directChildren.ok).toBe(true);
+		expect((directChildren.data as Array<{ id: string }>).map((issue) => issue.id)).toEqual([
+			"tau-child-a",
+			"tau-child-b",
+		]);
+
+		const recursiveChildren = await runBacklogCommand("children tau-epic --recursive", workspaceRoot);
+		expect(recursiveChildren.ok).toBe(true);
+		expect((recursiveChildren.data as Array<{ id: string }>).map((issue) => issue.id)).toEqual([
+			"tau-child-a",
+			"tau-child-b",
+			"tau-grandchild",
+		]);
+	});
+
+	it("search matches issue ids and dependency ids", async () => {
+		const workspaceRoot = await makeWorkspace();
+
+		await runBacklogCommand('create "Epic" --id tau-epic --type epic', workspaceRoot);
+		await runBacklogCommand('create "Child" --id tau-child --type task', workspaceRoot);
+		await runBacklogCommand('dep add tau-child tau-epic --type parent-child', workspaceRoot);
+
+		const result = await runBacklogCommand("search tau-epic", workspaceRoot);
+		expect(result.ok).toBe(true);
+		expect((result.data as Array<{ id: string }>).map((issue) => issue.id)).toEqual([
+			"tau-epic",
+			"tau-child",
+		]);
+	});
+
 	it("rejects adding a new task under a closed epic with a clear error", async () => {
 		const workspaceRoot = await makeWorkspace();
 

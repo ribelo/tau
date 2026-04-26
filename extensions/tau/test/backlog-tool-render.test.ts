@@ -55,6 +55,20 @@ describe("backlog tool renderer", () => {
 		expect(rendered?.render(400).join("\n")).toContain("backlog show tau-1");
 	});
 
+	it("renders valueless flags in calls", () => {
+		const rendered = normalizeRendered(renderCall({ command: "children tau-epic --recursive" }));
+		expect(rendered).toContain("backlog children tau-epic");
+		expect(rendered).toContain("recursive: true");
+	});
+
+	it("renders search and children in help", () => {
+		const rendered = normalizeRendered(
+			renderResult({ command: "help", kind: "help", ok: true, outputText: "help" }),
+		);
+		expect(rendered).toContain("backlog search <query> [--limit 20]");
+		expect(rendered).toContain("backlog children <id> [--recursive] [--limit 50]");
+	});
+
 	it("renders update calls and results with the compact issue summary layout", () => {
 		const command =
 			'update tau-kjk --description "Port the missing trustmate review area from the banana product page as a Storybook-friendly section: disclosure note, score summary cards, lightweight filter chrome, and review cards/list composition." --design "Do not attempt to recreate the whole third-party widget runtime. Instead, build honest presentational React components that capture the visible Frisco structure for trustmate reviews using plain typed props and story fixtures based on the banana reference fragment. Keep interactions shallow and local; focus on review cards, score summaries, filter chips/buttons, and section composition that can later be wired to real data or embedded widget decisions." --acceptance_criteria "The product-page component system includes typed Tailwind components and stories for the visible trustmate reviews section, including summary metrics and a review-list/card composition that matches the banana reference structure closely enough for later parity polish."';
@@ -105,6 +119,7 @@ describe("backlog tool renderer", () => {
 			{ command: "ready", kind: "ready", ok: true, data: [issue] },
 			{ command: "list", kind: "list", ok: true, data: [issue] },
 			{ command: "blocked", kind: "blocked", ok: true, data: [issue] },
+			{ command: "children tau-1", kind: "children", ok: true, data: [issue] },
 			{ command: "show tau-1", kind: "show", ok: true, data: { ...issue, notes: "note" } },
 			{ command: "dep tree tau-1", kind: "dep_tree", ok: true, data: [{ ...issue, depth: 0 }] },
 			{ command: "dep list tau-1", kind: "dep_list", ok: true, data: [issue] },

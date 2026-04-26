@@ -30,11 +30,15 @@ Use the backlog tool surface directly:
 ```text
 backlog ready
 backlog show <id>
+backlog children <epic-id>
+backlog children <epic-id> --recursive
 backlog list
 backlog status
 backlog create "Title" --type task --priority 2
 backlog update <id> --status in_progress
 backlog close <id> --reason "Done"
+backlog dep list <id> --direction down
+backlog dep tree <id> --direction down
 backlog dep add <issue-id> <depends-on-id> --type blocks
 backlog comment <id> "note"
 ```
@@ -66,6 +70,8 @@ Think in terms of requirements, not chronology.
 
 - If X needs Y first, record: `backlog dep add X Y --type blocks`
 - Use `parent-child` for epic/task structure
+- Use `backlog children <epic-id>` to list direct child issues, and `--recursive` for the full nested subtree
+- Use `backlog dep list <id> --direction down` to inspect dependents, and `--direction up` for dependencies/blockers/parents
 - Use `related` for context links that do not block execution
 - Use `discovered-from` when new work is found during existing work
 

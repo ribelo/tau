@@ -28,6 +28,7 @@ type BacklogRenderKind =
 	| "ready"
 	| "list"
 	| "blocked"
+	| "children"
 	| "show"
 	| "dep_tree"
 	| "dep_list"
@@ -78,7 +79,7 @@ export type BacklogToolDetails = {
 const BACKLOG_MESSAGE_TYPE = "backlog";
 
 const TOOL_DESCRIPTION =
-	"Backlog planning tool. Provide a CLI-style command without a leading tool name. Examples: `list`, `ready`, `blocked`, `show <id>`, `create \"Title\" --type task --priority 2`, `update <id> --title \"New title\"`, `close <id> --reason \"Done\"`, `dep add <id-1> <id-2> --type blocks`, `comment <id> \"note\"`, `status`. Use `--limit N` with list/ready/blocked/search to cap results.";
+	"Backlog planning tool. Provide a CLI-style command without a leading tool name. Examples: `list`, `ready`, `blocked`, `show <id>`, `children <epic-id>`, `create \"Title\" --type task --priority 2`, `update <id> --title \"New title\"`, `close <id> --reason \"Done\"`, `dep list <id> --direction down`, `dep add <id-1> <id-2> --type blocks`, `comment <id> \"note\"`, `status`. Use `--limit N` with list/ready/blocked/search/children to cap results.";
 
 const TOOL_PROMPT_SNIPPET =
 	"Backlog planning system for task tracking and event-sourced issue management";
@@ -91,8 +92,8 @@ const TOOL_PROMPT_GUIDELINES = [
 
 const backlogParams = Type.Object({
 	command: Type.String({
-		description:
-			"Backlog command to run. Omit any leading tool name. Examples: `list`, `ready`, `show <id>`, `create \"Title\" --type task`, `dep add <id-1> <id-2> --type blocks`.",
+			description:
+				"Backlog command to run. Omit any leading tool name. Examples: `list`, `ready`, `show <id>`, `children <epic-id>`, `create \"Title\" --type task`, `dep list <id> --direction down`, `dep add <id-1> <id-2> --type blocks`.",
 	}),
 	cwd: Type.Optional(
 		Type.String({
@@ -300,7 +301,9 @@ function renderHelpBlock(theme: Theme): Text {
 		"backlog list [--status open] [--type task] [--priority 2] [--text query] [--limit 20]",
 		"backlog ready [--limit 20]",
 		"backlog blocked [--limit 20]",
+		"backlog search <query> [--limit 20]",
 		"backlog show <id>",
+		"backlog children <id> [--recursive] [--limit 50]",
 		'backlog create "Title" [--type task] [--priority 2] [--description "..."]',
 		'backlog update <id> [--title "..."] [--status open] [--priority 1] [--unset notes]',
 		'backlog close <id> [--reason "..."]',
@@ -446,6 +449,7 @@ function commandKind(parsed: ParsedCommand): BacklogRenderKind {
 	if (first === "ready") return "ready";
 	if (first === "list") return "list";
 	if (first === "blocked") return "blocked";
+	if (first === "children") return "children";
 	if (first === "show") return "show";
 	if (first === "create") return "create";
 	if (first === "update") return "update";
@@ -568,6 +572,40 @@ function buildDependencyTree(
 	return nodes;
 }
 
+function listParentChildChildren(
+	issueId: string,
+	issues: ReadonlyArray<Issue>,
+	recursive: boolean,
+): ReadonlyArray<Issue> {
+	const childrenOf = (parentId: string): ReadonlyArray<Issue> =>
+		issues.filter((issue) =>
+			(issue.dependencies ?? []).some(
+				(dependency) =>
+					dependency.type === "parent-child" && dependency.depends_on_id === parentId,
+			),
+		);
+
+	if (!recursive) {
+		return childrenOf(issueId);
+	}
+
+	const result: Issue[] = [];
+	const visited = new Set<string>();
+	const visit = (parentId: string): void => {
+		for (const child of childrenOf(parentId)) {
+			if (visited.has(child.id)) {
+				continue;
+			}
+			visited.add(child.id);
+			result.push(child);
+			visit(child.id);
+		}
+	};
+
+	visit(issueId);
+	return result;
+}
+
 function createFieldsFromFlags(parsed: ParsedCommand): Readonly<Record<string, unknown>> {
 	const fields: Record<string, unknown> = {};
 	const assignString = (field: string, ...flags: ReadonlyArray<string>): void => {
@@ -644,6 +682,18 @@ export async function runBacklogCommand(command: string, cwd: string): Promise<B
 				}
 				const issue = await runWithBacklogCommandService(workspaceRoot, (service) => service.show(issueId));
 				return { command, kind, ok: true, data: issue };
+			}
+			case "children": {
+				const issueId = parsed.positional[1];
+				if (!issueId) {
+					throw new Error("Usage: backlog children <id> [--recursive] [--limit 50]");
+				}
+				const issues = await runWithBacklogCommandService(workspaceRoot, (service) => service.list({}));
+				await runWithBacklogCommandService(workspaceRoot, (service) => service.show(issueId));
+				const recursive = parsed.flags.has("recursive");
+				const limit = parseNumber(flagValue(parsed, "limit"), "limit") ?? 50;
+				const children = listParentChildChildren(issueId, issues, recursive);
+				return { command, kind, ok: true, data: children.slice(0, limit) };
 			}
 			case "create": {
 				const title = parsed.positional.slice(1).join(" ") || flagValue(parsed, "title");
@@ -868,6 +918,7 @@ function renderBacklog(details: BacklogToolDetails, options: { expanded: boolean
 		case "list":
 		case "ready":
 		case "blocked":
+		case "children":
 		case "search":
 		case "dep_list":
 		case "create":
@@ -887,6 +938,7 @@ function createCompletionItems(): ReadonlyArray<AutocompleteItem> {
 		{ value: "list", label: "list", description: "List issues" },
 		{ value: "ready", label: "ready", description: "List ready issues" },
 		{ value: "blocked", label: "blocked", description: "List blocked issues" },
+		{ value: "children ", label: "children", description: "List child issues" },
 		{ value: "show ", label: "show", description: "Show issue" },
 		{ value: "create ", label: "create", description: "Create issue" },
 		{ value: "update ", label: "update", description: "Update issue" },
@@ -947,16 +999,15 @@ export function createBacklogToolDefinition(): ToolDefinition {
 			const flagsToSkip = new Set(["cwd"]);
 			for (const [key, values] of parsed.flags) {
 				if (flagsToSkip.has(key)) continue;
-				if (values.length === 0) continue;
-
-				// Use the last value for single-value flags
-				const value = values[values.length - 1];
-				if (value === undefined) continue;
 
 				// Convert snake_case to display name (e.g., "issue_type" -> "type")
 				let displayKey = key;
 				if (key === "issue_type") displayKey = "type";
 				else if (key === "acceptance_criteria") displayKey = "acceptance-criteria";
+
+				// Use the last value for single-value flags; valueless flags are boolean true.
+				const value = values.length > 0 ? values[values.length - 1] : "true";
+				if (value === undefined) continue;
 
 				out += `\n  ${theme.fg("toolTitle", `${displayKey}:`)} ${theme.fg("toolOutput", value)}`;
 			}

@@ -85,7 +85,10 @@ const hasOpenBlockers = (issue: Issue, byId: ReadonlyMap<string, Issue>): boolea
 };
 
 const matchesText = (issue: Issue, query: string): boolean => {
-	const haystack = `${issue.title} ${issue.description ?? ""} ${issue.notes ?? ""}`
+	const dependencyText = (issue.dependencies ?? [])
+		.map((dependency) => `${dependency.issue_id} ${dependency.depends_on_id} ${dependency.type}`)
+		.join(" ");
+	const haystack = `${issue.id} ${issue.title} ${issue.description ?? ""} ${issue.notes ?? ""} ${dependencyText}`
 		.toLowerCase()
 		.trim();
 	return haystack.includes(query.toLowerCase());
