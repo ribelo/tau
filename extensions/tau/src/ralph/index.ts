@@ -1,3 +1,4 @@
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 import type {
@@ -702,6 +703,12 @@ type RalphStartArgs = {
 	readonly itemsPerIteration: number;
 	readonly reflectEvery: number;
 	readonly reflectInstructions: string;
+	readonly overrides: {
+		readonly maxIterations: boolean;
+		readonly itemsPerIteration: boolean;
+		readonly reflectEvery: boolean;
+		readonly reflectInstructions: boolean;
+	};
 };
 
 type RalphStartArgsParseResult =
@@ -745,6 +752,12 @@ function parseArgs(argsStr: string): RalphStartArgsParseResult {
 		itemsPerIteration: 0,
 		reflectEvery: 0,
 		reflectInstructions: DEFAULT_REFLECT_INSTRUCTIONS,
+		overrides: {
+			maxIterations: false,
+			itemsPerIteration: false,
+			reflectEvery: false,
+			reflectInstructions: false,
+		},
 	};
 
 	for (let i = 0; i < tokens.length; i++) {
@@ -768,20 +781,24 @@ function parseArgs(argsStr: string): RalphStartArgsParseResult {
 					return parsed;
 				}
 				result.maxIterations = parsed;
+				result.overrides.maxIterations = true;
 			} else if (option === "--items-per-iteration") {
 				const parsed = parseNonNegativeIntegerOption(option, rawValue);
 				if (typeof parsed !== "number") {
 					return parsed;
 				}
 				result.itemsPerIteration = parsed;
+				result.overrides.itemsPerIteration = true;
 			} else if (option === "--reflect-every") {
 				const parsed = parseNonNegativeIntegerOption(option, rawValue);
 				if (typeof parsed !== "number") {
 					return parsed;
 				}
 				result.reflectEvery = parsed;
+				result.overrides.reflectEvery = true;
 			} else if (option === "--reflect-instructions") {
 				result.reflectInstructions = rawValue.replace(/^"|"$/g, "");
+				result.overrides.reflectInstructions = true;
 			} else {
 				return {
 					ok: false,
@@ -899,6 +916,12 @@ type ResolvedLoopTarget = {
 	readonly isPath: boolean;
 };
 
+type ConfigureTarget = {
+	readonly loopName: string;
+	readonly taskFile: string;
+	readonly loop: LoopState | undefined;
+};
+
 type CreateTarget =
 	| {
 			readonly kind: "path";
@@ -929,6 +952,58 @@ function resolveLoopTarget(target: string): ResolvedLoopTarget {
 		recommendedStartTarget: formatCommandArgument(isPath ? taskFile : trimmed),
 		isPath,
 	};
+}
+
+function isNodeNotFoundError(error: unknown): boolean {
+	return (
+		typeof error === "object" &&
+		error !== null &&
+		"code" in error &&
+		(error as { readonly code: unknown }).code === "ENOENT"
+	);
+}
+
+async function readExistingTaskFile(
+	cwd: string,
+	taskFile: string,
+): Promise<string | undefined> {
+	try {
+		return await fs.readFile(path.resolve(cwd, taskFile), "utf-8");
+	} catch (error) {
+		if (isNodeNotFoundError(error)) {
+			return undefined;
+		}
+		throw error;
+	}
+}
+
+async function listTaskOnlyConfigureTargets(
+	cwd: string,
+	loops: ReadonlyArray<LoopState>,
+): Promise<ReadonlyArray<ConfigureTarget>> {
+	const loopNames = new Set(loops.map((loop) => loop.name));
+	let entries: ReadonlyArray<string>;
+	try {
+		entries = await fs.readdir(path.resolve(cwd, RALPH_TASKS_DIR));
+	} catch (error) {
+		if (isNodeNotFoundError(error)) {
+			return [];
+		}
+		throw error;
+	}
+
+	return entries
+		.filter((entry) => entry.endsWith(".md"))
+		.map((entry) => {
+			const stem = path.basename(entry, ".md");
+			return {
+				loopName: sanitizeLoopName(stem),
+				taskFile: path.join(RALPH_TASKS_DIR, entry),
+				loop: undefined,
+			} satisfies ConfigureTarget;
+		})
+		.filter((target) => !loopNames.has(target.loopName))
+		.sort((left, right) => left.loopName.localeCompare(right.loopName));
 }
 
 function classifyCreateTarget(target: string): CreateTarget {
@@ -1061,6 +1136,25 @@ export default function initRalph(
 		ctx: Pick<ExtensionContext, "model" | "sessionManager">,
 	): Promise<ExecutionProfile | null> =>
 		withPromptModes((promptModes) => promptModes.captureCurrentExecutionProfile(ctx));
+
+	const captureCurrentCapabilityContract = async (
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): Promise<RalphCapabilityContract> => {
+		const agentRegistry = await Effect.runPromise(AgentRegistry.load(ctx.cwd));
+		const availableAgents = agentRegistry.names();
+		const controllerSessionFile = sessionFileFromContext(ctx);
+		const enabledAgents = await resolveEnabledAgentsForSessionAuthoritative(
+			ctx.cwd,
+			controllerSessionFile,
+			availableAgents,
+		);
+		return captureCapabilityContract({
+			activeTools: pi.getActiveTools(),
+			allTools: pi.getAllTools(),
+			agentRegistry,
+			enabledAgents,
+		});
+	};
 
 	const syncPromptDispatcher = (ctx: Pick<ExtensionContext, "sessionManager">): void => {
 		registerRalphPromptDispatcher(sessionFileFromContext(ctx), (prompt) => {
@@ -1520,20 +1614,8 @@ export default function initRalph(
 
 						// Capture capability contract from current runtime before the session
 						// becomes Ralph-owned, so ambient Pi state is pinned.
-						const agentRegistry = await Effect.runPromise(AgentRegistry.load(ctx.cwd));
-						const availableAgents = agentRegistry.names();
 						const controllerSessionFile = sessionFileFromContext(ctx);
-						const enabledAgents = await resolveEnabledAgentsForSessionAuthoritative(
-							ctx.cwd,
-							controllerSessionFile,
-							availableAgents,
-						);
-						const capabilityContract = captureCapabilityContract({
-							activeTools: pi.getActiveTools(),
-							allTools: pi.getAllTools(),
-							agentRegistry,
-							enabledAgents,
-						});
+						const capabilityContract = await captureCurrentCapabilityContract(ctx);
 
 						const start = await withRalph((ralph) =>
 							ralph.startLoopState(ctx.cwd, {
@@ -1551,6 +1633,7 @@ export default function initRalph(
 										: Option.some(controllerSessionFile),
 								defaultTaskTemplate: DEFAULT_TEMPLATE,
 								capabilityContract,
+								overrides: parsed.value.overrides,
 							}),
 						);
 
@@ -1825,11 +1908,21 @@ export default function initRalph(
 						const loops = await listLoops(ctx.cwd);
 						// listLoops already returns only Ralph loops via RalphRepo.listLoops
 						const ralphLoops = loops;
+						const stateTargets: ConfigureTarget[] = ralphLoops.map((loop) => ({
+							loopName: loop.name,
+							taskFile: loop.taskFile,
+							loop,
+						}));
+						const taskOnlyTargets = await listTaskOnlyConfigureTargets(ctx.cwd, ralphLoops);
+						const configureTargets = [...stateTargets, ...taskOnlyTargets];
 
 						let targetLoopName: string | undefined;
+						let targetTaskFile: string | undefined;
 
 						if (arg) {
-							targetLoopName = sanitizeLoopName(arg);
+							const resolved = resolveLoopTarget(arg);
+							targetLoopName = resolved.loopName;
+							targetTaskFile = resolved.taskFile;
 						} else {
 							// Try current Ralph-owned loop
 							const sessionFile = sessionFileFromContext(ctx);
@@ -1840,19 +1933,23 @@ export default function initRalph(
 							);
 							if (owned) {
 								targetLoopName = owned.name;
+								targetTaskFile = owned.taskFile;
 							}
 						}
 
 						if (!targetLoopName) {
 							// Show selector of configurable Ralph loops
-							if (ralphLoops.length === 0) {
+							if (configureTargets.length === 0) {
 								ctx.ui.notify("No Ralph loops found to configure.", "info");
 								return;
 							}
-							const items: SelectItem[] = ralphLoops.map((loop) => ({
-								value: loop.name,
-								label: `${loop.name} (${loop.status}, iter ${loop.iteration})`,
-								description: loop.taskFile,
+							const items: SelectItem[] = configureTargets.map((target) => ({
+								value: target.loopName,
+								label:
+									target.loop === undefined
+										? `${target.loopName} (task, no state)`
+										: `${target.loopName} (${target.loop.status}, iter ${target.loop.iteration})`,
+								description: target.taskFile,
 							}));
 							await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
 								const selector = new SelectList(items, Math.min(items.length + 2, 10), {
@@ -1864,6 +1961,9 @@ export default function initRalph(
 								});
 								selector.onSelect = (item) => {
 									targetLoopName = item.value;
+									targetTaskFile = configureTargets.find(
+										(target) => target.loopName === item.value,
+									)?.taskFile;
 									done(undefined as unknown as void);
 								};
 								selector.onCancel = () => done(undefined as unknown as void);
@@ -1872,10 +1972,56 @@ export default function initRalph(
 							if (!targetLoopName) return;
 						}
 
-						const loop = ralphLoops.find((l) => l.name === targetLoopName);
+						const resolvedTargetLoopName = targetLoopName;
+						let loop = ralphLoops.find((l) => l.name === resolvedTargetLoopName);
 						if (!loop) {
-							ctx.ui.notify(`Loop "${targetLoopName}" not found.`, "error");
-							return;
+							const taskFile = targetTaskFile ?? resolveLoopTarget(resolvedTargetLoopName).taskFile;
+							const taskContent = await readExistingTaskFile(ctx.cwd, taskFile);
+							if (taskContent === undefined) {
+								ctx.ui.notify(
+									`Loop "${resolvedTargetLoopName}" not found and task file does not exist: ${taskFile}`,
+									"error",
+								);
+								return;
+							}
+							const executionProfile = await captureCurrentExecutionProfile(ctx);
+							if (executionProfile === null) {
+								ctx.ui.notify(
+									"Could not capture the current execution profile for this Ralph loop.",
+									"error",
+								);
+								return;
+							}
+							const parsedDefaults = parseArgs(resolvedTargetLoopName);
+							if (!parsedDefaults.ok) {
+								ctx.ui.notify(
+									`Could not prepare default Ralph configuration: ${parsedDefaults.error}`,
+									"error",
+								);
+								return;
+							}
+							const capabilityContract = await captureCurrentCapabilityContract(ctx);
+							const created = await withRalph((ralph) =>
+								ralph.createDraftLoopForConfiguration(ctx.cwd, {
+									loopName: resolvedTargetLoopName,
+									taskFile,
+									taskContent,
+									executionProfile,
+									sandboxProfile: captureSandboxProfile(pi, ctx),
+									maxIterations: parsedDefaults.value.maxIterations,
+									itemsPerIteration: parsedDefaults.value.itemsPerIteration,
+									reflectEvery: parsedDefaults.value.reflectEvery,
+									reflectInstructions: parsedDefaults.value.reflectInstructions,
+									capabilityContract,
+								}),
+							);
+							loop = created.loop;
+							if (created.createdState) {
+								ctx.ui.notify(
+									`Created configurable Ralph state for "${resolvedTargetLoopName}" from ${taskFile}.`,
+									"info",
+								);
+							}
 						}
 						const resolvedLoopName = loop.name;
 

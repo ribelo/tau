@@ -5,13 +5,14 @@ import { Effect, FileSystem, Layer, Option, Context } from "effect";
 
 import { StorageError, atomicWriteFileString, toStorageError } from "../shared/atomic-write.js";
 import { LoopContractValidationError } from "../loops/errors.js";
+import { loopTaskFile } from "../loops/paths.js";
 import { LoopRepo, LoopRepoLive } from "../loops/repo.js";
 import type {
 	LoopPersistedState,
 	LoopSessionRef,
 	RalphLoopPersistedState,
 } from "../loops/schema.js";
-import { RALPH_ARCHIVE_TASKS_DIR, RALPH_DIR } from "./paths.js";
+import { RALPH_ARCHIVE_TASKS_DIR, RALPH_DIR, RALPH_TASKS_DIR } from "./paths.js";
 import { RalphContractValidationError } from "./errors.js";
 import type { LoopState } from "./schema.js";
 import { emptyRalphLoopMetrics } from "./schema.js";
@@ -212,7 +213,11 @@ function toPersistedState(
 	timestamp: string,
 ): RalphLoopPersistedState {
 	const existingValue = Option.getOrUndefined(existing);
-	const lifecycle = archived ? "archived" : statusToLifecycle(state.status);
+	const lifecycle = archived
+		? "archived"
+		: existingValue?.lifecycle === "draft" && state.status === "paused"
+			? "draft"
+			: statusToLifecycle(state.status);
 
 	return {
 		taskId: state.name,
@@ -477,7 +482,36 @@ const RalphRepoBase = Layer.effect(
 					},
 				};
 
+				const canonicalTaskFile = loopTaskFile(persisted.value.taskId);
+				if (path.normalize(persisted.value.taskFile) !== path.normalize(canonicalTaskFile)) {
+					const taskContent = yield* readOptionalFile(
+						fs,
+						path.resolve(cwd, persisted.value.taskFile),
+					);
+					if (Option.isSome(taskContent)) {
+						yield* loopRepo
+							.writeTaskFile(cwd, persisted.value.taskId, taskContent.value)
+							.pipe(Effect.mapError(mapLoopRepoError));
+					}
+				}
+
 				yield* loopRepo.archiveTaskArtifacts(cwd, persisted.value.taskId);
+				if (path.normalize(persisted.value.taskFile) !== path.normalize(canonicalTaskFile)) {
+					const activeTasksRoot = path.resolve(cwd, RALPH_TASKS_DIR);
+					const sourceTaskFile = path.resolve(cwd, persisted.value.taskFile);
+					if (sourceTaskFile.startsWith(`${activeTasksRoot}${path.sep}`)) {
+						yield* fs.remove(sourceTaskFile, { force: true }).pipe(
+							Effect.mapError((error) =>
+								toStorageError(
+									"remove-task",
+									sourceTaskFile,
+									`Failed to remove ${sourceTaskFile}`,
+									error,
+								),
+							),
+						);
+					}
+				}
 				yield* loopRepo
 					.saveState(cwd, archivedState, true)
 					.pipe(Effect.mapError(mapLoopRepoError));

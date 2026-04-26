@@ -205,6 +205,16 @@ function makeContext(
 			setWidget: () => undefined,
 			setFooter: () => () => undefined,
 			setEditorComponent: () => undefined,
+			custom: async (
+				_factory: (
+					tui: unknown,
+					theme: { readonly fg: (_color: string, text: string) => string; readonly bold: (text: string) => string },
+					keybindings: unknown,
+					done: (value?: unknown) => void,
+				) => unknown,
+			) => {
+				return undefined;
+			},
 			notify: (message: string, level: string) => {
 				notifications.push({ message, level });
 			},
@@ -361,6 +371,122 @@ describe("ralph store behavior freeze", () => {
 		expect(
 			notifications.some((entry) => entry.message.includes('Started loop "alpha-loop"')),
 		).toBe(true);
+	});
+
+	it("/ralph configure creates draft state for an existing task file", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		fs.mkdirSync(path.dirname(taskPath(cwd, "task-only-loop")), { recursive: true });
+		fs.writeFileSync(taskPath(cwd, "task-only-loop"), "# Task\n\nConfigure me first.\n", "utf-8");
+
+		const notifications: Notifications = [];
+		const { pi, commands } = makePiStub();
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(pi, ralphRuntime.run);
+
+		const command = commands.get("ralph");
+		expect(command).toBeDefined();
+
+		const context = makeContext(cwd, notifications, [true]);
+		await command?.handler("configure task-only-loop", context);
+
+		expect(fs.existsSync(statePath(cwd, "task-only-loop"))).toBe(true);
+		const persisted = decodeLoopPersistedStateJsonSync(
+			fs.readFileSync(statePath(cwd, "task-only-loop"), "utf-8"),
+		);
+		expect(persisted.kind).toBe("ralph");
+		if (persisted.kind !== "ralph") {
+			throw new Error("expected ralph state");
+		}
+		expect(persisted.lifecycle).toBe("draft");
+		expect(persisted.ralph.iteration).toBe(0);
+		expect(persisted.ralph.maxIterations).toBe(50);
+		expect(persisted.ralph.capabilityContract.version).toBe("1");
+		expect(fs.readFileSync(taskPath(cwd, "task-only-loop"), "utf-8")).toContain(
+			"Configure me first.",
+		);
+		expect(
+			notifications.some((entry) =>
+				entry.message.includes('Created configurable Ralph state for "task-only-loop"'),
+			),
+		).toBe(true);
+
+		await ralphRuntime.run(
+			Effect.gen(function* () {
+				const ralph = yield* Ralph;
+				return yield* ralph.configureLoopMany(cwd, "task-only-loop", [
+					{ kind: "maxIterations", value: 12 },
+				]);
+			}),
+		);
+		const configured = decodeLoopPersistedStateJsonSync(
+			fs.readFileSync(statePath(cwd, "task-only-loop"), "utf-8"),
+		);
+		expect(configured.kind).toBe("ralph");
+		if (configured.kind !== "ralph") {
+			throw new Error("expected ralph state");
+		}
+		expect(configured.lifecycle).toBe("draft");
+		expect(configured.ralph.maxIterations).toBe(12);
+	});
+
+	it("/ralph configure preserves a noncanonical task path when creating state", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const taskFile = path.join(".pi", "loops", "tasks", "task path.md");
+		fs.mkdirSync(path.dirname(path.join(cwd, taskFile)), { recursive: true });
+		fs.writeFileSync(path.join(cwd, taskFile), "# Task\n\nUse this exact file.\n", "utf-8");
+
+		const notifications: Notifications = [];
+		const { pi, commands } = makePiStub();
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(pi, ralphRuntime.run);
+
+		const command = commands.get("ralph");
+		expect(command).toBeDefined();
+
+		const context = makeContext(cwd, notifications, [true]);
+		await command?.handler(`configure "${taskFile}"`, context);
+
+		const state = decodeLoopPersistedStateJsonSync(
+			fs.readFileSync(statePath(cwd, "task_path"), "utf-8"),
+		);
+		expect(state.kind).toBe("ralph");
+		if (state.kind !== "ralph") {
+			throw new Error("expected ralph state");
+		}
+		expect(state.taskFile).toBe(taskFile);
+		expect(state.lifecycle).toBe("draft");
+		await ralphRuntime.run(
+			Effect.gen(function* () {
+				const ralph = yield* Ralph;
+				return yield* ralph.configureLoopMany(cwd, "task_path", [
+					{ kind: "maxIterations", value: 9 },
+				]);
+			}),
+		);
+
+		await command?.handler("start task_path", context);
+		const started = decodeLoopPersistedStateJsonSync(
+			fs.readFileSync(statePath(cwd, "task_path"), "utf-8"),
+		);
+		expect(started.kind).toBe("ralph");
+		if (started.kind !== "ralph") {
+			throw new Error("expected ralph state");
+		}
+		expect(started.taskFile).toBe(taskFile);
+		expect(started.ralph.maxIterations).toBe(9);
+
+		fs.writeFileSync(path.join(cwd, taskFile), "# Task\n\nUpdated custom task.\n", "utf-8");
+		await command?.handler("archive task_path", context);
+		expect(fs.readFileSync(taskPath(cwd, "task_path", true), "utf-8")).toContain(
+			"Updated custom task.",
+		);
+		expect(fs.existsSync(path.join(cwd, taskFile))).toBe(false);
 	});
 
 	it("/ralph start rejects extra positional arguments instead of starting the wrong loop", async () => {

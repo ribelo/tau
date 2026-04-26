@@ -78,6 +78,12 @@ export type RalphStartLoopInput = {
 	readonly controllerSessionFile: Option.Option<string>;
 	readonly defaultTaskTemplate: string;
 	readonly capabilityContract?: import("../ralph/contract.js").RalphCapabilityContract;
+	readonly overrides?: {
+		readonly maxIterations: boolean;
+		readonly itemsPerIteration: boolean;
+		readonly reflectEvery: boolean;
+		readonly reflectInstructions: boolean;
+	};
 };
 
 export type RalphStartLoopStateResult =
@@ -110,6 +116,24 @@ export type RalphPrepareLoopTaskResult =
 			readonly status: "already_active";
 			readonly loopName: string;
 	  };
+
+export type RalphCreateDraftLoopForConfigurationInput = {
+	readonly loopName: string;
+	readonly taskFile: string;
+	readonly taskContent: string;
+	readonly executionProfile: ExecutionProfile;
+	readonly sandboxProfile: ResolvedSandboxConfig;
+	readonly maxIterations: number;
+	readonly itemsPerIteration: number;
+	readonly reflectEvery: number;
+	readonly reflectInstructions: string;
+	readonly capabilityContract: RalphCapabilityContract;
+};
+
+export type RalphCreateDraftLoopForConfigurationResult = {
+	readonly loop: LoopState;
+	readonly createdState: boolean;
+};
 
 export type RalphPauseCurrentLoopResult =
 	| {
@@ -491,6 +515,14 @@ export interface RalphService {
 		cwd: string,
 		input: RalphPrepareLoopTaskInput,
 	) => Effect.Effect<RalphPrepareLoopTaskResult, RalphContractValidationError, never>;
+	readonly createDraftLoopForConfiguration: (
+		cwd: string,
+		input: RalphCreateDraftLoopForConfigurationInput,
+	) => Effect.Effect<
+		RalphCreateDraftLoopForConfigurationResult,
+		RalphContractValidationError,
+		never
+	>;
 	readonly listLoops: (
 		cwd: string,
 		archived?: boolean,
@@ -619,6 +651,12 @@ const applyDeferredConfigMutations = (state: LoopState): LoopState => {
 	}
 	return { ...next, deferredConfigMutations: [] };
 };
+
+const isUnstartedDraftState = (state: LoopState): boolean =>
+	state.status === "paused" &&
+	state.iteration === 0 &&
+	Option.isNone(state.controllerSessionFile) &&
+	Option.isNone(state.activeIterationSessionFile);
 
 const isAtIterationLimit = (state: LoopState): boolean =>
 	state.maxIterations > 0 && state.iteration >= state.maxIterations;
@@ -867,9 +905,15 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					} satisfies RalphStartLoopStateResult;
 				}
 
+				const defaultTaskFile = path.join(RALPH_TASKS_DIR, `${input.loopName}.md`);
+				const taskFile =
+					Option.isSome(existing) && input.taskFile === defaultTaskFile
+						? existing.value.taskFile
+						: input.taskFile;
+
 				const createdTask = yield* repo.ensureTaskFile(
 					cwd,
-					input.taskFile,
+					taskFile,
 					input.defaultTaskTemplate,
 				);
 
@@ -889,20 +933,46 @@ export const RalphLive = (config: RalphLiveConfig) =>
 							capabilityContract: input.capabilityContract,
 						}),
 					);
+					if (taskFile !== defaultTaskFile) {
+						const created = yield* repo.loadState(cwd, input.loopName);
+						if (Option.isSome(created) && created.value.taskFile !== taskFile) {
+							yield* repo.saveState(cwd, { ...created.value, taskFile });
+						}
+					}
 				} else {
+					const preserveDraftConfiguration = isUnstartedDraftState(existing.value);
+					const overrides = input.overrides;
 					const preparedState: LoopState = {
 						...existing.value,
-						taskFile: input.taskFile,
-						maxIterations: input.maxIterations,
-						itemsPerIteration: input.itemsPerIteration,
-						reflectEvery: input.reflectEvery,
-						reflectInstructions: input.reflectInstructions,
-						executionProfile: input.executionProfile,
-						sandboxProfile: Option.some(input.sandboxProfile),
+						taskFile,
+						maxIterations:
+							preserveDraftConfiguration && overrides?.maxIterations !== true
+								? existing.value.maxIterations
+								: input.maxIterations,
+						itemsPerIteration:
+							preserveDraftConfiguration && overrides?.itemsPerIteration !== true
+								? existing.value.itemsPerIteration
+								: input.itemsPerIteration,
+						reflectEvery:
+							preserveDraftConfiguration && overrides?.reflectEvery !== true
+								? existing.value.reflectEvery
+								: input.reflectEvery,
+						reflectInstructions:
+							preserveDraftConfiguration && overrides?.reflectInstructions !== true
+								? existing.value.reflectInstructions
+								: input.reflectInstructions,
+						executionProfile: preserveDraftConfiguration
+							? existing.value.executionProfile
+							: input.executionProfile,
+						sandboxProfile: preserveDraftConfiguration
+							? existing.value.sandboxProfile
+							: Option.some(input.sandboxProfile),
 						lastReflectionAt: 0,
 						activeIterationSessionFile: Option.none(),
 						pendingDecision: Option.none(),
-						capabilityContract: input.capabilityContract ?? existing.value.capabilityContract,
+						capabilityContract: preserveDraftConfiguration
+							? existing.value.capabilityContract
+							: (input.capabilityContract ?? existing.value.capabilityContract),
 					};
 					yield* repo.saveState(cwd, preparedState);
 				}
@@ -943,7 +1013,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 				return {
 					status: "started",
 					loopName: input.loopName,
-					taskFile: input.taskFile,
+					taskFile,
 					createdTask,
 					maxIterations,
 				} satisfies RalphStartLoopStateResult;
@@ -967,6 +1037,55 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					taskFile,
 				} satisfies RalphPrepareLoopTaskResult;
 			});
+
+			const createDraftLoopForConfiguration: RalphService["createDraftLoopForConfiguration"] =
+				Effect.fn("Ralph.createDraftLoopForConfiguration")(function* (cwd, input) {
+					const existing = yield* repo.loadState(cwd, input.loopName);
+					if (Option.isSome(existing)) {
+						return {
+							loop: existing.value,
+							createdState: false,
+						} satisfies RalphCreateDraftLoopForConfigurationResult;
+					}
+
+					yield* mapLoopEngineError(
+						loopEngine.createLoop(cwd, {
+							kind: "ralph",
+							taskId: input.loopName,
+							title: input.loopName,
+							taskContent: input.taskContent,
+							maxIterations: input.maxIterations,
+							itemsPerIteration: input.itemsPerIteration,
+							reflectEvery: input.reflectEvery,
+							reflectInstructions: input.reflectInstructions,
+							executionProfile: input.executionProfile,
+							sandboxProfile: input.sandboxProfile,
+							capabilityContract: input.capabilityContract,
+						}),
+					);
+
+					const created = yield* repo.loadState(cwd, input.loopName);
+					if (Option.isNone(created)) {
+						return yield* Effect.fail(
+							new RalphContractValidationError({
+								entity: "ralph.config.create_draft",
+								reason: `Created loop "${input.loopName}" but could not reload its state.`,
+							}),
+						);
+					}
+					const loop =
+						created.value.taskFile === input.taskFile
+							? created.value
+							: { ...created.value, taskFile: input.taskFile };
+					if (loop !== created.value) {
+						yield* repo.saveState(cwd, loop);
+					}
+
+					return {
+						loop,
+						createdState: true,
+					} satisfies RalphCreateDraftLoopForConfigurationResult;
+				});
 
 			const resolveLoopForUi: RalphService["resolveLoopForUi"] = Effect.fn(
 				"Ralph.resolveLoopForUi",
@@ -1241,7 +1360,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 					yield* clearCurrentLoop;
 				}
 
-				yield* mapLoopEngineError(loopEngine.archiveLoop(cwd, state.name));
+				yield* repo.archiveLoop(cwd, state);
 				return {
 					status: "archived",
 				} satisfies RalphArchiveLoopByNameResult;
@@ -1870,6 +1989,7 @@ export const RalphLive = (config: RalphLiveConfig) =>
 			return Ralph.of({
 				startLoopState,
 				prepareLoopTask,
+				createDraftLoopForConfiguration,
 				listLoops: repo.listLoops,
 				findLoopBySessionFile: repo.findLoopBySessionFile,
 				resolveLoopForUi,
