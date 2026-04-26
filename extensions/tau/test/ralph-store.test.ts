@@ -501,6 +501,7 @@ describe("ralph store behavior freeze", () => {
 			"agent",
 			"memory",
 		]);
+		expect(persisted.ralph.capabilityContract.agents.enabledNames).toEqual(["finder"]);
 	});
 
 	it("/ralph configure preserves a noncanonical task path when creating state", async () => {

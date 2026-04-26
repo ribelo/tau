@@ -21,7 +21,7 @@ type SettingsReadResult =
 	| { readonly _tag: "valid"; readonly settings: AnyRecord }
 	| { readonly _tag: "invalid" };
 
-const DEFAULT_RALPH_ENABLED_AGENTS = ["finder", "librarian"] as const;
+const DEFAULT_RALPH_ENABLED_AGENTS = ["finder"] as const;
 const RALPH_SESSION_CACHE_KEY_DELIMITER = "\u0000";
 const ralphOwnedSessionCache = new Map<string, boolean>();
 
@@ -376,7 +376,10 @@ export class AgentSelectionStore {
 
 	isDisabledForSession(cwd: string, sessionFile: string | undefined, name: string): boolean {
 		const state = this.getStateForCwdOrUndefined(cwd);
-		return this.isDisabledForCwd(cwd, name) || isDisabledByRalphPolicy(state?.ralphEnabledAgents, cwd, sessionFile, name);
+		if (isRalphOwnedSession(cwd, sessionFile)) {
+			return isDisabledByRalphPolicy(state?.ralphEnabledAgents, cwd, sessionFile, name);
+		}
+		return this.isDisabledForCwd(cwd, name);
 	}
 
 	async resolveEnabledAgentsForSession(

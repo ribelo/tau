@@ -55,6 +55,7 @@ const RalphDefaultActiveToolNames = new Set([
 	"agent",
 	"memory",
 ]);
+const RALPH_DEFAULT_ENABLED_AGENT_NAME = "finder";
 
 function isRalphDefaultActiveToolName(name: string): boolean {
 	return (
@@ -126,7 +127,9 @@ export function captureToolContract(
 }
 
 /**
- * Capture an agent contract from current runtime state.
+ * Capture Ralph's initial agent contract from current runtime state.
+ * The registry snapshot preserves every configurable agent, while the default
+ * enabled set starts with only finder when it exists.
  */
 export function captureAgentContract(
 	input: Pick<ContractCaptureInput, "agentRegistry" | "enabledAgents">,
@@ -135,8 +138,11 @@ export function captureAgentContract(
 		name: agent.name,
 		description: agent.description,
 	}));
+	const registryNames = new Set(registrySnapshot.map((agent) => agent.name));
 	return {
-		enabledNames: [...input.enabledAgents],
+		enabledNames: registryNames.has(RALPH_DEFAULT_ENABLED_AGENT_NAME)
+			? [RALPH_DEFAULT_ENABLED_AGENT_NAME]
+			: [],
 		registrySnapshot,
 	};
 }

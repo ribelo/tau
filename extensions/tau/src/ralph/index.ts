@@ -43,7 +43,6 @@ import {
 } from "./contract.js";
 import type { RalphConfigMutation } from "./config-service.js";
 import { AgentRegistry } from "../agent/agent-registry.js";
-import { resolveEnabledAgentsForSessionAuthoritative } from "../agents-menu/index.js";
 import {
 	computeEffectiveConfig,
 	type ResolvedSandboxConfig,
@@ -1142,18 +1141,11 @@ export default function initRalph(
 		ctx: Pick<ExtensionContext, "cwd" | "sessionManager" | "model">,
 	): Promise<RalphCapabilityContract> => {
 		const agentRegistry = await Effect.runPromise(AgentRegistry.load(ctx.cwd));
-		const availableAgents = agentRegistry.names();
-		const controllerSessionFile = sessionFileFromContext(ctx);
-		const enabledAgents = await resolveEnabledAgentsForSessionAuthoritative(
-			ctx.cwd,
-			controllerSessionFile,
-			availableAgents,
-		);
 		return captureCapabilityContract({
 			activeTools: pi.getActiveTools(),
 			allTools: pi.getAllTools(),
 			agentRegistry,
-			enabledAgents,
+			enabledAgents: [],
 			useApplyPatchForMutationTools: shouldUseApplyPatchForProvider(ctx.model?.provider),
 		});
 	};

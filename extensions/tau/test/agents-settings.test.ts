@@ -79,7 +79,7 @@ async function writeRalphState(
 					...contract,
 					agents: {
 						...contract.agents,
-						enabledNames: input.enabledAgents ?? ["finder", "librarian"],
+						enabledNames: input.enabledAgents ?? ["finder"],
 					},
 				},
 				deferredConfigMutations: [],
@@ -249,7 +249,7 @@ describe("agent selection settings", () => {
 		await preloadRalphOwnedSessionCache(workspace, controllerSession);
 
 		expect(store.isDisabledForSession(workspace, controllerSession, "finder")).toBe(false);
-		expect(store.isDisabledForSession(workspace, controllerSession, "librarian")).toBe(false);
+		expect(store.isDisabledForSession(workspace, controllerSession, "librarian")).toBe(true);
 		expect(store.isDisabledForSession(workspace, controllerSession, "deep")).toBe(true);
 		expect(store.isDisabledForSession(workspace, controllerSession, "smart")).toBe(true);
 	});
@@ -336,6 +336,36 @@ describe("agent selection settings", () => {
 
 		expect(store.isDisabledForSession(workspace, controllerSession, "finder")).toBe(true);
 		expect(store.isDisabledForSession(workspace, controllerSession, "librarian")).toBe(false);
+	});
+
+	it("Ralph loop state is authoritative over project-disabled agents", async () => {
+		const workspace = await makeWorkspace();
+		cleanup.add(workspace);
+		const settingsPath = getAgentSettingsPath(workspace);
+		const controllerSession = path.join(
+			workspace,
+			".pi",
+			"sessions",
+			"controller.session.json",
+		);
+
+		await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+		await fs.writeFile(
+			settingsPath,
+			JSON.stringify({ tau: { agents: { enabled: ["finder"] } } }, null, 2),
+			"utf8",
+		);
+		await writeRalphState(workspace, "loop-c2", {
+			controllerSessionFile: controllerSession,
+			enabledAgents: ["oracle"],
+		});
+
+		const store = new AgentSelectionStore();
+		await store.activate(workspace, ["finder", "oracle"]);
+		await preloadRalphOwnedSessionCache(workspace, controllerSession);
+
+		expect(store.isDisabledForSession(workspace, controllerSession, "finder")).toBe(true);
+		expect(store.isDisabledForSession(workspace, controllerSession, "oracle")).toBe(false);
 	});
 
 	it("ignores completed Ralph loops when computing session restrictions", async () => {
