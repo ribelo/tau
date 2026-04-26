@@ -7,10 +7,15 @@ import { PromptModes } from "../services/prompt-modes.js";
 import { PiAPI } from "../effect/pi.js";
 import { LoopRepo } from "../loops/repo.js";
 import type { RalphLoopPersistedState } from "../loops/schema.js";
+import {
+	APPLY_PATCH_TOOL_NAME,
+	EDIT_TOOL_NAME,
+	WRITE_TOOL_NAME,
+	isMutationToolName,
+} from "../sandbox/mutation-tools.js";
 import { RalphContractValidationError } from "../ralph/errors.js";
 import {
 	ensureRalphSystemControlTools,
-	excludeRalphSystemControlTools,
 	isRalphSystemControlTool,
 	makeCapabilityContract,
 	type RalphCapabilityContract,
@@ -25,6 +30,7 @@ export type ContractCaptureInput = {
 	readonly allTools: ReadonlyArray<{ readonly name: string; readonly description: string }>;
 	readonly agentRegistry: AgentRegistry;
 	readonly enabledAgents: ReadonlyArray<string>;
+	readonly useApplyPatchForMutationTools?: boolean;
 };
 
 export type ContractApplyTarget = "controller" | "child";
@@ -42,17 +48,72 @@ export type ContractValidationResult =
 	| { readonly valid: true }
 	| { readonly valid: false; readonly issues: ReadonlyArray<ContractValidationIssue> };
 
+const RalphDefaultActiveToolNames = new Set([
+	"bash",
+	"read",
+	"backlog",
+	"agent",
+	"memory",
+]);
+
+function isRalphDefaultActiveToolName(name: string): boolean {
+	return (
+		RalphDefaultActiveToolNames.has(name) ||
+		name.endsWith("_exa") ||
+		name.startsWith("exa.")
+	);
+}
+
+function selectRalphDefaultMutationTools(
+	availableToolNames: ReadonlySet<string>,
+	useApplyPatch: boolean | undefined,
+): ReadonlySet<string> {
+	const legacyTools = [EDIT_TOOL_NAME, WRITE_TOOL_NAME].filter((name) =>
+		availableToolNames.has(name),
+	);
+	const hasApplyPatch = availableToolNames.has(APPLY_PATCH_TOOL_NAME);
+
+	if (useApplyPatch === true && hasApplyPatch) {
+		return new Set([APPLY_PATCH_TOOL_NAME]);
+	}
+	if (useApplyPatch === true) {
+		return new Set(legacyTools);
+	}
+	if (legacyTools.length > 0) {
+		return new Set(legacyTools);
+	}
+	if (hasApplyPatch) {
+		return new Set([APPLY_PATCH_TOOL_NAME]);
+	}
+	return new Set();
+}
+
 // ─── Pure capture helpers ───────────────────────────────────────────────────
 
 /**
- * Capture a tool contract from current Pi runtime state.
+ * Capture Ralph's initial tool contract from current Pi runtime state.
  * System-managed Ralph control tools are excluded from activeNames
- * but included in the available snapshot for display.
+ * but included in the available snapshot for display. activeNames starts
+ * from Ralph's safe default allowlist rather than the ambient session's
+ * active tools.
  */
 export function captureToolContract(
-	input: Pick<ContractCaptureInput, "activeTools" | "allTools">,
+	input: Pick<ContractCaptureInput, "activeTools" | "allTools" | "useApplyPatchForMutationTools">,
 ): RalphCapabilityContract["tools"] {
-	const userActiveNames = excludeRalphSystemControlTools(input.activeTools);
+	const availableToolNames = new Set(input.allTools.map((tool) => tool.name));
+	const selectedMutationTools = selectRalphDefaultMutationTools(
+		availableToolNames,
+		input.useApplyPatchForMutationTools,
+	);
+	const userActiveNames = input.allTools
+		.map((tool) => tool.name)
+		.filter(
+			(name) =>
+				(isMutationToolName(name)
+					? selectedMutationTools.has(name)
+					: isRalphDefaultActiveToolName(name)),
+		)
+		.filter((name) => !isRalphSystemControlTool(name));
 	const availableSnapshot: ToolMetadataFingerprint[] = input.allTools.map((tool) => ({
 		name: tool.name,
 		label: tool.name,

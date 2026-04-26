@@ -179,7 +179,7 @@ function makeContext(
 	cwd: string,
 	notifications: Notifications,
 	newSessionCancelled: readonly boolean[] = [true],
-	options?: { readonly idle?: boolean; readonly sessionFile?: string },
+	options?: { readonly idle?: boolean; readonly sessionFile?: string; readonly modelProvider?: string },
 ): ExtensionCommandContext {
 	let sessionFile =
 		options?.sessionFile ?? path.join(cwd, ".pi", "sessions", "controller.session.json");
@@ -189,7 +189,10 @@ function makeContext(
 	const context = {
 		cwd,
 		hasUI: true,
-		model: undefined,
+		model:
+			options?.modelProvider === undefined
+				? undefined
+				: { provider: options.modelProvider, id: "test-model" },
 		modelRegistry: {
 			find: (provider: string, id: string) => ({ provider, id }),
 			getAll: () => [],
@@ -264,6 +267,18 @@ function makePiStub(): {
 	readonly tools: ToolDefinition[];
 	readonly sentUserMessages: SentUserMessage[];
 } {
+	return makePiStubWithTools({ activeTools: [], allTools: [] });
+}
+
+function makePiStubWithTools(input: {
+	readonly activeTools: ReadonlyArray<string>;
+	readonly allTools: ReadonlyArray<{ readonly name: string; readonly description: string }>;
+}): {
+	readonly pi: ExtensionAPI;
+	readonly commands: Map<string, RegisteredCommand>;
+	readonly tools: ToolDefinition[];
+	readonly sentUserMessages: SentUserMessage[];
+} {
 	const eventHandlers = new Map<string, EventHandler[]>();
 	const commands = new Map<string, RegisteredCommand>();
 	const tools: ToolDefinition[] = [];
@@ -289,9 +304,9 @@ function makePiStub(): {
 		},
 		sendMessage: () => undefined,
 		appendEntry: () => undefined,
-		getActiveTools: () => [],
+		getActiveTools: () => [...input.activeTools],
 		setActiveTools: () => undefined,
-		getAllTools: () => [],
+		getAllTools: () => [...input.allTools],
 		getCommands: () => [],
 		setModel: async () => true,
 		getThinkingLevel: () => "medium",
@@ -430,6 +445,62 @@ describe("ralph store behavior freeze", () => {
 		}
 		expect(configured.lifecycle).toBe("draft");
 		expect(configured.ralph.maxIterations).toBe(12);
+	});
+
+	it("/ralph configure initializes draft tool contract with Ralph defaults", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		fs.mkdirSync(path.dirname(taskPath(cwd, "default-tools-loop")), { recursive: true });
+		fs.writeFileSync(taskPath(cwd, "default-tools-loop"), "# Task\n\nConfigure me first.\n", "utf-8");
+
+		const notifications: Notifications = [];
+		const { pi, commands } = makePiStubWithTools({
+			activeTools: ["read", "bash", "todo_write", "thread", "edit", "write", "apply_patch"],
+			allTools: [
+				{ name: "read", description: "Read files" },
+				{ name: "bash", description: "Run commands" },
+				{ name: "edit", description: "Edit files" },
+				{ name: "write", description: "Write files" },
+				{ name: "apply_patch", description: "Apply patches" },
+				{ name: "backlog", description: "Backlog" },
+				{ name: "web_search_exa", description: "Search" },
+				{ name: "crawling_exa", description: "Crawl" },
+				{ name: "get_code_context_exa", description: "Code context" },
+				{ name: "agent", description: "Spawn agents" },
+				{ name: "memory", description: "Memory" },
+				{ name: "todo_write", description: "Todo" },
+				{ name: "thread", description: "Thread" },
+			],
+		});
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(pi, ralphRuntime.run);
+
+		const command = commands.get("ralph");
+		expect(command).toBeDefined();
+
+		const context = makeContext(cwd, notifications, [true], { modelProvider: "openai" });
+		await command?.handler("configure default-tools-loop", context);
+
+		const persisted = decodeLoopPersistedStateJsonSync(
+			fs.readFileSync(statePath(cwd, "default-tools-loop"), "utf-8"),
+		);
+		expect(persisted.kind).toBe("ralph");
+		if (persisted.kind !== "ralph") {
+			throw new Error("expected ralph state");
+		}
+		expect(persisted.ralph.capabilityContract.tools.activeNames).toEqual([
+			"read",
+			"bash",
+			"apply_patch",
+			"backlog",
+			"web_search_exa",
+			"crawling_exa",
+			"get_code_context_exa",
+			"agent",
+			"memory",
+		]);
 	});
 
 	it("/ralph configure preserves a noncanonical task path when creating state", async () => {

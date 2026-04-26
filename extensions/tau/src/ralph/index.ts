@@ -50,6 +50,7 @@ import {
 	type SandboxConfig,
 	type SandboxPreset,
 } from "../sandbox/config.js";
+import { shouldUseApplyPatchForProvider } from "../sandbox/mutation-tools.js";
 import { discoverWorkspaceRoot } from "../sandbox/workspace-root.js";
 import { resolvePreset, SANDBOX_PRESET_NAMES } from "../shared/policy.js";
 
@@ -1138,7 +1139,7 @@ export default function initRalph(
 		withPromptModes((promptModes) => promptModes.captureCurrentExecutionProfile(ctx));
 
 	const captureCurrentCapabilityContract = async (
-		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager" | "model">,
 	): Promise<RalphCapabilityContract> => {
 		const agentRegistry = await Effect.runPromise(AgentRegistry.load(ctx.cwd));
 		const availableAgents = agentRegistry.names();
@@ -1153,6 +1154,7 @@ export default function initRalph(
 			allTools: pi.getAllTools(),
 			agentRegistry,
 			enabledAgents,
+			useApplyPatchForMutationTools: shouldUseApplyPatchForProvider(ctx.model?.provider),
 		});
 	};
 

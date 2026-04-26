@@ -60,6 +60,62 @@ describe("ralph contract resolver pure helpers", () => {
 		expect(contract.availableSnapshot[0]?.label).toBe("read");
 	});
 
+	it("captures Ralph default active tools from the available tool set", () => {
+		const contract = captureToolContract({
+			activeTools: ["read", "bash", "todo_write", "thread", "unknown_custom_tool"],
+			allTools: [
+				{ name: "read", description: "Read files" },
+				{ name: "bash", description: "Run commands" },
+				{ name: "apply_patch", description: "Apply patches" },
+				{ name: "backlog", description: "Backlog" },
+				{ name: "web_search_exa", description: "Search" },
+				{ name: "crawling_exa", description: "Crawl" },
+				{ name: "get_code_context_exa", description: "Code context" },
+				{ name: "agent", description: "Spawn agents" },
+				{ name: "memory", description: "Memory" },
+				{ name: "todo_write", description: "Todo" },
+				{ name: "thread", description: "Thread" },
+				{ name: "ralph_continue", description: "Continue" },
+				{ name: "ralph_finish", description: "Finish" },
+			],
+		});
+
+		expect(contract.activeNames).toEqual([
+			"read",
+			"bash",
+			"apply_patch",
+			"backlog",
+			"web_search_exa",
+			"crawling_exa",
+			"get_code_context_exa",
+			"agent",
+			"memory",
+		]);
+	});
+
+	it("routes Ralph default mutation tools by provider preference", () => {
+		const allTools = [
+			{ name: "read", description: "Read files" },
+			{ name: "edit", description: "Edit files" },
+			{ name: "write", description: "Write files" },
+			{ name: "apply_patch", description: "Apply patches" },
+			{ name: "bash", description: "Run commands" },
+		];
+		const legacyContract = captureToolContract({
+			activeTools: [],
+			allTools,
+			useApplyPatchForMutationTools: false,
+		});
+		const applyPatchContract = captureToolContract({
+			activeTools: [],
+			allTools,
+			useApplyPatchForMutationTools: true,
+		});
+
+		expect(legacyContract.activeNames).toEqual(["read", "edit", "write", "bash"]);
+		expect(applyPatchContract.activeNames).toEqual(["read", "apply_patch", "bash"]);
+	});
+
 	it("captures agent contract from registry and enabled list", () => {
 		const registry = {
 			list: () => [
