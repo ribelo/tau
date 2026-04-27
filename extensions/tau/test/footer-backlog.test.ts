@@ -6,7 +6,13 @@ import * as path from "node:path";
 import { Effect } from "effect";
 
 import { createIssue, setIssueStatus } from "../src/backlog/events.js";
-import { countInProgressIssues, readFooterBacklogInProgressCount } from "../src/services/footer.js";
+import {
+	countInProgressIssues,
+	makeFooterHygieneRef,
+	readFooterHygiene,
+	readFooterBacklogInProgressCount,
+	setFooterHygieneIfChanged,
+} from "../src/services/footer.js";
 
 async function withTempWorkspace<A>(fn: (workspaceRoot: string) => Promise<A>): Promise<A> {
 	const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "tau-footer-backlog-"));
@@ -19,6 +25,18 @@ async function withTempWorkspace<A>(fn: (workspaceRoot: string) => Promise<A>): 
 }
 
 describe("footer backlog hygiene", () => {
+	it("stores git hygiene in a ref and reports only changed snapshots", () => {
+		const ref = makeFooterHygieneRef();
+		const next = {
+			gitLineDelta: { added: 110, removed: 97 },
+			inProgressCount: 1,
+		};
+
+		expect(setFooterHygieneIfChanged(ref, next)).toBe(true);
+		expect(readFooterHygiene(ref)).toEqual(next);
+		expect(setFooterHygieneIfChanged(ref, next)).toBe(false);
+	});
+
 	it("counts in-progress issues from backlog state", () => {
 		expect(
 			countInProgressIssues([

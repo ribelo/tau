@@ -1,4 +1,4 @@
-import { Effect, Layer, Queue, Schedule, Scope, Context, Stream } from "effect";
+import { Effect, Layer, MutableRef, Schedule, Scope, Context, Stream } from "effect";
 
 import type {
 	ExtensionAPI,
@@ -33,6 +33,34 @@ type FooterHygiene = {
 	readonly gitLineDelta: GitLineDelta;
 	readonly inProgressCount: number;
 };
+
+const EMPTY_FOOTER_HYGIENE: FooterHygiene = {
+	gitLineDelta: { added: 0, removed: 0 },
+	inProgressCount: 0,
+};
+
+export const makeFooterHygieneRef = () =>
+	MutableRef.make<FooterHygiene>(EMPTY_FOOTER_HYGIENE);
+
+export const readFooterHygiene = (ref: MutableRef.MutableRef<FooterHygiene>): FooterHygiene =>
+	MutableRef.get(ref);
+
+export function setFooterHygieneIfChanged(
+	ref: MutableRef.MutableRef<FooterHygiene>,
+	next: FooterHygiene,
+): boolean {
+	const current = MutableRef.get(ref);
+	if (
+		current.gitLineDelta.added === next.gitLineDelta.added &&
+		current.gitLineDelta.removed === next.gitLineDelta.removed &&
+		current.inProgressCount === next.inProgressCount
+	) {
+		return false;
+	}
+
+	MutableRef.set(ref, next);
+	return true;
+}
 
 const FOOTER_PROVIDER_ALIASES: Record<string, string> = {
 	"google-gemini-cli": "gemini-cli",
@@ -156,12 +184,7 @@ export const FooterLive = Layer.effect(
 		const pi = yield* PiAPI;
 		const sandbox = yield* Sandbox;
 		const persistence = yield* Persistence;
-		const refreshQueue = yield* Queue.sliding<void>(1);
-
-		let currentHygiene: FooterHygiene = {
-			gitLineDelta: { added: 0, removed: 0 },
-			inProgressCount: 0,
-		};
+		const currentHygieneRef = makeFooterHygieneRef();
 		let currentTotalCost = 0;
 		let currentSandboxConfig = yield* sandbox.getConfig;
 		let currentPersisted = persistence.getSnapshot();
@@ -177,40 +200,31 @@ export const FooterLive = Layer.effect(
 			const gitLineDelta = yield* Effect.promise(() => collectGitLineDelta(pi, cwd));
 
 			const inProgressCount = yield* Effect.promise(() => readFooterBacklogInProgressCount(cwd));
-
-			if (
-				currentHygiene.gitLineDelta.added === gitLineDelta.added &&
-				currentHygiene.gitLineDelta.removed === gitLineDelta.removed &&
-				currentHygiene.inProgressCount === inProgressCount
-			) {
+			if (currentCwd !== cwd) {
 				return;
 			}
 
-			currentHygiene = { gitLineDelta, inProgressCount };
+			const changed = setFooterHygieneIfChanged(currentHygieneRef, {
+				gitLineDelta,
+				inProgressCount,
+			});
+			if (!changed) {
+				return;
+			}
+
 			yield* Effect.sync(() => emitFooterChanged());
 		});
 
 		const refreshFooterHygieneSafe = refreshFooterHygieneOnce.pipe(
 			Effect.catch(() => Effect.void),
 		);
-		const requestFooterHygieneRefresh = (): void => {
-			Queue.offerUnsafe(refreshQueue, undefined);
-		};
-
-		const drainRefreshQueue = Queue.take(refreshQueue).pipe(
-			Effect.flatMap(() => refreshFooterHygieneSafe),
-			Effect.forever,
-		);
-
-		const periodicRefreshRequests = Effect.sync(() => requestFooterHygieneRefresh()).pipe(
+		const refreshFooterHygieneLoop = refreshFooterHygieneSafe.pipe(
 			Effect.repeat(Schedule.spaced("5 seconds")),
 		);
 
 		return Footer.of({
 			setup: Effect.gen(function* () {
-				yield* drainRefreshQueue.pipe(Effect.forkScoped);
-				yield* periodicRefreshRequests.pipe(Effect.forkScoped);
-				requestFooterHygieneRefresh();
+				yield* refreshFooterHygieneLoop.pipe(Effect.forkScoped);
 				yield* sandbox.changes.pipe(
 					Stream.runForEach((config) =>
 						Effect.sync(() => {
@@ -232,9 +246,12 @@ export const FooterLive = Layer.effect(
 
 				yield* Effect.sync(() => {
 					const updateSessionFooterState = (_event: unknown, ctx: ExtensionContext) => {
+						const cwdChanged = currentCwd !== undefined && currentCwd !== ctx.cwd;
 						currentCwd = ctx.cwd;
 						currentTotalCost = computeTotalCost(ctx);
-						requestFooterHygieneRefresh();
+						if (cwdChanged) {
+							setFooterHygieneIfChanged(currentHygieneRef, EMPTY_FOOTER_HYGIENE);
+						}
 						emitFooterChanged();
 					};
 
@@ -258,7 +275,7 @@ export const FooterLive = Layer.effect(
 									invalidate() {},
 									render(width: number): string[] {
 										const sandboxConfig = currentSandboxConfig;
-										const hygiene = currentHygiene;
+										const hygiene = readFooterHygiene(currentHygieneRef);
 										const totalCost = currentTotalCost;
 										const persisted = currentPersisted;
 										const modeLabel = normalizeExecutionState(persisted.execution).selector.mode;
@@ -394,7 +411,6 @@ export const FooterLive = Layer.effect(
 					pi.on("turn_end", (_event: unknown, ctx: ExtensionContext) => {
 						currentCwd = ctx.cwd;
 						currentTotalCost = computeTotalCost(ctx);
-						requestFooterHygieneRefresh();
 						emitFooterChanged();
 					});
 					pi.on("session_tree", () => emitFooterChanged());
