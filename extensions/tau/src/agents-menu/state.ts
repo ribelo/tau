@@ -181,7 +181,7 @@ function getRalphStateDirectory(cwd: string): string {
 }
 
 function makeRalphOwnedSessionCacheKey(cwd: string, sessionFile: string): string {
-	return `${cwd}${RALPH_SESSION_CACHE_KEY_DELIMITER}${sessionFile}`;
+	return `${findNearestWorkspaceRoot(cwd)}${RALPH_SESSION_CACHE_KEY_DELIMITER}${sessionFile}`;
 }
 
 function isNodeError(err: unknown, code: string): boolean {
@@ -195,7 +195,7 @@ export function clearRalphOwnedSessionCache(cwd?: string): void {
 		return;
 	}
 
-	const prefix = `${cwd}${RALPH_SESSION_CACHE_KEY_DELIMITER}`;
+	const prefix = `${findNearestWorkspaceRoot(cwd)}${RALPH_SESSION_CACHE_KEY_DELIMITER}`;
 	for (const key of ralphOwnedSessionCache.keys()) {
 		if (key.startsWith(prefix)) {
 			ralphOwnedSessionCache.delete(key);
@@ -208,6 +208,12 @@ export function clearRalphOwnedSessionCache(cwd?: string): void {
 	}
 }
 
+export function clearRalphOwnedSessionCacheEntry(cwd: string, sessionFile: string): void {
+	const key = makeRalphOwnedSessionCacheKey(cwd, sessionFile);
+	ralphOwnedSessionCache.delete(key);
+	ralphLoopMetadataCache.delete(key);
+}
+
 export async function preloadRalphOwnedSessionCache(
 	cwd: string,
 	sessionFile: string | undefined,
@@ -217,19 +223,18 @@ export async function preloadRalphOwnedSessionCache(
 	}
 
 	const cacheKey = makeRalphOwnedSessionCacheKey(cwd, sessionFile);
-	const cached = ralphOwnedSessionCache.get(cacheKey);
-	if (cached !== undefined) {
-		return cached;
-	}
-
 	const stateDir = getRalphStateDirectory(cwd);
 	let entries: ReadonlyArray<string>;
 	try {
 		entries = await fs.readdir(stateDir);
 	} catch (error: unknown) {
 		if (isNodeError(error, "ENOENT")) {
+			ralphOwnedSessionCache.delete(cacheKey);
+			ralphLoopMetadataCache.delete(cacheKey);
 			return false;
 		}
+		ralphOwnedSessionCache.delete(cacheKey);
+		ralphLoopMetadataCache.delete(cacheKey);
 		return false;
 	}
 
@@ -260,6 +265,8 @@ export async function preloadRalphOwnedSessionCache(
 		}
 	}
 
+	ralphOwnedSessionCache.delete(cacheKey);
+	ralphLoopMetadataCache.delete(cacheKey);
 	return false;
 }
 

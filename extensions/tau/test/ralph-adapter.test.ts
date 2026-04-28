@@ -30,6 +30,7 @@ import {
 	makeRalphMetrics,
 	makeCapabilityContract,
 } from "./ralph-test-helpers.js";
+import { capturePreRalphActiveTools } from "../src/ralph/session-capabilities.js";
 
 type EventHandler = (event: unknown, ctx: ExtensionContext) => unknown;
 
@@ -63,6 +64,8 @@ type ContextHarness = {
 	readonly switchSessionCalls: readonly string[];
 	readonly setSessionFile: (next: string) => void;
 	readonly getSessionFile: () => string;
+	readonly setActiveTools: (next: ReadonlyArray<string>) => void;
+	readonly getActiveTools: () => ReadonlyArray<string>;
 };
 
 type NewSessionPlan = {
@@ -227,6 +230,7 @@ function makeContext(
 	const switchSessionCalls: string[] = [];
 	let sessionFile = path.join(cwd, ".pi", "sessions", "controller.session.json");
 	let newSessionCounter = 0;
+	let activeTools: ReadonlyArray<string> = [];
 
 	const ctx = {
 		cwd,
@@ -266,8 +270,10 @@ function makeContext(
 		hasPendingMessages: () => false,
 		shutdown: () => undefined,
 		getContextUsage: () => undefined,
-		getActiveTools: () => [],
-		setActiveTools: () => undefined,
+		getActiveTools: () => [...activeTools],
+		setActiveTools: (nextTools: ReadonlyArray<string>) => {
+			activeTools = [...nextTools];
+		},
 		getAllTools: () => [],
 		getCommands: () => [],
 		setModel: async () => true,
@@ -308,6 +314,10 @@ function makeContext(
 			sessionFile = next;
 		},
 		getSessionFile: () => sessionFile,
+		setActiveTools: (next) => {
+			activeTools = [...next];
+		},
+		getActiveTools: () => [...activeTools],
 	};
 }
 
@@ -514,6 +524,48 @@ describe("ralph adapter boundary freeze", () => {
 		const state = readLoopState(cwd, "close-loop");
 		expect(state.status).toBe("completed");
 		expect(Option.isSome(state.completedAt)).toBe(true);
+	});
+
+	it("restores pre-Ralph active tools when agent_end completes the owned loop", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const context = makeContext(cwd, [{ cancelled: false }]);
+		const iterationSession = path.join(cwd, ".pi", "sessions", "iteration-tools.session.json");
+		context.setSessionFile(iterationSession);
+		context.setActiveTools(["read", "bash", "agent", "memory"]);
+		capturePreRalphActiveTools(iterationSession, context.ctx);
+		context.setActiveTools(["read", "ralph_continue", "ralph_finish"]);
+
+		writeLoopState(cwd, "restore-tools-loop", {
+			controllerSessionFile: path.join(
+				cwd,
+				".pi",
+				"sessions",
+				"controller-tools.session.json",
+			),
+			activeIterationSessionFile: iterationSession,
+			iteration: 2,
+			status: "active",
+		});
+
+		const piHarness = makePiHarness();
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(piHarness.pi, ralphRuntime.run);
+		const finishTool = piHarness.tools.get("ralph_finish");
+		expect(finishTool).toBeDefined();
+		await finishTool?.execute(
+			"call-finish-restore-tools",
+			{ message: "All done." },
+			undefined,
+			undefined,
+			context.ctx,
+		);
+
+		await piHarness.fire("agent_end", agentEndPayload("final response"), context.ctx);
+
+		expect(context.getActiveTools()).toEqual(["read", "bash", "agent", "memory"]);
 	});
 
 	it("completes cleanly without UI when a finish banner is emitted on agent_end", async () => {

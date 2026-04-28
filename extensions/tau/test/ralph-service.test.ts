@@ -987,6 +987,57 @@ describe("ralph service behavior freeze", () => {
 		expect(Option.isNone(finalState.activeIterationSessionFile)).toBe(true);
 	});
 
+	it("restores active tools after the waiting Ralph loop completes from ralph_finish", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const controllerHarness = makePiHarness();
+		const childHarness = makePiHarness();
+		const controllerRuntime = makeRalphRuntime(false);
+		const childRuntime = makeRalphRuntime(false);
+		runtimes.push(controllerRuntime, childRuntime);
+		initRalph(controllerHarness.pi, controllerRuntime.run);
+		initRalph(childHarness.pi, childRuntime.run);
+
+		const command = controllerHarness.commands.get("ralph");
+		expect(command).toBeDefined();
+		if (!command) {
+			throw new Error("missing ralph command");
+		}
+
+		const childSessionFile = path.join(cwd, ".pi", "sessions", "finish-child.session.json");
+		const childContext = makeContext(cwd);
+		childContext.setSessionFile(childSessionFile);
+		await childHarness.fire("session_start", { type: "session_start" }, childContext.ctx);
+
+		const context = makeContext(cwd, [
+			{
+				cancelled: false,
+				sessionFile: childSessionFile,
+				updateContextSessionFile: false,
+			},
+		]);
+
+		const startPromise = Promise.resolve(command.handler("start finish-loop", context.ctx));
+		await waitFor(() => childHarness.sentUserMessages.length === 1);
+
+		const finishTool = childHarness.tools.get("ralph_finish");
+		expect(finishTool).toBeDefined();
+		await finishTool?.execute(
+			"finish-waiting-loop",
+			{ message: "All done." },
+			undefined,
+			undefined,
+			childContext.ctx,
+		);
+		await childHarness.fire("agent_end", agentEndPayload("final response"), childContext.ctx);
+		await startPromise;
+
+		const finalState = readLoopState(cwd, "finish-loop");
+		expect(finalState.status).toBe("completed");
+		expect(context.activeToolCalls.at(-1)).toEqual([]);
+	});
+
 	it("keeps Ralph start work on the replacement session context after newSession", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);

@@ -7,6 +7,7 @@ import { Option } from "effect";
 
 import {
 	AgentSelectionStore,
+	clearRalphOwnedSessionCacheEntry,
 	getAgentSettingsPath,
 	preloadRalphOwnedSessionCache,
 } from "../src/agents-menu/state.js";
@@ -389,6 +390,96 @@ describe("agent selection settings", () => {
 
 		expect(store.isDisabledForSession(workspace, controllerSession, "deep")).toBe(false);
 		expect(store.isDisabledForSession(workspace, controllerSession, "smart")).toBe(false);
+	});
+
+	it("refreshes a stale Ralph ownership cache entry after loop completion", async () => {
+		const workspace = await makeWorkspace();
+		cleanup.add(workspace);
+		const iterationSession = path.join(workspace, ".pi", "sessions", "iteration.session.json");
+
+		await writeRalphState(workspace, "loop-stale", {
+			controllerSessionFile: path.join(
+				workspace,
+				".pi",
+				"sessions",
+				"controller.session.json",
+			),
+			activeIterationSessionFile: iterationSession,
+			enabledAgents: ["finder"],
+		});
+		await preloadRalphOwnedSessionCache(workspace, iterationSession);
+		await writeRalphState(workspace, "loop-stale", {
+			controllerSessionFile: path.join(
+				workspace,
+				".pi",
+				"sessions",
+				"controller.session.json",
+			),
+			activeIterationSessionFile: iterationSession,
+			status: "completed",
+			enabledAgents: ["finder"],
+		});
+
+		const store = new AgentSelectionStore();
+		const enabled = await store.resolveEnabledAgentsForSession(workspace, iterationSession, [
+			"finder",
+			"librarian",
+		]);
+
+		expect(enabled).toEqual(["finder", "librarian"]);
+		expect(store.isDisabledForSession(workspace, iterationSession, "librarian")).toBe(false);
+	});
+
+	it("clears one Ralph ownership cache entry without releasing active sibling sessions", async () => {
+		const workspace = await makeWorkspace();
+		cleanup.add(workspace);
+		const iterationSession = path.join(workspace, ".pi", "sessions", "iteration.session.json");
+		const unrelatedSession = path.join(workspace, ".pi", "sessions", "unrelated.session.json");
+
+		await writeRalphState(workspace, "loop-cache-entry", {
+			controllerSessionFile: path.join(
+				workspace,
+				".pi",
+				"sessions",
+				"controller.session.json",
+			),
+			activeIterationSessionFile: iterationSession,
+			enabledAgents: ["finder"],
+		});
+		await preloadRalphOwnedSessionCache(workspace, iterationSession);
+
+		const store = new AgentSelectionStore();
+		await store.activate(workspace, ["finder", "librarian"]);
+		clearRalphOwnedSessionCacheEntry(workspace, unrelatedSession);
+
+		expect(store.isDisabledForSession(workspace, iterationSession, "librarian")).toBe(true);
+	});
+
+	it("normalizes Ralph ownership cache keys to the workspace root", async () => {
+		const workspace = await makeWorkspace();
+		cleanup.add(workspace);
+		const subdir = path.join(workspace, "src");
+		await fs.mkdir(subdir, { recursive: true });
+		const iterationSession = path.join(workspace, ".pi", "sessions", "iteration.session.json");
+
+		await writeRalphState(workspace, "loop-cache-root", {
+			controllerSessionFile: path.join(
+				workspace,
+				".pi",
+				"sessions",
+				"controller.session.json",
+			),
+			activeIterationSessionFile: iterationSession,
+			enabledAgents: ["finder"],
+		});
+		await preloadRalphOwnedSessionCache(workspace, iterationSession);
+		await preloadRalphOwnedSessionCache(subdir, iterationSession);
+		clearRalphOwnedSessionCacheEntry(workspace, iterationSession);
+
+		const store = new AgentSelectionStore();
+		await store.activate(subdir, ["finder", "librarian"]);
+
+		expect(store.isDisabledForSession(subdir, iterationSession, "librarian")).toBe(false);
 	});
 
 	it("resolves authoritative session restrictions without prior activation or Ralph cache warmup", async () => {

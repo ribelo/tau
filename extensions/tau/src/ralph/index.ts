@@ -52,6 +52,11 @@ import {
 import { shouldUseApplyPatchForProvider } from "../sandbox/mutation-tools.js";
 import { discoverWorkspaceRoot } from "../sandbox/workspace-root.js";
 import { resolvePreset, SANDBOX_PRESET_NAMES } from "../shared/policy.js";
+import { clearRalphOwnedSessionCacheEntry } from "../agents-menu/state.js";
+import {
+	capturePreRalphActiveTools,
+	restorePreRalphActiveTools,
+} from "./session-capabilities.js";
 
 const INVALID_STATE_HINT =
 	"Ralph state is invalid and could not be decoded. Repair or remove invalid files under .pi/loops (or reset with /ralph nuke --yes).";
@@ -1190,8 +1195,10 @@ export default function initRalph(
 	const applyCapabilityContractWithPi = (
 		contract: RalphCapabilityContract,
 		target: "controller" | "child",
+		sessionFile: string | undefined,
 	): RalphCapabilityContractApplyResult => {
 		try {
+			capturePreRalphActiveTools(sessionFile, pi);
 			const tools = effectiveToolNames(contract, target);
 			pi.setActiveTools([...tools]);
 			return { applied: true as const };
@@ -1213,7 +1220,9 @@ export default function initRalph(
 					reason: `registered capability contract applier is not live for ${registeredSessionFile ?? "the session"}`,
 				});
 			}
-			return Promise.resolve(applyCapabilityContractWithPi(contract, target));
+			return Promise.resolve(
+				applyCapabilityContractWithPi(contract, target, registeredSessionFile),
+			);
 		});
 	};
 
@@ -1311,6 +1320,7 @@ export default function initRalph(
 				const toolContext = activeContext;
 				return yield* Effect.sync(() => {
 					try {
+						capturePreRalphActiveTools(targetSessionFile, toolContext);
 						const tools = effectiveToolNames(contract, target);
 						toolContext.setActiveTools([...tools]);
 						return { applied: true as const };
@@ -1352,7 +1362,7 @@ export default function initRalph(
 			}
 
 			return yield* Effect.sync(() => {
-				const result = applyCapabilityContractWithPi(contract, target);
+				const result = applyCapabilityContractWithPi(contract, target, targetSessionFile);
 				if (
 					target === "controller" &&
 					!result.applied &&
@@ -1416,6 +1426,43 @@ export default function initRalph(
 			applyCapabilityContract,
 			sendFollowUp,
 		};
+	};
+
+	const restoreReleasedRalphSessionCapabilities = async (
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): Promise<void> => {
+		const sessionFile = sessionFileFromContext(ctx);
+		if (sessionFile === undefined) {
+			return;
+		}
+
+		const state = await withRalph((ralph) =>
+			ralph
+				.findLoopBySessionFile(ctx.cwd, sessionFile)
+				.pipe(Effect.map(Option.getOrUndefined)),
+		);
+		const activelyOwned =
+			state !== undefined &&
+			state.status === "active" &&
+			(Option.getOrUndefined(state.controllerSessionFile) === sessionFile ||
+				Option.getOrUndefined(state.activeIterationSessionFile) === sessionFile);
+		if (activelyOwned) {
+			return;
+		}
+
+		try {
+			if (restorePreRalphActiveTools(sessionFile, ctx)) {
+				clearRalphOwnedSessionCacheEntry(ctx.cwd, sessionFile);
+				return;
+			}
+		} catch (error) {
+			if (!isIgnorableSessionContextError(error)) {
+				throw error;
+			}
+		}
+
+		restorePreRalphActiveTools(sessionFile, pi);
+		clearRalphOwnedSessionCacheEntry(ctx.cwd, sessionFile);
 	};
 
 	const syncRalphHandshakeTools = async (
@@ -1540,6 +1587,7 @@ export default function initRalph(
 				throw error;
 			}
 		}
+		await restoreReleasedRalphSessionCapabilities(resultContext);
 	};
 
 	pi.registerCommand("ralph", {
@@ -1667,6 +1715,7 @@ export default function initRalph(
 						}
 						if (paused.status === "paused") {
 							await updateUI(ctx.cwd, ctx);
+							await restoreReleasedRalphSessionCapabilities(ctx);
 							ctx.ui.notify(
 								`Paused Ralph loop: ${paused.loopName} (iteration ${paused.iteration})`,
 								"info",
@@ -1738,6 +1787,7 @@ export default function initRalph(
 						}
 
 						await updateUI(ctx.cwd, ctx);
+						await restoreReleasedRalphSessionCapabilities(ctx);
 						ctx.ui.notify(
 							`Stopped Ralph loop: ${stopped.loopName} (iteration ${stopped.iteration})`,
 							"info",
@@ -2537,6 +2587,7 @@ export default function initRalph(
 					}
 				}
 			}
+			await restoreReleasedRalphSessionCapabilities(ctx);
 			await syncRalphHandshakeToolsSafely(ctx);
 		} catch (error) {
 			if (Option.isSome(handlePersistedStateFailure(error, ctx))) {
@@ -2554,6 +2605,7 @@ export default function initRalph(
 			await withRalph((ralph) =>
 				ralph.syncCurrentLoopFromSession(ctx.cwd, sessionFileFromContext(ctx)),
 			);
+			await restoreReleasedRalphSessionCapabilities(ctx);
 			const active = (await listLoops(ctx.cwd)).filter((loop) => loop.status === "active");
 			if (active.length > 0 && ctx.hasUI) {
 				const lines = active.map(
@@ -2583,6 +2635,7 @@ export default function initRalph(
 			await withRalph((ralph) =>
 				ralph.syncCurrentLoopFromSession(ctx.cwd, sessionFileFromContext(ctx)),
 			);
+			await restoreReleasedRalphSessionCapabilities(ctx);
 			await updateUI(ctx.cwd, ctx);
 			await syncRalphHandshakeToolsSafely(ctx);
 		} catch (error) {
@@ -2601,6 +2654,7 @@ export default function initRalph(
 			await withRalph((ralph) =>
 				ralph.syncCurrentLoopFromSession(ctx.cwd, sessionFileFromContext(ctx)),
 			);
+			await restoreReleasedRalphSessionCapabilities(ctx);
 			await updateUI(ctx.cwd, ctx);
 			await syncRalphHandshakeToolsSafely(ctx);
 		} catch (error) {
