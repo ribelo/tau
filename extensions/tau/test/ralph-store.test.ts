@@ -179,7 +179,11 @@ function makeContext(
 	cwd: string,
 	notifications: Notifications,
 	newSessionCancelled: readonly boolean[] = [true],
-	options?: { readonly idle?: boolean; readonly sessionFile?: string; readonly modelProvider?: string },
+	options?: {
+		readonly idle?: boolean;
+		readonly sessionFile?: string;
+		readonly modelProvider?: string;
+	},
 ): ExtensionCommandContext {
 	let sessionFile =
 		options?.sessionFile ?? path.join(cwd, ".pi", "sessions", "controller.session.json");
@@ -211,7 +215,10 @@ function makeContext(
 			custom: async (
 				_factory: (
 					tui: unknown,
-					theme: { readonly fg: (_color: string, text: string) => string; readonly bold: (text: string) => string },
+					theme: {
+						readonly fg: (_color: string, text: string) => string;
+						readonly bold: (text: string) => string;
+					},
 					keybindings: unknown,
 					done: (value?: unknown) => void,
 				) => unknown,
@@ -393,7 +400,11 @@ describe("ralph store behavior freeze", () => {
 		tempDirs.push(cwd);
 
 		fs.mkdirSync(path.dirname(taskPath(cwd, "task-only-loop")), { recursive: true });
-		fs.writeFileSync(taskPath(cwd, "task-only-loop"), "# Task\n\nConfigure me first.\n", "utf-8");
+		fs.writeFileSync(
+			taskPath(cwd, "task-only-loop"),
+			"# Task\n\nConfigure me first.\n",
+			"utf-8",
+		);
 
 		const notifications: Notifications = [];
 		const { pi, commands } = makePiStub();
@@ -452,7 +463,11 @@ describe("ralph store behavior freeze", () => {
 		tempDirs.push(cwd);
 
 		fs.mkdirSync(path.dirname(taskPath(cwd, "default-tools-loop")), { recursive: true });
-		fs.writeFileSync(taskPath(cwd, "default-tools-loop"), "# Task\n\nConfigure me first.\n", "utf-8");
+		fs.writeFileSync(
+			taskPath(cwd, "default-tools-loop"),
+			"# Task\n\nConfigure me first.\n",
+			"utf-8",
+		);
 
 		const notifications: Notifications = [];
 		const { pi, commands } = makePiStubWithTools({
@@ -651,7 +666,7 @@ describe("ralph store behavior freeze", () => {
 					pendingDecision: null,
 					executionProfile: makeExecutionProfile(),
 					sandboxProfile: makeSandboxProfile(),
-				capabilityContract: makeCapabilityContract(),
+					capabilityContract: makeCapabilityContract(),
 				}),
 			),
 			"utf-8",
@@ -712,7 +727,7 @@ describe("ralph store behavior freeze", () => {
 					pendingDecision: null,
 					executionProfile: makeExecutionProfile(),
 					sandboxProfile: makeSandboxProfile(),
-				capabilityContract: makeCapabilityContract(),
+					capabilityContract: makeCapabilityContract(),
 				}),
 			),
 			"utf-8",
@@ -770,7 +785,7 @@ describe("ralph store behavior freeze", () => {
 					pendingDecision: null,
 					executionProfile: makeExecutionProfile(),
 					sandboxProfile: makeSandboxProfile(),
-				capabilityContract: makeCapabilityContract(),
+					capabilityContract: makeCapabilityContract(),
 				}),
 			),
 			"utf-8",
@@ -832,7 +847,7 @@ describe("ralph store behavior freeze", () => {
 					pendingDecision: null,
 					executionProfile: makeExecutionProfile(),
 					sandboxProfile: makeSandboxProfile(),
-				capabilityContract: makeCapabilityContract(),
+					capabilityContract: makeCapabilityContract(),
 				}),
 			),
 			"utf-8",
@@ -897,7 +912,7 @@ describe("ralph store behavior freeze", () => {
 					pendingDecision: null,
 					executionProfile: makeExecutionProfile(),
 					sandboxProfile: makeSandboxProfile(),
-				capabilityContract: makeCapabilityContract(),
+					capabilityContract: makeCapabilityContract(),
 				}),
 			),
 			"utf-8",
@@ -956,7 +971,7 @@ describe("ralph store behavior freeze", () => {
 					pendingDecision: null,
 					executionProfile: makeExecutionProfile(),
 					sandboxProfile: makeSandboxProfile(),
-				capabilityContract: makeCapabilityContract(),
+					capabilityContract: makeCapabilityContract(),
 				}),
 			),
 			"utf-8",
@@ -987,7 +1002,7 @@ describe("ralph store behavior freeze", () => {
 					pendingDecision: null,
 					executionProfile: makeExecutionProfile(),
 					sandboxProfile: makeSandboxProfile(),
-				capabilityContract: makeCapabilityContract(),
+					capabilityContract: makeCapabilityContract(),
 				}),
 			),
 			"utf-8",
@@ -1001,211 +1016,6 @@ describe("ralph store behavior freeze", () => {
 			"";
 		expect(statusMessage).toContain("limit-loop: ⚠ max iterations reached (iteration 12/12)");
 		expect(statusMessage).toContain("done-loop: ✓ completed (iteration 9/12)");
-	});
-
-	it("/ralph create asks the current model to draft a backlog-based task file", async () => {
-		const cwd = makeTempDir();
-		tempDirs.push(cwd);
-
-		const notifications: Notifications = [];
-		const { pi, commands, sentUserMessages } = makePiStub();
-		const ralphRuntime = makeRalphRuntime();
-		runtimes.push(ralphRuntime);
-		initRalph(pi, ralphRuntime.run);
-
-		const command = commands.get("ralph");
-		expect(command).toBeDefined();
-
-		const context = makeContext(cwd, notifications);
-		await command?.handler("create foo-31z", context);
-
-		expect(sentUserMessages).toHaveLength(1);
-		expect(sentUserMessages[0]?.prompt).toContain("Create a Ralph task file for `foo-31z`.");
-		expect(sentUserMessages[0]?.prompt).toContain("backlog show foo-31z");
-		expect(sentUserMessages[0]?.prompt).toContain(".pi/loops/tasks/foo-31z.md");
-		expect(sentUserMessages[0]?.prompt).toContain("/ralph start foo-31z");
-		expect(notifications.some((entry) => entry.message.includes("foo-31z.md"))).toBe(true);
-	});
-
-	it("/ralph create preserves dotted backlog ids in the task path and start hint", async () => {
-		const cwd = makeTempDir();
-		tempDirs.push(cwd);
-
-		const notifications: Notifications = [];
-		const { pi, commands, sentUserMessages } = makePiStub();
-		const ralphRuntime = makeRalphRuntime();
-		runtimes.push(ralphRuntime);
-		initRalph(pi, ralphRuntime.run);
-
-		const command = commands.get("ralph");
-		expect(command).toBeDefined();
-
-		const context = makeContext(cwd, notifications);
-		await command?.handler("create tau-6vi.1", context);
-
-		expect(sentUserMessages).toHaveLength(1);
-		expect(sentUserMessages[0]?.prompt).toContain(
-			"If the target corresponds to a backlog item, inspect it first with `backlog show <id>`",
-		);
-		expect(sentUserMessages[0]?.prompt).toContain(".pi/loops/tasks/tau-6vi.1.md");
-		expect(sentUserMessages[0]?.prompt).toContain("/ralph start tau-6vi.1");
-	});
-
-	it("/ralph create recommends starting with the custom task path", async () => {
-		const cwd = makeTempDir();
-		tempDirs.push(cwd);
-
-		const notifications: Notifications = [];
-		const { pi, commands, sentUserMessages } = makePiStub();
-		const ralphRuntime = makeRalphRuntime();
-		runtimes.push(ralphRuntime);
-		initRalph(pi, ralphRuntime.run);
-
-		const command = commands.get("ralph");
-		expect(command).toBeDefined();
-
-		const context = makeContext(cwd, notifications);
-		await command?.handler("create docs/tasks/refactor.md", context);
-
-		expect(sentUserMessages).toHaveLength(1);
-		expect(sentUserMessages[0]?.prompt).toContain(
-			"Write the task file at `docs/tasks/refactor.md`",
-		);
-		expect(sentUserMessages[0]?.prompt).toContain("/ralph start docs/tasks/refactor.md");
-	});
-
-	it("/ralph create does not treat .md file paths as backlog ids", async () => {
-		const cwd = makeTempDir();
-		tempDirs.push(cwd);
-
-		const notifications: Notifications = [];
-		const { pi, commands, sentUserMessages } = makePiStub();
-		const ralphRuntime = makeRalphRuntime();
-		runtimes.push(ralphRuntime);
-		initRalph(pi, ralphRuntime.run);
-
-		const command = commands.get("ralph");
-		expect(command).toBeDefined();
-
-		const context = makeContext(cwd, notifications);
-		await command?.handler("create foo-31z.md", context);
-
-		expect(sentUserMessages).toHaveLength(1);
-		expect(sentUserMessages[0]?.prompt).toContain("Write the task file at `foo-31z.md`");
-		expect(sentUserMessages[0]?.prompt).not.toContain("backlog show foo-31z.md");
-		expect(sentUserMessages[0]?.prompt).toContain("/ralph start foo-31z.md");
-	});
-
-	it("/ralph create quotes custom start hints for paths with spaces", async () => {
-		const cwd = makeTempDir();
-		tempDirs.push(cwd);
-
-		const notifications: Notifications = [];
-		const { pi, commands, sentUserMessages } = makePiStub();
-		const ralphRuntime = makeRalphRuntime();
-		runtimes.push(ralphRuntime);
-		initRalph(pi, ralphRuntime.run);
-
-		const command = commands.get("ralph");
-		expect(command).toBeDefined();
-
-		const context = makeContext(cwd, notifications);
-		await command?.handler("create docs/tasks/my task.md", context);
-
-		expect(sentUserMessages).toHaveLength(1);
-		expect(sentUserMessages[0]?.prompt).toContain('/ralph start "docs/tasks/my task.md"');
-	});
-
-	it("/ralph create strips surrounding quotes from backlog ids and paths", async () => {
-		const cwd = makeTempDir();
-		tempDirs.push(cwd);
-
-		const notifications: Notifications = [];
-		const { pi, commands, sentUserMessages } = makePiStub();
-		const ralphRuntime = makeRalphRuntime();
-		runtimes.push(ralphRuntime);
-		initRalph(pi, ralphRuntime.run);
-
-		const command = commands.get("ralph");
-		expect(command).toBeDefined();
-
-		const context = makeContext(cwd, notifications);
-		await command?.handler('create "tau-6vi.1"', context);
-		await command?.handler('create "docs/tasks/my task.md"', context);
-
-		expect(sentUserMessages).toHaveLength(2);
-		expect(sentUserMessages[0]?.prompt).toContain("Create a Ralph task file for `tau-6vi.1`.");
-		expect(sentUserMessages[0]?.prompt).toContain(
-			"Example backlog flow: `/ralph create foo-31z` should inspect `backlog show foo-31z`",
-		);
-		expect(sentUserMessages[1]?.prompt).toContain(
-			"Write the task file at `docs/tasks/my task.md`",
-		);
-		expect(sentUserMessages[1]?.prompt).toContain('/ralph start "docs/tasks/my task.md"');
-	});
-
-	it("/ralph create treats free-form requests as task descriptions and asks the model to choose a short name", async () => {
-		const cwd = makeTempDir();
-		tempDirs.push(cwd);
-
-		const notifications: Notifications = [];
-		const { pi, commands, sentUserMessages } = makePiStub();
-		const ralphRuntime = makeRalphRuntime();
-		runtimes.push(ralphRuntime);
-		initRalph(pi, ralphRuntime.run);
-
-		const command = commands.get("ralph");
-		expect(command).toBeDefined();
-
-		const context = makeContext(cwd, notifications);
-		await command?.handler("create my-feature", context);
-
-		expect(sentUserMessages).toHaveLength(1);
-		expect(sentUserMessages[0]?.prompt).toContain("Create a Ralph task file for this request:");
-		expect(sentUserMessages[0]?.prompt).toContain("`my-feature`");
-		expect(sentUserMessages[0]?.prompt).toContain(
-			"Pick the best short name for the loop and task file.",
-		);
-		expect(sentUserMessages[0]?.prompt).toContain(
-			"Do not mirror the full request text into the file name.",
-		);
-		expect(sentUserMessages[0]?.prompt).not.toContain("backlog show my-feature");
-		expect(sentUserMessages[0]?.prompt).not.toContain(".pi/loops/tasks/my-feature.md");
-		expect(sentUserMessages[0]?.prompt).not.toContain("/ralph start my-feature");
-		expect(notifications.some((entry) => entry.message.includes("choose a short name"))).toBe(
-			true,
-		);
-	});
-
-	it("/ralph create does not turn long free-form requests into long task file paths", async () => {
-		const cwd = makeTempDir();
-		tempDirs.push(cwd);
-
-		const notifications: Notifications = [];
-		const { pi, commands, sentUserMessages } = makePiStub();
-		const ralphRuntime = makeRalphRuntime();
-		runtimes.push(ralphRuntime);
-		initRalph(pi, ralphRuntime.run);
-
-		const command = commands.get("ralph");
-		expect(command).toBeDefined();
-
-		const context = makeContext(cwd, notifications);
-		await command?.handler(
-			"create make ralph task from all still open tasks you listed in previous message",
-			context,
-		);
-
-		expect(sentUserMessages).toHaveLength(1);
-		expect(sentUserMessages[0]?.prompt).toContain(
-			"Pick the best short name for the loop and task file.",
-		);
-		expect(sentUserMessages[0]?.prompt).toContain(
-			"Write the task file at `.pi/loops/tasks/<chosen-name>.md` using apply_patch.",
-		);
-		expect(sentUserMessages[0]?.prompt).not.toContain(
-			".pi/loops/tasks/make_ralph_task_from_all_still_open_tasks_you_listed_in_previous_message.md",
-		);
 	});
 
 	it("/ralph stop ends the active loop and /ralph pause keeps it resumable", async () => {
@@ -1230,7 +1040,7 @@ describe("ralph store behavior freeze", () => {
 					taskFile: path.join(".pi", "loops", "tasks", "pausable-loop.md"),
 					executionProfile: makeExecutionProfile(),
 					sandboxProfile: makeSandboxProfile(),
-				capabilityContract: makeCapabilityContract(),
+					capabilityContract: makeCapabilityContract(),
 					maxIterations: 50,
 					itemsPerIteration: 0,
 					reflectEvery: 0,
@@ -1294,7 +1104,7 @@ describe("ralph store behavior freeze", () => {
 					taskFile: path.join(".pi", "loops", "tasks", "esc-stop-loop.md"),
 					executionProfile: makeExecutionProfile(),
 					sandboxProfile: makeSandboxProfile(),
-				capabilityContract: makeCapabilityContract(),
+					capabilityContract: makeCapabilityContract(),
 					maxIterations: 50,
 					itemsPerIteration: 0,
 					reflectEvery: 0,
@@ -1364,7 +1174,7 @@ describe("ralph store behavior freeze", () => {
 					pendingDecision: null,
 					executionProfile: makeExecutionProfile(),
 					sandboxProfile: makeSandboxProfile(),
-				capabilityContract: makeCapabilityContract(),
+					capabilityContract: makeCapabilityContract(),
 				}),
 			),
 			"utf-8",
@@ -1389,7 +1199,7 @@ describe("ralph store behavior freeze", () => {
 					pendingDecision: null,
 					executionProfile: makeExecutionProfile(),
 					sandboxProfile: makeSandboxProfile(),
-				capabilityContract: makeCapabilityContract(),
+					capabilityContract: makeCapabilityContract(),
 				}),
 			),
 			"utf-8",
@@ -1452,7 +1262,7 @@ describe("ralph store behavior freeze", () => {
 					pendingDecision: null,
 					executionProfile: makeExecutionProfile(),
 					sandboxProfile: makeSandboxProfile(),
-				capabilityContract: makeCapabilityContract(),
+					capabilityContract: makeCapabilityContract(),
 				},
 				null,
 				2,

@@ -53,10 +53,7 @@ import { shouldUseApplyPatchForProvider } from "../sandbox/mutation-tools.js";
 import { discoverWorkspaceRoot } from "../sandbox/workspace-root.js";
 import { resolvePreset, SANDBOX_PRESET_NAMES } from "../shared/policy.js";
 import { clearRalphOwnedSessionCacheEntry } from "../agents-menu/state.js";
-import {
-	capturePreRalphActiveTools,
-	restorePreRalphActiveTools,
-} from "./session-capabilities.js";
+import { capturePreRalphActiveTools, restorePreRalphActiveTools } from "./session-capabilities.js";
 
 const INVALID_STATE_HINT =
 	"Ralph state is invalid and could not be decoded. Repair or remove invalid files under .pi/loops (or reset with /ralph nuke --yes).";
@@ -346,10 +343,7 @@ const RALPH_CAPABILITY_CONTRACT_APPLIERS_GLOBAL = "__tau_ralph_capability_contra
 type RalphGlobalState = typeof globalThis & {
 	[RALPH_PROMPT_DISPATCHERS_GLOBAL]?: Map<string, RalphPromptDispatcher>;
 	[RALPH_EXECUTION_PROFILE_APPLIERS_GLOBAL]?: Map<string, RalphExecutionProfileApplier>;
-	[RALPH_CAPABILITY_CONTRACT_APPLIERS_GLOBAL]?: Map<
-		string,
-		RalphCapabilityContractApplier
-	>;
+	[RALPH_CAPABILITY_CONTRACT_APPLIERS_GLOBAL]?: Map<string, RalphCapabilityContractApplier>;
 };
 
 function getRalphPromptDispatchers(): Map<string, RalphPromptDispatcher> {
@@ -910,9 +904,6 @@ function formatCommandArgument(value: string): string {
 	return /\s/.test(value) ? `"${value.replace(/"/g, '\\"')}"` : value;
 }
 
-const BACKLOG_ID_PATTERN =
-	/^[a-z][a-z0-9]*-(?=[a-z0-9]{3,8}(?:\.\d+){0,3}$)(?=[a-z0-9]*\d)[a-z0-9]{3,8}(?:\.\d+){0,3}$/;
-
 type ResolvedLoopTarget = {
 	readonly loopName: string;
 	readonly taskStem: string;
@@ -926,22 +917,6 @@ type ConfigureTarget = {
 	readonly taskFile: string;
 	readonly loop: LoopState | undefined;
 };
-
-type CreateTarget =
-	| {
-			readonly kind: "path";
-			readonly input: string;
-			readonly resolved: ResolvedLoopTarget;
-	  }
-	| {
-			readonly kind: "backlog";
-			readonly input: string;
-			readonly resolved: ResolvedLoopTarget;
-	  }
-	| {
-			readonly kind: "request";
-			readonly input: string;
-	  };
 
 function resolveLoopTarget(target: string): ResolvedLoopTarget {
 	const trimmed = stripSurroundingQuotes(target.trim());
@@ -968,10 +943,7 @@ function isNodeNotFoundError(error: unknown): boolean {
 	);
 }
 
-async function readExistingTaskFile(
-	cwd: string,
-	taskFile: string,
-): Promise<string | undefined> {
+async function readExistingTaskFile(cwd: string, taskFile: string): Promise<string | undefined> {
 	try {
 		return await fs.readFile(path.resolve(cwd, taskFile), "utf-8");
 	} catch (error) {
@@ -1011,73 +983,9 @@ async function listTaskOnlyConfigureTargets(
 		.sort((left, right) => left.loopName.localeCompare(right.loopName));
 }
 
-function classifyCreateTarget(target: string): CreateTarget {
-	const input = stripSurroundingQuotes(target.trim());
-	const resolved = resolveLoopTarget(input);
-	if (resolved.isPath) {
-		return { kind: "path", input, resolved };
-	}
-	if (BACKLOG_ID_PATTERN.test(input)) {
-		return { kind: "backlog", input, resolved };
-	}
-	return { kind: "request", input };
-}
-
-function createPromptStructureLines(): ReadonlyArray<string> {
-	return [
-		"Use this structure:",
-		"- Title and brief summary",
-		"- Goals",
-		"- Checklist with discrete, verifiable items",
-		"- Verification with commands, files, or outputs to capture",
-		"- Notes for assumptions, decisions, and progress",
-	];
-}
-
-function buildCreatePrompt(target: string): string {
-	const createTarget = classifyCreateTarget(target);
-	const structureLines = createPromptStructureLines();
-
-	if (createTarget.kind === "request") {
-		return [
-			"Create a Ralph task file for this request:",
-			`\`${createTarget.input}\``,
-			"",
-			"Pick the best short name for the loop and task file.",
-			"Use a concise lowercase hyphenated name that fits naturally in `/ralph start <name>`.",
-			"Do not mirror the full request text into the file name.",
-			"Write the task file at `.pi/loops/tasks/<chosen-name>.md` using apply_patch.",
-			"Do not start the loop. Only create or update the task markdown file.",
-			"",
-			...structureLines,
-			"",
-			"If this request clearly maps to a backlog item, inspect it first with `backlog show <id>` and synthesize the task from that issue.",
-			"Do not update backlog state.",
-			"",
-			"After writing the file, tell me the chosen name, the path, and recommend starting with `/ralph start <chosen-name>`.",
-		].join("\n");
-	}
-
-	return [
-		`Create a Ralph task file for \`${createTarget.input}\`.`,
-		"",
-		`Write the task file at \`${createTarget.resolved.taskFile}\` using apply_patch.`,
-		"Do not start the loop. Only create or update the task markdown file.",
-		"",
-		...structureLines,
-		"",
-		"If the target corresponds to a backlog item, inspect it first with `backlog show <id>` and synthesize the task from that issue.",
-		"Do not update backlog state.",
-		"Example backlog flow: `/ralph create foo-31z` should inspect `backlog show foo-31z` and write `.pi/loops/tasks/foo-31z.md`.",
-		"",
-		`After writing the file, tell me the path and recommend starting with \`/ralph start ${createTarget.resolved.recommendedStartTarget}\`.`,
-	].join("\n");
-}
-
 const HELP = `Ralph Wiggum - Long-running development loops
 
 Commands:
-  /ralph create <request|path|backlog-id>  Ask the current model to draft a task file
   /ralph start <name|path> [options]  Start a new loop
   /ralph pause                        Pause current loop
   /ralph stop                         End active loop (idle only)
@@ -1099,8 +1007,6 @@ To pause: press ESC or run /ralph pause
 To stop: press ESC to interrupt, then run /ralph stop when idle
 
 Examples:
-  /ralph create "refactor auth retry flow"
-  /ralph create foo-31z
   /ralph start my-feature
   /ralph start review --items-per-iteration 5 --reflect-every 10
   /ralph resume review --max-iterations 100`;
@@ -1341,8 +1247,9 @@ export default function initRalph(
 						return result;
 					}
 					const applierIsStale =
-						result.reason?.startsWith("registered capability contract applier is not live") ===
-							true || isStaleExtensionContextError(result.reason ?? "");
+						result.reason?.startsWith(
+							"registered capability contract applier is not live",
+						) === true || isStaleExtensionContextError(result.reason ?? "");
 					if (applierIsStale) {
 						unregisterRalphCapabilityContractApplier(targetSessionFile);
 					}
@@ -1598,32 +1505,6 @@ export default function initRalph(
 				const rest = cmd ? args.slice(args.indexOf(cmd) + cmd.length).trim() : "";
 
 				switch (cmd) {
-					case "create": {
-						const target = stripSurroundingQuotes(rest.trim());
-						if (!target) {
-							ctx.ui.notify(
-								"Usage: /ralph create <request|path|backlog-id>",
-								"warning",
-							);
-							return;
-						}
-
-						const createTarget = classifyCreateTarget(target);
-						pi.sendUserMessage(buildCreatePrompt(target));
-						if (createTarget.kind === "request") {
-							ctx.ui.notify(
-								"Asked the current model to draft a Ralph task file and choose a short name",
-								"info",
-							);
-							return;
-						}
-						ctx.ui.notify(
-							`Asked the current model to draft ${createTarget.resolved.taskFile}`,
-							"info",
-						);
-						return;
-					}
-
 					case "start": {
 						const parsed = parseArgs(rest);
 						if (!parsed.ok) {
@@ -1944,7 +1825,10 @@ export default function initRalph(
 
 					case "configure": {
 						if (!ctx.hasUI) {
-							ctx.ui.notify("/ralph configure requires an interactive UI.", "warning");
+							ctx.ui.notify(
+								"/ralph configure requires an interactive UI.",
+								"warning",
+							);
 							return;
 						}
 
@@ -1957,7 +1841,10 @@ export default function initRalph(
 							taskFile: loop.taskFile,
 							loop,
 						}));
-						const taskOnlyTargets = await listTaskOnlyConfigureTargets(ctx.cwd, ralphLoops);
+						const taskOnlyTargets = await listTaskOnlyConfigureTargets(
+							ctx.cwd,
+							ralphLoops,
+						);
 						const configureTargets = [...stateTargets, ...taskOnlyTargets];
 
 						let targetLoopName: string | undefined;
@@ -1996,13 +1883,18 @@ export default function initRalph(
 								description: target.taskFile,
 							}));
 							await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
-								const selector = new SelectList(items, Math.min(items.length + 2, 10), {
-									selectedPrefix: (text) => theme.fg("accent", text),
-									selectedText: (text) => theme.fg("accent", theme.bold(text)),
-									description: (text) => theme.fg("dim", text),
-									scrollInfo: (text) => theme.fg("muted", text),
-									noMatch: (text) => theme.fg("warning", text),
-								});
+								const selector = new SelectList(
+									items,
+									Math.min(items.length + 2, 10),
+									{
+										selectedPrefix: (text) => theme.fg("accent", text),
+										selectedText: (text) =>
+											theme.fg("accent", theme.bold(text)),
+										description: (text) => theme.fg("dim", text),
+										scrollInfo: (text) => theme.fg("muted", text),
+										noMatch: (text) => theme.fg("warning", text),
+									},
+								);
 								selector.onSelect = (item) => {
 									targetLoopName = item.value;
 									targetTaskFile = configureTargets.find(
@@ -2019,7 +1911,9 @@ export default function initRalph(
 						const resolvedTargetLoopName = targetLoopName;
 						let loop = ralphLoops.find((l) => l.name === resolvedTargetLoopName);
 						if (!loop) {
-							const taskFile = targetTaskFile ?? resolveLoopTarget(resolvedTargetLoopName).taskFile;
+							const taskFile =
+								targetTaskFile ??
+								resolveLoopTarget(resolvedTargetLoopName).taskFile;
 							const taskContent = await readExistingTaskFile(ctx.cwd, taskFile);
 							if (taskContent === undefined) {
 								ctx.ui.notify(
@@ -2071,7 +1965,8 @@ export default function initRalph(
 
 						const state = loop;
 						let currentSandboxProfile =
-							Option.getOrUndefined(state.sandboxProfile) ?? captureSandboxProfile(pi, ctx);
+							Option.getOrUndefined(state.sandboxProfile) ??
+							captureSandboxProfile(pi, ctx);
 						let sandboxStr = currentSandboxProfile.preset;
 						let currentMaxIterations = state.maxIterations;
 						let currentItemsPerIteration = state.itemsPerIteration;
@@ -2079,7 +1974,9 @@ export default function initRalph(
 						let currentReflectInstructions = state.reflectInstructions;
 						let executionProfileLabel = `${state.executionProfile.selector.mode} / ${state.executionProfile.promptProfile.model ?? "default"} / ${state.executionProfile.promptProfile.thinking ?? "default"}`;
 						let toolsActive = [
-							...excludeRalphSystemControlTools(state.capabilityContract.tools.activeNames),
+							...excludeRalphSystemControlTools(
+								state.capabilityContract.tools.activeNames,
+							),
 						];
 						let agentsEnabled = [...state.capabilityContract.agents.enabledNames];
 						let editReflectionInstructions = false;
@@ -2126,7 +2023,8 @@ export default function initRalph(
 								{
 									id: "itemsPerIteration",
 									label: "Items per iteration",
-									description: "Suggested work items per Ralph turn (0 = no hint)",
+									description:
+										"Suggested work items per Ralph turn (0 = no hint)",
 									currentValue: String(currentItemsPerIteration),
 									submenu: (_currentValue, submenuDone) =>
 										new NumericInputSubmenu(
@@ -2135,7 +2033,10 @@ export default function initRalph(
 											currentItemsPerIteration,
 											(value) => {
 												currentItemsPerIteration = value;
-												recordMutation({ kind: "itemsPerIteration", value });
+												recordMutation({
+													kind: "itemsPerIteration",
+													value,
+												});
 												submenuDone(String(value));
 											},
 											() => submenuDone(),
@@ -2144,7 +2045,8 @@ export default function initRalph(
 								{
 									id: "reflectEvery",
 									label: "Reflect every",
-									description: "Reflection checkpoint frequency in iterations (0 = off)",
+									description:
+										"Reflection checkpoint frequency in iterations (0 = off)",
 									currentValue: String(currentReflectEvery),
 									submenu: (_currentValue, submenuDone) =>
 										new NumericInputSubmenu(
@@ -2169,10 +2071,14 @@ export default function initRalph(
 											"Active tools",
 											"Toggle tools captured in this loop contract. Ralph control tools are managed by the loop runtime.",
 											state.capabilityContract.tools.availableSnapshot
-												.filter((tool) => !isRalphSystemControlTool(tool.name))
+												.filter(
+													(tool) => !isRalphSystemControlTool(tool.name),
+												)
 												.map((tool) => ({
 													name: tool.name,
-													description: normalizeDisplayLine(tool.description),
+													description: normalizeDisplayLine(
+														tool.description,
+													),
 												})),
 											new Set(toolsActive),
 											(next, changed) => {
@@ -2196,10 +2102,14 @@ export default function initRalph(
 										new ToggleSettingsSubmenu(
 											"Enabled agents",
 											"Toggle agents allowed by this loop contract.",
-											state.capabilityContract.agents.registrySnapshot.map((agent) => ({
-												name: agent.name,
-												description: normalizeDisplayLine(agent.description),
-											})),
+											state.capabilityContract.agents.registrySnapshot.map(
+												(agent) => ({
+													name: agent.name,
+													description: normalizeDisplayLine(
+														agent.description,
+													),
+												}),
+											),
 											new Set(agentsEnabled),
 											(next, changed) => {
 												agentsEnabled = [...next];
@@ -2226,7 +2136,8 @@ export default function initRalph(
 												{
 													value: "recapture",
 													label: "Recapture current session",
-													description: "Pin the current mode, model, and thinking level to this loop.",
+													description:
+														"Pin the current mode, model, and thinking level to this loop.",
 												},
 											],
 											(value) => {
@@ -2234,17 +2145,28 @@ export default function initRalph(
 													submenuDone();
 													return;
 												}
-												void captureCurrentExecutionProfile(ctx).then((profile) => {
-													if (profile === null) {
-														ctx.ui.notify("Could not capture current execution profile.", "error");
-														submenuDone();
-														return;
-													}
-													executionProfileLabel = `${profile.selector.mode} / ${profile.promptProfile.model ?? "default"} / ${profile.promptProfile.thinking ?? "default"}`;
-													recordMutation({ kind: "executionProfile", profile });
-													ctx.ui.notify("Execution profile recaptured from current session.", "info");
-													submenuDone(executionProfileLabel);
-												});
+												void captureCurrentExecutionProfile(ctx).then(
+													(profile) => {
+														if (profile === null) {
+															ctx.ui.notify(
+																"Could not capture current execution profile.",
+																"error",
+															);
+															submenuDone();
+															return;
+														}
+														executionProfileLabel = `${profile.selector.mode} / ${profile.promptProfile.model ?? "default"} / ${profile.promptProfile.thinking ?? "default"}`;
+														recordMutation({
+															kind: "executionProfile",
+															profile,
+														});
+														ctx.ui.notify(
+															"Execution profile recaptured from current session.",
+															"info",
+														);
+														submenuDone(executionProfileLabel);
+													},
+												);
 											},
 											() => submenuDone(),
 										),
@@ -2260,7 +2182,8 @@ export default function initRalph(
 								{
 									id: "sandboxRecapture",
 									label: "Recapture sandbox",
-									description: "Pin the current session sandbox preset and overrides to this loop.",
+									description:
+										"Pin the current session sandbox preset and overrides to this loop.",
 									currentValue: "current session",
 									values: ["current session"],
 								},
@@ -2277,7 +2200,8 @@ export default function initRalph(
 												{
 													value: "edit",
 													label: "Edit in editor",
-													description: "Close this selector and open the full-screen editor.",
+													description:
+														"Close this selector and open the full-screen editor.",
 												},
 											],
 											(value) => {
@@ -2299,33 +2223,58 @@ export default function initRalph(
 								getSettingsListTheme(),
 								(id, newValue) => {
 									if (id === "sandboxProfile") {
-										const preset = SANDBOX_PRESET_NAMES.find((candidate) => candidate === newValue);
+										const preset = SANDBOX_PRESET_NAMES.find(
+											(candidate) => candidate === newValue,
+										);
 										if (preset === undefined) {
 											return;
 										}
-										currentSandboxProfile = sandboxProfileForPreset(preset, currentSandboxProfile);
+										currentSandboxProfile = sandboxProfileForPreset(
+											preset,
+											currentSandboxProfile,
+										);
 										sandboxStr = currentSandboxProfile.preset;
-										recordMutation({ kind: "sandboxProfile", profile: currentSandboxProfile });
+										recordMutation({
+											kind: "sandboxProfile",
+											profile: currentSandboxProfile,
+										});
 										settingsList.updateValue("sandboxProfile", sandboxStr);
 									}
 									if (id === "sandboxRecapture") {
 										currentSandboxProfile = captureSandboxProfile(pi, ctx);
 										sandboxStr = currentSandboxProfile.preset;
-										recordMutation({ kind: "sandboxProfile", profile: currentSandboxProfile });
+										recordMutation({
+											kind: "sandboxProfile",
+											profile: currentSandboxProfile,
+										});
 										settingsList.updateValue("sandboxProfile", sandboxStr);
-										settingsList.updateValue("sandboxRecapture", "current session");
-										ctx.ui.notify("Sandbox profile recaptured from current session.", "info");
+										settingsList.updateValue(
+											"sandboxRecapture",
+											"current session",
+										);
+										ctx.ui.notify(
+											"Sandbox profile recaptured from current session.",
+											"info",
+										);
 									}
 								},
 								closeConfigure,
 								{ enableSearch: true },
 							);
 							const container = new Container();
-							container.addChild(new Text(`Configure Ralph loop: ${resolvedLoopName}`, 0, 0));
+							container.addChild(
+								new Text(`Configure Ralph loop: ${resolvedLoopName}`, 0, 0),
+							);
 							container.addChild(new Spacer(1));
 							container.addChild(settingsList);
 							container.addChild(new Spacer(1));
-							container.addChild(new Text("Enter/Space edits or cycles · type to search · Esc saves and closes", 0, 0));
+							container.addChild(
+								new Text(
+									"Enter/Space edits or cycles · type to search · Esc saves and closes",
+									0,
+									0,
+								),
+							);
 							return {
 								render: (width: number) => container.render(width),
 								invalidate: () => container.invalidate(),
@@ -2346,10 +2295,17 @@ export default function initRalph(
 
 						if (dirty && pendingMutations.length > 0) {
 							const result = await withRalph((ralph) =>
-								ralph.configureLoopMany(ctx.cwd, resolvedLoopName, pendingMutations),
+								ralph.configureLoopMany(
+									ctx.cwd,
+									resolvedLoopName,
+									pendingMutations,
+								),
 							);
 							if (result.status === "updated") {
-								ctx.ui.notify(`Updated loop "${resolvedLoopName}" configuration.`, "info");
+								ctx.ui.notify(
+									`Updated loop "${resolvedLoopName}" configuration.`,
+									"info",
+								);
 							} else if (result.status === "deferred") {
 								ctx.ui.notify(
 									`Queued ${result.count} loop configuration change(s) for the next iteration of "${resolvedLoopName}".`,
@@ -2556,12 +2512,10 @@ export default function initRalph(
 			}
 			instructions += "- Update checkboxes and short notebook notes in the task file\n";
 			instructions += "- Record verification evidence for completed items\n";
-			instructions +=
-				"- Call ralph_finish with a short message when the loop is complete\n";
+			instructions += "- Call ralph_finish with a short message when the loop is complete\n";
 			instructions +=
 				"- Call ralph_continue when this iteration is complete and work remains\n";
-			instructions +=
-				"- Correct recoverable tool failures and continue the iteration\n";
+			instructions += "- Correct recoverable tool failures and continue the iteration\n";
 			instructions +=
 				"- End with exactly one Ralph loop tool: ralph_continue or ralph_finish";
 

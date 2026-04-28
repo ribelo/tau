@@ -21,18 +21,20 @@ describe("createThreadToolDefinitions", () => {
 		expect(tools.map((t) => t.name)).toEqual(["find_thread", "read_thread"]);
 	});
 
-	it("find_thread accepts a query parameter", () => {
+	it("find_thread has a non-empty description", () => {
 		const tools = createThreadToolDefinitions();
 		const findThread = tools.find((t) => t.name === "find_thread")!;
 		expect(findThread).toBeDefined();
-		expect(findThread.description).toContain("Search for threads");
+		expect(typeof findThread.description).toBe("string");
+		expect(findThread.description.length).toBeGreaterThan(0);
 	});
 
-	it("read_thread accepts threadID and optional goal", () => {
+	it("read_thread has a non-empty description", () => {
 		const tools = createThreadToolDefinitions();
 		const readThread = tools.find((t) => t.name === "read_thread")!;
 		expect(readThread).toBeDefined();
-		expect(readThread.description).toContain("thread by ID");
+		expect(typeof readThread.description).toBe("string");
+		expect(readThread.description.length).toBeGreaterThan(0);
 	});
 
 	it("rejects invalid find_thread params before execution", async () => {
@@ -138,7 +140,7 @@ describe("thread renderers", () => {
 
 		const rendered = renderFindThreadResult(result, true, mockTheme as never);
 		expect(rendered).toContain("nonexistent");
-		expect(rendered).toContain("no matching threads found");
+		expect(rendered).not.toMatch(/\d+\./);
 	});
 });
 

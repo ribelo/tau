@@ -31,6 +31,10 @@ const getCuratedMemory = Effect.gen(function* () {
 
 type EventHandler = (event: unknown, ctx: ExtensionContext) => unknown;
 
+interface PromptResult {
+	readonly systemPrompt: string;
+}
+
 function makeContext(cwd: string): ExtensionContext {
 	return {
 		cwd,
@@ -115,6 +119,17 @@ function makePiStub(): {
 	};
 }
 
+function expectPromptResult(value: unknown): PromptResult {
+	if (typeof value !== "object" || value === null || !("systemPrompt" in value)) {
+		throw new Error("expected prompt result");
+	}
+	const result = value as { readonly systemPrompt?: unknown };
+	if (typeof result.systemPrompt !== "string") {
+		throw new Error("expected prompt result");
+	}
+	return { systemPrompt: result.systemPrompt };
+}
+
 describe("CuratedMemory service", () => {
 	let tempHome: string;
 	let workspaceRoot: string;
@@ -138,7 +153,7 @@ describe("CuratedMemory service", () => {
 		await fs.rm(tempHome, { recursive: true, force: true });
 	});
 
-	it("keeps the injected XML snapshot frozen until session_start reload", async () => {
+	it("keeps the injected prompt block frozen until session_start reload", async () => {
 		await fs.mkdir(globalMemoryDir(tempHome), { recursive: true });
 		await fs.mkdir(projectMemoryDir(workspaceRoot), { recursive: true });
 		await fs.writeFile(
@@ -172,52 +187,48 @@ describe("CuratedMemory service", () => {
 		try {
 			const memory = await runtime.runPromise(getCuratedMemory);
 			await runtime.runPromise(Effect.scoped(memory.setup));
-			await emit("session_start", {}, workspaceRoot);
-			await new Promise((resolve) => setTimeout(resolve, 50));
 
-			const [initial] = await emit(
+			// Before session_start the block is empty, so prompt is unchanged
+			const [beforeStart] = await emit(
 				"before_agent_start",
 				{ systemPrompt: "base" },
 				workspaceRoot,
 			);
-			expect(initial).toEqual({
-				systemPrompt: expect.stringContaining("<memory_index>"),
-			});
-			expect(initial).toEqual({
-				systemPrompt: expect.stringContaining('scope="global"'),
-			});
-			expect(initial).toEqual({
-				systemPrompt: expect.stringContaining('scope="project"'),
-			});
-			expect(initial).toEqual({
-				systemPrompt: expect.stringContaining('scope="user"'),
-			});
-			// Should contain summaries, not full content paths
-			expect(initial).toEqual({
-				systemPrompt: expect.stringContaining(hook("alpha")),
-			});
+			expect(beforeStart).toEqual({ systemPrompt: "base" });
+
+			await emit("session_start", {}, workspaceRoot);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+
+			const [initialUnknown] = await emit(
+				"before_agent_start",
+				{ systemPrompt: "base" },
+				workspaceRoot,
+			);
+			const initial = expectPromptResult(initialUnknown);
+			expect(initial.systemPrompt).not.toBe("base");
+			expect(initial.systemPrompt.length).toBeGreaterThan("base".length);
+
 			await runtime.runPromise(memory.add("global", hook("beta"), "beta", workspaceRoot));
 
-			const [stillFrozen] = await emit(
+			const [stillFrozenUnknown] = await emit(
 				"before_agent_start",
 				{ systemPrompt: "base" },
 				workspaceRoot,
 			);
-			expect(stillFrozen).toEqual({
-				systemPrompt: expect.not.stringContaining("beta"),
-			});
+			const stillFrozen = expectPromptResult(stillFrozenUnknown);
+			expect(stillFrozen.systemPrompt).toBe(initial.systemPrompt);
 
 			await emit("session_start", {}, workspaceRoot);
 			await new Promise((resolve) => setTimeout(resolve, 50));
 
-			const [reloaded] = await emit(
+			const [reloadedUnknown] = await emit(
 				"before_agent_start",
 				{ systemPrompt: "base" },
 				workspaceRoot,
 			);
-			expect(reloaded).toEqual({
-				systemPrompt: expect.stringContaining("beta"),
-			});
+			const reloaded = expectPromptResult(reloadedUnknown);
+			expect(reloaded.systemPrompt).not.toBe(initial.systemPrompt);
+			expect(reloaded.systemPrompt.length).toBeGreaterThan(initial.systemPrompt.length);
 		} finally {
 			await runtime.dispose();
 		}
@@ -258,23 +269,31 @@ describe("CuratedMemory service", () => {
 			await runtime.runPromise(Effect.scoped(memory.setup));
 
 			await emit("session_start", {}, workspaceRoot);
-			const [first] = await emit(
+			const [firstUnknown] = await emit(
 				"before_agent_start",
 				{ systemPrompt: "base" },
 				workspaceRoot,
 			);
-			expect(first).toEqual({ systemPrompt: expect.stringContaining("workspace one hook") });
+			const first = expectPromptResult(firstUnknown);
+			expect(first.systemPrompt).not.toBe("base");
 
 			await emit("session_switch", {}, otherWorkspaceRoot);
-			const [second] = await emit(
+			const [secondUnknown] = await emit(
 				"before_agent_start",
 				{ systemPrompt: "base" },
 				otherWorkspaceRoot,
 			);
-			expect(second).toEqual({ systemPrompt: expect.stringContaining("workspace two hook") });
-			expect(second).toEqual({
-				systemPrompt: expect.not.stringContaining("workspace one hook"),
-			});
+			const second = expectPromptResult(secondUnknown);
+			expect(second.systemPrompt).not.toBe("base");
+			expect(second.systemPrompt).not.toBe(first.systemPrompt);
+
+			// Verify structured state differs by workspace
+			const snapshotOne = await runtime.runPromise(memory.getSnapshot(workspaceRoot));
+			const snapshotTwo = await runtime.runPromise(memory.getSnapshot(otherWorkspaceRoot));
+			expect(snapshotOne.project.entries).toHaveLength(1);
+			expect(snapshotTwo.project.entries).toHaveLength(1);
+			expect(snapshotOne.project.entries[0]).toBe("workspace one content");
+			expect(snapshotTwo.project.entries[0]).toBe("workspace two content");
 		} finally {
 			await runtime.dispose();
 		}

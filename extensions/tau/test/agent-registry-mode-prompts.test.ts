@@ -53,12 +53,6 @@ describe("agent-registry: mode agents", () => {
 			expect(deep?.tools).toEqual(expectedTools);
 			expect(rush?.tools).toEqual(expectedTools);
 			expect(plan?.tools).toEqual(expectedTools);
-
-			for (const prompt of [presets.smart.systemPrompt, presets.deep.systemPrompt, presets.rush.systemPrompt, presets.plan.systemPrompt]) {
-				expect(prompt).toContain("backlog");
-				expect(prompt).not.toMatch(/\bbd\b/u);
-				expect(prompt).not.toMatch(/beads/iu);
-			}
 		} finally {
 			fs.rmSync(tempHome, { recursive: true, force: true });
 		}

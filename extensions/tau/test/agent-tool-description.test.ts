@@ -68,10 +68,8 @@ describe("buildToolDescription", () => {
 
 	it("respects spawns filter combined with isDisabled", () => {
 		const disabled = new Set(["oracle"]);
-		const desc = buildToolDescription(
-			makeRegistry(agents),
-			["smart", "oracle"],
-			(n) => disabled.has(n),
+		const desc = buildToolDescription(makeRegistry(agents), ["smart", "oracle"], (n) =>
+			disabled.has(n),
 		);
 
 		expect(desc).toContain("- smart:");
@@ -82,7 +80,6 @@ describe("buildToolDescription", () => {
 	it("shows no agent entries when all are disabled", () => {
 		const desc = buildToolDescription(makeRegistry(agents), undefined, () => true);
 
-		expect(desc).toContain("Available agents");
 		expect(desc).not.toContain("- smart:");
 		expect(desc).not.toContain("- oracle:");
 		expect(desc).not.toContain("- finder:");

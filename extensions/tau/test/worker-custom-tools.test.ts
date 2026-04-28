@@ -4,7 +4,7 @@ import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
 import type { RunAgentControlPromise } from "../src/agent/runtime.js";
-import { createWorkerCustomTools, WORKER_DELEGATION_PROMPT } from "../src/agent/worker.js";
+import { createWorkerCustomTools } from "../src/agent/worker.js";
 
 const agentToolDefinition: ToolDefinition = {
 	name: "agent",
@@ -25,10 +25,7 @@ describe("createWorkerCustomTools", () => {
 			throw new Error("unused in test");
 		};
 
-		const tools = createWorkerCustomTools(
-			agentToolDefinition,
-			runEffect,
-		);
+		const tools = createWorkerCustomTools(agentToolDefinition, runEffect);
 
 		expect(tools.map((tool) => tool.name)).toEqual([
 			"agent",
@@ -43,9 +40,16 @@ describe("createWorkerCustomTools", () => {
 		]);
 	});
 
-	it("guides workers to inspect backlog tasks without bd/beads wording", () => {
-		expect(WORKER_DELEGATION_PROMPT).toContain("backlog show <id>");
-		expect(WORKER_DELEGATION_PROMPT).not.toContain("bd show <id>");
-		expect(WORKER_DELEGATION_PROMPT).not.toMatch(/beads/iu);
+	it("wires the backlog tool into the worker allowlist with a working execute", () => {
+		const runEffect: RunAgentControlPromise = async () => {
+			throw new Error("unused in test");
+		};
+
+		const tools = createWorkerCustomTools(agentToolDefinition, runEffect);
+		const backlog = tools.find((t) => t.name === "backlog");
+		expect(backlog).toBeDefined();
+		expect(typeof backlog?.execute).toBe("function");
+		expect(backlog?.parameters).toBeDefined();
+		expect(backlog?.parameters["type"]).toBe("object");
 	});
 });

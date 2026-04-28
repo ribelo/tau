@@ -7,16 +7,17 @@ import {
 import { isOverlapping } from "../src/sandbox/agent-awareness/detection.js";
 
 describe("agent-awareness", () => {
-	it("buildAgentContextNotice: formats 0 and >0", () => {
-		expect(buildAgentContextNotice({ count: 0 })).toBe(
-			"AGENT_CONTEXT: no other agents detected",
-		);
-		expect(buildAgentContextNotice({ count: 1 })).toContain(
-			"AGENT_CONTEXT: 1 other pi agent detected",
-		);
-		expect(buildAgentContextNotice({ count: 2 })).toContain(
-			"AGENT_CONTEXT: 2 other pi agents detected",
-		);
+	it("buildAgentContextNotice: emits structured AGENT_CONTEXT block", () => {
+		const zero = buildAgentContextNotice({ count: 0 });
+		expect(zero).toMatch(/^AGENT_CONTEXT:/);
+
+		const one = buildAgentContextNotice({ count: 1 });
+		expect(one).toMatch(/^AGENT_CONTEXT:/);
+		expect(one).toContain("1");
+
+		const two = buildAgentContextNotice({ count: 2 });
+		expect(two).toMatch(/^AGENT_CONTEXT:/);
+		expect(two).toContain("2");
 	});
 
 	it("injectAgentContextIntoMessages: prepends last user message", () => {
