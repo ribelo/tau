@@ -190,9 +190,9 @@ Split broad remainder work into named slices. Replace vague tasks like "finish t
 
 Good task shape:
 
-- "Persist Ralph loop notebook updates"
-- "Block prompt-copy assertions in Ralph adapter tests"
-- "Render backlog child checklist in Ralph task template"
+- "Persist user notification preferences"
+- "Block invalid project config writes"
+- "Render child issue checklist"
 
 Each task should be small enough for an agent to start from `backlog show <id>` and make progress immediately.
 
