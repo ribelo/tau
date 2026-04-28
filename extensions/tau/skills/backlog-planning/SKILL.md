@@ -29,6 +29,7 @@ Every planned `epic`, `feature`, `bug`, and `task` needs:
 - a clear problem statement
 - the chosen approach and boundaries
 - mandatory acceptance criteria
+- actionable tasks with concrete implementation slices
 - explicit parent-child and blocker relationships when structure or ordering matters
 
 Acceptance criteria are mandatory. If you cannot write them precisely, planning is not finished.
@@ -172,6 +173,28 @@ Do not mark an item ready until acceptance criteria exist.
 For epics, acceptance criteria describe the complete outcome across child tasks. For tasks, acceptance criteria describe the specific slice that task owns.
 
 Each acceptance criterion should be verifiable by a reviewer, test, command, or observable behavior.
+
+## Actionable Tasks
+
+Tasks are implementation slices an agent can execute directly.
+
+An actionable task has:
+
+- one concrete outcome
+- a clear scope boundary
+- known prerequisites or dependency edges
+- enough context to choose the first implementation step
+- acceptance criteria that verify completion
+
+Split broad remainder work into named slices. Replace vague tasks like "finish the feature", "handle the rest", or "draw the rest of the owl" with concrete tasks that state the subsystem, behavior, and completion signal.
+
+Good task shape:
+
+- "Persist Ralph loop notebook updates"
+- "Block prompt-copy assertions in Ralph adapter tests"
+- "Render backlog child checklist in Ralph task template"
+
+Each task should be small enough for an agent to start from `backlog show <id>` and make progress immediately.
 
 ## Code in Backlog Items
 
@@ -330,6 +353,8 @@ Epic acceptance criteria describe the finished user-visible or system-visible ou
 - dependencies are real and worth modeling
 - different files or subsystems can be verified separately
 - a single item would otherwise hide too much complexity
+
+Each split task must name the concrete slice it owns. The task title and acceptance criteria should make the first implementation move obvious.
 
 ### Keep One Item When
 
