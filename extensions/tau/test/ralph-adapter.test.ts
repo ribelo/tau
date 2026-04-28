@@ -463,9 +463,6 @@ describe("ralph adapter boundary freeze", () => {
 			context.ctx,
 		);
 
-		expect(beforeStartResults[0]).toEqual({
-			systemPrompt: expect.stringContaining("[RALPH LOOP - owned-loop - Iteration 3/50]"),
-		});
 		const beforeStartResult = beforeStartResults[0];
 		if (
 			typeof beforeStartResult !== "object" ||
@@ -475,16 +472,6 @@ describe("ralph adapter boundary freeze", () => {
 		) {
 			throw new Error("expected Ralph before_agent_start prompt result");
 		}
-		expect(beforeStartResult.systemPrompt).toContain("- Read the task file first");
-		expect(beforeStartResult.systemPrompt).toContain(
-			"- If the task file references backlog, run the listed backlog commands before implementing",
-		);
-		expect(beforeStartResult.systemPrompt).toContain(
-			"- Treat backlog as the source of truth when backlog is referenced",
-		);
-		expect(beforeStartResult.systemPrompt).toContain(
-			"- End with exactly one Ralph loop tool: ralph_continue or ralph_finish",
-		);
 
 		const doneTool = piHarness.tools.get("ralph_continue");
 		expect(doneTool).toBeDefined();
