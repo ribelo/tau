@@ -2545,19 +2545,25 @@ export default function initRalph(
 			}
 
 			const iterStr = `${state.iteration}${state.maxIterations > 0 ? `/${state.maxIterations}` : ""}`;
-			let instructions = `You are in a Ralph loop working on: ${state.taskFile}\n`;
+			let instructions = `Ralph loop task file: ${state.taskFile}\n`;
+			instructions += "- Read the task file first\n";
+			instructions +=
+				"- If the task file references backlog, run the listed backlog commands before implementing\n";
+			instructions += "- Treat backlog as the source of truth when backlog is referenced\n";
+			instructions += "- Work on the next unchecked task item\n";
 			if (state.itemsPerIteration > 0) {
-				instructions += `- Work on ~${state.itemsPerIteration} items this iteration\n`;
+				instructions += `- Target ~${state.itemsPerIteration} item(s) this iteration\n`;
 			}
-			instructions += "- Update the task file as you progress\n";
+			instructions += "- Update checkboxes and short notebook notes in the task file\n";
+			instructions += "- Record verification evidence for completed items\n";
 			instructions +=
-				"- If the Ralph loop is complete, call ralph_finish with a short message\n";
+				"- Call ralph_finish with a short message when the loop is complete\n";
 			instructions +=
-				"- If this iteration is done and Ralph should continue, call ralph_continue\n";
+				"- Call ralph_continue when this iteration is complete and work remains\n";
 			instructions +=
-				"- If a recoverable tool call fails, correct it and continue the iteration\n";
+				"- Correct recoverable tool failures and continue the iteration\n";
 			instructions +=
-				"- Do not end the iteration with free text alone; end with exactly one Ralph loop tool";
+				"- End with exactly one Ralph loop tool: ralph_continue or ralph_finish";
 
 			return {
 				systemPrompt:

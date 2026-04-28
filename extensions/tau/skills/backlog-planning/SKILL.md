@@ -7,16 +7,31 @@ description: Plan and refine work into well-formed backlog items through grounde
 
 ## The Deal
 
-Planning is for turning vague intent into executable work.
+Planning is implementation contract creation.
+
+The backlog item is the source of truth for implementation. A ready epic or task must let an experienced AI agent implement the agreed work without chat history, hidden assumptions, or another clarification round.
+
+Planning turns vague intent into executable work:
 
 - Understand the problem
 - Ground it in the codebase
-- Ask focused questions only where needed
+- Ask focused questions when decisions are still open
 - Decide the approach
 - Define observable success
-- Encode that into backlog so implementation can proceed without guesswork
+- Encode the agreement into backlog so implementation can proceed without guesswork
 
-The goal is simple: by the time work is marked ready, an implementer should not need a clarification round to start.
+The goal is simple: by the time work is marked ready, the backlog item is the implementation contract.
+
+## Core Contract
+
+Every planned `epic`, `feature`, `bug`, and `task` needs:
+
+- a clear problem statement
+- the chosen approach and boundaries
+- mandatory acceptance criteria
+- explicit parent-child and blocker relationships when structure or ordering matters
+
+Acceptance criteria are mandatory. If you cannot write them precisely, planning is not finished.
 
 ## Separation of Concerns
 
@@ -61,6 +76,8 @@ A ready item has enough context for implementation:
 - acceptance criteria define what must be true when complete
 - dependencies and parent-child structure are explicit
 
+Ready means an experienced AI agent can start from `backlog show <id>` and implement the item without asking what was agreed.
+
 ### Done
 
 The implementation meets the acceptance criteria and the backlog item can be closed with a concrete reason.
@@ -95,6 +112,18 @@ Questions should come after investigation, not instead of it.
 
 When you need clarification, make it specific and informed.
 
+Use `request_user_input` for decisions that materially affect scope, behavior, UX, architecture, or acceptance criteria. Ask after investigation, and present the real options you found.
+
+Use it when:
+
+- acceptance criteria cannot be written without a decision
+- scope could reasonably include or exclude a subsystem
+- two implementation approaches imply different contracts
+- user preference determines workflow or UI behavior
+- the plan would otherwise encode a guess
+
+Ask 1-3 focused questions. Provide 2-4 mutually exclusive choices. Put the recommended choice first and explain the tradeoff briefly.
+
 Bad:
 
 - "Where is the auth code?"
@@ -108,6 +137,8 @@ Good:
 Pattern:
 
 "I found X. Should we do Y or Z?"
+
+For structured choices, use `request_user_input` instead of free-form chat.
 
 ### 4. Decide the Approach
 
@@ -135,6 +166,35 @@ Good acceptance criteria answer:
 - what users or downstream systems will observe
 
 Bad acceptance criteria are really design notes in disguise.
+
+Do not mark an item ready until acceptance criteria exist.
+
+For epics, acceptance criteria describe the complete outcome across child tasks. For tasks, acceptance criteria describe the specific slice that task owns.
+
+Each acceptance criterion should be verifiable by a reviewer, test, command, or observable behavior.
+
+## Code in Backlog Items
+
+Backlog items describe contracts, decisions, and observable outcomes. They are not implementation scratchpads.
+
+Include code only when the literal code shape is necessary for implementation. Valid cases:
+
+- invariants that must be preserved exactly
+- public interfaces or function signatures the implementation must expose
+- schema fields and required/optional semantics
+- protocol, command, or config shapes that are part of the contract
+- minimal examples needed to remove ambiguity from an external API boundary
+
+Keep code snippets minimal. Prefer names, fields, and contracts over bodies.
+
+Avoid:
+
+- implementation snippets that merely suggest one possible solution
+- pseudo-code for ordinary control flow
+- copied code from existing files
+- large examples that belong in tests or implementation
+
+If the code is not part of the contract, put the decision in `design` and leave implementation to the agent.
 
 ## Before Creating or Updating Items
 
@@ -226,6 +286,8 @@ Use acceptance criteria for:
 - verifiable completion conditions
 - externally meaningful behavior
 
+Acceptance criteria are required for every planned epic, feature, bug, and task.
+
 Example:
 
 "Switching mode updates the active execution profile used by the session, Ralph iterations inherit the intended profile, and spawned agents respect the effective tool policy."
@@ -233,6 +295,13 @@ Example:
 Test:
 
 If the statement would still be valid under a different implementation, it is probably acceptance criteria. If it only describes one implementation approach, it belongs in design.
+
+Quality bar:
+
+- each criterion can be checked directly
+- the set covers the agreed scope
+- the wording avoids hidden implementation guesses
+- the criterion remains true even if the implementation changes
 
 ### Comments
 
@@ -252,6 +321,8 @@ Do not overload comments with the core contract if `description`, `design`, or a
 - the goal spans multiple deliverables
 - the user asked for a broad feature or migration
 - several tasks share one user-visible outcome
+
+Epic acceptance criteria describe the finished user-visible or system-visible outcome. Child task acceptance criteria describe the smaller implementation slices that together satisfy the epic.
 
 ### Split into Tasks When
 
@@ -309,9 +380,11 @@ Set priority during planning instead of leaving urgency implicit.
 
 - [ ] Problem is understood
 - [ ] Relevant code and patterns were inspected
-- [ ] Questions, if any, are grounded in findings
+- [ ] Open decisions were asked with `request_user_input` when they affect the contract
 - [ ] Scope and approach are decided
+- [ ] Acceptance criteria exist for every planned epic/task/feature/bug
 - [ ] Acceptance criteria define real completion
+- [ ] Code appears only when needed as an invariant, interface, schema, or contract
 - [ ] Existing epic or related work was checked
 - [ ] Dependencies are modeled explicitly
 - [ ] Priority is set intentionally
