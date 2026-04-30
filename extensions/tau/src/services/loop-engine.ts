@@ -174,7 +174,7 @@ export interface LoopEngineService {
 export class LoopEngine extends Context.Service<LoopEngine, LoopEngineService>()("LoopEngine") {}
 
 function sessionRefMatches(left: LoopSessionRef, right: LoopSessionRef): boolean {
-	return left.sessionId === right.sessionId || left.sessionFile === right.sessionFile;
+	return left.sessionFile === right.sessionFile;
 }
 
 function stateOwnsSession(state: LoopPersistedState, session: LoopSessionRef): boolean {

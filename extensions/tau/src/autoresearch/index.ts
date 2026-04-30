@@ -234,7 +234,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function sessionRefMatches(left: LoopSessionRef, right: LoopSessionRef): boolean {
-	return left.sessionId === right.sessionId || left.sessionFile === right.sessionFile;
+	return left.sessionFile === right.sessionFile;
 }
 
 function assertNoLegacyAutoresearchLayout(cwd: string): void {

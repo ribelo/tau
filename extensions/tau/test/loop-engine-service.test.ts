@@ -146,6 +146,50 @@ describe("loop engine service", () => {
 		);
 	});
 
+	it("uses session files, not project session ids, for loop ownership", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const controller = makeSession("shared-project-session", "controller.session.json");
+		const otherTerminal = makeSession("shared-project-session", "other-terminal.session.json");
+		const child = makeSession("shared-project-session", "child.session.json");
+
+		const result = await Effect.runPromise(
+			Effect.gen(function* () {
+				const engine = yield* LoopEngine;
+
+				yield* engine.createLoop(cwd, {
+					kind: "ralph",
+					taskId: "session-file-owned-loop",
+					title: "Session-file owned loop",
+					taskContent: "# Task\n",
+					maxIterations: 20,
+					itemsPerIteration: 3,
+					reflectEvery: 5,
+					reflectInstructions: "reflect",
+					executionProfile: makeExecutionProfile(),
+					sandboxProfile: makeSandboxProfile(),
+					capabilityContract: makeCapabilityContract(),
+				});
+
+				yield* engine.startLoop(cwd, "session-file-owned-loop", controller);
+				const otherBeforeAttach = yield* engine.resolveOwnedLoop(cwd, otherTerminal);
+				const withChild = yield* engine.attachChildSession(
+					cwd,
+					"session-file-owned-loop",
+					child,
+				);
+
+				return { otherBeforeAttach, withChild };
+			}).pipe(Effect.provide(loopEngineLayer)),
+		);
+
+		expect(Option.isNone(result.otherBeforeAttach)).toBe(true);
+		expect(Option.getOrUndefined(result.withChild.ownership.child)?.sessionFile).toBe(
+			child.sessionFile,
+		);
+	});
+
 	it("writes strict autoresearch task docs and materializes phase snapshots on start", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);

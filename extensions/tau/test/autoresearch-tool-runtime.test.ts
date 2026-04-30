@@ -111,6 +111,7 @@ function makeRuntime(): RuntimeHarness {
 function makeContext(
 	cwd: string,
 	newSessionPlan: readonly NewSessionPlan[] = [{ cancelled: false }],
+	projectSessionId?: string,
 ): ContextHarness {
 	const newSessionCalls: unknown[] = [];
 	let sessionFile = path.join(cwd, ".pi", "sessions", "controller.session.json");
@@ -133,7 +134,7 @@ function makeContext(
 		sessionManager: {
 			getEntries: () => [],
 			getBranch: () => [],
-			getSessionId: () => sessionId,
+			getSessionId: () => projectSessionId ?? sessionId,
 			getSessionFile: () => sessionFile,
 		},
 		ui: {
@@ -254,6 +255,43 @@ describe("autoresearch tool runtime", () => {
 		for (const runtime of runtimes.splice(0)) {
 			await runtime.dispose();
 		}
+	});
+
+	it("starts child sessions when terminals share a project session id", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const context = makeContext(cwd, [{ cancelled: false }], "shared-project-session");
+		const piHarness = makePiHarness();
+		const runtime = makeRuntime();
+		runtimes.push(runtime);
+		initAutoresearch(piHarness.pi, runtime.run);
+
+		const command = piHarness.commands.get("autoresearch");
+		if (command === undefined) {
+			throw new Error("autoresearch command was not registered");
+		}
+
+		await command.handler("create shared-session-id", context.ctx);
+		await command.handler("start shared-session-id", context.ctx);
+
+		const state = await runtime.run(
+			Effect.gen(function* () {
+				const engine = yield* LoopEngine;
+				const owned = yield* engine.resolveOwnedLoop(cwd, {
+					sessionId: "shared-project-session",
+					sessionFile: context.ctx.sessionManager.getSessionFile() ?? "",
+				});
+				return Option.getOrUndefined(owned);
+			}),
+		);
+
+		expect(context.newSessionCalls).toHaveLength(1);
+		expect(state?.kind).toBe("autoresearch");
+		expect(Option.isSome(state?.ownership.child ?? Option.none())).toBe(true);
+		expect(Option.getOrUndefined(state?.ownership.child ?? Option.none())?.sessionFile).toBe(
+			context.ctx.sessionManager.getSessionFile(),
+		);
 	});
 
 	it("runs the benchmark in the real workspace scope", async () => {

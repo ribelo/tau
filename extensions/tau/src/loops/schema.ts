@@ -490,9 +490,7 @@ export const validateLoopOwnership = (
 		if (
 			Option.isSome(state.ownership.child) &&
 			Option.isSome(state.ownership.controller) &&
-			(state.ownership.child.value.sessionId === state.ownership.controller.value.sessionId ||
-				state.ownership.child.value.sessionFile ===
-					state.ownership.controller.value.sessionFile)
+			state.ownership.child.value.sessionFile === state.ownership.controller.value.sessionFile
 		) {
 			return yield* Effect.fail(
 				new LoopOwnershipValidationError({
