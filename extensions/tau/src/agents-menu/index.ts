@@ -446,6 +446,13 @@ export default function initAgentsMenu(
 			(message) => ctx.ui.notify(message, "error"),
 		);
 	});
+	pi.on("before_agent_start", async (_event, ctx) => {
+		await syncForCwd(
+			ctx.cwd,
+			getSessionFileFromContext(ctx),
+			ctx.hasUI ? (message) => ctx.ui.notify(message, "error") : undefined,
+		);
+	});
 
 	pi.registerCommand("agents", {
 		description: "Enable/disable agents for this session",
@@ -473,6 +480,7 @@ export default function initAgentsMenu(
 				const allNames = registry.names();
 				const sessionFile = getSessionFileFromContext(ctx);
 				await preloadRalphOwnedSessionCache(ctx.cwd, sessionFile);
+				syncAgentToolAvailability(pi, agentTool, registry, ctx.cwd, sessionFile);
 
 			const trimmed = (args || "").trim();
 

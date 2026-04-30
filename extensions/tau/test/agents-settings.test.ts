@@ -519,4 +519,26 @@ describe("agent selection settings", () => {
 		expect(store.isDisabledForSession(workspace, controllerSession, "deep")).toBe(true);
 		expect(store.isDisabledForSession(workspace, controllerSession, "finder")).toBe(false);
 	});
+
+	it("prefers a child .pi/loops root over a parent git root for Ralph ownership", async () => {
+		const parent = await makeWorkspace();
+		cleanup.add(parent);
+		await fs.mkdir(path.join(parent, ".git"), { recursive: true });
+		const workspace = path.join(parent, "apsis");
+		await fs.mkdir(workspace, { recursive: true });
+		const childSession = path.join(workspace, ".pi", "sessions", "iteration.session.json");
+
+		await writeRalphState(workspace, "loop-f", {
+			controllerSessionFile: path.join(workspace, ".pi", "sessions", "controller.session.json"),
+			activeIterationSessionFile: childSession,
+			enabledAgents: ["finder"],
+		});
+
+		const store = new AgentSelectionStore();
+		await store.activate(workspace, ["finder", "oracle"]);
+		await preloadRalphOwnedSessionCache(workspace, childSession);
+
+		expect(store.isDisabledForSession(workspace, childSession, "finder")).toBe(false);
+		expect(store.isDisabledForSession(workspace, childSession, "oracle")).toBe(true);
+	});
 });

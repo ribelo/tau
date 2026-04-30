@@ -4,12 +4,23 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Option } from "effect";
 
 import initAgentsMenu from "../src/agents-menu/index.js";
+import { encodeLoopPersistedStateJsonSync } from "../src/loops/schema.js";
+import {
+	makeCapabilityContract,
+	makeExecutionProfile,
+	makeRalphMetrics,
+	makeSandboxProfile,
+} from "./ralph-test-helpers.js";
 
 type EventContext = {
 	readonly cwd: string;
 	readonly hasUI: boolean;
+	readonly sessionManager?: {
+		readonly getSessionFile: () => string | undefined;
+	};
 	readonly ui?: {
 		readonly notify: (message: string, level: "info" | "error") => void;
 	};
@@ -38,6 +49,66 @@ function writeInvalidAgentSettings(tempHome: string): void {
 			null,
 			2,
 		),
+		"utf-8",
+	);
+}
+
+function writeRalphState(
+	workspace: string,
+	loopName: string,
+	input: {
+		readonly controllerSessionFile: string;
+		readonly activeIterationSessionFile: string;
+		readonly enabledAgents: ReadonlyArray<string>;
+	},
+): void {
+	const statePath = path.join(workspace, ".pi", "loops", "state", `${loopName}.json`);
+	fs.mkdirSync(path.dirname(statePath), { recursive: true });
+	const contract = makeCapabilityContract();
+	fs.writeFileSync(
+		statePath,
+		encodeLoopPersistedStateJsonSync({
+			taskId: loopName,
+			title: loopName,
+			taskFile: path.join(".pi", "loops", "tasks", `${loopName}.md`),
+			kind: "ralph",
+			lifecycle: "active",
+			createdAt: "2026-01-01T00:00:00.000Z",
+			updatedAt: "2026-01-01T00:00:00.000Z",
+			startedAt: Option.some("2026-01-01T00:00:00.000Z"),
+			completedAt: Option.none(),
+			archivedAt: Option.none(),
+			ownership: {
+				controller: Option.some({
+					sessionId: input.controllerSessionFile,
+					sessionFile: input.controllerSessionFile,
+				}),
+				child: Option.some({
+					sessionId: input.activeIterationSessionFile,
+					sessionFile: input.activeIterationSessionFile,
+				}),
+			},
+			ralph: {
+				iteration: 1,
+				maxIterations: 50,
+				itemsPerIteration: 0,
+				reflectEvery: 0,
+				reflectInstructions: "reflect",
+				lastReflectionAt: 0,
+				pendingDecision: Option.none(),
+				pinnedExecutionProfile: makeExecutionProfile(),
+				sandboxProfile: Option.some(makeSandboxProfile()),
+				metrics: makeRalphMetrics(),
+				capabilityContract: {
+					...contract,
+					agents: {
+						...contract.agents,
+						enabledNames: [...input.enabledAgents],
+					},
+				},
+				deferredConfigMutations: [],
+			},
+		}),
 		"utf-8",
 	);
 }
@@ -139,6 +210,51 @@ describe("agents menu", () => {
 		);
 
 		expect(refreshCount).toBe(1);
+	});
+
+	it("refreshes the agent tool description from Ralph loop policy before agent start", async () => {
+		const { pi, handlers } = makePiStub();
+		const refreshedDescriptions: string[] = [];
+		const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "tau-agents-menu-ralph-"));
+		const controllerSession = path.join(workspace, ".pi", "sessions", "controller.jsonl");
+		const childSession = path.join(workspace, ".pi", "sessions", "child.jsonl");
+
+		try {
+			writeRalphState(workspace, "ralph-loop", {
+				controllerSessionFile: controllerSession,
+				activeIterationSessionFile: childSession,
+				enabledAgents: ["finder"],
+			});
+
+			initAgentsMenu(pi, {
+				refresh: (description) => {
+					refreshedDescriptions.push(description);
+				},
+			});
+
+			const beforeAgentStart = handlers.get("before_agent_start")?.[0];
+			expect(beforeAgentStart).toBeTypeOf("function");
+
+			await Promise.resolve(
+				beforeAgentStart?.(
+					{ type: "before_agent_start" },
+					{
+						cwd: workspace,
+						hasUI: false,
+						sessionManager: {
+							getSessionFile: () => childSession,
+						},
+					},
+				),
+			);
+
+			const refreshedDescription = refreshedDescriptions.at(-1);
+			expect(refreshedDescription).toContain("- finder:");
+			expect(refreshedDescription).not.toContain("- oracle:");
+			expect(refreshedDescription).not.toContain("- smart:");
+		} finally {
+			fs.rmSync(workspace, { recursive: true, force: true });
+		}
 	});
 
 	it("fails closed on visible session_start when registry loading fails", async () => {

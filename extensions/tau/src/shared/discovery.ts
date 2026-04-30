@@ -40,7 +40,11 @@ export function findNearestWorkspaceRoot(cwd: string): string {
 	const start = path.resolve(cwd);
 	let current = path.resolve(cwd);
 	for (;;) {
-		if (pathExists(path.join(current, ".pi", "settings.json")) || pathExists(path.join(current, ".git"))) {
+		if (
+			pathExists(path.join(current, ".pi", "settings.json")) ||
+			pathExists(path.join(current, ".pi", "loops")) ||
+			pathExists(path.join(current, ".git"))
+		) {
 			return current;
 		}
 		const parent = path.dirname(current);
