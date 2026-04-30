@@ -6,9 +6,7 @@ import { loopOwnsSessionFile } from "../src/ralph/repo.js";
 import { decodeLoopStateSync, sanitizeLoopName } from "../src/ralph/schema.js";
 import {
 	makeExecutionProfile,
-	makePromptProfile,
 	makeSandboxProfile,
-	makeRalphMetrics,
 } from "./ralph-test-helpers.js";
 
 describe("ralph fresh-session helpers", () => {
@@ -91,27 +89,34 @@ describe("ralph fresh-session helpers", () => {
 			sandboxProfile: makeSandboxProfile(),
 		});
 
-		const legacyNormalized = decodeLoopStateSync({
-			name: "legacy-normalized",
-			taskFile: ".pi/ralph/tasks/legacy-normalized.md",
-			iteration: 2,
-			maxIterations: 10,
-			itemsPerIteration: 0,
-			reflectEvery: 0,
-			reflectInstructions: "reflect",
-			status: "active",
-			startedAt: "2026-01-01T00:00:00.000Z",
-			completedAt: null,
-			lastReflectionAt: 0,
-			controllerSessionFile: "/tmp/controller.session",
-			activeIterationSessionFile: "/tmp/iteration.session",
-			pendingDecision: null,
-			promptProfile: makePromptProfile({ mode: "deep" }),
-		});
-
 		expect(loopOwnsSessionFile(normalized, "/tmp/controller.session")).toBe(true);
 		expect(loopOwnsSessionFile(normalized, "/tmp/iteration.session")).toBe(true);
 		expect(loopOwnsSessionFile(normalized, "/tmp/other.session")).toBe(false);
-		expect(legacyNormalized.executionProfile.promptProfile.mode).toBe("deep");
+	});
+
+	it("fails fast for legacy prompt-profile loop state", () => {
+		expect(() =>
+			decodeLoopStateSync({
+				name: "legacy-normalized",
+				taskFile: ".pi/ralph/tasks/legacy-normalized.md",
+				iteration: 2,
+				maxIterations: 10,
+				itemsPerIteration: 0,
+				reflectEvery: 0,
+				reflectInstructions: "reflect",
+				status: "active",
+				startedAt: "2026-01-01T00:00:00.000Z",
+				completedAt: null,
+				lastReflectionAt: 0,
+				controllerSessionFile: "/tmp/controller.session",
+				activeIterationSessionFile: "/tmp/iteration.session",
+				pendingDecision: null,
+				promptProfile: {
+					mode: "deep",
+					model: "anthropic/claude-opus-4-5",
+					thinking: "high",
+				},
+			}),
+		).toThrow(RalphContractValidationError);
 	});
 });

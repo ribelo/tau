@@ -1,16 +1,10 @@
 import { Effect, Option, Schema } from "effect";
 
-import {
-	DEFAULT_EXECUTION_POLICY,
-	ExecutionProfileSchema,
-	makeExecutionProfile,
-} from "../execution/schema.js";
+import { ExecutionProfileSchema } from "../execution/schema.js";
 import { SandboxConfigRequired as SandboxProfileSchema } from "../schemas/config.js";
-import { PromptModeProfileSchema } from "../prompt/profile.js";
 import {
 	makeEmptyCapabilityContract,
 	RalphCapabilityContractSchema,
-	type RalphCapabilityContract,
 } from "./contract.js";
 import { RalphConfigMutationListSchema } from "./config-mutation.js";
 import { RalphContractValidationError } from "./errors.js";
@@ -94,12 +88,6 @@ export const LoopStateSchema = Schema.Struct({
 export type LoopState = Schema.Schema.Type<typeof LoopStateSchema>;
 export type EncodedLoopState = Schema.Codec.Encoded<typeof LoopStateSchema>;
 
-const LegacyLoopStateSchema = Schema.Struct({
-	...LoopStateSharedFields,
-	promptProfile: Schema.mutableKey(PromptModeProfileSchema),
-});
-type LegacyLoopState = Schema.Schema.Type<typeof LegacyLoopStateSchema>;
-
 export const StartLoopInputSchema = Schema.Struct({
 	name: LoopNameSchema,
 	maxIterations: NonNegativeIntSchema,
@@ -130,7 +118,6 @@ export type LoopSummary = Schema.Schema.Type<typeof LoopSummarySchema>;
 
 const encodeLoopStateSchema = Schema.encodeUnknownEffect(LoopStateSchema);
 const decodeLoopStateSchemaSync = Schema.decodeUnknownSync(LoopStateSchema);
-const decodeLegacyLoopStateSchemaSync = Schema.decodeUnknownSync(LegacyLoopStateSchema);
 const encodeLoopStateSchemaSync = Schema.encodeUnknownSync(LoopStateSchema);
 
 const parseJsonUnknown = (
@@ -174,23 +161,6 @@ function normalizeLoopStateValue(value: unknown): unknown {
 	return next;
 }
 
-function legacyLoopStateToCanonical(state: LegacyLoopState): LoopState {
-	return {
-		...state,
-		executionProfile: makeExecutionProfile({
-			selector: {
-				mode: state.promptProfile.mode,
-			},
-			promptProfile: state.promptProfile,
-			policy: DEFAULT_EXECUTION_POLICY,
-		}),
-		sandboxProfile: Option.none(),
-		metrics: emptyRalphLoopMetrics(),
-		capabilityContract: makeEmptyCapabilityContract(),
-		deferredConfigMutations: [],
-	};
-}
-
 export function emptyRalphLoopMetrics(): RalphLoopMetrics {
 	return {
 		totalTokens: 0,
@@ -204,12 +174,7 @@ function decodeLoopStateCompatSync(value: unknown): LoopState {
 	try {
 		return decodeLoopStateSchemaSync(normalizeLoopStateValue(value));
 	} catch (canonicalError) {
-		try {
-			const legacy = decodeLegacyLoopStateSchemaSync(value);
-			return legacyLoopStateToCanonical(legacy);
-		} catch {
-			throw toContractValidationError("ralph.loop_state", canonicalError);
-		}
+		throw toContractValidationError("ralph.loop_state", canonicalError);
 	}
 }
 

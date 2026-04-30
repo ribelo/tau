@@ -52,16 +52,11 @@ describe("createAgentToolDef", () => {
 				parentModel: TEST_MODEL,
 				resolveParentExecution: async () => ({
 					state: {
-						selector: { mode: "default" },
 						policy: { tools: { kind: "inherit" } },
 					},
 					profile: {
-						selector: { mode: "default" },
-						promptProfile: {
-							mode: "default",
-							model: "openai-codex/gpt-5.4",
-							thinking: "medium",
-						},
+						model: "openai-codex/gpt-5.4",
+						thinking: "medium",
 						policy: { tools: { kind: "inherit" } },
 					},
 				}),

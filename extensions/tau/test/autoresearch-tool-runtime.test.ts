@@ -19,13 +19,13 @@ import type {
 import { LoopRepoLive } from "../src/loops/repo.js";
 import { LoopEngine } from "../src/services/loop-engine.js";
 import { LoopEngineLive } from "../src/services/loop-engine.js";
-import { PromptModes } from "../src/services/prompt-modes.js";
+import { ExecutionRuntime } from "../src/services/execution-runtime.js";
 import { Sandbox } from "../src/services/sandbox.js";
 import {
 	AutoresearchLoopRunner,
 	AutoresearchLoopRunnerLive,
 } from "../src/services/autoresearch-loop-runner.js";
-import { makePromptModesStubLayer } from "./ralph-test-helpers.js";
+import { makeExecutionRuntimeStubLayer } from "./ralph-test-helpers.js";
 
 const getSandboxedBashOperationsMock = vi.fn<
 	(ctx: ExtensionContext, escalate: boolean) => BashOperations | undefined
@@ -64,7 +64,7 @@ type PiHarness = {
 
 type RuntimeHarness = {
 	readonly run: <A, E>(
-		effect: Effect.Effect<A, E, LoopEngine | Sandbox | PromptModes | AutoresearchLoopRunner>,
+		effect: Effect.Effect<A, E, LoopEngine | Sandbox | ExecutionRuntime | AutoresearchLoopRunner>,
 	) => Promise<A>;
 	readonly dispose: () => Promise<void>;
 };
@@ -96,7 +96,7 @@ function makeRuntime(): RuntimeHarness {
 
 	const layer = LoopEngineLive.pipe(
 		Layer.provideMerge(LoopRepoLive),
-		Layer.provideMerge(makePromptModesStubLayer()),
+		Layer.provideMerge(makeExecutionRuntimeStubLayer()),
 		Layer.provideMerge(sandboxLayer),
 		Layer.provideMerge(AutoresearchLoopRunnerLive),
 		Layer.provide(NodeFileSystem.layer),

@@ -20,8 +20,6 @@ import {
 import type { LoopState, RalphPendingDecision } from "../src/ralph/schema.js";
 import {
 	makeExecutionProfile,
-	makeExecutionProfileForPrompt,
-	makePromptProfile,
 	makeSandboxProfile,
 	makeRalphMetrics,
 	makeCapabilityContract,
@@ -266,7 +264,6 @@ describe("ralph core service", () => {
 					loopName: "visible-loop",
 					taskFile: path.join(".pi", "loops", "tasks", "visible-loop.md"),
 					executionProfile: makeExecutionProfile({
-						mode: "smart",
 						model: "anthropic/claude-opus-4-5",
 						thinking: "medium",
 					}),
@@ -440,12 +437,10 @@ describe("ralph core service", () => {
 		const iterationSessionFileA = path.join(cwd, ".pi", "sessions", "iteration-a.session.json");
 		const iterationSessionFileB = path.join(cwd, ".pi", "sessions", "iteration-b.session.json");
 
-		const initialProfile = makePromptProfile({
-			mode: "deep",
+		const pinnedExecutionProfile = makeExecutionProfile({
 			model: "openai-codex/gpt-5.3-codex",
 			thinking: "high",
 		});
-		const pinnedExecutionProfile = makeExecutionProfileForPrompt(initialProfile);
 
 		const result = await Effect.runPromise(
 			Effect.gen(function* () {

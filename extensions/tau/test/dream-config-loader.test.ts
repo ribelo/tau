@@ -99,44 +99,6 @@ describe("loadDreamConfig", () => {
 		});
 	});
 
-	it("does not fall back to prompt-mode presets", async () => {
-		await withTempWorkspace(async ({ cwd, userSettingsPath }) => {
-			await writeJson(userSettingsPath, {
-				tau: {
-					promptModes: {
-						presets: {
-							plan: {
-								model: "openai/gpt-5.4-mini",
-								thinking: "high",
-							},
-						},
-					},
-					dream: {
-						enabled: true,
-						manual: { enabled: true },
-						auto: {
-							enabled: false,
-							minHoursSinceLastRun: 24,
-							minSessionsSinceLastRun: 5,
-							scanThrottleMinutes: 10,
-						},
-						subagent: {
-							thinking: "high",
-							maxTurns: 8,
-						},
-					},
-				},
-			});
-
-			await writeJson(path.join(cwd, ".pi", "settings.json"), {});
-
-			await expect(Effect.runPromise(loadDreamConfig(cwd))).rejects.toMatchObject({
-				_tag: "DreamConfigDecodeError",
-				reason: expect.stringContaining("tau.dream.subagent.model"),
-			});
-		});
-	});
-
 	it("fails on negative thresholds", async () => {
 		await withTempWorkspace(async ({ cwd, userSettingsPath }) => {
 			await writeJson(userSettingsPath, {

@@ -476,9 +476,6 @@ function buildPrompt(state: LoopState, taskContent: string, isReflection: boolea
 	parts.push(`## Current Task (from ${state.taskFile})\n\n${taskContent}\n\n---`);
 	parts.push(`\n## Instructions\n`);
 	parts.push(
-		"User controls: ESC pauses the assistant. Run /ralph pause to keep the loop resumable. Run /ralph stop when idle to end the loop.\n",
-	);
-	parts.push(
 		`You are in a Ralph loop (iteration ${state.iteration}${state.maxIterations > 0 ? ` of ${state.maxIterations}` : ""}).\n`,
 	);
 
@@ -497,10 +494,10 @@ function buildPrompt(state: LoopState, taskContent: string, isReflection: boolea
 	);
 	parts.push(`4. If this iteration is done and Ralph should continue, call ralph_continue`);
 	parts.push(
-		`5. Do not end this iteration with free text alone. End with exactly one Ralph loop tool.`,
+		`5. End this iteration with exactly one Ralph loop tool.`,
 	);
 	parts.push(
-		`6. If a tool call fails with a recoverable input or usage error, correct the tool call and continue the iteration; do not treat that as a reason to pause or stop Ralph.`,
+		`6. Correct recoverable tool input or usage errors and continue the iteration.`,
 	);
 
 	return parts.join("\n");

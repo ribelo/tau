@@ -60,8 +60,8 @@ describe("agent sandbox policy", () => {
 		});
 	});
 
-	describe("mode agent sandbox defaults", () => {
-		it("mode agents use worker-safe sandbox preset by default", async () => {
+	describe("bundled agent sandbox defaults", () => {
+		it("bundled agents use worker-safe sandbox preset by default", async () => {
 			const tempHome = mkdtemp("tau-home-");
 			vi.stubEnv("HOME", tempHome);
 
@@ -72,7 +72,7 @@ describe("agent sandbox policy", () => {
 				const deep = registry.resolve("deep");
 				const rush = registry.resolve("rush");
 
-				// Mode agents should default to worker-safe (workspace-write), not full-access
+				// Bundled agents should default to worker-safe (workspace-write), not full-access
 				expect(smart?.sandbox.preset).toBe("workspace-write");
 				expect(deep?.sandbox.preset).toBe("workspace-write");
 				expect(rush?.sandbox.preset).toBe("workspace-write");

@@ -143,9 +143,6 @@ const PARENT_SANDBOX_CONFIG: ResolvedSandboxConfig = {
 };
 
 const TEST_EXECUTION_STATE = {
-	selector: {
-		mode: "default",
-	},
 	policy: {
 		tools: {
 			kind: "inherit",
@@ -154,14 +151,8 @@ const TEST_EXECUTION_STATE = {
 } as const;
 
 const TEST_EXECUTION_PROFILE = {
-	selector: {
-		mode: "default",
-	},
-	promptProfile: {
-		mode: "default",
-		model: "openai-codex/gpt-5.4",
-		thinking: "medium",
-	},
+	model: "openai-codex/gpt-5.4",
+	thinking: "medium",
 	policy: {
 		tools: {
 			kind: "inherit",
@@ -307,19 +298,17 @@ describe("AgentWorker structured-output wiring", () => {
 
 		const parentExecutionProfile = (
 			worker as unknown as {
-				agentContext: {
-					parentExecutionProfile: {
-						promptProfile: {
-							model: string;
-							thinking: string;
-						};
-					};
+			agentContext: {
+				parentExecutionProfile: {
+					model: string;
+					thinking: string;
 				};
-			}
-		).agentContext.parentExecutionProfile;
+			};
+		}
+	).agentContext.parentExecutionProfile;
 
-		expect(parentExecutionProfile.promptProfile.model).toBe("anthropic/claude-opus-4-5");
-		expect(parentExecutionProfile.promptProfile.thinking).toBe("high");
+	expect(parentExecutionProfile.model).toBe("anthropic/claude-opus-4-5");
+	expect(parentExecutionProfile.thinking).toBe("high");
 	});
 
 	it("preserves the inherited session file for nested agent gating", async () => {
@@ -425,11 +414,8 @@ describe("AgentWorker structured-output wiring", () => {
 		expect(session?.customEntries[0]).toMatchObject({
 			customType: TAU_PERSISTED_STATE_TYPE,
 			data: {
-				execution: {
-					selector: {
-						mode: "default",
-					},
-					policy: {
+			execution: {
+				policy: {
 						tools: {
 							kind: "inherit",
 						},

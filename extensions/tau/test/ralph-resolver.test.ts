@@ -10,6 +10,7 @@ import {
 	captureToolContract,
 	captureAgentContract,
 	validateCapabilityContract,
+	validateExecutionContract,
 	effectiveToolNames,
 	checkControlToolsExcluded,
 } from "../src/ralph/resolver.js";
@@ -18,7 +19,40 @@ import {
 	makeCapabilityContract,
 } from "../src/ralph/contract.js";
 import { PiAPI } from "../src/effect/pi.js";
-import { PromptModes } from "../src/services/prompt-modes.js";
+import { ExecutionRuntime } from "../src/services/execution-runtime.js";
+import { DEFAULT_EXECUTION_POLICY, type ExecutionProfile } from "../src/execution/schema.js";
+import { DEFAULT_SANDBOX_CONFIG } from "../src/sandbox/config.js";
+
+const concreteProfile = (overrides?: Partial<ExecutionProfile>): ExecutionProfile => ({
+	model: "test-provider/reasoning-model",
+	thinking: "medium",
+	policy: DEFAULT_EXECUTION_POLICY,
+	...overrides,
+});
+
+const modelRegistry = {
+	find: (provider: string, modelId: string) =>
+		provider === "test-provider" && modelId === "reasoning-model"
+			? {
+				id: "reasoning-model",
+				provider: "test-provider",
+				reasoning: true,
+			}
+			: provider === "test-provider" && modelId === "plain-model"
+				? {
+					id: "plain-model",
+					provider: "test-provider",
+					reasoning: false,
+				  }
+				: undefined,
+	getApiKey: (model: { readonly id: string }) =>
+		Promise.resolve(model.id === "reasoning-model" || model.id === "plain-model" ? "key" : undefined),
+};
+
+const unauthenticatedModelRegistry = {
+	...modelRegistry,
+	getApiKey: () => Promise.resolve(undefined),
+};
 
 const piStub = {
 	getActiveTools: () => [] as string[],
@@ -28,20 +62,18 @@ const piStub = {
 
 const piLayer = Layer.succeed(PiAPI, piStub);
 
-const promptModesStub = PromptModes.of({
+const executionRuntimeStub = ExecutionRuntime.of({
 	setup: Effect.void,
-	captureCurrentProfile: () => Effect.succeed(null),
 	captureCurrentExecutionProfile: () => Effect.succeed(null),
-	applyProfile: () => Effect.succeed({ applied: true as const, profile: { mode: "default", model: "test", thinking: "medium" } }),
-	applyExecutionProfile: () => Effect.succeed({ applied: true as const, profile: { mode: "default", model: "test", thinking: "medium" } }),
+	applyExecutionProfile: (profile) => Effect.succeed({ applied: true as const, profile }),
 });
 
-const promptModesLayer = Layer.succeed(PromptModes, promptModesStub);
+const executionRuntimeLayer = Layer.succeed(ExecutionRuntime, executionRuntimeStub);
 
 const resolverLayer = RalphContractResolverLive.pipe(
 	Layer.provide(LoopRepoLive),
 	Layer.provide(piLayer),
-	Layer.provide(promptModesLayer),
+	Layer.provide(executionRuntimeLayer),
 	Layer.provide(NodeFileSystem.layer),
 );
 
@@ -270,6 +302,50 @@ describe("ralph contract resolver pure helpers", () => {
 		});
 		const result = validateCapabilityContract(contract);
 		expect(result.valid).toBe(true);
+	});
+
+	it("validates concrete execution model availability and auth", async () => {
+		const missingModel = await validateExecutionContract({
+			profile: concreteProfile({ model: "test-provider/missing-model" }),
+			sandboxProfile: DEFAULT_SANDBOX_CONFIG,
+			modelRegistry,
+		});
+		expect(missingModel.valid).toBe(false);
+		if (!missingModel.valid) {
+			expect(missingModel.issues.some((issue) => issue.kind === "missing_model")).toBe(true);
+		}
+
+		const missingAuth = await validateExecutionContract({
+			profile: concreteProfile(),
+			sandboxProfile: DEFAULT_SANDBOX_CONFIG,
+			modelRegistry: unauthenticatedModelRegistry,
+		});
+		expect(missingAuth.valid).toBe(false);
+		if (!missingAuth.valid) {
+			expect(missingAuth.issues.some((issue) => issue.kind === "missing_model_auth")).toBe(true);
+		}
+	});
+
+	it("validates thinking support and sandbox presence", async () => {
+		const unsupportedThinking = await validateExecutionContract({
+			profile: concreteProfile({ model: "test-provider/plain-model", thinking: "high" }),
+			sandboxProfile: DEFAULT_SANDBOX_CONFIG,
+			modelRegistry,
+		});
+		expect(unsupportedThinking.valid).toBe(false);
+		if (!unsupportedThinking.valid) {
+			expect(unsupportedThinking.issues.some((issue) => issue.kind === "unsupported_thinking")).toBe(true);
+		}
+
+		const missingSandbox = await validateExecutionContract({
+			profile: concreteProfile(),
+			sandboxProfile: undefined,
+			modelRegistry,
+		});
+		expect(missingSandbox.valid).toBe(false);
+		if (!missingSandbox.valid) {
+			expect(missingSandbox.issues.some((issue) => issue.kind === "missing_sandbox_profile")).toBe(true);
+		}
 	});
 
 	it("computes controller effective tools without system controls", () => {

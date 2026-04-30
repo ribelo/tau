@@ -168,7 +168,7 @@ describe("runTau runtime", () => {
 		const startup = tau(pi);
 		await startup;
 
-		expect(pi.__registeredCommands).toContain("mode");
+		expect(pi.__registeredCommands).not.toContain("mode");
 		expect(pi.__registeredCommands).toContain("memories");
 
 		const sessionStartHandlers = pi.__eventHandlers.get("session_start") ?? [];

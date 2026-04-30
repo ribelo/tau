@@ -123,9 +123,6 @@ const makeWorker = async (
 		definition.models,
 		undefined,
 		{
-			selector: {
-				mode: "default",
-			},
 			policy: {
 				tools: {
 					kind: "inherit",
@@ -133,14 +130,8 @@ const makeWorker = async (
 			},
 		},
 		{
-			selector: {
-				mode: "default",
-			},
-			promptProfile: {
-				mode: "default",
-				model: "openai/gpt-5-codex",
-				thinking: "medium",
-			},
+			model: "openai/gpt-5-codex",
+			thinking: "medium",
 			policy: {
 				tools: {
 					kind: "inherit",
@@ -152,9 +143,6 @@ const makeWorker = async (
 			parentSessionFile: "parent-session",
 			parentModel: undefined,
 			parentExecutionState: {
-				selector: {
-					mode: "default",
-				},
 				policy: {
 					tools: {
 						kind: "inherit",
@@ -162,14 +150,8 @@ const makeWorker = async (
 				},
 			},
 			parentExecutionProfile: {
-				selector: {
-					mode: "default",
-				},
-				promptProfile: {
-					mode: "default",
-					model: "openai/gpt-5-codex",
-					thinking: "medium",
-				},
+				model: "openai/gpt-5-codex",
+				thinking: "medium",
 				policy: {
 					tools: {
 						kind: "inherit",
@@ -178,9 +160,6 @@ const makeWorker = async (
 			},
 			resolveParentExecution: async () => ({
 				state: {
-					selector: {
-						mode: "default",
-					},
 					policy: {
 						tools: {
 							kind: "inherit",
@@ -188,14 +167,8 @@ const makeWorker = async (
 					},
 				},
 				profile: {
-					selector: {
-						mode: "default",
-					},
-					promptProfile: {
-						mode: "default",
-						model: "openai/gpt-5-codex",
-						thinking: "medium",
-					},
+					model: "openai/gpt-5-codex",
+					thinking: "medium",
 					policy: {
 						tools: {
 							kind: "inherit",

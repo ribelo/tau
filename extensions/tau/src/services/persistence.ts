@@ -18,17 +18,9 @@ function sanitizePersistedStateForSession(
 		return rest;
 	}
 
-	const sanitizedExecution =
-		execution === undefined
-			? undefined
-			: (() => {
-					const { selector: _selector, ...persistedWithoutSelector } = execution;
-					return persistedWithoutSelector;
-			  })();
-
 	return {
 		...rest,
-		...(sanitizedExecution === undefined ? {} : { execution: sanitizedExecution }),
+		...(execution === undefined ? {} : { execution }),
 	};
 }
 

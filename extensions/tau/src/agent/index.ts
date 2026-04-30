@@ -6,10 +6,9 @@ import { createUiApprovalBroker } from "./approval-broker.js";
 import type { AgentRuntimeBridgeService } from "./runtime.js";
 import { AgentParams, createAgentToolDef } from "./tool.js";
 import { ExecutionState } from "../services/execution-state.js";
-import { resolveSessionMode } from "../services/execution-resolver.js";
 import { makeExecutionProfile } from "../execution/schema.js";
 import { readModelId } from "../prompt/profile.js";
-import { isPromptModeThinkingLevel } from "./model-spec.js";
+import { isExecutionThinkingLevel } from "./model-spec.js";
 
 function nonEmptyString(value: unknown): string | undefined {
 	return typeof value === "string" && value.length > 0 ? value : undefined;
@@ -105,7 +104,6 @@ export default function initAgent(
 						Effect.gen(function* () {
 							const executionState = yield* ExecutionState;
 							const state = executionState.getSnapshot();
-							const mode = resolveSessionMode(state);
 							const parentModel = readContextModel(ctx);
 							const model = readModelId(parentModel);
 							if (model === undefined) {
@@ -115,7 +113,7 @@ export default function initAgent(
 							}
 
 							const thinking = pi.getThinkingLevel();
-							if (!isPromptModeThinkingLevel(thinking)) {
+							if (!isExecutionThinkingLevel(thinking)) {
 								throw new Error(
 									"Cannot spawn agent: current session has no supported thinking level",
 								);
@@ -124,14 +122,8 @@ export default function initAgent(
 							return {
 								state,
 								profile: makeExecutionProfile({
-									selector: {
-										mode,
-									},
-									promptProfile: {
-										mode,
-										model,
-										thinking,
-									},
+									model,
+									thinking,
 									policy: state.policy,
 								}),
 							};

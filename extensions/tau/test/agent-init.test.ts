@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { Api, Model } from "@mariozechner/pi-ai";
-import { Effect, Layer, Option, Stream } from "effect";
+import { Effect, Layer, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 
 import initAgent from "../src/agent/index.js";
@@ -37,9 +37,6 @@ type RegisteredTool = {
 
 function makeExecutionStateStub(): ExecutionStateService {
 	const snapshot = {
-		selector: {
-			mode: "default",
-		},
 		policy: {
 			tools: {
 				kind: "inherit",
@@ -53,8 +50,6 @@ function makeExecutionStateStub(): ExecutionStateService {
 		transient: () => undefined,
 		hydrate: () => undefined,
 		update: () => undefined,
-		getDefaultProfile: () => Option.none(),
-		setDefaultProfile: () => undefined,
 		changes: Stream.empty,
 		setup: Effect.void,
 	};

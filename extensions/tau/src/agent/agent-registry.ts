@@ -6,15 +6,13 @@
  * 2. User: ~/.pi/agent/agents/*.md
  * 3. Extension: extensions/tau/agents/*.md (bundled)
  *
- * NOTE: Mode agents (smart/deep/rush/plan) are virtual and derive model+thinking from
- * prompt mode settings (global/project). They are not loadable/overridable via
- * agent frontmatter.
+ * Bundled agents are ordinary agent definition files and can be overridden by
+ * higher-priority user or project agent files with the same name.
  */
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
-import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import { Data, Effect, Result } from "effect";
 
 import { errorMessage } from "../shared/error-message.js";
@@ -29,39 +27,10 @@ import {
 	readUserSettings,
 	SettingsError,
 } from "../shared/settings.js";
-import {
-	isPromptModeName,
-	isPromptModePresetName,
-	resolvePromptModePresets,
-	type PromptModePresetName,
-} from "../prompt/modes.js";
-import type { SandboxConfig } from "../sandbox/config.js";
 import { parseAgentDefinition } from "./parser.js";
 import { parseConfiguredToolNames } from "./tool-allowlist.js";
 import type { AgentDefinition, ModelSpec } from "./types.js";
-import { decodeAgentModelSpec, isPromptModeThinkingLevel, validatePromptModeModelId } from "./model-spec.js";
-
-const MODE_AGENT_SANDBOX: SandboxConfig = {
-	preset: "workspace-write",
-};
-
-const MODE_AGENT_TOOLS = [
-	"read",
-	"bash",
-	"edit",
-	"write",
-	"apply_patch",
-	"agent",
-	"backlog",
-	"memory",
-	"web_search_exa",
-	"crawling_exa",
-	"get_code_context_exa",
-	"find_thread",
-	"read_thread",
-] as const;
-
-const MODE_AGENT_SPAWNS = ["smart", "deep", "rush", "finder", "librarian", "oracle", "painter"] as const;
+import { decodeAgentModelSpec, isExecutionThinkingLevel, validateExecutionModelId } from "./model-spec.js";
 
 const ALLOWED_AGENT_SETTINGS_KEYS = new Set(["models", "model", "thinking", "tools", "spawns"]);
 
@@ -69,49 +38,6 @@ export class AgentRegistryConfigError extends Data.TaggedError("AgentRegistryCon
 	readonly message: string;
 	readonly cause?: unknown;
 }> {}
-
-function buildModeAgentDefinition(
-	mode: PromptModePresetName,
-	cwd: string,
-): Effect.Effect<AgentDefinition, AgentRegistryConfigError | SettingsError> {
-	return resolvePromptModePresets(cwd).pipe(
-		Effect.map((presets) => {
-			const preset = presets[mode];
-
-			const model: ModelSpec = {
-				model: preset.model,
-				thinking: preset.thinking as ThinkingLevel,
-			};
-
-			const description =
-				mode === "smart"
-					? "Smart agent. Uses the smart mode system prompt and preset model selection."
-					: mode === "deep"
-						? "Deep agent. Uses the deep mode system prompt and preset model selection."
-						: mode === "rush"
-							? "Rush agent. Uses the rush mode system prompt and preset model selection."
-							: "Plan agent. Uses the plan mode system prompt and preset model selection.";
-
-			return {
-				name: mode,
-				description,
-				models: [model],
-				tools: MODE_AGENT_TOOLS,
-				spawns: [...MODE_AGENT_SPAWNS],
-				sandbox: MODE_AGENT_SANDBOX,
-				systemPrompt: preset.systemPrompt,
-			};
-		}),
-		Effect.mapError((cause) =>
-			cause instanceof AgentRegistryConfigError
-				? cause
-				: new AgentRegistryConfigError({
-						message: `Failed to build mode agent "${mode}"`,
-						cause,
-					}),
-		),
-	);
-}
 
 function discoverAgentFiles(
 	dir: string,
@@ -143,10 +69,10 @@ function discoverAgentFiles(
 						continue;
 					}
 					const name = entry.name.slice(0, -3);
-					if (isPromptModeName(name)) {
+					if (name === "default") {
 						return yield* Effect.fail(
 							new AgentRegistryConfigError({
-								message: `Invalid agent file ${path.join(dir, entry.name)}: prompt mode names (default, smart, deep, rush, plan) are reserved; smart, deep, rush, and plan are virtual agents, and default is not spawnable.`,
+								message: `Invalid agent file ${path.join(dir, entry.name)}: default is not a spawnable agent.`,
 							}),
 						);
 					}
@@ -276,7 +202,7 @@ function parseModelShorthand(
 				new AgentRegistryConfigError({ message: `${thinkingKeyPath}: must be a string` }),
 			);
 		}
-		if (!isPromptModeThinkingLevel(thinkingValue)) {
+		if (!isExecutionThinkingLevel(thinkingValue)) {
 			return Effect.fail(
 				new AgentRegistryConfigError({
 					message: `${thinkingKeyPath}: must be one of inherit, off, minimal, low, medium, high, xhigh`,
@@ -286,7 +212,7 @@ function parseModelShorthand(
 		return Effect.succeed([{ model: "inherit", thinking: thinkingValue }] as const);
 	}
 
-	return validatePromptModeModelId(value, keyPath).pipe(
+	return validateExecutionModelId(value, keyPath).pipe(
 		Effect.mapError(
 			(error) =>
 				new AgentRegistryConfigError({
@@ -303,7 +229,7 @@ function parseModelShorthand(
 					new AgentRegistryConfigError({ message: `${thinkingKeyPath}: must be a string` }),
 				);
 			}
-			if (!isPromptModeThinkingLevel(thinkingValue)) {
+			if (!isExecutionThinkingLevel(thinkingValue)) {
 				return Effect.fail(
 					new AgentRegistryConfigError({
 						message: `${thinkingKeyPath}: must be one of off, minimal, low, medium, high, xhigh`,
@@ -366,34 +292,10 @@ function loadAgentSettingsFromJson(
 					}),
 				);
 			}
-			if (isPromptModePresetName(name)) {
-				for (const key of Object.keys(config)) {
-					if (key !== "tools" && key !== "spawns") {
-						return yield* Effect.fail(
-							new AgentRegistryConfigError({
-								message: `Invalid settings in ${agentPath}: mode agents only support tools and spawns here; prompt mode model settings belong under promptModes`,
-							}),
-						);
-					}
-				}
-
-				const tools = yield* parseToolsArray(config["tools"], `${agentPath}.tools`);
-				const spawns = yield* parseSpawnsRestriction(
-					config["spawns"],
-					`${agentPath}.spawns`,
-				);
-				if (tools !== undefined || spawns !== undefined) {
-					result = mergeSettingsOverride(result, name, {
-						...(tools !== undefined ? { tools } : {}),
-						...(spawns !== undefined ? { spawns } : {}),
-					});
-				}
-				continue;
-			}
 			if (name === "default") {
 				return yield* Effect.fail(
 					new AgentRegistryConfigError({
-						message: `Invalid settings in ${agentPath}: default mode is not a spawnable agent and does not accept agent settings`,
+						message: `Invalid settings in ${agentPath}: default is not a spawnable agent and does not accept agent settings`,
 					}),
 				);
 			}
@@ -511,19 +413,13 @@ interface AgentSummary {
 export class AgentRegistry {
 	private readonly definitions: Map<string, AgentDefinition>;
 	private readonly settingsOverrides: Map<string, AgentSettingsOverride>;
-	private readonly modeAgents: Map<PromptModePresetName, AgentDefinition>;
-	private readonly cwd: string;
 
 	private constructor(args: {
 		definitions: Map<string, AgentDefinition>;
 		settingsOverrides: Map<string, AgentSettingsOverride>;
-		modeAgents: Map<PromptModePresetName, AgentDefinition>;
-		cwd: string;
 	}) {
 		this.definitions = args.definitions;
 		this.settingsOverrides = args.settingsOverrides;
-		this.modeAgents = args.modeAgents;
-		this.cwd = args.cwd;
 	}
 
 	static load(
@@ -595,18 +491,9 @@ export class AgentRegistry {
 				definitions.set(name, definition);
 			}
 
-			const modeAgentEntries = yield* Effect.all(
-				(["smart", "deep", "rush", "plan"] as const).map((mode) =>
-					buildModeAgentDefinition(mode, cwd).pipe(Effect.map((definition) => [mode, definition] as const)),
-				),
-			);
-			const modeAgents = new Map<PromptModePresetName, AgentDefinition>(modeAgentEntries);
-
 			return new AgentRegistry({
 				definitions,
 				settingsOverrides: yield* loadAgentSettings(cwd),
-				modeAgents,
-				cwd,
 			});
 		}).pipe(
 			Effect.mapError((cause) =>
@@ -621,10 +508,6 @@ export class AgentRegistry {
 	}
 
 	get(name: string): AgentDefinition | undefined {
-		if (isPromptModePresetName(name)) {
-			return this.modeAgents.get(name);
-		}
-
 		if (name === "default") {
 			return undefined;
 		}
@@ -633,15 +516,11 @@ export class AgentRegistry {
 	}
 
 	has(name: string): boolean {
-		if (isPromptModePresetName(name)) {
-			return this.modeAgents.has(name);
-		}
-
 		return name === "default" ? false : this.definitions.has(name);
 	}
 
 	names(): string[] {
-		const names = new Set<string>([...this.definitions.keys(), ...this.modeAgents.keys()]);
+		const names = new Set<string>(this.definitions.keys());
 		return Array.from(names).sort();
 	}
 
@@ -653,18 +532,6 @@ export class AgentRegistry {
 	}
 
 	resolve(name: string): AgentDefinition | undefined {
-		if (isPromptModePresetName(name)) {
-			const def = this.modeAgents.get(name);
-			if (!def) return undefined;
-			const override = this.settingsOverrides.get(name);
-			if (!override) return def;
-			return {
-				...def,
-				...(override.tools !== undefined ? { tools: override.tools } : {}),
-				...(override.spawns !== undefined ? { spawns: override.spawns } : {}),
-			};
-		}
-
 		if (name === "default") {
 			return undefined;
 		}

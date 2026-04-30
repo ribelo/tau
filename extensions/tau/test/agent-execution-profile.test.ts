@@ -4,15 +4,8 @@ import { describe, expect, it } from "vitest";
 import { resolveAgentExecutionAtSpawn } from "../src/agent/execution-profile.js";
 import type { AgentDefinition } from "../src/agent/types.js";
 import type { ExecutionProfile, ExecutionSessionState } from "../src/execution/schema.js";
-import { resolvePromptModePresets } from "../src/prompt/modes.js";
 
 const parentExecutionState: ExecutionSessionState = {
-	selector: {
-		mode: "deep",
-	},
-	modelsByMode: {
-		smart: "openai-codex/gpt-5.4",
-	},
 	policy: {
 		tools: {
 			kind: "inherit",
@@ -21,14 +14,8 @@ const parentExecutionState: ExecutionSessionState = {
 };
 
 const parentExecutionProfile: ExecutionProfile = {
-	selector: {
-		mode: "deep",
-	},
-	promptProfile: {
-		mode: "deep",
-		model: "anthropic/claude-opus-4-5",
-		thinking: "high",
-	},
+	model: "anthropic/claude-opus-4-5",
+	thinking: "high",
 	policy: {
 		tools: {
 			kind: "inherit",
@@ -37,18 +24,17 @@ const parentExecutionProfile: ExecutionProfile = {
 };
 
 describe("resolveAgentExecutionAtSpawn", () => {
-	it("resolves mode agents using parent mode-model assignments", async () => {
+	it("resolves smart as an ordinary agent using its definition model", async () => {
 		const definition: AgentDefinition = {
 			name: "smart",
 			description: "Smart agent",
-			models: [{ model: "inherit", thinking: "inherit" }],
+			models: [{ model: "anthropic/claude-opus-4-5", thinking: "medium" }],
 			tools: ["read", "bash"],
 			spawns: "*",
 			sandbox: { preset: "workspace-write" },
 			systemPrompt: "smart",
 		};
 
-		const presets = await Effect.runPromise(resolvePromptModePresets(process.cwd()));
 		const resolved = await Effect.runPromise(
 			resolveAgentExecutionAtSpawn({
 				definition,
@@ -59,16 +45,13 @@ describe("resolveAgentExecutionAtSpawn", () => {
 		);
 
 		expect(resolved.definition.models[0]).toEqual({
-			model: "openai-codex/gpt-5.4",
-			thinking: presets.smart.thinking,
+			model: "anthropic/claude-opus-4-5",
+			thinking: "medium",
 		});
-		expect(resolved.executionProfile.promptProfile).toEqual({
-			mode: "smart",
-			model: "openai-codex/gpt-5.4",
-			thinking: presets.smart.thinking,
+		expect(resolved.executionProfile).toMatchObject({
+			model: "anthropic/claude-opus-4-5",
+			thinking: "medium",
 		});
-		expect(resolved.executionState.selector.mode).toBe("smart");
-		expect(resolved.executionState.modelsByMode?.smart).toBe("openai-codex/gpt-5.4");
 		expect(resolved.executionState.policy.tools.kind).toBe("allowlist");
 	});
 
@@ -98,8 +81,7 @@ describe("resolveAgentExecutionAtSpawn", () => {
 			model: "anthropic/claude-opus-4-5",
 			thinking: "high",
 		});
-		expect(resolved.executionProfile.promptProfile).toEqual({
-			mode: "default",
+		expect(resolved.executionProfile).toMatchObject({
 			model: "anthropic/claude-opus-4-5",
 			thinking: "high",
 		});

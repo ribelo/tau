@@ -27,7 +27,7 @@ export const RALPH_FIELD_CLASSIFICATIONS: ReadonlyArray<FieldClassificationEntry
 	{ field: "metrics", classification: "system", description: "Token cost and runtime metrics" },
 	{ field: "pendingDecision", classification: "runtime", description: "Continue/finish decision from current iteration" },
 	{ field: "lastReflectionAt", classification: "runtime", description: "Iteration of last reflection checkpoint" },
-	{ field: "pinnedExecutionProfile", classification: "configurable", description: "Pinned mode/model/thinking execution profile" },
+	{ field: "pinnedExecutionProfile", classification: "configurable", description: "Pinned model/thinking execution profile" },
 	{ field: "sandboxProfile", classification: "configurable", description: "Pinned sandbox preset and overrides" },
 
 	// Configurable fields

@@ -529,7 +529,7 @@ broken
 		fs.rmSync(tempProject, { recursive: true, force: true });
 	});
 
-	it("accepts tool allowlist overrides for virtual mode agents", async () => {
+	it("accepts tool allowlist overrides for bundled agents", async () => {
 		const tempHome = mkdtemp("tau-home-");
 		const tempProject = mkdtemp("tau-project-");
 
@@ -558,7 +558,7 @@ broken
 		fs.rmSync(tempProject, { recursive: true, force: true });
 	});
 
-	it("accepts spawn restrictions for virtual mode agents", async () => {
+	it("accepts spawn restrictions for bundled smart agent", async () => {
 		const tempHome = mkdtemp("tau-home-");
 		const tempProject = mkdtemp("tau-project-");
 
@@ -587,7 +587,7 @@ broken
 		fs.rmSync(tempProject, { recursive: true, force: true });
 	});
 
-	it("fails when virtual mode agents override unsupported keys", async () => {
+	it("accepts model overrides for bundled smart agent", async () => {
 		const tempHome = mkdtemp("tau-home-");
 		const tempProject = mkdtemp("tau-project-");
 
@@ -613,18 +613,15 @@ broken
 
 		vi.stubEnv("HOME", tempHome);
 
-		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrowError(
-			AgentRegistryConfigError,
-		);
-		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrow(
-			/mode agents only support tools and spawns here/,
-		);
+		const registry = await Effect.runPromise(AgentRegistry.load(tempProject));
+		const resolved = registry.resolve("smart");
+		expect(resolved?.models).toEqual([{ model: "inherit", thinking: "inherit" }]);
 
 		fs.rmSync(tempHome, { recursive: true, force: true });
 		fs.rmSync(tempProject, { recursive: true, force: true });
 	});
 
-	it("fails when mode agents are defined as markdown files", async () => {
+	it("allows smart to be defined as a markdown agent", async () => {
 		const tempHome = mkdtemp("tau-home-");
 		const tempProject = mkdtemp("tau-project-");
 
@@ -635,12 +632,8 @@ broken
 
 		vi.stubEnv("HOME", tempHome);
 
-		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrowError(
-			AgentRegistryConfigError,
-		);
-		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrow(
-			/prompt mode names .* reserved/,
-		);
+		const registry = await Effect.runPromise(AgentRegistry.load(tempProject));
+		expect(registry.resolve("smart")?.systemPrompt).toBe("You are smart.");
 
 		fs.rmSync(tempHome, { recursive: true, force: true });
 		fs.rmSync(tempProject, { recursive: true, force: true });
@@ -661,7 +654,7 @@ broken
 			AgentRegistryConfigError,
 		);
 		await expect(Effect.runPromise(AgentRegistry.load(tempProject))).rejects.toThrow(
-			/default is not spawnable/,
+			/default is not a spawnable agent/,
 		);
 
 		fs.rmSync(tempHome, { recursive: true, force: true });

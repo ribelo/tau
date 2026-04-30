@@ -9,7 +9,6 @@ import {
 	Stream,
 	SubscriptionRef,
 } from "effect";
-import type { PromptModeProfile } from "../prompt/profile.js";
 import {
 	mergeExecutionSessionState,
 	normalizeExecutionState,
@@ -25,8 +24,6 @@ export interface ExecutionState {
 	readonly transient: (patch: Partial<ExecutionPersistedState>) => void;
 	readonly hydrate: (patch: Partial<ExecutionPersistedState>) => void;
 	readonly update: (patch: Partial<ExecutionPersistedState>) => void;
-	readonly getDefaultProfile: () => Option.Option<PromptModeProfile>;
-	readonly setDefaultProfile: (profile: Option.Option<PromptModeProfile>) => void;
 	readonly changes: Stream.Stream<ExecutionSessionState>;
 	readonly setup: Effect.Effect<void, never, Scope.Scope>;
 }
@@ -41,7 +38,6 @@ export const ExecutionStateLive = Layer.effect(
 		const snapshotRef = yield* SubscriptionRef.make<ExecutionSessionState>(initialSnapshot);
 		const runtimeSnapshotRef = MutableRef.make(initialSnapshot);
 		const transientSnapshotRef = MutableRef.make<Option.Option<ExecutionSessionState>>(Option.none());
-		const defaultProfileRef = MutableRef.make<Option.Option<PromptModeProfile>>(Option.none());
 		const syncQueue = yield* Queue.sliding<ExecutionSessionState>(1);
 
 		const publishSnapshot = (next: ExecutionSessionState): ExecutionSessionState => {
@@ -112,10 +108,6 @@ export const ExecutionStateLive = Layer.effect(
 			},
 			update: (patch) => {
 				updateSnapshot(patch);
-			},
-			getDefaultProfile: () => MutableRef.get(defaultProfileRef),
-			setDefaultProfile: (profile) => {
-				MutableRef.set(defaultProfileRef, profile);
 			},
 			changes: SubscriptionRef.changes(snapshotRef),
 			setup: Effect.gen(function* () {

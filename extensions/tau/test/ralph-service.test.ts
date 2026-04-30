@@ -25,7 +25,7 @@ import {
 } from "../src/loops/schema.js";
 import { LoopRepoLive } from "../src/loops/repo.js";
 import { LoopEngineLive } from "../src/services/loop-engine.js";
-import { PromptModes } from "../src/services/prompt-modes.js";
+import { ExecutionRuntime } from "../src/services/execution-runtime.js";
 import {
 	Ralph,
 	RalphLive,
@@ -33,11 +33,10 @@ import {
 } from "../src/services/ralph.js";
 import {
 	makeExecutionProfile,
-	makePromptModesStubLayer,
+	makeExecutionRuntimeStubLayer,
 	makeRalphMetrics,
 	makeCapabilityContract,
 } from "./ralph-test-helpers.js";
-
 type EventHandler = (event: unknown, ctx: ExtensionContext) => unknown;
 
 type RegisteredCommand = {
@@ -60,7 +59,7 @@ type SentUserMessage = {
 };
 
 type RalphRuntimeHarness = {
-	readonly run: <A, E>(effect: Effect.Effect<A, E, Ralph | PromptModes>) => Promise<A>;
+	readonly run: <A, E>(effect: Effect.Effect<A, E, Ralph | ExecutionRuntime>) => Promise<A>;
 	readonly dispose: () => Promise<void>;
 };
 
@@ -166,14 +165,14 @@ type LoopStatus = "active" | "paused" | "completed";
 
 function makeRalphRuntime(
 	activeSubagents: boolean,
-	promptModesLayer: Layer.Layer<PromptModes, never, never> = makePromptModesStubLayer(),
+	executionRuntimeLayer: Layer.Layer<ExecutionRuntime, never, never> = makeExecutionRuntimeStubLayer(),
 ): RalphRuntimeHarness {
 	const layer = RalphLive({
 		hasActiveSubagents: () => Effect.succeed(activeSubagents),
 	}).pipe(
 		Layer.provideMerge(RalphRepoLive),
 		Layer.provideMerge(LoopEngineLive.pipe(Layer.provideMerge(LoopRepoLive))),
-		Layer.provideMerge(promptModesLayer),
+		Layer.provideMerge(executionRuntimeLayer),
 		Layer.provide(NodeFileSystem.layer),
 	);
 	const runtime = ManagedRuntime.make(layer);
@@ -861,24 +860,18 @@ describe("ralph service behavior freeze", () => {
 		tempDirs.push(cwd);
 
 		const executionProfile = makeExecutionProfile();
-		const failingPromptModesLayer = Layer.succeed(
-			PromptModes,
-			PromptModes.of({
+		const failingExecutionRuntimeLayer = Layer.succeed(
+			ExecutionRuntime,
+			ExecutionRuntime.of({
 				setup: Effect.void,
-				captureCurrentProfile: () => Effect.succeed(executionProfile.promptProfile),
 				captureCurrentExecutionProfile: () => Effect.succeed(executionProfile),
-				applyProfile: (profile) =>
-					Effect.succeed({
-						applied: true as const,
-						profile,
-					}),
 				applyExecutionProfile: () =>
 					Effect.die(new Error("command context disposed during applyExecutionProfile")),
 			}),
 		);
 
 		const piHarness = makePiHarness();
-		const ralphRuntime = makeRalphRuntime(false, failingPromptModesLayer);
+		const ralphRuntime = makeRalphRuntime(false, failingExecutionRuntimeLayer);
 		runtimes.push(ralphRuntime);
 		initRalph(piHarness.pi, ralphRuntime.run);
 
@@ -917,34 +910,28 @@ describe("ralph service behavior freeze", () => {
 		const controllerHarness = makePiHarness();
 		const childHarness = makePiHarness();
 		const executionProfile = makeExecutionProfile();
-		const controllerPromptModesLayer = Layer.succeed(
-			PromptModes,
-			PromptModes.of({
+		const controllerExecutionRuntimeLayer = Layer.succeed(
+			ExecutionRuntime,
+			ExecutionRuntime.of({
 				setup: Effect.void,
-				captureCurrentProfile: () => Effect.succeed(executionProfile.promptProfile),
 				captureCurrentExecutionProfile: () => Effect.succeed(executionProfile),
-				applyProfile: (nextProfile) =>
-					Effect.succeed({ applied: true as const, profile: nextProfile }),
 				applyExecutionProfile: () => Effect.die(new Error("stale controller pi")),
 			}),
 		);
-		const childPromptModesLayer = Layer.succeed(
-			PromptModes,
-			PromptModes.of({
+		const childExecutionRuntimeLayer = Layer.succeed(
+			ExecutionRuntime,
+			ExecutionRuntime.of({
 				setup: Effect.void,
-				captureCurrentProfile: () => Effect.succeed(executionProfile.promptProfile),
 				captureCurrentExecutionProfile: () => Effect.succeed(executionProfile),
-				applyProfile: (nextProfile) =>
-					Effect.succeed({ applied: true as const, profile: nextProfile }),
 				applyExecutionProfile: (nextProfile, ctx) =>
 					Effect.sync(() => {
 						ctx.modelRegistry.getAll();
-						return { applied: true as const, profile: nextProfile.promptProfile };
+						return { applied: true as const, profile: nextProfile };
 					}),
 			}),
 		);
-		const controllerRuntime = makeRalphRuntime(false, controllerPromptModesLayer);
-		const childRuntime = makeRalphRuntime(false, childPromptModesLayer);
+		const controllerRuntime = makeRalphRuntime(false, controllerExecutionRuntimeLayer);
+		const childRuntime = makeRalphRuntime(false, childExecutionRuntimeLayer);
 		runtimes.push(controllerRuntime, childRuntime);
 		initRalph(controllerHarness.pi, controllerRuntime.run);
 		initRalph(childHarness.pi, childRuntime.run);
@@ -1049,34 +1036,28 @@ describe("ralph service behavior freeze", () => {
 		});
 		const childHarness = makePiHarness();
 		const executionProfile = makeExecutionProfile();
-		const controllerPromptModesLayer = Layer.succeed(
-			PromptModes,
-			PromptModes.of({
+		const controllerExecutionRuntimeLayer = Layer.succeed(
+			ExecutionRuntime,
+			ExecutionRuntime.of({
 				setup: Effect.void,
-				captureCurrentProfile: () => Effect.succeed(executionProfile.promptProfile),
 				captureCurrentExecutionProfile: () => Effect.succeed(executionProfile),
-				applyProfile: (nextProfile) =>
-					Effect.succeed({ applied: true as const, profile: nextProfile }),
 				applyExecutionProfile: () => Effect.die(new Error("stale controller pi")),
 			}),
 		);
-		const childPromptModesLayer = Layer.succeed(
-			PromptModes,
-			PromptModes.of({
+		const childExecutionRuntimeLayer = Layer.succeed(
+			ExecutionRuntime,
+			ExecutionRuntime.of({
 				setup: Effect.void,
-				captureCurrentProfile: () => Effect.succeed(executionProfile.promptProfile),
 				captureCurrentExecutionProfile: () => Effect.succeed(executionProfile),
-				applyProfile: (nextProfile) =>
-					Effect.succeed({ applied: true as const, profile: nextProfile }),
 				applyExecutionProfile: (nextProfile, ctx) =>
 					Effect.sync(() => {
 						ctx.modelRegistry.getAll();
-						return { applied: true as const, profile: nextProfile.promptProfile };
+						return { applied: true as const, profile: nextProfile };
 					}),
 			}),
 		);
-		const controllerRuntime = makeRalphRuntime(false, controllerPromptModesLayer);
-		const childRuntime = makeRalphRuntime(false, childPromptModesLayer);
+		const controllerRuntime = makeRalphRuntime(false, controllerExecutionRuntimeLayer);
+		const childRuntime = makeRalphRuntime(false, childExecutionRuntimeLayer);
 		runtimes.push(controllerRuntime, childRuntime);
 		initRalph(controllerHarness.pi, controllerRuntime.run);
 		initRalph(childHarness.pi, childRuntime.run);
@@ -1308,34 +1289,28 @@ describe("ralph service behavior freeze", () => {
 		});
 		const childHarness = makePiHarness();
 		const executionProfile = makeExecutionProfile();
-		const controllerPromptModesLayer = Layer.succeed(
-			PromptModes,
-			PromptModes.of({
+		const controllerExecutionRuntimeLayer = Layer.succeed(
+			ExecutionRuntime,
+			ExecutionRuntime.of({
 				setup: Effect.void,
-				captureCurrentProfile: () => Effect.succeed(executionProfile.promptProfile),
 				captureCurrentExecutionProfile: () => Effect.succeed(executionProfile),
-				applyProfile: (nextProfile) =>
-					Effect.succeed({ applied: true as const, profile: nextProfile }),
 				applyExecutionProfile: () => Effect.die(new Error("stale controller pi")),
 			}),
 		);
-		const childPromptModesLayer = Layer.succeed(
-			PromptModes,
-			PromptModes.of({
+		const childExecutionRuntimeLayer = Layer.succeed(
+			ExecutionRuntime,
+			ExecutionRuntime.of({
 				setup: Effect.void,
-				captureCurrentProfile: () => Effect.succeed(executionProfile.promptProfile),
 				captureCurrentExecutionProfile: () => Effect.succeed(executionProfile),
-				applyProfile: (nextProfile) =>
-					Effect.succeed({ applied: true as const, profile: nextProfile }),
 				applyExecutionProfile: (nextProfile, ctx) =>
 					Effect.sync(() => {
 						ctx.modelRegistry.getAll();
-						return { applied: true as const, profile: nextProfile.promptProfile };
+						return { applied: true as const, profile: nextProfile };
 					}),
 			}),
 		);
-		const controllerRuntime = makeRalphRuntime(false, controllerPromptModesLayer);
-		const childRuntime = makeRalphRuntime(false, childPromptModesLayer);
+		const controllerRuntime = makeRalphRuntime(false, controllerExecutionRuntimeLayer);
+		const childRuntime = makeRalphRuntime(false, childExecutionRuntimeLayer);
 		runtimes.push(controllerRuntime, childRuntime);
 		initRalph(controllerHarness.pi, controllerRuntime.run);
 		initRalph(childHarness.pi, childRuntime.run);

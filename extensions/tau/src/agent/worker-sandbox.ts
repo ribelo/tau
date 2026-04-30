@@ -12,11 +12,7 @@ export function withWorkerSandboxOverride(
 	return mergePersistedState(base, {
 		sandbox: sandboxPatch,
 		execution: {
-			selector: executionState.selector,
 			policy: executionState.policy,
-			...(executionState.modelsByMode === undefined
-				? {}
-				: { modelsByMode: executionState.modelsByMode }),
 		},
 	});
 }

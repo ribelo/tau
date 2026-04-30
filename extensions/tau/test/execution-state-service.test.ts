@@ -53,16 +53,18 @@ async function makeExecutionState(initial: TauPersistedState) {
 }
 
 describe("execution-state service", () => {
-	it("hydrates canonical selector from execution state", async () => {
+	it("hydrates canonical policy from execution state", async () => {
 		const { service } = await makeExecutionState({
 			execution: {
-				selector: { mode: "smart" },
+				policy: { tools: { kind: "allowlist", tools: ["read"] } },
 			},
 		});
 
 		await Effect.runPromise(Effect.scoped(service.setup));
 
-		expect(service.getSnapshot().selector.mode).toBe("smart");
+		expect(service.getSnapshot().policy).toEqual({
+			tools: { kind: "allowlist", tools: ["read"] },
+		});
 	});
 
 	it("persists canonical execution updates", async () => {
@@ -70,26 +72,23 @@ describe("execution-state service", () => {
 
 		await Effect.runPromise(Effect.scoped(service.setup));
 		service.update({
-			selector: {
-				mode: "deep",
-			},
+			policy: { tools: { kind: "allowlist", tools: ["bash"] } },
 		});
 
-		expect(getPersisted().execution?.selector?.mode).toBe("deep");
+		expect(getPersisted().execution?.policy).toEqual({
+			tools: { kind: "allowlist", tools: ["bash"] },
+		});
 	});
 
 	it("applies transient execution updates without mutating persisted snapshot", async () => {
 		const { service, getPersisted } = await makeExecutionState({
 			execution: {
-				selector: { mode: "default" },
+				policy: { tools: { kind: "inherit" } },
 			},
 		});
 
 		await Effect.runPromise(Effect.scoped(service.setup));
 		service.transient({
-			selector: {
-				mode: "deep",
-			},
 			policy: {
 				tools: {
 					kind: "allowlist",
@@ -98,24 +97,20 @@ describe("execution-state service", () => {
 			},
 		});
 
-		expect(service.getSnapshot().selector.mode).toBe("deep");
 		expect(service.getSnapshot().policy.tools.kind).toBe("allowlist");
-		expect(getPersisted().execution?.selector?.mode).toBe("default");
 		expect(getPersisted().execution?.policy?.tools.kind ?? "inherit").toBe("inherit");
 	});
 
 	it("keeps transient execution override across unrelated persistence updates", async () => {
 		const { service, mutatePersisted } = await makeExecutionState({
 			execution: {
-				selector: { mode: "default" },
+				policy: { tools: { kind: "inherit" } },
 			},
 		});
 
 		await Effect.runPromise(Effect.scoped(service.setup));
 		service.transient({
-			selector: {
-				mode: "deep",
-			},
+			policy: { tools: { kind: "allowlist", tools: ["read"] } },
 		});
 
 		mutatePersisted({
@@ -125,9 +120,9 @@ describe("execution-state service", () => {
 		});
 
 		await Effect.runPromise(Effect.sleep("10 millis"));
-		expect(service.getSnapshot().selector.mode).toBe("deep");
+		expect(service.getSnapshot().policy.tools.kind).toBe("allowlist");
 
 		service.refreshFromPersistence();
-		expect(service.getSnapshot().selector.mode).toBe("default");
+		expect(service.getSnapshot().policy.tools.kind).toBe("inherit");
 	});
 });

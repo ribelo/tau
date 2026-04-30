@@ -13,7 +13,7 @@ import { Effect } from "effect";
 
 import type { ApprovalBroker } from "../approval-broker.js";
 import { setWorkerApprovalBroker } from "../approval-broker.js";
-import { isPromptModeThinkingLevel } from "../model-spec.js";
+import { isExecutionThinkingLevel } from "../model-spec.js";
 import type { AgentError } from "../services.js";
 import { applyAgentToolAllowlist } from "../tool-allowlist.js";
 import type { AgentDefinition, ModelSpec } from "../types.js";
@@ -53,17 +53,13 @@ export function syncExecutionProfileToSession(
 		return profile;
 	}
 
-	const thinking = isPromptModeThinkingLevel(session.thinkingLevel)
+	const thinking = isExecutionThinkingLevel(session.thinkingLevel)
 		? session.thinkingLevel
-		: profile.promptProfile.thinking;
+		: profile.thinking;
 
 	return makeExecutionProfile({
-		selector: profile.selector,
-		promptProfile: {
-			mode: profile.promptProfile.mode,
-			model: modelId,
-			thinking,
-		},
+		model: modelId,
+		thinking,
 		policy: profile.policy,
 	});
 }

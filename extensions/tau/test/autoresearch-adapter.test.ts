@@ -19,13 +19,13 @@ import initAutoresearch from "../src/autoresearch/index.js";
 import { LoopRepoLive } from "../src/loops/repo.js";
 import { LoopEngine } from "../src/services/loop-engine.js";
 import { LoopEngineLive } from "../src/services/loop-engine.js";
-import { PromptModes } from "../src/services/prompt-modes.js";
+import { ExecutionRuntime } from "../src/services/execution-runtime.js";
 import { Sandbox } from "../src/services/sandbox.js";
 import {
 	AutoresearchLoopRunner,
 	AutoresearchLoopRunnerLive,
 } from "../src/services/autoresearch-loop-runner.js";
-import { makePromptModesStubLayer } from "./ralph-test-helpers.js";
+import { makeExecutionRuntimeStubLayer } from "./ralph-test-helpers.js";
 
 type EventHandler = (event: unknown, ctx: ExtensionContext) => unknown;
 
@@ -83,7 +83,7 @@ function renderWidgetUpdate(update: unknown): string {
 
 type RuntimeHarness = {
 	readonly run: <A, E>(
-		effect: Effect.Effect<A, E, LoopEngine | Sandbox | PromptModes | AutoresearchLoopRunner>,
+		effect: Effect.Effect<A, E, LoopEngine | Sandbox | ExecutionRuntime | AutoresearchLoopRunner>,
 	) => Promise<A>;
 	readonly dispose: () => Promise<void>;
 };
@@ -120,7 +120,7 @@ function makeRuntime(): RuntimeHarness {
 
 	const layer = LoopEngineLive.pipe(
 		Layer.provideMerge(LoopRepoLive),
-		Layer.provideMerge(makePromptModesStubLayer()),
+		Layer.provideMerge(makeExecutionRuntimeStubLayer()),
 		Layer.provideMerge(sandboxLayer),
 		Layer.provideMerge(AutoresearchLoopRunnerLive),
 		Layer.provide(NodeFileSystem.layer),

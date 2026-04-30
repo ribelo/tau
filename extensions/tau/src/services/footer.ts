@@ -16,8 +16,6 @@ import { BacklogRepository } from "../backlog/services.js";
 import type { Issue } from "../backlog/schema.js";
 import { isRecord } from "../shared/json.js";
 import { findNearestWorkspaceRoot } from "../shared/discovery.js";
-import { normalizeExecutionState } from "../execution/schema.js";
-import { Persistence } from "./persistence.js";
 import { Sandbox } from "./sandbox.js";
 import { DEFAULT_SANDBOX_CONFIG } from "../sandbox/config.js";
 
@@ -183,11 +181,9 @@ export const FooterLive = Layer.effect(
 	Effect.gen(function* () {
 		const pi = yield* PiAPI;
 		const sandbox = yield* Sandbox;
-		const persistence = yield* Persistence;
 		const currentHygieneRef = makeFooterHygieneRef();
 		let currentTotalCost = 0;
 		let currentSandboxConfig = yield* sandbox.getConfig;
-		let currentPersisted = persistence.getSnapshot();
 		let currentCwd: string | undefined;
 
 		const emitFooterChanged = () => pi.events.emit("tau:footer:changed", null);
@@ -234,16 +230,6 @@ export const FooterLive = Layer.effect(
 					),
 					Effect.forkScoped,
 				);
-				yield* persistence.changes.pipe(
-					Stream.runForEach((persisted) =>
-						Effect.sync(() => {
-							currentPersisted = persisted;
-							emitFooterChanged();
-						}),
-					),
-					Effect.forkScoped,
-				);
-
 				yield* Effect.sync(() => {
 					const updateSessionFooterState = (_event: unknown, ctx: ExtensionContext) => {
 						const cwdChanged = currentCwd !== undefined && currentCwd !== ctx.cwd;
@@ -277,9 +263,6 @@ export const FooterLive = Layer.effect(
 										const sandboxConfig = currentSandboxConfig;
 										const hygiene = readFooterHygiene(currentHygieneRef);
 										const totalCost = currentTotalCost;
-										const persisted = currentPersisted;
-										const modeLabel = normalizeExecutionState(persisted.execution).selector.mode;
-
 										// Single sandbox mode dot (matches codex behavior)
 										const fsMode =
 											sandboxConfig.filesystemMode ??
@@ -319,8 +302,7 @@ export const FooterLive = Layer.effect(
 										const model = ctx.model?.id ?? "no-model";
 										const thinkingLabel = pi.getThinkingLevel() ?? "off";
 										const thinkingStr = ` • ${thinkingLabel}`;
-										const modeStr = ` • ${modeLabel}`;
-										const modelAndMetaRaw = `${model}${thinkingStr}${modeStr}`;
+										const modelAndMetaRaw = `${model}${thinkingStr}`;
 										const middleRaw = providerLabel
 											? `${providerLabel} • ${modelAndMetaRaw}`
 											: modelAndMetaRaw;

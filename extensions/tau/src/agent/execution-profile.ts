@@ -4,18 +4,12 @@ import {
 	type ExecutionPolicy,
 	type ExecutionProfile,
 	type ExecutionSessionState,
-	type PromptModePresetName,
 	makeExecutionProfile,
 } from "../execution/schema.js";
 import {
-	isPromptModePresetName,
-	resolvePromptModePresets,
-} from "../prompt/modes.js";
-import { resolveModeModelCandidates } from "../services/execution-resolver.js";
-import {
-	type PromptModeThinkingLevel,
+	type ExecutionThinkingLevel,
 	isFullyQualifiedModelId,
-	isPromptModeThinkingLevel,
+	isExecutionThinkingLevel,
 } from "./model-spec.js";
 import { AgentError } from "./services.js";
 import type { AgentDefinition, ModelSpec } from "./types.js";
@@ -72,10 +66,10 @@ function resolveConcreteModelSpec(
 	spec: ModelSpec,
 	index: number,
 	parentExecutionProfile: ExecutionProfile,
-): Effect.Effect<{ readonly model: string; readonly thinking: PromptModeThinkingLevel }, AgentError> {
+): Effect.Effect<{ readonly model: string; readonly thinking: ExecutionThinkingLevel }, AgentError> {
 	const model =
 		spec.model === "inherit"
-			? parentExecutionProfile.promptProfile.model
+			? parentExecutionProfile.model
 			: spec.model;
 
 	if (!isFullyQualifiedModelId(model)) {
@@ -90,10 +84,10 @@ function resolveConcreteModelSpec(
 
 	const thinking =
 		spec.thinking === undefined || spec.thinking === "inherit"
-			? parentExecutionProfile.promptProfile.thinking
+			? parentExecutionProfile.thinking
 			: spec.thinking;
 
-	if (!isPromptModeThinkingLevel(thinking)) {
+	if (!isExecutionThinkingLevel(thinking)) {
 		return Effect.fail(
 			new AgentError({
 				message:
@@ -112,7 +106,7 @@ function resolveConcreteModelSpec(
 function resolveConcreteModelSpecs(
 	definition: AgentDefinition,
 	parentExecutionProfile: ExecutionProfile,
-): Effect.Effect<readonly { readonly model: string; readonly thinking: PromptModeThinkingLevel }[], AgentError> {
+): Effect.Effect<readonly { readonly model: string; readonly thinking: ExecutionThinkingLevel }[], AgentError> {
 	if (definition.models.length === 0) {
 		return Effect.fail(
 			new AgentError({
@@ -129,109 +123,6 @@ function resolveConcreteModelSpecs(
 			parentExecutionProfile,
 		),
 	);
-}
-
-function withModelsByMode(
-	state: ExecutionSessionState,
-	overrides: Partial<ExecutionSessionState["modelsByMode"]> = {},
-): ExecutionSessionState["modelsByMode"] | undefined {
-	const base = state.modelsByMode;
-	if (base === undefined && Object.keys(overrides).length === 0) {
-		return undefined;
-	}
-
-	if (base === undefined) {
-		return {
-			...overrides,
-		};
-	}
-
-	return {
-		...base,
-		...overrides,
-	};
-}
-
-function resolveModeAgentExecution(
-	mode: PromptModePresetName,
-	input: ResolveAgentExecutionInput,
-): Effect.Effect<ResolvedAgentExecution, AgentError> {
-	return Effect.gen(function* () {
-		const presets = yield* resolvePromptModePresets(input.cwd).pipe(
-			Effect.mapError(
-				(cause) =>
-					new AgentError({
-						message:
-							cause instanceof Error
-								? cause.message
-								: `Could not load prompt mode presets for ${mode}`,
-					}),
-			),
-		);
-
-		const preset = presets[mode];
-		const candidates = resolveModeModelCandidates(
-			input.parentExecutionState,
-			mode,
-			preset.model,
-		);
-		const resolvedModel = candidates.find((candidate) => isFullyQualifiedModelId(candidate));
-		if (resolvedModel === undefined) {
-			return yield* Effect.fail(
-				new AgentError({
-					message: `Mode agent "${mode}" could not resolve a valid model id`,
-				}),
-			);
-		}
-
-		if (!isPromptModeThinkingLevel(preset.thinking)) {
-			return yield* Effect.fail(
-				new AgentError({
-					message: `Mode agent "${mode}" resolved an invalid thinking level: ${preset.thinking}`,
-				}),
-			);
-		}
-
-		const executionPolicy = yield* resolveExecutionPolicy(
-			input.definition,
-			input.parentExecutionState,
-		);
-
-		const resolvedDefinition: AgentDefinition = {
-			...input.definition,
-			models: [{
-				model: resolvedModel,
-				thinking: preset.thinking,
-			}],
-		};
-
-		const selector = { mode } as const;
-		const executionProfile = makeExecutionProfile({
-			selector,
-			promptProfile: {
-				mode,
-				model: resolvedModel,
-				thinking: preset.thinking,
-			},
-			policy: executionPolicy,
-		});
-
-		const modelsByMode = withModelsByMode(input.parentExecutionState, {
-			[mode]: resolvedModel,
-		});
-
-		const executionState: ExecutionSessionState = {
-			selector,
-			policy: executionPolicy,
-			...(modelsByMode === undefined ? {} : { modelsByMode }),
-		};
-
-		return {
-			definition: resolvedDefinition,
-			executionProfile,
-			executionState,
-		};
-	});
 }
 
 function resolveDefaultAgentExecution(
@@ -261,25 +152,14 @@ function resolveDefaultAgentExecution(
 			models: resolvedModels,
 		};
 
-		const selector = {
-			mode: "default",
-		} as const;
-
 		const executionProfile = makeExecutionProfile({
-			selector,
-			promptProfile: {
-				mode: "default",
-				model: firstModel.model,
-				thinking: firstModel.thinking,
-			},
+			model: firstModel.model,
+			thinking: firstModel.thinking,
 			policy: executionPolicy,
 		});
 
-		const modelsByMode = withModelsByMode(input.parentExecutionState);
 		const executionState: ExecutionSessionState = {
-			selector,
 			policy: executionPolicy,
-			...(modelsByMode === undefined ? {} : { modelsByMode }),
 		};
 
 		return {
@@ -293,9 +173,5 @@ function resolveDefaultAgentExecution(
 export function resolveAgentExecutionAtSpawn(
 	input: ResolveAgentExecutionInput,
 ): Effect.Effect<ResolvedAgentExecution, AgentError> {
-	if (isPromptModePresetName(input.definition.name)) {
-		return resolveModeAgentExecution(input.definition.name, input);
-	}
-
 	return resolveDefaultAgentExecution(input);
 }

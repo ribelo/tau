@@ -95,7 +95,7 @@ describe("ralph schema", () => {
 		}
 	});
 
-	it("accepts legacy promptProfile payloads as read-compat and normalizes to executionProfile", async () => {
+	it("rejects legacy promptProfile payloads", async () => {
 		const legacyState = {
 			name: encodedLoopState.name,
 			taskFile: encodedLoopState.taskFile,
@@ -118,9 +118,8 @@ describe("ralph schema", () => {
 			},
 		};
 
-		const decoded = await Effect.runPromise(decodeLoopState(legacyState));
-		expect(decoded.executionProfile.promptProfile.mode).toBe("smart");
-		expect(decoded.executionProfile.policy.tools.kind).toBe("inherit");
+		const result = await Effect.runPromise(Effect.exit(decodeLoopState(legacyState)));
+		expect(result._tag).toBe("Failure");
 	});
 
 	it("maps invalid JSON payloads to RalphContractValidationError", async () => {

@@ -60,14 +60,8 @@ const BASELINE_MD = `# Autoresearch Plan
 const BASELINE_SH = "#!/bin/bash\necho 'METRIC runtime_ms=100'";
 
 const TEST_EXECUTION_PROFILE = makeExecutionProfile({
-	selector: {
-		mode: "smart",
-	},
-	promptProfile: {
-		mode: "smart",
-		model: "openai/gpt-5",
-		thinking: "high",
-	},
+	model: "openai/gpt-5",
+	thinking: "high",
 	policy: {
 		tools: {
 			kind: "inherit",

@@ -60,16 +60,13 @@ async function setupPersistence(pi: ExtensionAPI): Promise<{
 }
 
 describe("persistence session_start", () => {
-	it("does not append active prompt selector into session state", async () => {
+	it("appends execution policy for interactive sessions", async () => {
 		const mock = makePiMock();
 		const persistence = await setupPersistence(mock.pi);
 
 		persistence.update({
 			execution: {
-				selector: { mode: "deep" },
-				modelsByMode: {
-					deep: "openai-codex/gpt-5.3-codex",
-				},
+				policy: { tools: { kind: "allowlist", tools: ["read"] } },
 			},
 		});
 
@@ -78,12 +75,10 @@ describe("persistence session_start", () => {
 			type: TAU_PERSISTED_STATE_TYPE,
 			data: {
 				execution: {
-					modelsByMode: {
-						deep: "openai-codex/gpt-5.3-codex",
-					},
 					policy: {
 						tools: {
-							kind: "inherit",
+							kind: "allowlist",
+							tools: ["read"],
 						},
 					},
 				},
@@ -103,10 +98,7 @@ describe("persistence session_start", () => {
 
 		persistence.update({
 			execution: {
-				selector: { mode: "deep" },
-				modelsByMode: {
-					deep: "openai-codex/gpt-5.3-codex",
-				},
+				policy: { tools: { kind: "allowlist", tools: ["read"] } },
 			},
 		});
 
@@ -117,10 +109,10 @@ describe("persistence session_start", () => {
 		});
 	});
 
-	it("keeps existing execution selector when session has no tau state", async () => {
+	it("keeps existing execution policy when session has no tau state", async () => {
 		const mock = makePiMock();
 		const persistence = await setupPersistence(mock.pi);
-		persistence.update({ execution: { selector: { mode: "deep" } } });
+		persistence.update({ execution: { policy: { tools: { kind: "allowlist", tools: ["read"] } } } });
 
 		const sessionStart = mock.handlers.get("session_start")?.[0];
 		expect(sessionStart).toBeTypeOf("function");
@@ -129,13 +121,13 @@ describe("persistence session_start", () => {
 		await Promise.resolve(sessionStart?.({ type: "session_start" }, ctx));
 
 		const state = persistence.getSnapshot();
-		expect(state.execution?.selector?.mode).toBe("deep");
+		expect(state.execution?.policy?.tools.kind).toBe("allowlist");
 	});
 
-	it("prefers session execution selector when tau state contains one", async () => {
+	it("prefers session execution policy when tau state contains one", async () => {
 		const mock = makePiMock();
 		const persistence = await setupPersistence(mock.pi);
-		persistence.update({ execution: { selector: { mode: "deep" } } });
+		persistence.update({ execution: { policy: { tools: { kind: "allowlist", tools: ["read"] } } } });
 
 		const sessionStart = mock.handlers.get("session_start")?.[0];
 		expect(sessionStart).toBeTypeOf("function");
@@ -144,19 +136,19 @@ describe("persistence session_start", () => {
 			{
 				type: "custom",
 				customType: TAU_PERSISTED_STATE_TYPE,
-				data: { execution: { selector: { mode: "smart" } } },
+				data: { execution: { policy: { tools: { kind: "require", tools: ["bash"] } } } },
 			},
 		]);
 		await Promise.resolve(sessionStart?.({ type: "session_start" }, ctx));
 
 		const state = persistence.getSnapshot();
-		expect(state.execution?.selector?.mode).toBe("smart");
+		expect(state.execution?.policy?.tools.kind).toBe("require");
 	});
 
 	it("uses deterministic default when session tau state contains empty execution", async () => {
 		const mock = makePiMock();
 		const persistence = await setupPersistence(mock.pi);
-		persistence.update({ execution: { selector: { mode: "deep" } } });
+		persistence.update({ execution: { policy: { tools: { kind: "allowlist", tools: ["read"] } } } });
 
 		const sessionStart = mock.handlers.get("session_start")?.[0];
 		expect(sessionStart).toBeTypeOf("function");
@@ -171,7 +163,7 @@ describe("persistence session_start", () => {
 		await Promise.resolve(sessionStart?.({ type: "session_start" }, ctx));
 
 		const state = persistence.getSnapshot();
-		expect(state.execution?.selector?.mode).toBe("default");
+		expect(state.execution?.policy?.tools.kind).toBe("inherit");
 	});
 
 	it("surfaces invalid session tau state instead of treating it as missing", async () => {

@@ -20,7 +20,7 @@ import { matchesKey, Text } from "@mariozechner/pi-tui";
 import { Cause, Effect, Option } from "effect";
 
 import { Sandbox } from "../services/sandbox.js";
-import { PromptModes } from "../services/prompt-modes.js";
+import { ExecutionRuntime } from "../services/execution-runtime.js";
 import { LoopEngine, type LoopEngineService } from "../services/loop-engine.js";
 import {
 	AutoresearchLoopRunner,
@@ -848,7 +848,7 @@ function buildRunExperimentText(details: RunDetails): string {
 export default function initAutoresearch(
 	pi: ExtensionAPI,
 	runEffect: <A, E>(
-		effect: Effect.Effect<A, E, LoopEngine | Sandbox | PromptModes | AutoresearchLoopRunner>,
+		effect: Effect.Effect<A, E, LoopEngine | Sandbox | ExecutionRuntime | AutoresearchLoopRunner>,
 	) => Promise<A>,
 ): void {
 	const withLoopEngine = <A, E>(
@@ -861,12 +861,12 @@ export default function initAutoresearch(
 			}),
 		);
 
-	const withPromptModes = <A, E>(
-		f: (service: PromptModes) => Effect.Effect<A, E, never>,
+	const withExecutionRuntime = <A, E>(
+		f: (service: ExecutionRuntime) => Effect.Effect<A, E, never>,
 	): Promise<A> =>
 		runEffect(
 			Effect.gen(function* () {
-				const service = yield* PromptModes;
+				const service = yield* ExecutionRuntime;
 				return yield* f(service);
 			}),
 		);
@@ -874,14 +874,14 @@ export default function initAutoresearch(
 	const captureCurrentExecutionProfile = (
 		ctx: Pick<ExtensionContext, "model">,
 	): Promise<ExecutionProfile | null> =>
-		withPromptModes((promptModes) => promptModes.captureCurrentExecutionProfile(ctx));
+		withExecutionRuntime((runtime) => runtime.captureCurrentExecutionProfile(ctx));
 
 	const applyExecutionProfileInSession = (
 		profile: ExecutionProfile,
 		ctx: ExtensionContext,
 	): Promise<{ readonly applied: true } | { readonly applied: false; readonly reason: string }> =>
-		withPromptModes((promptModes) =>
-			promptModes
+		withExecutionRuntime((runtime) =>
+			runtime
 				.applyExecutionProfile(profile, ctx, {
 					notifyOnSuccess: false,
 					persist: false,

@@ -3,10 +3,12 @@ import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 
 import type { AgentRegistry } from "../agent/agent-registry.js";
 import type { ExecutionProfile } from "../execution/schema.js";
-import { PromptModes } from "../services/prompt-modes.js";
+import { ExecutionRuntime } from "../services/execution-runtime.js";
 import { PiAPI } from "../effect/pi.js";
 import { LoopRepo } from "../loops/repo.js";
 import type { RalphLoopPersistedState } from "../loops/schema.js";
+import type { ResolvedSandboxConfig } from "../sandbox/config.js";
+import { parseProviderModel } from "../shared/model-id.js";
 import {
 	APPLY_PATCH_TOOL_NAME,
 	EDIT_TOOL_NAME,
@@ -42,7 +44,12 @@ export type ContractValidationIssue =
 	| { readonly kind: "missing_ralph_control_tools"; readonly missing: ReadonlyArray<string> }
 	| { readonly kind: "empty_tool_contract"; readonly message: string }
 	| { readonly kind: "empty_agent_contract"; readonly message: string }
-	| { readonly kind: "invalid_version"; readonly expected: string; readonly actual: string };
+	| { readonly kind: "invalid_version"; readonly expected: string; readonly actual: string }
+	| { readonly kind: "invalid_model_id"; readonly model: string }
+	| { readonly kind: "missing_model"; readonly model: string }
+	| { readonly kind: "missing_model_auth"; readonly model: string }
+	| { readonly kind: "unsupported_thinking"; readonly model: string; readonly thinking: string }
+	| { readonly kind: "missing_sandbox_profile"; readonly message: string };
 
 export type ContractValidationResult =
 	| { readonly valid: true }
@@ -252,6 +259,60 @@ export function validateCapabilityContract(
 	return { valid: true };
 }
 
+type ExecutionModel = {
+	readonly id: string;
+	readonly provider: string;
+	readonly reasoning: boolean;
+};
+
+type ExecutionModelRegistry = {
+	readonly find: (provider: string, modelId: string) => ExecutionModel | undefined;
+	readonly getApiKey: (model: ExecutionModel) => Promise<string | undefined>;
+};
+
+export async function validateExecutionContract(input: {
+	readonly profile: ExecutionProfile;
+	readonly sandboxProfile: ResolvedSandboxConfig | undefined;
+	readonly modelRegistry: ExecutionModelRegistry;
+}): Promise<ContractValidationResult> {
+	const issues: ContractValidationIssue[] = [];
+	const parsed = parseProviderModel(input.profile.model);
+	if (parsed === undefined) {
+		issues.push({ kind: "invalid_model_id", model: input.profile.model });
+	} else {
+		const model = input.modelRegistry.find(parsed.provider, parsed.modelId);
+		if (model === undefined) {
+			issues.push({ kind: "missing_model", model: input.profile.model });
+		} else {
+			const apiKey = await input.modelRegistry.getApiKey(model);
+			if (apiKey === undefined) {
+				issues.push({ kind: "missing_model_auth", model: input.profile.model });
+			}
+
+			if (input.profile.thinking !== "off" && !model.reasoning) {
+				issues.push({
+					kind: "unsupported_thinking",
+					model: input.profile.model,
+					thinking: input.profile.thinking,
+				});
+			}
+		}
+	}
+
+	if (input.sandboxProfile === undefined) {
+		issues.push({
+			kind: "missing_sandbox_profile",
+			message: "Ralph execution contract has no pinned sandbox profile",
+		});
+	}
+
+	if (issues.length > 0) {
+		return { valid: false, issues };
+	}
+
+	return { valid: true };
+}
+
 // ─── Pure contract application helpers ──────────────────────────────────────
 
 /**
@@ -297,6 +358,15 @@ export interface RalphContractResolver {
 	) => Effect.Effect<ContractValidationResult, never, never>;
 
 	/**
+	 * Validate concrete model/thinking/sandbox availability for the pinned contract.
+	 */
+	readonly validateExecution: (input: {
+		readonly profile: ExecutionProfile;
+		readonly sandboxProfile: ResolvedSandboxConfig | undefined;
+		readonly modelRegistry: ExecutionModelRegistry;
+	}) => Effect.Effect<ContractValidationResult, never, never>;
+
+	/**
 	 * Apply a capability contract to the current Pi session.
 	 * Controller sessions get pinned user tools; child sessions get pinned
 	 * user tools plus system Ralph control tools.
@@ -322,7 +392,7 @@ export const RalphContractResolverLive = Layer.effect(
 	Effect.gen(function* () {
 		const pi = yield* PiAPI;
 		const loopRepo = yield* LoopRepo;
-		const promptModes = yield* PromptModes;
+		const executionRuntime = yield* ExecutionRuntime;
 
 		const resolveOwnedLoop: RalphContractResolver["resolveOwnedLoop"] = (cwd, sessionFile) =>
 			Effect.gen(function* () {
@@ -393,6 +463,9 @@ export const RalphContractResolverLive = Layer.effect(
 		const validate: RalphContractResolver["validate"] = (contract) =>
 			Effect.sync(() => validateCapabilityContract(contract));
 
+		const validateExecution: RalphContractResolver["validateExecution"] = (input) =>
+			Effect.promise(() => validateExecutionContract(input));
+
 		const applyToSession: RalphContractResolver["applyToSession"] = (contract, target) =>
 			Effect.sync(() => {
 				const tools = effectiveToolNames(contract, target);
@@ -403,7 +476,7 @@ export const RalphContractResolverLive = Layer.effect(
 			profile,
 			profileContext,
 		) =>
-			promptModes
+			executionRuntime
 				.applyExecutionProfile(profile, profileContext, {
 					notifyOnSuccess: false,
 					persist: false,
@@ -415,6 +488,7 @@ export const RalphContractResolverLive = Layer.effect(
 			resolveOwnedLoop,
 			captureFromRuntime,
 			validate,
+			validateExecution,
 			applyToSession,
 			applyExecutionProfile,
 		});

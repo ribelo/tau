@@ -82,7 +82,7 @@ describe("agent startup validation", () => {
 		fs.rmSync(tempProject, { recursive: true, force: true });
 	});
 
-	it("fails startup when a resolved mode agent references unavailable tools", async () => {
+	it("fails startup when a bundled agent references unavailable tools", async () => {
 		const tempHome = mkdtemp("tau-home-");
 		const tempProject = mkdtemp("tau-project-");
 
@@ -111,7 +111,7 @@ describe("agent startup validation", () => {
 		fs.rmSync(tempProject, { recursive: true, force: true });
 	});
 
-	it("allows startup when a mode agent uses backlog as its planning tool", async () => {
+	it("allows startup when a bundled agent uses backlog as its planning tool", async () => {
 		const tempHome = mkdtemp("tau-home-");
 		const tempProject = mkdtemp("tau-project-");
 

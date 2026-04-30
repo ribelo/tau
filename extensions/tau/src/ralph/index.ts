@@ -23,7 +23,7 @@ import {
 import { Effect, Option } from "effect";
 
 import type { ExecutionProfile } from "../execution/schema.js";
-import { PromptModes } from "../services/prompt-modes.js";
+import { ExecutionRuntime } from "../services/execution-runtime.js";
 import {
 	Ralph,
 	type RalphCommandBoundary,
@@ -1018,7 +1018,7 @@ type RalphUiContext = Pick<ExtensionContext, "hasUI" | "ui" | "sessionManager">;
 
 export default function initRalph(
 	pi: ExtensionAPI,
-	runEffect: <A, E>(effect: Effect.Effect<A, E, Ralph | PromptModes>) => Promise<A>,
+	runEffect: <A, E>(effect: Effect.Effect<A, E, Ralph | ExecutionRuntime>) => Promise<A>,
 ): void {
 	const withRalph = <A, E>(
 		f: (service: RalphService) => Effect.Effect<A, E, never>,
@@ -1030,12 +1030,12 @@ export default function initRalph(
 			}),
 		);
 
-	const withPromptModes = <A, E>(
-		f: (service: PromptModes) => Effect.Effect<A, E, never>,
+	const withExecutionRuntime = <A, E>(
+		f: (service: ExecutionRuntime) => Effect.Effect<A, E, never>,
 	): Promise<A> =>
 		runEffect(
 			Effect.gen(function* () {
-				const service = yield* PromptModes;
+				const service = yield* ExecutionRuntime;
 				return yield* f(service);
 			}),
 		);
@@ -1046,7 +1046,7 @@ export default function initRalph(
 	const captureCurrentExecutionProfile = (
 		ctx: Pick<ExtensionContext, "model" | "sessionManager">,
 	): Promise<ExecutionProfile | null> =>
-		withPromptModes((promptModes) => promptModes.captureCurrentExecutionProfile(ctx));
+		withExecutionRuntime((runtime) => runtime.captureCurrentExecutionProfile(ctx));
 
 	const captureCurrentCapabilityContract = async (
 		ctx: Pick<ExtensionContext, "cwd" | "sessionManager" | "model">,
@@ -1071,8 +1071,8 @@ export default function initRalph(
 		profile: ExecutionProfile,
 		profileContext: Pick<ExtensionContext, "model" | "modelRegistry" | "ui">,
 	): Promise<RalphExecutionProfileApplyResult> =>
-		withPromptModes((promptModes) =>
-			promptModes
+		withExecutionRuntime((runtime) =>
+			runtime
 				.applyExecutionProfile(profile, profileContext, {
 					notifyOnSuccess: false,
 					persist: false,
@@ -1972,7 +1972,7 @@ export default function initRalph(
 						let currentItemsPerIteration = state.itemsPerIteration;
 						let currentReflectEvery = state.reflectEvery;
 						let currentReflectInstructions = state.reflectInstructions;
-						let executionProfileLabel = `${state.executionProfile.selector.mode} / ${state.executionProfile.promptProfile.model ?? "default"} / ${state.executionProfile.promptProfile.thinking ?? "default"}`;
+						let executionProfileLabel = `${state.executionProfile.model} / ${state.executionProfile.thinking}`;
 						let toolsActive = [
 							...excludeRalphSystemControlTools(
 								state.capabilityContract.tools.activeNames,
@@ -2126,7 +2126,7 @@ export default function initRalph(
 								{
 									id: "executionProfile",
 									label: "Execution profile",
-									description: "Pinned mode, model, and thinking level",
+									description: "Pinned model and thinking level",
 									currentValue: executionProfileLabel,
 									submenu: (_currentValue, submenuDone) =>
 										new ActionSelectSubmenu(
@@ -2137,7 +2137,7 @@ export default function initRalph(
 													value: "recapture",
 													label: "Recapture current session",
 													description:
-														"Pin the current mode, model, and thinking level to this loop.",
+														"Pin the current model and thinking level to this loop.",
 												},
 											],
 											(value) => {
@@ -2155,7 +2155,7 @@ export default function initRalph(
 															submenuDone();
 															return;
 														}
-														executionProfileLabel = `${profile.selector.mode} / ${profile.promptProfile.model ?? "default"} / ${profile.promptProfile.thinking ?? "default"}`;
+													executionProfileLabel = `${profile.model} / ${profile.thinking}`;
 														recordMutation({
 															kind: "executionProfile",
 															profile,

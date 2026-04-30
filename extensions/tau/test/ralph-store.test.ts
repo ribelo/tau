@@ -22,11 +22,11 @@ import {
 } from "../src/loops/schema.js";
 import { LoopRepoLive } from "../src/loops/repo.js";
 import { LoopEngineLive } from "../src/services/loop-engine.js";
-import { PromptModes } from "../src/services/prompt-modes.js";
+import { ExecutionRuntime } from "../src/services/execution-runtime.js";
 import { Ralph, RalphLive } from "../src/services/ralph.js";
 import {
 	makeExecutionProfile,
-	makePromptModesStubLayer,
+	makeExecutionRuntimeStubLayer,
 	makeSandboxProfile,
 	makeRalphMetrics,
 	makeCapabilityContract,
@@ -45,7 +45,7 @@ type SentUserMessage = {
 };
 
 type RalphRuntimeHarness = {
-	readonly run: <A, E>(effect: Effect.Effect<A, E, Ralph | PromptModes>) => Promise<A>;
+	readonly run: <A, E>(effect: Effect.Effect<A, E, Ralph | ExecutionRuntime>) => Promise<A>;
 	readonly dispose: () => Promise<void>;
 };
 
@@ -55,7 +55,7 @@ function makeRalphRuntime(activeSubagents = false): RalphRuntimeHarness {
 	}).pipe(
 		Layer.provideMerge(RalphRepoLive),
 		Layer.provideMerge(LoopEngineLive.pipe(Layer.provideMerge(LoopRepoLive))),
-		Layer.provideMerge(makePromptModesStubLayer()),
+		Layer.provideMerge(makeExecutionRuntimeStubLayer()),
 		Layer.provide(NodeFileSystem.layer),
 	);
 	const runtime = ManagedRuntime.make(layer);

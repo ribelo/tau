@@ -45,9 +45,9 @@ export default function initRequestUserInput(pi: ExtensionAPI) {
 		name: "request_user_input",
 		label: "request_user_input",
 		description:
-			"Request user input for one to three short questions with multiple-choice options and wait for the response. Available in plan mode. Use for decisions that materially change the plan, for confirming important assumptions, or for information that cannot be discovered via non-mutating exploration.",
+			"Request user input for one to three short questions with multiple-choice options and wait for the response. Use for decisions that materially change the plan, for confirming important assumptions, or for information that cannot be discovered via non-mutating exploration.",
 		promptSnippet:
-			"request_user_input: Present structured multiple-choice questions to the user. Use in plan mode for decisions/tradeoffs.",
+			"request_user_input: Present structured multiple-choice questions to the user for decisions and tradeoffs.",
 		parameters: RequestUserInputParams,
 
 		renderCall(args, theme) {

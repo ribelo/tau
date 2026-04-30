@@ -42,7 +42,7 @@ describe("shared persisted state", () => {
 			{
 				type: "custom",
 				customType: TAU_PERSISTED_STATE_TYPE,
-				data: { execution: { selector: { mode: "smart" } } },
+				data: { execution: { policy: { tools: { kind: "inherit" } } } },
 			},
 			{
 				type: "custom",

@@ -54,8 +54,8 @@ function makeTestLoop(overrides?: Partial<LoopState>): LoopState {
 		sandboxProfile: Option.none(),
 		metrics: emptyRalphLoopMetrics(),
 		executionProfile: {
-			selector: { mode: "default" },
-			promptProfile: { mode: "default", model: "test-model", thinking: "medium" },
+			model: "test-model",
+			thinking: "medium",
 			policy: { tools: { kind: "inherit" } },
 		},
 		capabilityContract: makeEmptyCapabilityContract(),

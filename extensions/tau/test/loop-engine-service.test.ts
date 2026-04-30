@@ -333,12 +333,10 @@ describe("loop engine service", () => {
 
 		const controller = makeSession("controller-profile", "controller-profile.session.json");
 		const profileAtCreate = makeExecutionProfile({
-			mode: "smart",
 			model: "anthropic/claude-opus-4-5",
 			thinking: "medium",
 		});
 		const profileAtStart = makeExecutionProfile({
-			mode: "rush",
 			model: "openai/gpt-5-mini",
 			thinking: "low",
 		});

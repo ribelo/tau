@@ -11,7 +11,7 @@ export class ModelSpecError extends Data.TaggedError("ModelSpecError")<{
 	readonly cause?: unknown;
 }> {}
 
-export const PROMPT_MODE_THINKING_LEVELS = [
+export const EXECUTION_THINKING_LEVELS = [
 	"off",
 	"minimal",
 	"low",
@@ -20,9 +20,9 @@ export const PROMPT_MODE_THINKING_LEVELS = [
 	"xhigh",
 ] as const;
 
-export const AGENT_THINKING_LEVELS = [...PROMPT_MODE_THINKING_LEVELS, "inherit"] as const;
+export const AGENT_THINKING_LEVELS = [...EXECUTION_THINKING_LEVELS, "inherit"] as const;
 
-const PromptModeThinkingLevelSchema = Schema.Literals([...PROMPT_MODE_THINKING_LEVELS]);
+const ExecutionThinkingLevelSchema = Schema.Literals([...EXECUTION_THINKING_LEVELS]);
 const AgentThinkingLevelSchema = Schema.Literals([...AGENT_THINKING_LEVELS]);
 
 const RawModelSpecSchema = Schema.Struct({
@@ -30,13 +30,13 @@ const RawModelSpecSchema = Schema.Struct({
 	thinking: Schema.optional(AgentThinkingLevelSchema),
 });
 
-export type PromptModeThinkingLevel = Schema.Schema.Type<typeof PromptModeThinkingLevelSchema>;
+export type ExecutionThinkingLevel = Schema.Schema.Type<typeof ExecutionThinkingLevelSchema>;
 
-export function isPromptModeThinkingLevel(value: string): value is PromptModeThinkingLevel {
-	return PROMPT_MODE_THINKING_LEVELS.includes(value as PromptModeThinkingLevel);
+export function isExecutionThinkingLevel(value: string): value is ExecutionThinkingLevel {
+	return EXECUTION_THINKING_LEVELS.includes(value as ExecutionThinkingLevel);
 }
 
-export function validatePromptModeModelId(
+export function validateExecutionModelId(
 	value: string,
 	context: string,
 ): Effect.Effect<string, ModelSpecError> {
