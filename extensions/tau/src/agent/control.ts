@@ -16,7 +16,9 @@ import { isFinal } from "./status.js";
 import type { AgentId } from "./types.js";
 import { Sandbox } from "../services/sandbox.js";
 import { resolveEnabledAgentsForSessionAuthoritative } from "../agents-menu/index.js";
+import { getRalphLoopMetadata } from "../agents-menu/state.js";
 import { resolveAgentExecutionAtSpawn } from "./execution-profile.js";
+import type { AgentDefinition } from "./types.js";
 
 export const DEFAULT_WAIT_TIMEOUT_MS = 20 * 60 * 1000;
 export const MAX_WAIT_TIMEOUT_MS = 4 * 60 * 60 * 1000;
@@ -38,6 +40,26 @@ export function normalizeWaitTimeoutMs(timeoutMs: number | undefined): number {
 	}
 
 	return Math.min(Math.max(timeoutMs, DEFAULT_WAIT_TIMEOUT_MS), MAX_WAIT_TIMEOUT_MS);
+}
+
+export function clampAgentDefinitionToolsToParentTools(
+	definition: AgentDefinition,
+	parentTools: ReadonlyArray<string> | undefined,
+): AgentDefinition {
+	if (parentTools === undefined) {
+		return definition;
+	}
+
+	const allowed = new Set(parentTools);
+	const tools =
+		definition.tools === undefined
+			? parentTools
+			: definition.tools.filter((tool) => allowed.has(tool));
+
+	return {
+		...definition,
+		tools: [...tools],
+	};
 }
 
 export const AgentControlLive = Layer.effect(
@@ -81,8 +103,13 @@ export const AgentControlLive = Layer.effect(
 					}
 
 					const parentSandboxConfig = yield* sandbox.getConfig;
-					const resolvedExecution = yield* resolveAgentExecutionAtSpawn({
+					const ralphMetadata = getRalphLoopMetadata(opts.cwd, opts.parentSessionFile);
+					const policyDefinition = clampAgentDefinitionToolsToParentTools(
 						definition,
+						ralphMetadata?.activeTools,
+					);
+					const resolvedExecution = yield* resolveAgentExecutionAtSpawn({
+						definition: policyDefinition,
 						cwd: opts.cwd,
 						parentExecutionState: parentExecution.state,
 						parentExecutionProfile: parentExecution.profile,

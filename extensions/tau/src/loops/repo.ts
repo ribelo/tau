@@ -29,6 +29,7 @@ import {
 	loopStateFile,
 	loopTaskFile,
 } from "./paths.js";
+import { resolveLoopWorkspacePath, resolveLoopWorkspaceRoot } from "./workspace-root.js";
 
 const isPlatformReasonTag = (error: unknown, tag: string): boolean => {
 	if (typeof error !== "object" || error === null) {
@@ -50,7 +51,7 @@ function withFileContext(
 	filePath: string,
 	error: LoopContractValidationError,
 ): LoopContractValidationError {
-	const relativePath = path.relative(cwd, filePath);
+	const relativePath = path.relative(resolveLoopWorkspaceRoot(cwd), filePath);
 	const displayPath = relativePath.length > 0 ? relativePath : filePath;
 	return new LoopContractValidationError({
 		entity: error.entity,
@@ -59,19 +60,19 @@ function withFileContext(
 }
 
 function loopsRoot(cwd: string): string {
-	return path.resolve(cwd, LOOPS_DIR);
+	return resolveLoopWorkspacePath(cwd, LOOPS_DIR);
 }
 
 function resolveTaskPath(cwd: string, taskId: string, archived = false): string {
-	return path.resolve(cwd, loopTaskFile(taskId, archived));
+	return resolveLoopWorkspacePath(cwd, loopTaskFile(taskId, archived));
 }
 
 function resolveStatePath(cwd: string, taskId: string, archived = false): string {
-	return path.resolve(cwd, loopStateFile(taskId, archived));
+	return resolveLoopWorkspacePath(cwd, loopStateFile(taskId, archived));
 }
 
 function resolvePhaseDirectory(cwd: string, taskId: string, archived = false): string {
-	return path.resolve(cwd, loopPhaseDirectory(taskId, archived));
+	return resolveLoopWorkspacePath(cwd, loopPhaseDirectory(taskId, archived));
 }
 
 function resolvePhasePath(
@@ -80,11 +81,11 @@ function resolvePhasePath(
 	phaseId: string,
 	archived = false,
 ): string {
-	return path.resolve(cwd, loopPhaseFile(taskId, phaseId, archived));
+	return resolveLoopWorkspacePath(cwd, loopPhaseFile(taskId, phaseId, archived));
 }
 
 function resolveRunsDirectory(cwd: string, taskId: string, archived = false): string {
-	return path.resolve(cwd, loopRunsDirectory(taskId, archived));
+	return resolveLoopWorkspacePath(cwd, loopRunsDirectory(taskId, archived));
 }
 
 function resolveRunDirectory(
@@ -93,7 +94,7 @@ function resolveRunDirectory(
 	runId: string,
 	archived = false,
 ): string {
-	return path.resolve(cwd, loopRunDirectory(taskId, runId, archived));
+	return resolveLoopWorkspacePath(cwd, loopRunDirectory(taskId, runId, archived));
 }
 
 const readOptionalFile = (
@@ -218,59 +219,59 @@ export const LoopRepoLive = Layer.effect(
 		const ensureLayout = (cwd: string): Effect.Effect<void, StorageError, never> =>
 			Effect.gen(function* () {
 				yield* fs
-					.makeDirectory(path.resolve(cwd, LOOPS_TASKS_DIR), { recursive: true })
+					.makeDirectory(resolveLoopWorkspacePath(cwd, LOOPS_TASKS_DIR), { recursive: true })
 					.pipe(
 						Effect.mapError((error) =>
-							toStorageError("mkdir-loops-tasks", path.resolve(cwd, LOOPS_TASKS_DIR), `Failed to create ${LOOPS_TASKS_DIR}`, error),
+							toStorageError("mkdir-loops-tasks", resolveLoopWorkspacePath(cwd, LOOPS_TASKS_DIR), `Failed to create ${LOOPS_TASKS_DIR}`, error),
 						),
 					);
 				yield* fs
-					.makeDirectory(path.resolve(cwd, LOOPS_STATE_DIR), { recursive: true })
+					.makeDirectory(resolveLoopWorkspacePath(cwd, LOOPS_STATE_DIR), { recursive: true })
 					.pipe(
 						Effect.mapError((error) =>
-							toStorageError("mkdir-loops-state", path.resolve(cwd, LOOPS_STATE_DIR), `Failed to create ${LOOPS_STATE_DIR}`, error),
+							toStorageError("mkdir-loops-state", resolveLoopWorkspacePath(cwd, LOOPS_STATE_DIR), `Failed to create ${LOOPS_STATE_DIR}`, error),
 						),
 					);
 				yield* fs
-					.makeDirectory(path.resolve(cwd, LOOPS_PHASES_DIR), { recursive: true })
+					.makeDirectory(resolveLoopWorkspacePath(cwd, LOOPS_PHASES_DIR), { recursive: true })
 					.pipe(
 						Effect.mapError((error) =>
-							toStorageError("mkdir-loops-phases", path.resolve(cwd, LOOPS_PHASES_DIR), `Failed to create ${LOOPS_PHASES_DIR}`, error),
+							toStorageError("mkdir-loops-phases", resolveLoopWorkspacePath(cwd, LOOPS_PHASES_DIR), `Failed to create ${LOOPS_PHASES_DIR}`, error),
 						),
 					);
 				yield* fs
-					.makeDirectory(path.resolve(cwd, LOOPS_RUNS_DIR), { recursive: true })
+					.makeDirectory(resolveLoopWorkspacePath(cwd, LOOPS_RUNS_DIR), { recursive: true })
 					.pipe(
 						Effect.mapError((error) =>
-							toStorageError("mkdir-loops-runs", path.resolve(cwd, LOOPS_RUNS_DIR), `Failed to create ${LOOPS_RUNS_DIR}`, error),
+							toStorageError("mkdir-loops-runs", resolveLoopWorkspacePath(cwd, LOOPS_RUNS_DIR), `Failed to create ${LOOPS_RUNS_DIR}`, error),
 						),
 					);
 				yield* fs
-					.makeDirectory(path.resolve(cwd, LOOPS_ARCHIVE_TASKS_DIR), { recursive: true })
+					.makeDirectory(resolveLoopWorkspacePath(cwd, LOOPS_ARCHIVE_TASKS_DIR), { recursive: true })
 					.pipe(
 						Effect.mapError((error) =>
-							toStorageError("mkdir-loops-archive-tasks", path.resolve(cwd, LOOPS_ARCHIVE_TASKS_DIR), `Failed to create ${LOOPS_ARCHIVE_TASKS_DIR}`, error),
+							toStorageError("mkdir-loops-archive-tasks", resolveLoopWorkspacePath(cwd, LOOPS_ARCHIVE_TASKS_DIR), `Failed to create ${LOOPS_ARCHIVE_TASKS_DIR}`, error),
 						),
 					);
 				yield* fs
-					.makeDirectory(path.resolve(cwd, LOOPS_ARCHIVE_STATE_DIR), { recursive: true })
+					.makeDirectory(resolveLoopWorkspacePath(cwd, LOOPS_ARCHIVE_STATE_DIR), { recursive: true })
 					.pipe(
 						Effect.mapError((error) =>
-							toStorageError("mkdir-loops-archive-state", path.resolve(cwd, LOOPS_ARCHIVE_STATE_DIR), `Failed to create ${LOOPS_ARCHIVE_STATE_DIR}`, error),
+							toStorageError("mkdir-loops-archive-state", resolveLoopWorkspacePath(cwd, LOOPS_ARCHIVE_STATE_DIR), `Failed to create ${LOOPS_ARCHIVE_STATE_DIR}`, error),
 						),
 					);
 				yield* fs
-					.makeDirectory(path.resolve(cwd, LOOPS_ARCHIVE_PHASES_DIR), { recursive: true })
+					.makeDirectory(resolveLoopWorkspacePath(cwd, LOOPS_ARCHIVE_PHASES_DIR), { recursive: true })
 					.pipe(
 						Effect.mapError((error) =>
-							toStorageError("mkdir-loops-archive-phases", path.resolve(cwd, LOOPS_ARCHIVE_PHASES_DIR), `Failed to create ${LOOPS_ARCHIVE_PHASES_DIR}`, error),
+							toStorageError("mkdir-loops-archive-phases", resolveLoopWorkspacePath(cwd, LOOPS_ARCHIVE_PHASES_DIR), `Failed to create ${LOOPS_ARCHIVE_PHASES_DIR}`, error),
 						),
 					);
 				yield* fs
-					.makeDirectory(path.resolve(cwd, LOOPS_ARCHIVE_RUNS_DIR), { recursive: true })
+					.makeDirectory(resolveLoopWorkspacePath(cwd, LOOPS_ARCHIVE_RUNS_DIR), { recursive: true })
 					.pipe(
 						Effect.mapError((error) =>
-							toStorageError("mkdir-loops-archive-runs", path.resolve(cwd, LOOPS_ARCHIVE_RUNS_DIR), `Failed to create ${LOOPS_ARCHIVE_RUNS_DIR}`, error),
+							toStorageError("mkdir-loops-archive-runs", resolveLoopWorkspacePath(cwd, LOOPS_ARCHIVE_RUNS_DIR), `Failed to create ${LOOPS_ARCHIVE_RUNS_DIR}`, error),
 						),
 					);
 			});
@@ -306,7 +307,7 @@ export const LoopRepoLive = Layer.effect(
 
 		const listStates: LoopRepoService["listStates"] = Effect.fn("LoopRepo.listStates")(
 			function* (cwd, archived = false) {
-				const dir = path.resolve(cwd, archived ? LOOPS_ARCHIVE_STATE_DIR : LOOPS_STATE_DIR);
+				const dir = resolveLoopWorkspacePath(cwd, archived ? LOOPS_ARCHIVE_STATE_DIR : LOOPS_STATE_DIR);
 				const exists = yield* fs.exists(dir).pipe(
 					Effect.mapError((error) => toStorageError("exists-dir", dir, `Failed to inspect ${dir}`, error)),
 				);

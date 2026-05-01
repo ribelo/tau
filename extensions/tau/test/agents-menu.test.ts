@@ -59,6 +59,7 @@ function writeRalphState(
 	input: {
 		readonly controllerSessionFile: string;
 		readonly activeIterationSessionFile: string;
+		readonly activeTools?: ReadonlyArray<string>;
 		readonly enabledAgents: ReadonlyArray<string>;
 	},
 ): void {
@@ -101,6 +102,10 @@ function writeRalphState(
 				metrics: makeRalphMetrics(),
 				capabilityContract: {
 					...contract,
+					tools: {
+						...contract.tools,
+						activeNames: [...(input.activeTools ?? contract.tools.activeNames)],
+					},
 					agents: {
 						...contract.agents,
 						enabledNames: [...input.enabledAgents],
@@ -252,6 +257,46 @@ describe("agents menu", () => {
 			expect(refreshedDescription).toContain("- finder:");
 			expect(refreshedDescription).not.toContain("- oracle:");
 			expect(refreshedDescription).not.toContain("- smart:");
+		} finally {
+			fs.rmSync(workspace, { recursive: true, force: true });
+		}
+	});
+
+	it("does not re-add the agent tool when Ralph contract disables it", async () => {
+		const { pi, handlers, setActiveToolsCalls } = makePiStub();
+		const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "tau-agents-menu-tools-"));
+		const controllerSession = path.join(workspace, ".pi", "sessions", "controller.jsonl");
+		const childSession = path.join(workspace, ".pi", "sessions", "child.jsonl");
+
+		try {
+			writeRalphState(workspace, "ralph-loop", {
+				controllerSessionFile: controllerSession,
+				activeIterationSessionFile: childSession,
+				activeTools: [],
+				enabledAgents: ["finder"],
+			});
+
+			initAgentsMenu(pi, {
+				refresh: () => undefined,
+			});
+
+			const beforeAgentStart = handlers.get("before_agent_start")?.[0];
+			expect(beforeAgentStart).toBeTypeOf("function");
+
+			await Promise.resolve(
+				beforeAgentStart?.(
+					{ type: "before_agent_start" },
+					{
+						cwd: workspace,
+						hasUI: false,
+						sessionManager: {
+							getSessionFile: () => childSession,
+						},
+					},
+				),
+			);
+
+			expect(setActiveToolsCalls.at(-1)).toEqual([]);
 		} finally {
 			fs.rmSync(workspace, { recursive: true, force: true });
 		}

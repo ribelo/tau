@@ -108,4 +108,19 @@ describe("AutoresearchLoopRunner", () => {
 			}),
 		);
 	});
+
+	it("queues agent end events that arrive before waiters", async () => {
+		const runtime = makeRuntime();
+		runtimes.push(runtime);
+
+		await runtime.run(
+			Effect.gen(function* () {
+				const runner = yield* AutoresearchLoopRunner;
+
+				yield* runner.resolveAgentEnd("session-before-wait", { status: "done" });
+				const resolved = yield* runner.waitForAgentEnd("session-before-wait");
+				expect(resolved).toEqual({ _tag: "completed", event: { status: "done" } });
+			}),
+		);
+	});
 });

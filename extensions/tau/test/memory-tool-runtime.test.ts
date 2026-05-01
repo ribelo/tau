@@ -236,6 +236,7 @@ describe("memory tool runtime", () => {
 
 	beforeEach(async () => {
 		tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "tau-memory-tool-runtime-"));
+		await fs.mkdir(path.join(tempHome, ".git"), { recursive: true });
 		originalTauMemoryDir = process.env["TAU_MEMORY_DIR"];
 		process.env["TAU_MEMORY_DIR"] = path.join(tempHome, ".pi", "agent", "tau", "memories");
 	});

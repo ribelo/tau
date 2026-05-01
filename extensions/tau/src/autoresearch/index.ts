@@ -59,13 +59,14 @@ import {
 	loopStateFile,
 	loopTaskFile,
 } from "../loops/paths.js";
+import { resolveLoopWorkspacePath, resolveLoopWorkspaceRoot } from "../loops/workspace-root.js";
 import {
 	normalizeAutoresearchTaskContractInput,
 	parseAutoresearchTaskDocument,
 	renderAutoresearchTaskDocument,
 } from "./task-contract.js";
 import { atomicWriteFileStringSync } from "../shared/atomic-write.js";
-import { AutoresearchValidationError, AutoresearchGitError } from "./errors.js";
+import { AutoresearchValidationError } from "./errors.js";
 import {
 	formatNum,
 	formatElapsed,
@@ -88,6 +89,7 @@ import type { ExperimentResult } from "./schema.js";
 import { computeConfidence, findBestResult } from "./state.js";
 import { setToolEnabled } from "../shared/tool-activation.js";
 
+const AUTORESEARCH_RUN_TOOL_NAME = "autoresearch_run";
 const AUTORESEARCH_DONE_TOOL_NAME = "autoresearch_done";
 
 // ------------------------------------------------------------------------------
@@ -417,7 +419,7 @@ function listRunRecordsForTask(
 	cwd: string,
 	taskId: string,
 ): ReadonlyArray<PersistedAutoresearchRun> {
-	const runsRoot = path.resolve(cwd, loopRunsDirectory(taskId));
+	const runsRoot = resolveLoopWorkspacePath(cwd, loopRunsDirectory(taskId));
 	if (!fs.existsSync(runsRoot)) {
 		return [];
 	}
@@ -619,149 +621,6 @@ async function executeBenchmarkAsync(
 // ------------------------------------------------------------------------------
 // Workspace execution
 // ------------------------------------------------------------------------------
-
-type ShellCommandResult = {
-	readonly exitCode: number | null;
-	readonly output: string;
-};
-
-type WorkspaceFinalizeResult = {
-	readonly note: string;
-	readonly commit: string | null;
-	readonly warning: string | null;
-};
-
-async function runShellCommand(
-	ops: BashOperations,
-	command: string,
-	cwd: string,
-	timeoutSeconds: number,
-): Promise<ShellCommandResult> {
-	let output = "";
-	const result = await ops.exec(command, cwd, {
-		onData: (data) => {
-			output += data.toString("utf-8");
-		},
-		timeout: timeoutSeconds,
-	});
-	return {
-		exitCode: result.exitCode,
-		output: output.trim(),
-	};
-}
-
-async function runGitOrThrow(
-	ops: BashOperations,
-	workDir: string,
-	command: string,
-	action: string,
-	timeoutSeconds: number,
-): Promise<string> {
-	const result = await runShellCommand(ops, command, workDir, timeoutSeconds);
-	if (result.exitCode === 0) {
-		return result.output;
-	}
-	const timedOut = result.exitCode === null;
-	const reasonSuffix = result.output.length > 0 ? `: ${result.output}` : "";
-	throw new AutoresearchGitError({
-		reason: timedOut
-			? `${action} timed out in ${workDir}${reasonSuffix}`
-			: `${action} failed in ${workDir}${reasonSuffix}`,
-	});
-}
-
-async function finalizeKeepInWorkspace(
-	workDir: string,
-	run: PersistedAutoresearchRun,
-	input: {
-		readonly description: string;
-		readonly status: AutoresearchRunOutcome;
-		readonly metrics: Record<string, number> | undefined;
-		readonly asi: Record<string, unknown> | null;
-	},
-	ops: BashOperations,
-): Promise<WorkspaceFinalizeResult> {
-	try {
-		await runGitOrThrow(ops, workDir, "git add -A", "stage workspace changes", 10);
-		const diffResult = await runShellCommand(ops, "git diff --cached --quiet", workDir, 10);
-		if (diffResult.exitCode === 0) {
-			return {
-				note: "Git: nothing to commit (working tree clean).",
-				commit: null,
-				warning: null,
-			};
-		}
-		if (diffResult.exitCode !== 1) {
-			const reasonSuffix = diffResult.output.length > 0 ? `: ${diffResult.output}` : "";
-			throw new AutoresearchGitError({
-				reason: `inspect staged workspace changes failed${reasonSuffix}`,
-			});
-		}
-
-		const resultSummary: Record<string, unknown> = {
-			status: input.status,
-			run_id: run.runId,
-			run_number: run.runNumber,
-			phase_id: run.phaseId,
-			metrics: input.metrics ?? null,
-			asi: input.asi,
-		};
-		const commitMessage =
-			`autoresearch(${run.taskId}) run ${run.runNumber}: ${input.description}\n\n` +
-			`result: ${JSON.stringify(resultSummary)}`;
-		const commitOutput = await runGitOrThrow(
-			ops,
-			workDir,
-			`git commit -m ${JSON.stringify(commitMessage)}`,
-			"commit kept workspace changes",
-			20,
-		);
-		const sha = await runGitOrThrow(
-			ops,
-			workDir,
-			"git rev-parse --short=7 HEAD",
-			"resolve kept commit",
-			5,
-		);
-		const firstLine = commitOutput.split("\n")[0]?.trim() ?? "";
-		return {
-			note:
-				firstLine.length > 0
-					? `Git: committed — ${firstLine}`
-					: `Git: committed ${sha.trim()}`,
-			commit: sha.trim().slice(0, 7),
-			warning: null,
-		};
-	} catch (error) {
-		return {
-			note: "Git: keep requested but commit did not complete.",
-			commit: null,
-			warning: error instanceof Error ? error.message : String(error),
-		};
-	}
-}
-
-async function finalizeNonKeepInWorkspace(
-	workDir: string,
-	status: Exclude<AutoresearchRunOutcome, "keep">,
-	ops: BashOperations,
-): Promise<WorkspaceFinalizeResult> {
-	try {
-		await runGitOrThrow(ops, workDir, "git checkout -- .", "revert workspace changes", 10);
-		await runGitOrThrow(ops, workDir, "git clean -fd", "clean workspace untracked files", 10);
-		return {
-			note: `Git: reverted workspace changes (${status}).`,
-			commit: null,
-			warning: null,
-		};
-	} catch (error) {
-		return {
-			note: `Git: ${status} requested but revert did not complete.`,
-			commit: null,
-			warning: error instanceof Error ? error.message : String(error),
-		};
-	}
-}
 
 function resolveWorkspaceScopeWorkDir(workspaceRoot: string, scopeRoot: string): string {
 	const normalizedRoot = path.normalize(scopeRoot);
@@ -1174,8 +1033,21 @@ export default function initAutoresearch(
 		readonly child: LoopSessionRef;
 	};
 
+	type ReplacementSessionOptions = {
+		readonly parentSession?: string;
+		readonly withSession?: (ctx: ExtensionCommandContext) => Promise<void> | void;
+	};
+
+	type SwitchSessionOptions = {
+		readonly withSession?: (ctx: ExtensionCommandContext) => Promise<void> | void;
+	};
+
+	type SessionReplacementResult = {
+		readonly cancelled: boolean;
+	};
+
 	const readCanonicalLoopState = (cwd: string, taskId: string): LoopPersistedState => {
-		const statePath = path.resolve(cwd, loopStateFile(taskId));
+		const statePath = resolveLoopWorkspacePath(cwd, loopStateFile(taskId));
 		if (!fs.existsSync(statePath)) {
 			throw new LoopTaskNotFoundError({ taskId });
 		}
@@ -1184,7 +1056,7 @@ export default function initAutoresearch(
 	};
 
 	const writeCanonicalLoopState = (cwd: string, state: LoopPersistedState): void => {
-		const statePath = path.resolve(cwd, loopStateFile(state.taskId));
+		const statePath = resolveLoopWorkspacePath(cwd, loopStateFile(state.taskId));
 		atomicWriteFileStringSync(statePath, encodeLoopPersistedStateJsonSync(state));
 	};
 
@@ -1197,23 +1069,11 @@ export default function initAutoresearch(
 			},
 			onSome: (value) => value,
 		});
-		const snapshotPath = path.resolve(cwd, loopPhaseFile(state.taskId, phaseId));
+		const snapshotPath = resolveLoopWorkspacePath(cwd, loopPhaseFile(state.taskId, phaseId));
 		if (!fs.existsSync(snapshotPath)) {
 			throw new LoopContractValidationError({
 				entity: "loops.phase_snapshot",
 				reason: `${loopPhaseFile(state.taskId, phaseId)} does not exist.`,
-			});
-		}
-		const content = fs.readFileSync(snapshotPath, "utf-8");
-		return decodeAutoresearchPhaseSnapshotJsonSync(content);
-	};
-
-	const loadPhaseSnapshot = (cwd: string, taskId: string, phaseId: string) => {
-		const snapshotPath = path.resolve(cwd, loopPhaseFile(taskId, phaseId));
-		if (!fs.existsSync(snapshotPath)) {
-			throw new LoopContractValidationError({
-				entity: "loops.phase_snapshot",
-				reason: `${loopPhaseFile(taskId, phaseId)} does not exist.`,
 			});
 		}
 		const content = fs.readFileSync(snapshotPath, "utf-8");
@@ -1286,9 +1146,10 @@ export default function initAutoresearch(
 		};
 	};
 
-	const syncAutoresearchDoneTool = async (ctx: ExtensionContext): Promise<void> => {
+	const syncAutoresearchToolVisibility = async (ctx: ExtensionContext): Promise<void> => {
 		try {
 			await resolveActiveAutoresearchChildContext(ctx);
+			setToolEnabled(pi, AUTORESEARCH_RUN_TOOL_NAME, true);
 			setToolEnabled(pi, AUTORESEARCH_DONE_TOOL_NAME, true);
 		} catch (error) {
 			if (
@@ -1299,6 +1160,7 @@ export default function initAutoresearch(
 				error instanceof LoopLifecycleConflictError ||
 				error instanceof LoopOwnershipValidationError
 			) {
+				setToolEnabled(pi, AUTORESEARCH_RUN_TOOL_NAME, false);
 				setToolEnabled(pi, AUTORESEARCH_DONE_TOOL_NAME, false);
 				return;
 			}
@@ -1314,42 +1176,66 @@ export default function initAutoresearch(
 		taskId: string,
 		runId: string,
 	): PersistedAutoresearchRun => {
-		const runPath = path.resolve(cwd, loopRunDirectory(taskId, runId), RUN_RECORD_FILE);
+		const runPath = path.join(
+			resolveLoopWorkspacePath(cwd, loopRunDirectory(taskId, runId)),
+			RUN_RECORD_FILE,
+		);
 		if (!fs.existsSync(runPath)) {
 			throw new LoopContractValidationError({
 				entity: "loops.run",
-				reason: `${path.relative(cwd, runPath)} does not exist.`,
+				reason: `${path.relative(resolveLoopWorkspaceRoot(cwd), runPath)} does not exist.`,
 			});
 		}
 		return parsePersistedRunRecord(fs.readFileSync(runPath, "utf-8"), runPath);
 	};
 
 	const writeRunRecord = (cwd: string, run: PersistedAutoresearchRun): void => {
-		const runPath = path.resolve(cwd, loopRunDirectory(run.taskId, run.runId), RUN_RECORD_FILE);
+		const runPath = path.join(
+			resolveLoopWorkspacePath(cwd, loopRunDirectory(run.taskId, run.runId)),
+			RUN_RECORD_FILE,
+		);
 		atomicWriteFileStringSync(runPath, `${JSON.stringify(run, null, 2)}\n`);
 	};
 
 	const switchSession = async (
 		ctx: ExtensionCommandContext,
 		targetSessionFile: string,
-	): Promise<boolean> => {
+	): Promise<ExtensionCommandContext | null> => {
 		try {
-			const result = await ctx.switchSession(targetSessionFile);
-			return !result.cancelled;
+			let replacementContext: ExtensionCommandContext | undefined;
+			const switchSessionWithReplacement = ctx.switchSession as (
+				target: string,
+				options?: SwitchSessionOptions,
+			) => Promise<SessionReplacementResult>;
+			const result = await switchSessionWithReplacement(targetSessionFile, {
+				withSession: async (nextContext) => {
+					replacementContext = nextContext;
+				},
+			});
+			return result.cancelled ? null : (replacementContext ?? ctx);
 		} catch {
-			return false;
+			return null;
 		}
 	};
 
 	const createChildSession = async (
 		ctx: ExtensionCommandContext,
 		parentSessionFile: string,
-	): Promise<boolean> => {
+	): Promise<ExtensionCommandContext | null> => {
 		try {
-			const result = await ctx.newSession({ parentSession: parentSessionFile });
-			return !result.cancelled;
+			let replacementContext: ExtensionCommandContext | undefined;
+			const newSessionWithReplacement = ctx.newSession as (
+				options: ReplacementSessionOptions,
+			) => Promise<SessionReplacementResult>;
+			const result = await newSessionWithReplacement({
+				parentSession: parentSessionFile,
+				withSession: async (nextContext) => {
+					replacementContext = nextContext;
+				},
+			});
+			return result.cancelled ? null : (replacementContext ?? ctx);
 		} catch {
-			return false;
+			return null;
 		}
 	};
 
@@ -1384,6 +1270,7 @@ export default function initAutoresearch(
 		});
 
 		const currentSession = commandSessionRef(ctx);
+		let activeContext = ctx;
 		if (Option.isNone(currentSession)) {
 			throw new AutoresearchValidationError({
 				reason: "Autoresearch commands require an interactive session file.",
@@ -1391,15 +1278,16 @@ export default function initAutoresearch(
 		}
 
 		if (!sessionRefMatches(controller, currentSession.value)) {
-			const switched = await switchSession(ctx, controller.sessionFile);
-			if (!switched) {
+			const switchedContext = await switchSession(activeContext, controller.sessionFile);
+			if (switchedContext === null) {
 				throw new AutoresearchValidationError({
 					reason: `Could not switch to controller session ${controller.sessionFile} for task ${persisted.taskId}.`,
 				});
 			}
+			activeContext = switchedContext;
 		}
 
-		const sessionAfterSwitch = commandSessionRef(ctx);
+		const sessionAfterSwitch = commandSessionRef(activeContext);
 		if (
 			Option.isNone(sessionAfterSwitch) ||
 			!sessionRefMatches(controller, sessionAfterSwitch.value)
@@ -1409,14 +1297,15 @@ export default function initAutoresearch(
 			});
 		}
 
-		const created = await createChildSession(ctx, controller.sessionFile);
-		if (!created) {
+		const childContext = await createChildSession(activeContext, controller.sessionFile);
+		if (childContext === null) {
 			throw new AutoresearchValidationError({
 				reason: `Creating child session for task ${persisted.taskId} was cancelled.`,
 			});
 		}
+		activeContext = childContext;
 
-		const child = commandSessionRef(ctx);
+		const child = commandSessionRef(activeContext);
 		try {
 			if (Option.isNone(child)) {
 				throw new AutoresearchValidationError({
@@ -1431,7 +1320,7 @@ export default function initAutoresearch(
 
 			const applied = await applyExecutionProfileInSession(
 				persisted.autoresearch.pinnedExecutionProfile,
-				ctx,
+				activeContext,
 			);
 			if (!applied.applied) {
 				throw new AutoresearchValidationError({
@@ -1440,7 +1329,7 @@ export default function initAutoresearch(
 			}
 
 			await withLoopEngine((engine) =>
-				engine.attachChildSession(ctx.cwd, taskId, child.value),
+				engine.attachChildSession(activeContext.cwd, taskId, child.value),
 			);
 			return child.value;
 		} catch (error) {
@@ -1451,8 +1340,8 @@ export default function initAutoresearch(
 					// best-effort rollback only
 				}
 			}
-			const switchedBack = await switchSession(ctx, controller.sessionFile);
-			if (!switchedBack) {
+			const switchedBack = await switchSession(activeContext, controller.sessionFile);
+			if (switchedBack === null) {
 				const originalReason = error instanceof Error ? error.message : String(error);
 				throw new AutoresearchValidationError({
 					reason: `Autoresearch child-session rollback failed for task ${persisted.taskId}: could not switch back to controller session ${controller.sessionFile}. Original error: ${originalReason}`,
@@ -1618,7 +1507,7 @@ export default function initAutoresearch(
 	};
 
 	const updateAutoresearchUI = async (cwd: string, ctx: ExtensionContext): Promise<void> => {
-		await syncAutoresearchDoneTool(ctx);
+		await syncAutoresearchToolVisibility(ctx);
 
 		if (!ctx.hasUI) {
 			return;
@@ -1962,7 +1851,7 @@ export default function initAutoresearch(
 		promptGuidelines: [
 			"Autoresearch loop ownership resolves the pending trial automatically.",
 			"Call this exactly once for each pending autoresearch_run.",
-			"This tool automatically commits kept workspace changes and reverts discarded/crashed/check-failed workspace changes. Do not commit or revert manually.",
+			"This tool records the trial outcome without committing, reverting, or cleaning workspace changes.",
 		],
 		parameters: Type.Object({
 			status: Type.Union([
@@ -2033,34 +1922,6 @@ export default function initAutoresearch(
 					};
 				}
 
-				const phaseSnapshot = loadPhaseSnapshot(
-					ctx.cwd,
-					persisted.taskId,
-					runRecord.phaseId,
-				);
-				const workDir = resolveWorkspaceScopeWorkDir(ctx.cwd, phaseSnapshot.scope.root);
-				const ops = getSandboxedBashOperations(ctx, false);
-				if (!ops) {
-					throw new AutoresearchValidationError({
-						reason: "Sandbox bash operations are not available.",
-					});
-				}
-
-				const gitResult =
-					params.status === "keep"
-						? await finalizeKeepInWorkspace(
-								workDir,
-								runRecord,
-								{
-									description: params.description,
-									status: params.status,
-									metrics: params.metrics,
-									asi: finalizedAsi,
-								},
-								ops,
-							)
-						: await finalizeNonKeepInWorkspace(workDir, params.status, ops);
-
 				const finalizedRun: PersistedAutoresearchRun = {
 					...runRecord,
 					finalized: {
@@ -2093,25 +1954,18 @@ export default function initAutoresearch(
 						{
 							type: "text",
 							text:
-								`Finalized run ${pendingRunId} as ${params.status}. Pending trial cleared for task ${persisted.taskId}. Child session ownership cleared. Next trial will start automatically if the task remains active. ${gitResult.note}` +
-								(gitResult.warning === null
-									? ""
-									: `\nWarning: ${gitResult.warning}`),
+								`Finalized run ${pendingRunId} as ${params.status}. Pending trial cleared for task ${persisted.taskId}. Child session ownership cleared. Next trial will start automatically if the task remains active. Workspace changes were left untouched.`,
 						},
 					],
 					details: {
 						task_id: persisted.taskId,
 						run_id: pendingRunId,
 						status: params.status,
-						workspace_root: workDir,
-						kept_commit: gitResult.commit,
-						git_warning: gitResult.warning,
 					},
 				};
 			} catch (error) {
 				if (
 					error instanceof AutoresearchValidationError ||
-					error instanceof AutoresearchGitError ||
 					error instanceof LoopContractValidationError ||
 					error instanceof LoopTaskNotFoundError ||
 					error instanceof LoopAmbiguousOwnershipError ||
@@ -2604,7 +2458,7 @@ export default function initAutoresearch(
 	});
 
 	pi.on("before_agent_start", async (_event, ctx) => {
-		await syncAutoresearchDoneTool(ctx);
+		await syncAutoresearchToolVisibility(ctx);
 	});
 
 	pi.on("session_shutdown", async (event, ctx) => {
@@ -2639,6 +2493,7 @@ export default function initAutoresearch(
 			}
 		}
 
+		setToolEnabled(pi, AUTORESEARCH_RUN_TOOL_NAME, false);
 		setToolEnabled(pi, AUTORESEARCH_DONE_TOOL_NAME, false);
 	});
 }

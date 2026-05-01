@@ -75,7 +75,7 @@ describe("loops schema", () => {
 		expect(reencoded).toEqual(encodedRalphState);
 	});
 
-	it("migrates legacy ralph payloads missing pendingDecision, sandboxProfile, metrics, and deferred config", async () => {
+	it("fails fast on legacy ralph payloads missing required fields", async () => {
 		const {
 			pendingDecision: _pendingDecision,
 			sandboxProfile: _sandboxProfile,
@@ -88,32 +88,16 @@ describe("loops schema", () => {
 			ralph: legacyRalph,
 		};
 
-		const decoded = await Effect.runPromise(decodeLoopPersistedStateWithMigration(legacyState));
-		expect(decoded.migrated).toBe(true);
-		expect(decoded.state.kind).toBe("ralph");
-		if (decoded.state.kind === "ralph") {
-			expect(Option.isNone(decoded.state.ralph.pendingDecision)).toBe(true);
-			expect(Option.isNone(decoded.state.ralph.sandboxProfile)).toBe(true);
-			expect(decoded.state.ralph.metrics.totalTokens).toBe(0);
-			expect(decoded.state.ralph.metrics.totalCostUsd).toBe(0);
-			expect(decoded.state.ralph.metrics.activeDurationMs).toBe(0);
-			expect(Option.isNone(decoded.state.ralph.metrics.activeStartedAt)).toBe(true);
-			expect(decoded.state.ralph.capabilityContract.version).toBe("1");
-			expect(decoded.state.ralph.deferredConfigMutations).toEqual([]);
-		}
-
-		const reencoded = await Effect.runPromise(encodeLoopPersistedState(decoded.state));
-		expect(reencoded.kind).toBe("ralph");
-		if (reencoded.kind === "ralph") {
-			expect(reencoded.ralph.pendingDecision).toBeNull();
-			expect(reencoded.ralph.sandboxProfile).toBeNull();
-			expect(reencoded.ralph.metrics).toEqual({
-				totalTokens: 0,
-				totalCostUsd: 0,
-				activeDurationMs: 0,
-				activeStartedAt: null,
-			});
-			expect(reencoded.ralph.deferredConfigMutations).toEqual([]);
+		const result = await Effect.runPromise(
+			Effect.exit(decodeLoopPersistedStateWithMigration(legacyState)),
+		);
+		expect(result._tag).toBe("Failure");
+		if (result._tag === "Failure") {
+			const failure = Cause.findErrorOption(result.cause);
+			expect(Option.isSome(failure)).toBe(true);
+			if (Option.isSome(failure)) {
+				expect(failure.value).toBeInstanceOf(LoopContractValidationError);
+			}
 		}
 	});
 

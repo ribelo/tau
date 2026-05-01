@@ -166,6 +166,12 @@ function syncAgentToolAvailability(
 	const enabledCount = registry.names().filter((name) => !isAgentDisabledForSession(cwd, sessionFile, name)).length;
 	setToolActivationTransform(pi, AGENT_TOOL_ACTIVATION_KEY, (toolNames) => {
 		const hasAgentTool = toolNames.includes("agent");
+		const ralphMeta = getRalphLoopMetadata(cwd, sessionFile);
+		const ralphDisablesAgentTool =
+			ralphMeta !== undefined && !ralphMeta.activeTools.includes("agent");
+		if (ralphDisablesAgentTool) {
+			return hasAgentTool ? toolNames.filter((name) => name !== "agent") : toolNames;
+		}
 		if (enabledCount === 0) {
 			return hasAgentTool ? toolNames.filter((name) => name !== "agent") : toolNames;
 		}
@@ -533,6 +539,7 @@ export default function initAgentsMenu(
 							if (result.status === "deferred") {
 								setRalphLoopMetadata(ctx.cwd, sessionFile!, {
 									loopName: meta.loopName,
+									activeTools: meta.activeTools,
 									enabledAgents: meta.enabledAgents,
 									deferredEnabledAgents: nextEnabled,
 								});
@@ -543,6 +550,7 @@ export default function initAgentsMenu(
 							} else {
 								setRalphLoopMetadata(ctx.cwd, sessionFile!, {
 									loopName: meta.loopName,
+									activeTools: meta.activeTools,
 									enabledAgents: nextEnabled,
 								});
 								ctx.ui.notify(
@@ -614,6 +622,7 @@ export default function initAgentsMenu(
 									if (result.status === "deferred") {
 										setRalphLoopMetadata(ctx.cwd, sessionFile, {
 											loopName: loopMeta.loopName,
+											activeTools: loopMeta.activeTools,
 											enabledAgents: ralphEnabled,
 											deferredEnabledAgents: nextEnabled,
 										});
@@ -628,6 +637,7 @@ export default function initAgentsMenu(
 									ralphDeferredEnabled = undefined;
 									setRalphLoopMetadata(ctx.cwd, sessionFile, {
 										loopName: loopMeta.loopName,
+										activeTools: loopMeta.activeTools,
 										enabledAgents: ralphEnabled,
 									});
 									selector.refreshView();

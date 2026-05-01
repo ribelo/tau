@@ -3,10 +3,7 @@ import { Effect, Option, Schema } from "effect";
 import type { ExecutionProfile } from "../execution/schema.js";
 import { ExecutionProfileSchema } from "../execution/schema.js";
 import { SandboxConfigRequired as SandboxProfileSchema } from "../schemas/config.js";
-import {
-	makeEmptyCapabilityContract,
-	RalphCapabilityContractSchema,
-} from "../ralph/contract.js";
+import { RalphCapabilityContractSchema } from "../ralph/contract.js";
 import { RalphConfigMutationListSchema } from "../ralph/config-mutation.js";
 import { LoopContractValidationError, LoopOwnershipValidationError } from "./errors.js";
 
@@ -56,66 +53,6 @@ const parseJsonUnknown = (
 		try: () => JSON.parse(input) as unknown,
 		catch: (error) => toContractValidationError(entity, error),
 	});
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-interface NormalizeLoopPersistedStateResult {
-	readonly candidate: unknown;
-	readonly migrated: boolean;
-}
-
-function normalizeLoopPersistedState(value: unknown): NormalizeLoopPersistedStateResult {
-	if (!isRecord(value) || value["kind"] !== "ralph") {
-		return { candidate: value, migrated: false };
-	}
-
-	const ralph = value["ralph"];
-	if (!isRecord(ralph)) {
-		return { candidate: value, migrated: false };
-	}
-
-	let migrated = false;
-	const nextRalph: Record<string, unknown> = { ...ralph };
-	if (!("pendingDecision" in nextRalph)) {
-		nextRalph["pendingDecision"] = null;
-		migrated = true;
-	}
-	if (!("sandboxProfile" in nextRalph)) {
-		nextRalph["sandboxProfile"] = null;
-		migrated = true;
-	}
-	if (!("metrics" in nextRalph)) {
-		nextRalph["metrics"] = {
-			totalTokens: 0,
-			totalCostUsd: 0,
-			activeDurationMs: 0,
-			activeStartedAt: null,
-		};
-		migrated = true;
-	}
-	if (!("capabilityContract" in nextRalph)) {
-		nextRalph["capabilityContract"] = makeEmptyCapabilityContract();
-		migrated = true;
-	}
-	if (!("deferredConfigMutations" in nextRalph)) {
-		nextRalph["deferredConfigMutations"] = [];
-		migrated = true;
-	}
-
-	if (!migrated) {
-		return { candidate: value, migrated: false };
-	}
-
-	return {
-		candidate: {
-			...value,
-			ralph: nextRalph,
-		},
-		migrated: true,
-	};
-}
 
 export function sanitizeLoopTaskId(value: string): string {
 	return value
@@ -344,10 +281,9 @@ export const decodeLoopPersistedStateWithMigration = (
 ): Effect.Effect<LoopPersistedStateDecodeResult, LoopContractValidationError, never> =>
 	Effect.try({
 		try: () => {
-			const normalized = normalizeLoopPersistedState(value);
 			return {
-				state: decodeLoopPersistedStateSchemaSync(normalized.candidate),
-				migrated: normalized.migrated,
+				state: decodeLoopPersistedStateSchemaSync(value),
+				migrated: false,
 			};
 		},
 		catch: (error) => toContractValidationError("loops.state", error),
@@ -388,10 +324,9 @@ export function decodeLoopPersistedStateSync(value: unknown): LoopPersistedState
 export function decodeLoopPersistedStateSyncWithMigration(
 	value: unknown,
 ): LoopPersistedStateDecodeResult {
-	const normalized = normalizeLoopPersistedState(value);
 	return {
-		state: decodeLoopPersistedStateSchemaSync(normalized.candidate),
-		migrated: normalized.migrated,
+		state: decodeLoopPersistedStateSchemaSync(value),
+		migrated: false,
 	};
 }
 

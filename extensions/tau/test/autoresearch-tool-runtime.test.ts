@@ -49,6 +49,10 @@ type NewSessionPlan = {
 	readonly sessionFile?: string;
 };
 
+type ReplacementSessionOptions = {
+	readonly withSession?: (ctx: ExtensionCommandContext) => Promise<void> | void;
+};
+
 type ContextHarness = {
 	readonly ctx: ExtensionCommandContext;
 	readonly newSessionCalls: ReadonlyArray<unknown>;
@@ -59,6 +63,7 @@ type PiHarness = {
 	readonly pi: ExtensionAPI;
 	readonly commands: Map<string, RegisteredCommand>;
 	readonly tools: Map<string, ToolDefinition>;
+	readonly activeTools: () => readonly string[];
 	readonly fire: (event: string, payload: unknown, ctx: ExtensionContext) => Promise<readonly unknown[]>;
 };
 
@@ -167,11 +172,22 @@ function makeContext(
 					plan.sessionFile ??
 					path.join(cwd, ".pi", "sessions", `child-${newSessionCounter}.session.json`);
 				setSessionFile(nextSessionFile);
+				if (
+					typeof options === "object" &&
+					options !== null &&
+					"withSession" in options &&
+					typeof options.withSession === "function"
+				) {
+					await (options as ReplacementSessionOptions).withSession?.(
+						ctx as unknown as ExtensionCommandContext,
+					);
+				}
 			}
 			return { cancelled: plan.cancelled };
 		},
-		switchSession: async (target: string) => {
+		switchSession: async (target: string, options?: ReplacementSessionOptions) => {
 			setSessionFile(target);
+			await options?.withSession?.(ctx as unknown as ExtensionCommandContext);
 			return { cancelled: false };
 		},
 	};
@@ -187,6 +203,7 @@ function makePiHarness(): PiHarness {
 	const eventHandlers = new Map<string, EventHandler[]>();
 	const commands = new Map<string, RegisteredCommand>();
 	const tools = new Map<string, ToolDefinition>();
+	let activeTools = ["autoresearch_run", "autoresearch_done"];
 
 	const base = {
 		on: (event: string, handler: EventHandler) => {
@@ -206,8 +223,10 @@ function makePiHarness(): PiHarness {
 		sendUserMessage: () => undefined,
 		sendMessage: () => undefined,
 		appendEntry: () => undefined,
-		getActiveTools: () => [],
-		setActiveTools: () => undefined,
+		getActiveTools: () => activeTools,
+		setActiveTools: (nextTools: string[]) => {
+			activeTools = [...nextTools];
+		},
 		getAllTools: () => [],
 		getCommands: () => [],
 		setModel: async () => true,
@@ -233,6 +252,7 @@ function makePiHarness(): PiHarness {
 		}) as unknown as ExtensionAPI,
 		commands,
 		tools,
+		activeTools: () => activeTools,
 		fire: async (event, payload, ctx) => {
 			const results: unknown[] = [];
 			for (const handler of eventHandlers.get(event) ?? []) {
@@ -294,6 +314,22 @@ describe("autoresearch tool runtime", () => {
 		);
 	});
 
+	it("hides autoresearch run tools outside the active child session", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const context = makeContext(cwd);
+		const piHarness = makePiHarness();
+		const runtime = makeRuntime();
+		runtimes.push(runtime);
+		initAutoresearch(piHarness.pi, runtime.run);
+
+		await piHarness.fire("before_agent_start", { type: "before_agent_start" }, context.ctx);
+
+		expect(piHarness.activeTools()).not.toContain("autoresearch_run");
+		expect(piHarness.activeTools()).not.toContain("autoresearch_done");
+	});
+
 	it("runs the benchmark in the real workspace scope", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
@@ -347,7 +383,7 @@ describe("autoresearch tool runtime", () => {
 		await command?.handler("stop improve-local-pdp-web-vitals", context.ctx);
 	});
 
-	it("auto-commits kept runs in the real workspace", async () => {
+	it("finalizes kept runs without mutating the workspace", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 
@@ -368,20 +404,6 @@ describe("autoresearch tool runtime", () => {
 
 				if (command === "bash autoresearch.sh") {
 					options.onData?.(Buffer.from('METRIC metric=123\nASI hypothesis="workspace"\n'));
-					return { exitCode: 0 };
-				}
-				if (command === "git add -A") {
-					return { exitCode: 0 };
-				}
-				if (command === "git diff --cached --quiet") {
-					return { exitCode: 1 };
-				}
-				if (command.startsWith("git commit -m ")) {
-					options.onData?.(Buffer.from("[master abc1234] autoresearch keep\n 1 file changed\n"));
-					return { exitCode: 0 };
-				}
-				if (command === "git rev-parse --short=7 HEAD") {
-					options.onData?.(Buffer.from("abc1234\n"));
 					return { exitCode: 0 };
 				}
 
@@ -411,20 +433,17 @@ describe("autoresearch tool runtime", () => {
 			context.ctx,
 		);
 
-		expect(execCalls.map((call) => call.command)).toContain("git add -A");
-		expect(execCalls.map((call) => call.command)).toContain("git diff --cached --quiet");
-		expect(execCalls.some((call) => call.command.startsWith("git commit -m "))).toBe(true);
-		expect(execCalls.map((call) => call.command)).toContain("git rev-parse --short=7 HEAD");
+		expect(execCalls.map((call) => call.command)).toEqual(["bash autoresearch.sh"]);
 		expect(doneResult.content[0]?.type).toBe("text");
 		if (doneResult.content[0]?.type !== "text") {
 			throw new Error("expected text result");
 		}
-		expect(doneResult.content[0].text).toContain("Git: committed");
+		expect(doneResult.content[0].text).toContain("Workspace changes were left untouched.");
 		context.setSessionFile(controllerSession);
 		await command.handler("stop improve-local-pdp-web-vitals", context.ctx);
 	});
 
-	it("auto-reverts discarded runs in the real workspace", async () => {
+	it("finalizes discarded runs without mutating the workspace", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 
@@ -445,12 +464,6 @@ describe("autoresearch tool runtime", () => {
 
 				if (command === "bash autoresearch.sh") {
 					options.onData?.(Buffer.from('METRIC metric=123\nASI hypothesis="workspace"\n'));
-					return { exitCode: 0 };
-				}
-				if (command === "git checkout -- .") {
-					return { exitCode: 0 };
-				}
-				if (command === "git clean -fd") {
 					return { exitCode: 0 };
 				}
 
@@ -480,13 +493,12 @@ describe("autoresearch tool runtime", () => {
 			context.ctx,
 		);
 
-		expect(execCalls.map((call) => call.command)).toContain("git checkout -- .");
-		expect(execCalls.map((call) => call.command)).toContain("git clean -fd");
+		expect(execCalls.map((call) => call.command)).toEqual(["bash autoresearch.sh"]);
 		expect(doneResult.content[0]?.type).toBe("text");
 		if (doneResult.content[0]?.type !== "text") {
 			throw new Error("expected text result");
 		}
-		expect(doneResult.content[0].text).toContain("Git: reverted workspace changes (discard)");
+		expect(doneResult.content[0].text).toContain("Workspace changes were left untouched.");
 		context.setSessionFile(controllerSession);
 		await command.handler("stop improve-local-pdp-web-vitals", context.ctx);
 	});
@@ -591,12 +603,6 @@ describe("autoresearch tool runtime", () => {
 			exec: async (command, _commandCwd, options) => {
 				if (command === "bash autoresearch.sh") {
 					options.onData?.(Buffer.from('METRIC metric=123\nASI hypothesis="workspace"\n'));
-					return { exitCode: 0 };
-				}
-				if (command === "git checkout -- .") {
-					return { exitCode: 0 };
-				}
-				if (command === "git clean -fd") {
 					return { exitCode: 0 };
 				}
 

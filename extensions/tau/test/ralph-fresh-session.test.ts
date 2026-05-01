@@ -7,7 +7,21 @@ import { decodeLoopStateSync, sanitizeLoopName } from "../src/ralph/schema.js";
 import {
 	makeExecutionProfile,
 	makeSandboxProfile,
+	makeCapabilityContract,
 } from "./ralph-test-helpers.js";
+
+function currentFields(): Record<string, unknown> {
+	return {
+		metrics: {
+			totalTokens: 0,
+			totalCostUsd: 0,
+			activeDurationMs: 0,
+			activeStartedAt: null,
+		},
+		capabilityContract: makeCapabilityContract(),
+		deferredConfigMutations: [],
+	};
+}
 
 describe("ralph fresh-session helpers", () => {
 	it("preserves uppercase letters when sanitizing loop names", () => {
@@ -34,6 +48,7 @@ describe("ralph fresh-session helpers", () => {
 			pendingDecision: null,
 			executionProfile: makeExecutionProfile(),
 			sandboxProfile: makeSandboxProfile(),
+			...currentFields(),
 		});
 
 		expect(Option.isNone(state.completedAt)).toBe(true);
@@ -65,6 +80,7 @@ describe("ralph fresh-session helpers", () => {
 				pendingDecision: null,
 				executionProfile: makeExecutionProfile(),
 				sandboxProfile: makeSandboxProfile(),
+				...currentFields(),
 			}),
 		).toThrow(RalphContractValidationError);
 	});
@@ -87,6 +103,7 @@ describe("ralph fresh-session helpers", () => {
 			pendingDecision: null,
 			executionProfile: makeExecutionProfile(),
 			sandboxProfile: makeSandboxProfile(),
+			...currentFields(),
 		});
 
 		expect(loopOwnsSessionFile(normalized, "/tmp/controller.session")).toBe(true);

@@ -721,6 +721,38 @@ describe("ralph core service", () => {
 		}
 	});
 
+	it("pauses the active workspace loop without trusting stale current-loop memory", async () => {
+		const firstCwd = makeTempDir();
+		const secondCwd = makeTempDir();
+		tempDirs.push(firstCwd, secondCwd);
+		const firstSessionFile = path.join(firstCwd, ".pi", "sessions", "first.session.json");
+		const secondSessionFile = path.join(secondCwd, ".pi", "sessions", "second.session.json");
+
+		const result = await Effect.runPromise(
+			Effect.gen(function* () {
+				const repo = yield* RalphRepo;
+				const ralph = yield* Ralph;
+
+				yield* repo.saveState(firstCwd, makeState("stale-loop", firstSessionFile));
+				yield* ralph.syncCurrentLoopFromSession(firstCwd, firstSessionFile);
+				yield* repo.saveState(secondCwd, makeState("active-loop", secondSessionFile));
+
+				const paused = yield* ralph.pauseCurrentLoop(secondCwd);
+				const saved = yield* repo.loadState(secondCwd, "active-loop");
+				return { paused, saved };
+			}).pipe(Effect.provide(ralphLayer)),
+		);
+
+		expect(result.paused.status).toBe("paused");
+		if (result.paused.status === "paused") {
+			expect(result.paused.loopName).toBe("active-loop");
+		}
+		expect(Option.isSome(result.saved)).toBe(true);
+		if (Option.isSome(result.saved)) {
+			expect(result.saved.value.status).toBe("paused");
+		}
+	});
+
 	it("reopens completed loops through resumeLoopState without resetting iteration", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);

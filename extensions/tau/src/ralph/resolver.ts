@@ -9,12 +9,6 @@ import { LoopRepo } from "../loops/repo.js";
 import type { RalphLoopPersistedState } from "../loops/schema.js";
 import type { ResolvedSandboxConfig } from "../sandbox/config.js";
 import { parseProviderModel } from "../shared/model-id.js";
-import {
-	APPLY_PATCH_TOOL_NAME,
-	EDIT_TOOL_NAME,
-	WRITE_TOOL_NAME,
-	isMutationToolName,
-} from "../sandbox/mutation-tools.js";
 import { RalphContractValidationError } from "../ralph/errors.js";
 import {
 	ensureRalphSystemControlTools,
@@ -55,73 +49,24 @@ export type ContractValidationResult =
 	| { readonly valid: true }
 	| { readonly valid: false; readonly issues: ReadonlyArray<ContractValidationIssue> };
 
-const RalphDefaultActiveToolNames = new Set([
-	"bash",
-	"read",
-	"backlog",
-	"agent",
-	"memory",
-]);
-const RALPH_DEFAULT_ENABLED_AGENT_NAME = "finder";
-
-function isRalphDefaultActiveToolName(name: string): boolean {
-	return (
-		RalphDefaultActiveToolNames.has(name) ||
-		name.endsWith("_exa") ||
-		name.startsWith("exa.")
-	);
-}
-
-function selectRalphDefaultMutationTools(
-	availableToolNames: ReadonlySet<string>,
-	useApplyPatch: boolean | undefined,
-): ReadonlySet<string> {
-	const legacyTools = [EDIT_TOOL_NAME, WRITE_TOOL_NAME].filter((name) =>
-		availableToolNames.has(name),
-	);
-	const hasApplyPatch = availableToolNames.has(APPLY_PATCH_TOOL_NAME);
-
-	if (useApplyPatch === true && hasApplyPatch) {
-		return new Set([APPLY_PATCH_TOOL_NAME]);
-	}
-	if (useApplyPatch === true) {
-		return new Set(legacyTools);
-	}
-	if (legacyTools.length > 0) {
-		return new Set(legacyTools);
-	}
-	if (hasApplyPatch) {
-		return new Set([APPLY_PATCH_TOOL_NAME]);
-	}
-	return new Set();
-}
-
 // ─── Pure capture helpers ───────────────────────────────────────────────────
 
 /**
  * Capture Ralph's initial tool contract from current Pi runtime state.
  * System-managed Ralph control tools are excluded from activeNames
- * but included in the available snapshot for display. activeNames starts
- * from Ralph's safe default allowlist rather than the ambient session's
- * active tools.
+ * but included in the available snapshot for display.
  */
 export function captureToolContract(
 	input: Pick<ContractCaptureInput, "activeTools" | "allTools" | "useApplyPatchForMutationTools">,
 ): RalphCapabilityContract["tools"] {
 	const availableToolNames = new Set(input.allTools.map((tool) => tool.name));
-	const selectedMutationTools = selectRalphDefaultMutationTools(
-		availableToolNames,
-		input.useApplyPatchForMutationTools,
-	);
-	const userActiveNames = input.allTools
-		.map((tool) => tool.name)
+	const userActiveNames = input.activeTools
 		.filter(
 			(name) =>
-				(isMutationToolName(name)
-					? selectedMutationTools.has(name)
-					: isRalphDefaultActiveToolName(name)),
+				availableToolNames.has(name) &&
+				!isRalphSystemControlTool(name),
 		)
-		.filter((name) => !isRalphSystemControlTool(name));
+		.filter((name, index, names) => names.indexOf(name) === index);
 	const availableSnapshot: ToolMetadataFingerprint[] = input.allTools.map((tool) => ({
 		name: tool.name,
 		label: tool.name,
@@ -135,8 +80,7 @@ export function captureToolContract(
 
 /**
  * Capture Ralph's initial agent contract from current runtime state.
- * The registry snapshot preserves every configurable agent, while the default
- * enabled set starts with only finder when it exists.
+ * The registry snapshot preserves every configurable agent.
  */
 export function captureAgentContract(
 	input: Pick<ContractCaptureInput, "agentRegistry" | "enabledAgents">,
@@ -147,9 +91,9 @@ export function captureAgentContract(
 	}));
 	const registryNames = new Set(registrySnapshot.map((agent) => agent.name));
 	return {
-		enabledNames: registryNames.has(RALPH_DEFAULT_ENABLED_AGENT_NAME)
-			? [RALPH_DEFAULT_ENABLED_AGENT_NAME]
-			: [],
+		enabledNames: input.enabledAgents
+			.filter((name) => registryNames.has(name))
+			.filter((name, index, names) => names.indexOf(name) === index),
 		registrySnapshot,
 	};
 }

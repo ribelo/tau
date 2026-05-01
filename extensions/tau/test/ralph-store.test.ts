@@ -39,6 +39,23 @@ type RegisteredCommand = {
 };
 
 type Notifications = Array<{ readonly message: string; readonly level: string }>;
+
+function withCurrentRalphFields(
+	state: Record<string, unknown>,
+): Record<string, unknown> {
+	return {
+		sandboxProfile: makeSandboxProfile(),
+		metrics: {
+			totalTokens: 0,
+			totalCostUsd: 0,
+			activeDurationMs: 0,
+			activeStartedAt: null,
+		},
+		capabilityContract: makeCapabilityContract(),
+		deferredConfigMutations: [],
+		...state,
+	};
+}
 type SentUserMessage = {
 	readonly prompt: string;
 	readonly options: { readonly deliverAs?: string } | undefined;
@@ -458,7 +475,7 @@ describe("ralph store behavior freeze", () => {
 		expect(configured.ralph.maxIterations).toBe(12);
 	});
 
-	it("/ralph configure initializes draft tool contract with Ralph defaults", async () => {
+	it("/ralph configure captures the current runtime tool contract", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 
@@ -508,18 +525,15 @@ describe("ralph store behavior freeze", () => {
 		expect(persisted.ralph.capabilityContract.tools.activeNames).toEqual([
 			"read",
 			"bash",
+			"todo_write",
+			"thread",
+			"edit",
+			"write",
 			"apply_patch",
-			"backlog",
-			"web_search_exa",
-			"crawling_exa",
-			"get_code_context_exa",
-			"agent",
-			"memory",
 		]);
-		expect(persisted.ralph.capabilityContract.agents.enabledNames).toEqual(["finder"]);
 	});
 
-	it("/ralph configure preserves a noncanonical task path when creating state", async () => {
+	it("/ralph configure imports a noncanonical task path into canonical loop storage", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 
@@ -546,7 +560,7 @@ describe("ralph store behavior freeze", () => {
 		if (state.kind !== "ralph") {
 			throw new Error("expected ralph state");
 		}
-		expect(state.taskFile).toBe(taskFile);
+		expect(state.taskFile).toBe(path.join(".pi", "loops", "tasks", "task_path.md"));
 		expect(state.lifecycle).toBe("draft");
 		await ralphRuntime.run(
 			Effect.gen(function* () {
@@ -565,15 +579,15 @@ describe("ralph store behavior freeze", () => {
 		if (started.kind !== "ralph") {
 			throw new Error("expected ralph state");
 		}
-		expect(started.taskFile).toBe(taskFile);
+		expect(started.taskFile).toBe(path.join(".pi", "loops", "tasks", "task_path.md"));
 		expect(started.ralph.maxIterations).toBe(9);
 
-		fs.writeFileSync(path.join(cwd, taskFile), "# Task\n\nUpdated custom task.\n", "utf-8");
+		fs.writeFileSync(taskPath(cwd, "task_path"), "# Task\n\nUpdated custom task.\n", "utf-8");
 		await command?.handler("archive task_path", context);
 		expect(fs.readFileSync(taskPath(cwd, "task_path", true), "utf-8")).toContain(
 			"Updated custom task.",
 		);
-		expect(fs.existsSync(path.join(cwd, taskFile))).toBe(false);
+		expect(fs.existsSync(path.join(cwd, taskFile))).toBe(true);
 	});
 
 	it("/ralph start rejects extra positional arguments instead of starting the wrong loop", async () => {
@@ -644,7 +658,7 @@ describe("ralph store behavior freeze", () => {
 		fs.writeFileSync(
 			statePath(cwd, "limit-loop"),
 			encodeStateForStorage(
-				decodeLoopStateSync({
+				decodeLoopStateSync(withCurrentRalphFields({
 					name: "limit-loop",
 					taskFile: path.join(".pi", "loops", "tasks", "limit-loop.md"),
 					iteration: 12,
@@ -667,7 +681,7 @@ describe("ralph store behavior freeze", () => {
 					executionProfile: makeExecutionProfile(),
 					sandboxProfile: makeSandboxProfile(),
 					capabilityContract: makeCapabilityContract(),
-				}),
+				})),
 			),
 			"utf-8",
 		);
@@ -705,7 +719,7 @@ describe("ralph store behavior freeze", () => {
 		fs.writeFileSync(
 			statePath(cwd, "limit-loop"),
 			encodeStateForStorage(
-				decodeLoopStateSync({
+				decodeLoopStateSync(withCurrentRalphFields({
 					name: "limit-loop",
 					taskFile: path.join(".pi", "loops", "tasks", "limit-loop.md"),
 					iteration: 12,
@@ -728,7 +742,7 @@ describe("ralph store behavior freeze", () => {
 					executionProfile: makeExecutionProfile(),
 					sandboxProfile: makeSandboxProfile(),
 					capabilityContract: makeCapabilityContract(),
-				}),
+				})),
 			),
 			"utf-8",
 		);
@@ -763,7 +777,7 @@ describe("ralph store behavior freeze", () => {
 		fs.writeFileSync(
 			statePath(cwd, "done-loop"),
 			encodeStateForStorage(
-				decodeLoopStateSync({
+				decodeLoopStateSync(withCurrentRalphFields({
 					name: "done-loop",
 					taskFile: path.join(".pi", "loops", "tasks", "done-loop.md"),
 					iteration: 9,
@@ -786,7 +800,7 @@ describe("ralph store behavior freeze", () => {
 					executionProfile: makeExecutionProfile(),
 					sandboxProfile: makeSandboxProfile(),
 					capabilityContract: makeCapabilityContract(),
-				}),
+				})),
 			),
 			"utf-8",
 		);
@@ -825,7 +839,7 @@ describe("ralph store behavior freeze", () => {
 		fs.writeFileSync(
 			statePath(cwd, "legacy-limit-loop"),
 			encodeStateForStorage(
-				decodeLoopStateSync({
+				decodeLoopStateSync(withCurrentRalphFields({
 					name: "legacy-limit-loop",
 					taskFile: path.join(".pi", "loops", "tasks", "legacy-limit-loop.md"),
 					iteration: 12,
@@ -848,7 +862,7 @@ describe("ralph store behavior freeze", () => {
 					executionProfile: makeExecutionProfile(),
 					sandboxProfile: makeSandboxProfile(),
 					capabilityContract: makeCapabilityContract(),
-				}),
+				})),
 			),
 			"utf-8",
 		);
@@ -890,7 +904,7 @@ describe("ralph store behavior freeze", () => {
 		fs.writeFileSync(
 			statePath(cwd, "legacy-limit-loop"),
 			encodeStateForStorage(
-				decodeLoopStateSync({
+				decodeLoopStateSync(withCurrentRalphFields({
 					name: "legacy-limit-loop",
 					taskFile: path.join(".pi", "loops", "tasks", "legacy-limit-loop.md"),
 					iteration: 12,
@@ -913,7 +927,7 @@ describe("ralph store behavior freeze", () => {
 					executionProfile: makeExecutionProfile(),
 					sandboxProfile: makeSandboxProfile(),
 					capabilityContract: makeCapabilityContract(),
-				}),
+				})),
 			),
 			"utf-8",
 		);
@@ -949,7 +963,7 @@ describe("ralph store behavior freeze", () => {
 		fs.writeFileSync(
 			statePath(cwd, "limit-loop"),
 			encodeStateForStorage(
-				decodeLoopStateSync({
+				decodeLoopStateSync(withCurrentRalphFields({
 					name: "limit-loop",
 					taskFile: path.join(".pi", "loops", "tasks", "limit-loop.md"),
 					iteration: 12,
@@ -972,7 +986,7 @@ describe("ralph store behavior freeze", () => {
 					executionProfile: makeExecutionProfile(),
 					sandboxProfile: makeSandboxProfile(),
 					capabilityContract: makeCapabilityContract(),
-				}),
+				})),
 			),
 			"utf-8",
 		);
@@ -980,7 +994,7 @@ describe("ralph store behavior freeze", () => {
 		fs.writeFileSync(
 			statePath(cwd, "done-loop"),
 			encodeStateForStorage(
-				decodeLoopStateSync({
+				decodeLoopStateSync(withCurrentRalphFields({
 					name: "done-loop",
 					taskFile: path.join(".pi", "loops", "tasks", "done-loop.md"),
 					iteration: 9,
@@ -1003,7 +1017,7 @@ describe("ralph store behavior freeze", () => {
 					executionProfile: makeExecutionProfile(),
 					sandboxProfile: makeSandboxProfile(),
 					capabilityContract: makeCapabilityContract(),
-				}),
+				})),
 			),
 			"utf-8",
 		);
@@ -1152,7 +1166,7 @@ describe("ralph store behavior freeze", () => {
 		fs.writeFileSync(
 			statePath(cwd, "owned-paused"),
 			encodeStateForStorage(
-				decodeLoopStateSync({
+				decodeLoopStateSync(withCurrentRalphFields({
 					name: "owned-paused",
 					taskFile: path.join(".pi", "loops", "tasks", "owned-paused.md"),
 					iteration: 2,
@@ -1175,14 +1189,14 @@ describe("ralph store behavior freeze", () => {
 					executionProfile: makeExecutionProfile(),
 					sandboxProfile: makeSandboxProfile(),
 					capabilityContract: makeCapabilityContract(),
-				}),
+				})),
 			),
 			"utf-8",
 		);
 		fs.writeFileSync(
 			statePath(cwd, "other-active"),
 			encodeStateForStorage(
-				decodeLoopStateSync({
+				decodeLoopStateSync(withCurrentRalphFields({
 					name: "other-active",
 					taskFile: path.join(".pi", "loops", "tasks", "other-active.md"),
 					iteration: 1,
@@ -1200,7 +1214,7 @@ describe("ralph store behavior freeze", () => {
 					executionProfile: makeExecutionProfile(),
 					sandboxProfile: makeSandboxProfile(),
 					capabilityContract: makeCapabilityContract(),
-				}),
+				})),
 			),
 			"utf-8",
 		);

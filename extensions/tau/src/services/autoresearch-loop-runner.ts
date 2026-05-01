@@ -33,6 +33,12 @@ export class AutoresearchLoopRunner extends Context.Service<
 >()("AutoresearchLoopRunner") {}
 
 const AUTORESEARCH_AGENT_END_WAIT_TIMEOUT = "30 minutes";
+const AUTORESEARCH_AGENT_END_EVENT_TTL_MS = 30 * 60 * 1000;
+
+type QueuedAgentEnd = {
+	readonly event: unknown;
+	readonly timeout: ReturnType<typeof setTimeout>;
+};
 
 export const AutoresearchLoopRunnerLive = Layer.effect(
 	AutoresearchLoopRunner,
@@ -43,6 +49,16 @@ export const AutoresearchLoopRunnerLive = Layer.effect(
 
 		const activeLoops = new Map<string, Fiber.Fiber<void, never>>();
 		const waitingAgentEnds = new Map<string, Deferred.Deferred<unknown>>();
+		const queuedAgentEnds = new Map<string, QueuedAgentEnd>();
+		yield* Scope.addFinalizer(
+			serviceScope,
+			Effect.sync(() => {
+				for (const queued of queuedAgentEnds.values()) {
+					clearTimeout(queued.timeout);
+				}
+				queuedAgentEnds.clear();
+			}),
+		);
 
 		const ensureLoopRunning: AutoresearchLoopRunnerService["ensureLoopRunning"] = Effect.fn(
 			"AutoresearchLoopRunner.ensureLoopRunning",
@@ -78,6 +94,16 @@ export const AutoresearchLoopRunnerLive = Layer.effect(
 		const waitForAgentEnd: AutoresearchLoopRunnerService["waitForAgentEnd"] = Effect.fn(
 			"AutoresearchLoopRunner.waitForAgentEnd",
 		)(function* (sessionFile) {
+			const queued = queuedAgentEnds.get(sessionFile);
+			if (queued !== undefined) {
+				clearTimeout(queued.timeout);
+				queuedAgentEnds.delete(sessionFile);
+				return {
+					_tag: "completed",
+					event: queued.event,
+				} satisfies WaitForAutoresearchAgentEndResult;
+			}
+
 			const deferred = yield* Deferred.make<unknown>();
 			waitingAgentEnds.set(sessionFile, deferred);
 
@@ -112,6 +138,17 @@ export const AutoresearchLoopRunnerLive = Layer.effect(
 		)(function* (sessionFile, event) {
 			const deferred = waitingAgentEnds.get(sessionFile);
 			if (deferred === undefined) {
+				const existing = queuedAgentEnds.get(sessionFile);
+				if (existing !== undefined) {
+					clearTimeout(existing.timeout);
+				}
+				const timeout = setTimeout(() => {
+					const queued = queuedAgentEnds.get(sessionFile);
+					if (queued?.timeout === timeout) {
+						queuedAgentEnds.delete(sessionFile);
+					}
+				}, AUTORESEARCH_AGENT_END_EVENT_TTL_MS);
+				queuedAgentEnds.set(sessionFile, { event, timeout });
 				return;
 			}
 

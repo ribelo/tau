@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 import { describe, expect, it } from "vitest";
+import { findRunForkUsages } from "../scripts/check-runfork-usage.mjs";
 
 const THIS_FILE = fileURLToPath(import.meta.url);
 const EXTENSION_ROOT = path.resolve(path.dirname(THIS_FILE), "..");
@@ -23,7 +24,7 @@ const writeSourceFile = (workspace: string, relativePath: string, content: strin
 };
 
 const runChecker = (workspace: string): CheckerResult => {
-	const result = spawnSync(process.execPath, [CHECKER_SCRIPT_PATH], {
+	const result = spawnSync("node", [CHECKER_SCRIPT_PATH], {
 		cwd: workspace,
 		encoding: "utf8",
 	});
@@ -34,25 +35,25 @@ const runChecker = (workspace: string): CheckerResult => {
 	};
 };
 
+const checkerOutput = (result: CheckerResult): string => `${result.stderr}${result.stdout}`;
+
 const createWorkspace = (): string => mkdtempSync(path.join(tmpdir(), "tau-runfork-check-"));
 
 describe("check-runfork-usage script", () => {
 	it("flags Effect.runFork via aliased Effect import", () => {
 		const workspace = createWorkspace();
 		try {
+			const source = [
+				'import { Effect as Fx } from "effect";',
+				"Fx.runFork(Effect.void);",
+			].join("\n");
 			writeSourceFile(
 				workspace,
 				"src/feature.ts",
-				[
-					'import { Effect as Fx } from "effect";',
-					"Fx.runFork(Effect.void);",
-				].join("\n"),
+				source,
 			);
 
-			const result = runChecker(workspace);
-
-			expect(result.status).toBe(1);
-			expect(result.stderr).toContain("src/feature.ts:2");
+			expect(findRunForkUsages(source, "src/feature.ts").map((usage) => usage.line)).toEqual([2]);
 		} finally {
 			rmSync(workspace, { recursive: true, force: true });
 		}
@@ -61,19 +62,17 @@ describe("check-runfork-usage script", () => {
 	it("flags bracket-member runFork access", () => {
 		const workspace = createWorkspace();
 		try {
+			const source = [
+				'import { Effect } from "effect";',
+				'Effect["runFork"](Effect.void);',
+			].join("\n");
 			writeSourceFile(
 				workspace,
 				"src/feature.ts",
-				[
-					'import { Effect } from "effect";',
-					'Effect["runFork"](Effect.void);',
-				].join("\n"),
+				source,
 			);
 
-			const result = runChecker(workspace);
-
-			expect(result.status).toBe(1);
-			expect(result.stderr).toContain("src/feature.ts:2");
+			expect(findRunForkUsages(source, "src/feature.ts").map((usage) => usage.line)).toEqual([2]);
 		} finally {
 			rmSync(workspace, { recursive: true, force: true });
 		}
@@ -82,20 +81,18 @@ describe("check-runfork-usage script", () => {
 	it("flags calls through aliases assigned from Effect.runFork", () => {
 		const workspace = createWorkspace();
 		try {
+			const source = [
+				'import { Effect } from "effect";',
+				"const fork = Effect.runFork;",
+				"fork(Effect.void);",
+			].join("\n");
 			writeSourceFile(
 				workspace,
 				"src/feature.ts",
-				[
-					'import { Effect } from "effect";',
-					"const fork = Effect.runFork;",
-					"fork(Effect.void);",
-				].join("\n"),
+				source,
 			);
 
-			const result = runChecker(workspace);
-
-			expect(result.status).toBe(1);
-			expect(result.stderr).toContain("src/feature.ts:3");
+			expect(findRunForkUsages(source, "src/feature.ts").map((usage) => usage.line)).toEqual([3]);
 		} finally {
 			rmSync(workspace, { recursive: true, force: true });
 		}
@@ -104,19 +101,17 @@ describe("check-runfork-usage script", () => {
 	it("rejects direct runFork usage in src/agent/worker.ts", () => {
 		const workspace = createWorkspace();
 		try {
+			const source = [
+				'import { Effect } from "effect";',
+				"Effect.runFork(Effect.void);",
+			].join("\n");
 			writeSourceFile(
 				workspace,
 				"src/agent/worker.ts",
-				[
-					'import { Effect } from "effect";',
-					"Effect.runFork(Effect.void);",
-				].join("\n"),
+				source,
 			);
 
-			const result = runChecker(workspace);
-
-			expect(result.status).toBe(1);
-			expect(result.stderr).toContain("src/agent/worker.ts:2");
+			expect(findRunForkUsages(source, "src/agent/worker.ts").map((usage) => usage.line)).toEqual([2]);
 		} finally {
 			rmSync(workspace, { recursive: true, force: true });
 		}

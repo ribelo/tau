@@ -122,6 +122,26 @@ describe("ralph schema", () => {
 		expect(result._tag).toBe("Failure");
 	});
 
+	it("fails fast when required runtime fields are missing", async () => {
+		const {
+			sandboxProfile: _sandboxProfile,
+			metrics: _metrics,
+			capabilityContract: _capabilityContract,
+			deferredConfigMutations: _deferredConfigMutations,
+			...legacyState
+		} = encodedLoopState;
+
+		const result = await Effect.runPromise(Effect.exit(decodeLoopState(legacyState)));
+		expect(result._tag).toBe("Failure");
+		if (result._tag === "Failure") {
+			const failure = Cause.findErrorOption(result.cause);
+			expect(Option.isSome(failure)).toBe(true);
+			if (Option.isSome(failure)) {
+				expect(failure.value).toBeInstanceOf(RalphContractValidationError);
+			}
+		}
+	});
+
 	it("maps invalid JSON payloads to RalphContractValidationError", async () => {
 		const result = await Effect.runPromise(Effect.exit(decodeLoopStateJson("{")));
 		expect(result._tag).toBe("Failure");

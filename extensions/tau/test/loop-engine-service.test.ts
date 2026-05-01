@@ -651,4 +651,118 @@ describe("loop engine service", () => {
 		const parsed = JSON.parse(decoded) as { readonly kind?: unknown };
 		expect(parsed.kind).toBe("autoresearch");
 	});
+
+	it("blocks autoresearch for manual resolution when a pending run would lose child ownership", async () => {
+		const operations = ["pause", "stop", "clear_child"] as const;
+
+		for (const operation of operations) {
+			const cwd = makeTempDir();
+			tempDirs.push(cwd);
+			const taskId = `pending-${operation.replace("_", "-")}`;
+			const controller = makeSession(
+				`${operation}-controller`,
+				`${operation}-controller.session.json`,
+			);
+			const child = makeSession(`${operation}-child`, `${operation}-child.session.json`);
+
+			const blocked = await Effect.runPromise(
+				Effect.gen(function* () {
+					const engine = yield* LoopEngine;
+					const repo = yield* LoopRepo;
+
+					yield* engine.createLoop(cwd, {
+						kind: "autoresearch",
+						taskId,
+						title: "Pending autoresearch",
+						taskContent: "Exercise pending run child ownership loss.",
+						benchmarkCommand: "bash scripts/bench.sh",
+						checksCommand: Option.none(),
+						metricName: "latency_ms",
+						metricUnit: "ms",
+						metricDirection: "lower",
+						scopeRoot: ".",
+						scopePaths: ["src"],
+						offLimits: [],
+						constraints: [],
+						maxIterations: Option.none(),
+						executionProfile: makeExecutionProfile(),
+					});
+
+					yield* engine.startLoop(cwd, taskId, controller);
+					const withChild = yield* engine.attachChildSession(cwd, taskId, child);
+					if (withChild.kind !== "autoresearch") {
+						throw new Error("expected autoresearch state");
+					}
+
+					yield* repo.saveState(cwd, {
+						...withChild,
+						autoresearch: {
+							...withChild.autoresearch,
+							pendingRunId: Option.some("run-0001"),
+						},
+					});
+
+					if (operation === "pause") {
+						return yield* engine.pauseLoop(cwd, taskId);
+					}
+					if (operation === "stop") {
+						return yield* engine.stopLoop(cwd, taskId);
+					}
+					return yield* engine.clearChildSession(cwd, taskId, child);
+				}).pipe(Effect.provide(loopEngineLayer)),
+			);
+
+			expect(blocked.kind).toBe("blocked_manual_resolution");
+			if (blocked.kind !== "blocked_manual_resolution") {
+				throw new Error("expected blocked state");
+			}
+			expect(blocked.previousKind).toBe("autoresearch");
+			expect(blocked.blocked.reasonCode).toBe("autoresearch.pending_run_child_lost");
+			expect(blocked.blocked.recoveryNotes).toContain("pending_run_id=run-0001");
+			expect(blocked.blocked.recoveryNotes).toContain(`operation=${operation}`);
+			expect(Option.isNone(blocked.ownership.child)).toBe(true);
+		}
+	});
+
+	it("stores loop state at the nearest workspace root when invoked from nested directories", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+		fs.mkdirSync(path.join(cwd, ".git"));
+		const nested = path.join(cwd, "packages", "app", "src");
+		fs.mkdirSync(nested, { recursive: true });
+
+		const listed = await Effect.runPromise(
+			Effect.gen(function* () {
+				const engine = yield* LoopEngine;
+
+				yield* engine.createLoop(nested, {
+					kind: "autoresearch",
+					taskId: "nested-root",
+					title: "Nested root",
+					taskContent: "Verify nested loop storage root.",
+					benchmarkCommand: "bash scripts/bench.sh",
+					checksCommand: Option.none(),
+					metricName: "latency_ms",
+					metricUnit: "ms",
+					metricDirection: "lower",
+					scopeRoot: ".",
+					scopePaths: ["src"],
+					offLimits: [],
+					constraints: [],
+					maxIterations: Option.none(),
+					executionProfile: makeExecutionProfile(),
+				});
+
+				return yield* engine.listLoops(cwd);
+			}).pipe(Effect.provide(loopEngineLayer)),
+		);
+
+		expect(listed.map((state) => state.taskId)).toContain("nested-root");
+		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "state", "nested-root.json"))).toBe(
+			true,
+		);
+		expect(fs.existsSync(path.join(nested, ".pi", "loops", "state", "nested-root.json"))).toBe(
+			false,
+		);
+	});
 });

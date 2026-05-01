@@ -8,6 +8,7 @@ import { atomicWriteFileStringSync } from "../shared/atomic-write.js";
 import { isRecord, type AnyRecord } from "../shared/json.js";
 import { LOOPS_STATE_DIR } from "../loops/paths.js";
 import { decodeLoopPersistedStateJsonSync } from "../loops/schema.js";
+import { resolveLoopWorkspaceRoot } from "../loops/workspace-root.js";
 
 type ProjectAgentState = {
 	readonly disabledAgents: Set<string>;
@@ -27,6 +28,7 @@ const ralphOwnedSessionCache = new Map<string, boolean>();
 
 export type RalphLoopMetadata = {
 	readonly loopName: string;
+	readonly activeTools: ReadonlyArray<string>;
 	readonly enabledAgents: ReadonlyArray<string>;
 	readonly deferredEnabledAgents?: ReadonlyArray<string>;
 };
@@ -177,11 +179,11 @@ export function getAgentSettingsPath(cwd: string): string {
 }
 
 function getRalphStateDirectory(cwd: string): string {
-	return path.join(findNearestWorkspaceRoot(cwd), LOOPS_STATE_DIR);
+	return path.join(resolveLoopWorkspaceRoot(cwd), LOOPS_STATE_DIR);
 }
 
 function makeRalphOwnedSessionCacheKey(cwd: string, sessionFile: string): string {
-	return `${findNearestWorkspaceRoot(cwd)}${RALPH_SESSION_CACHE_KEY_DELIMITER}${sessionFile}`;
+	return `${resolveLoopWorkspaceRoot(cwd)}${RALPH_SESSION_CACHE_KEY_DELIMITER}${sessionFile}`;
 }
 
 function isNodeError(err: unknown, code: string): boolean {
@@ -195,7 +197,7 @@ export function clearRalphOwnedSessionCache(cwd?: string): void {
 		return;
 	}
 
-	const prefix = `${findNearestWorkspaceRoot(cwd)}${RALPH_SESSION_CACHE_KEY_DELIMITER}`;
+	const prefix = `${resolveLoopWorkspaceRoot(cwd)}${RALPH_SESSION_CACHE_KEY_DELIMITER}`;
 	for (const key of ralphOwnedSessionCache.keys()) {
 		if (key.startsWith(prefix)) {
 			ralphOwnedSessionCache.delete(key);
@@ -254,6 +256,7 @@ export async function preloadRalphOwnedSessionCache(
 					);
 					ralphLoopMetadataCache.set(cacheKey, {
 						loopName: state.taskId,
+						activeTools: state.ralph.capabilityContract.tools.activeNames,
 						enabledAgents: state.ralph.capabilityContract.agents.enabledNames,
 						...(deferredEnabledAgents === undefined ? {} : { deferredEnabledAgents }),
 					});

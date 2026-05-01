@@ -92,7 +92,7 @@ describe("ralph contract resolver pure helpers", () => {
 		expect(contract.availableSnapshot[0]?.label).toBe("read");
 	});
 
-	it("captures Ralph default active tools from the available tool set", () => {
+	it("captures active tools from the current runtime state", () => {
 		const contract = captureToolContract({
 			activeTools: ["read", "bash", "todo_write", "thread", "unknown_custom_tool"],
 			allTools: [
@@ -112,20 +112,10 @@ describe("ralph contract resolver pure helpers", () => {
 			],
 		});
 
-		expect(contract.activeNames).toEqual([
-			"read",
-			"bash",
-			"apply_patch",
-			"backlog",
-			"web_search_exa",
-			"crawling_exa",
-			"get_code_context_exa",
-			"agent",
-			"memory",
-		]);
+		expect(contract.activeNames).toEqual(["read", "bash", "todo_write", "thread"]);
 	});
 
-	it("routes Ralph default mutation tools by provider preference", () => {
+	it("does not invent mutation tools that are inactive in the current runtime", () => {
 		const allTools = [
 			{ name: "read", description: "Read files" },
 			{ name: "edit", description: "Edit files" },
@@ -133,22 +123,16 @@ describe("ralph contract resolver pure helpers", () => {
 			{ name: "apply_patch", description: "Apply patches" },
 			{ name: "bash", description: "Run commands" },
 		];
-		const legacyContract = captureToolContract({
-			activeTools: [],
+		const contract = captureToolContract({
+			activeTools: ["read"],
 			allTools,
 			useApplyPatchForMutationTools: false,
 		});
-		const applyPatchContract = captureToolContract({
-			activeTools: [],
-			allTools,
-			useApplyPatchForMutationTools: true,
-		});
 
-		expect(legacyContract.activeNames).toEqual(["read", "edit", "write", "bash"]);
-		expect(applyPatchContract.activeNames).toEqual(["read", "apply_patch", "bash"]);
+		expect(contract.activeNames).toEqual(["read"]);
 	});
 
-	it("captures agent registry snapshot with finder enabled by default", () => {
+	it("captures agent registry snapshot with currently enabled agents", () => {
 		const registry = {
 			list: () => [
 				{ name: "finder", description: "Find code" },
@@ -157,13 +141,13 @@ describe("ralph contract resolver pure helpers", () => {
 		};
 		const contract = captureAgentContract({
 			agentRegistry: registry as unknown as import("../src/agent/agent-registry.js").AgentRegistry,
-			enabledAgents: ["finder"],
+			enabledAgents: ["finder", "oracle"],
 		});
-		expect(contract.enabledNames).toEqual(["finder"]);
+		expect(contract.enabledNames).toEqual(["finder", "oracle"]);
 		expect(contract.registrySnapshot).toHaveLength(2);
 	});
 
-	it("captures only finder as the default enabled Ralph agent", () => {
+	it("captures all currently enabled Ralph agents that exist in the registry", () => {
 		const registry = {
 			list: () => [
 				{ name: "deep", description: "Deep" },
@@ -182,7 +166,7 @@ describe("ralph contract resolver pure helpers", () => {
 			enabledAgents: ["deep", "finder", "librarian", "oracle", "painter", "plan", "review", "rush", "smart"],
 		});
 
-		expect(contract.enabledNames).toEqual(["finder"]);
+		expect(contract.enabledNames).toEqual(["deep", "finder", "librarian", "oracle", "painter", "plan", "review", "rush", "smart"]);
 		expect(contract.registrySnapshot.map((agent) => agent.name)).toEqual([
 			"deep",
 			"finder",

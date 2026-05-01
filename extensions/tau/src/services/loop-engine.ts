@@ -13,6 +13,7 @@ import {
 } from "../autoresearch/task-contract.js";
 import { loopTaskFile } from "../loops/paths.js";
 import { LoopRepo } from "../loops/repo.js";
+import { resolveLoopWorkspaceRoot } from "../loops/workspace-root.js";
 import {
 	LoopAmbiguousOwnershipError,
 	LoopContractValidationError,
@@ -25,6 +26,7 @@ import {
 import {
 	decodeLoopTaskIdSync,
 	encodeLoopPersistedStateJsonSync,
+	type AutoresearchLoopPersistedState,
 	type BlockedManualResolutionLoopState,
 	type LoopPersistedState,
 	type RalphLoopStateDetails,
@@ -37,6 +39,12 @@ const nowIso = Effect.gen(function* () {
 	const millis = yield* Clock.currentTimeMillis;
 	return new Date(millis).toISOString();
 });
+
+type TaskLock = {
+	readonly key: string;
+	readonly tail: Promise<void>;
+	readonly release: () => void;
+};
 
 function stopRalphActiveTimer(
 	metrics: RalphLoopStateDetails["metrics"],
@@ -249,6 +257,45 @@ export const LoopEngineLive = Layer.effect(
 	LoopEngine,
 	Effect.gen(function* () {
 		const repo = yield* LoopRepo;
+		const taskLocks = new Map<string, Promise<void>>();
+
+		const withTaskLock = <A, E>(
+			cwd: string,
+			taskId: string,
+			effect: Effect.Effect<A, E, never>,
+		): Effect.Effect<A, E, never> => {
+			const acquire = Effect.promise(async (): Promise<TaskLock> => {
+				const key = `${resolveLoopWorkspaceRoot(cwd)}\u0000${taskId}`;
+				const previous = taskLocks.get(key) ?? Promise.resolve();
+				let releaseLock: () => void = () => undefined;
+				const current = new Promise<void>((resolve) => {
+					releaseLock = resolve;
+				});
+				const tail = previous.then(
+					() => current,
+					() => current,
+				);
+				taskLocks.set(key, tail);
+				await previous.catch(() => undefined);
+				return {
+					key,
+					tail,
+					release: releaseLock,
+				};
+			});
+
+			return Effect.acquireUseRelease(
+				acquire,
+				() => effect,
+				(lock) =>
+					Effect.sync(() => {
+						lock.release();
+						if (taskLocks.get(lock.key) === lock.tail) {
+							taskLocks.delete(lock.key);
+						}
+					}),
+			);
+		};
 
 		const ensureLoadedState = (
 			cwd: string,
@@ -414,6 +461,70 @@ export const LoopEngineLive = Layer.effect(
 				}
 				return yield* Effect.void;
 			});
+
+		const blockAutoresearchPendingChildLoss = Effect.fn(
+			"LoopEngine.blockAutoresearchPendingChildLoss",
+		)(function* (
+			cwd: string,
+			state: AutoresearchLoopPersistedState,
+			input: {
+				readonly operation: string;
+				readonly pendingRunId: string;
+				readonly child: Option.Option<LoopSessionRef>;
+			},
+		) {
+			const pendingRunId = input.pendingRunId;
+			const preservedStateBase64 = Buffer.from(
+				encodeLoopPersistedStateJsonSync(state),
+				"utf-8",
+			).toString("base64");
+			const blockedAt = yield* nowIso;
+			const childNotes = Option.match(input.child, {
+				onNone: () => ["child_session=none"],
+				onSome: (child) => [
+					`child_session_id=${child.sessionId}`,
+					`child_session_file=${child.sessionFile}`,
+				],
+			});
+
+			const nextState: BlockedManualResolutionLoopState = {
+				taskId: state.taskId,
+				title: state.title,
+				taskFile: state.taskFile,
+				kind: "blocked_manual_resolution",
+				previousKind: "autoresearch",
+				lifecycle: "paused",
+				createdAt: state.createdAt,
+				updatedAt: blockedAt,
+				startedAt: state.startedAt,
+				completedAt: Option.none(),
+				archivedAt: Option.none(),
+				ownership: {
+					controller: state.ownership.controller,
+					child: Option.none(),
+				},
+				blocked: {
+					reasonCode: "autoresearch.pending_run_child_lost",
+					message: `Autoresearch run ${pendingRunId} lost child ownership during ${input.operation}. Resolve the pending trial manually.`,
+					blockedAt,
+					recoveryActions: [
+						"Inspect the run artifact and child session transcript.",
+						"Decide whether the pending trial should be kept, discarded, marked crashed, or marked checks_failed.",
+						"Restore the preserved state only after resolving the pending trial outcome.",
+					],
+					recoveryNotes: [
+						`pending_run_id=${pendingRunId}`,
+						`operation=${input.operation}`,
+						...childNotes,
+						`preserved_state_base64=${preservedStateBase64}`,
+					],
+				},
+			};
+
+			yield* validateLoopOwnership(nextState);
+			yield* repo.saveState(cwd, nextState);
+			return nextState;
+		});
 
 		const createLoop: LoopEngineService["createLoop"] = Effect.fn("LoopEngine.createLoop")(
 			function* (cwd, input) {
@@ -707,6 +818,14 @@ export const LoopEngineLive = Layer.effect(
 				yield* validateState(state);
 				yield* ensureLifecycle(state, ["active"], "active");
 
+				if (state.kind === "autoresearch" && Option.isSome(state.autoresearch.pendingRunId)) {
+					return yield* blockAutoresearchPendingChildLoss(cwd, state, {
+						operation: "pause",
+						pendingRunId: state.autoresearch.pendingRunId.value,
+						child: state.ownership.child,
+					});
+				}
+
 				const timestamp = yield* nowIso;
 				const nextState: LoopPersistedState =
 					state.kind === "ralph"
@@ -744,6 +863,14 @@ export const LoopEngineLive = Layer.effect(
 				const state = yield* ensureLoadedState(cwd, taskId);
 				yield* validateState(state);
 				yield* ensureLifecycle(state, ["active", "paused"], "active or paused");
+
+				if (state.kind === "autoresearch" && Option.isSome(state.autoresearch.pendingRunId)) {
+					return yield* blockAutoresearchPendingChildLoss(cwd, state, {
+						operation: "stop",
+						pendingRunId: state.autoresearch.pendingRunId.value,
+						child: state.ownership.child,
+					});
+				}
 
 				const timestamp = yield* nowIso;
 				const nextState: LoopPersistedState =
@@ -846,6 +973,14 @@ export const LoopEngineLive = Layer.effect(
 						reason: "child session does not match persisted ownership",
 					}),
 				);
+			}
+
+			if (state.kind === "autoresearch" && Option.isSome(state.autoresearch.pendingRunId)) {
+				return yield* blockAutoresearchPendingChildLoss(cwd, state, {
+					operation: "clear_child",
+					pendingRunId: state.autoresearch.pendingRunId.value,
+					child: Option.some(child),
+				});
 			}
 
 			const nextState: LoopPersistedState = {
@@ -1054,19 +1189,27 @@ export const LoopEngineLive = Layer.effect(
 		);
 
 		return LoopEngine.of({
-			createLoop,
-			startLoop,
-			resumeLoop,
-			pauseLoop,
-			stopLoop,
-			archiveLoop,
-			cancelLoop,
+			createLoop: (cwd, input) =>
+				withTaskLock(cwd, input.taskId, createLoop(cwd, input)),
+			startLoop: (cwd, taskId, controller, executionProfile) =>
+				withTaskLock(cwd, taskId, startLoop(cwd, taskId, controller, executionProfile)),
+			resumeLoop: (cwd, taskId, controller, executionProfile) =>
+				withTaskLock(cwd, taskId, resumeLoop(cwd, taskId, controller, executionProfile)),
+			pauseLoop: (cwd, taskId) => withTaskLock(cwd, taskId, pauseLoop(cwd, taskId)),
+			stopLoop: (cwd, taskId) => withTaskLock(cwd, taskId, stopLoop(cwd, taskId)),
+			archiveLoop: (cwd, taskId) =>
+				withTaskLock(cwd, taskId, archiveLoop(cwd, taskId)),
+			cancelLoop: (cwd, taskId) =>
+				withTaskLock(cwd, taskId, cancelLoop(cwd, taskId)),
 			cleanLoops,
 			listLoops,
 			resolveOwnedLoop,
-			attachChildSession,
-			clearChildSession,
-			blockLoopForManualResolution,
+			attachChildSession: (cwd, taskId, child) =>
+				withTaskLock(cwd, taskId, attachChildSession(cwd, taskId, child)),
+			clearChildSession: (cwd, taskId, child) =>
+				withTaskLock(cwd, taskId, clearChildSession(cwd, taskId, child)),
+			blockLoopForManualResolution: (cwd, taskId, input) =>
+				withTaskLock(cwd, taskId, blockLoopForManualResolution(cwd, taskId, input)),
 		});
 	}),
 );

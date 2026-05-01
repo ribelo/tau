@@ -7,6 +7,7 @@ import { Effect, Layer, Option } from "effect";
 import { NodeFileSystem } from "@effect/platform-node";
 
 import { LoopRepo, LoopRepoLive } from "../src/loops/repo.js";
+import { LoopContractValidationError } from "../src/loops/errors.js";
 import type {
 	AutoresearchPhaseSnapshot,
 	LoopPersistedState,
@@ -126,7 +127,7 @@ describe("loop repo", () => {
 		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "tasks", "repo-loop.md"))).toBe(true);
 	});
 
-	it("migrates legacy state files missing ralph.pendingDecision on load", async () => {
+	it("fails fast on legacy state files missing required ralph fields", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 
@@ -162,33 +163,14 @@ describe("loop repo", () => {
 		};
 		fs.writeFileSync(statePath, JSON.stringify(legacyState, null, 2), "utf-8");
 
-		const loaded = await Effect.runPromise(
-			Effect.gen(function* () {
-				const repo = yield* LoopRepo;
-				return yield* repo.loadState(cwd, taskId);
-			}).pipe(Effect.provide(loopRepoLayer)),
-		);
-
-		expect(Option.isSome(loaded)).toBe(true);
-		if (Option.isSome(loaded)) {
-			expect(loaded.value.kind).toBe("ralph");
-			if (loaded.value.kind === "ralph") {
-				expect(Option.isNone(loaded.value.ralph.pendingDecision)).toBe(true);
-			}
-		}
-
-		const migratedState = JSON.parse(fs.readFileSync(statePath, "utf-8")) as unknown;
-		expect(isRecord(migratedState)).toBe(true);
-		if (!isRecord(migratedState)) {
-			throw new Error("expected record migrated loop state payload");
-		}
-		const migratedRalph = migratedState["ralph"];
-		expect(isRecord(migratedRalph)).toBe(true);
-		if (!isRecord(migratedRalph)) {
-			throw new Error("expected record migrated ralph payload");
-		}
-		expect("pendingDecision" in migratedRalph).toBe(true);
-		expect(migratedRalph["pendingDecision"]).toBeNull();
+		await expect(
+			Effect.runPromise(
+				Effect.gen(function* () {
+					const repo = yield* LoopRepo;
+					return yield* repo.loadState(cwd, taskId);
+				}).pipe(Effect.provide(loopRepoLayer)),
+			),
+		).rejects.toBeInstanceOf(LoopContractValidationError);
 	});
 
 	it("persists phase snapshots under .pi/loops/phases/<task-id>", async () => {

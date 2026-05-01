@@ -1163,7 +1163,7 @@ describe("ralph service behavior freeze", () => {
 		await expect(startPromise).resolves.toBeUndefined();
 	});
 
-	it("migrates legacy loops without sandbox profiles from the current sandbox", async () => {
+	it("rejects legacy loops without sandbox profiles", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);
 
@@ -1254,28 +1254,14 @@ describe("ralph service behavior freeze", () => {
 		);
 		context.setSessionFile(path.join(cwd, ".pi", "sessions", "other.session.json"));
 
-		const resumePromise = Promise.resolve(
-			command.handler("resume legacy-sandbox-loop", context.ctx),
-		);
-		await waitFor(() => context.appendedCustomEntries.length === 1);
+		await command.handler("resume legacy-sandbox-loop", context.ctx);
 
-		expect(context.appendedCustomEntries[0]).toEqual({
-			customType: TAU_PERSISTED_STATE_TYPE,
-			data: {
-				sandbox: {
-					sessionOverride: {
-						preset: "read-only",
-						subagent: false,
-						approvalTimeoutSeconds: 60,
-					},
-				},
-			},
-		});
-
-		await childHarness.fire("session_shutdown", { type: "session_shutdown" }, childContext.ctx);
-		await expect(resumePromise).resolves.toBeUndefined();
-		const migrated = readLoopState(cwd, "legacy-sandbox-loop");
-		expect(Option.getOrUndefined(migrated.sandboxProfile)).toEqual(READ_ONLY_SANDBOX_PROFILE);
+		expect(context.appendedCustomEntries).toHaveLength(0);
+		expect(
+			context.notifications.some((entry) =>
+				entry.message.includes("Missing key") && entry.message.includes("sandboxProfile"),
+			),
+		).toBe(true);
 	});
 
 	it("creates the resumed iteration session through the controller replacement context", async () => {

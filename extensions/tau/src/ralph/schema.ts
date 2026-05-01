@@ -2,10 +2,7 @@ import { Effect, Option, Schema } from "effect";
 
 import { ExecutionProfileSchema } from "../execution/schema.js";
 import { SandboxConfigRequired as SandboxProfileSchema } from "../schemas/config.js";
-import {
-	makeEmptyCapabilityContract,
-	RalphCapabilityContractSchema,
-} from "./contract.js";
+import { RalphCapabilityContractSchema } from "./contract.js";
 import { RalphConfigMutationListSchema } from "./config-mutation.js";
 import { RalphContractValidationError } from "./errors.js";
 
@@ -136,31 +133,6 @@ function parseJsonUnknownSync(input: string): unknown {
 	}
 }
 
-function normalizeLoopStateValue(value: unknown): unknown {
-	if (typeof value !== "object" || value === null || Array.isArray(value)) {
-		return value;
-	}
-	const next: Record<string, unknown> = { ...value };
-	if (!("sandboxProfile" in next)) {
-		next["sandboxProfile"] = null;
-	}
-	if (!("metrics" in next)) {
-		next["metrics"] = {
-			totalTokens: 0,
-			totalCostUsd: 0,
-			activeDurationMs: 0,
-			activeStartedAt: null,
-		};
-	}
-	if (!("capabilityContract" in next)) {
-		next["capabilityContract"] = makeEmptyCapabilityContract();
-	}
-	if (!("deferredConfigMutations" in next)) {
-		next["deferredConfigMutations"] = [];
-	}
-	return next;
-}
-
 export function emptyRalphLoopMetrics(): RalphLoopMetrics {
 	return {
 		totalTokens: 0,
@@ -172,7 +144,7 @@ export function emptyRalphLoopMetrics(): RalphLoopMetrics {
 
 function decodeLoopStateCompatSync(value: unknown): LoopState {
 	try {
-		return decodeLoopStateSchemaSync(normalizeLoopStateValue(value));
+		return decodeLoopStateSchemaSync(value);
 	} catch (canonicalError) {
 		throw toContractValidationError("ralph.loop_state", canonicalError);
 	}
