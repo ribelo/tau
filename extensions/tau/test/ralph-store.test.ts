@@ -1345,4 +1345,190 @@ describe("ralph store behavior freeze", () => {
 			),
 		).toBe(true);
 	});
+
+	it("nukes invalid Ralph loop state without requiring schema decode", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const notifications: Notifications = [];
+		const { pi, commands } = makePiStub();
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(pi, ralphRuntime.run);
+		const command = commands.get("ralph");
+		expect(command).toBeDefined();
+
+		const invalidStatePath = statePath(cwd, "broken-loop");
+		const invalidTaskPath = taskPath(cwd, "broken-loop");
+		const autoresearchStatePath = statePath(cwd, "autoresearch-loop");
+		const autoresearchTaskPath = taskPath(cwd, "autoresearch-loop");
+		const unsafeRalphStatePath = statePath(cwd, "");
+		const unsafeRalphTaskPath = taskPath(cwd, "");
+		const autoresearchPhasePath = path.join(
+			cwd,
+			".pi",
+			"loops",
+			"phases",
+			"autoresearch-loop",
+			"phase.json",
+		);
+		const autoresearchRunPath = path.join(
+			cwd,
+			".pi",
+			"loops",
+			"runs",
+			"autoresearch-loop",
+			"run.json",
+		);
+		fs.mkdirSync(path.dirname(invalidStatePath), { recursive: true });
+		fs.mkdirSync(path.dirname(invalidTaskPath), { recursive: true });
+		fs.writeFileSync(invalidTaskPath, "# Broken loop\n", "utf-8");
+		fs.writeFileSync(
+			invalidStatePath,
+			JSON.stringify(
+				{
+					taskId: "broken-loop",
+					title: "broken-loop",
+					taskFile: ".pi/loops/tasks/broken-loop.md",
+					kind: "ralph",
+					lifecycle: "completed",
+					createdAt: "2026-01-01T00:00:00.000Z",
+					updatedAt: "2026-01-01T00:00:00.000Z",
+					startedAt: "2026-01-01T00:00:00.000Z",
+					completedAt: "2026-01-01T00:01:00.000Z",
+					archivedAt: null,
+					ownership: { controller: null, child: null },
+					ralph: {
+						iteration: 1,
+						maxIterations: 50,
+						itemsPerIteration: 0,
+						reflectEvery: 0,
+						reflectInstructions: "reflect",
+						lastReflectionAt: 0,
+						pendingDecision: null,
+						pinnedExecutionProfile: {
+							selector: { mode: "default" },
+							promptProfile: {
+								mode: "default",
+								model: "openai-codex/gpt-5.5",
+								thinking: "high",
+							},
+							policy: { tools: { kind: "inherit" } },
+						},
+						sandboxProfile: null,
+						metrics: {
+							totalTokens: 0,
+							totalCostUsd: 0,
+							activeDurationMs: 0,
+							activeStartedAt: null,
+						},
+						capabilityContract: makeCapabilityContract(),
+						deferredConfigMutations: [],
+					},
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+		fs.writeFileSync(autoresearchTaskPath, "# Autoresearch loop\n", "utf-8");
+		fs.writeFileSync(
+			autoresearchStatePath,
+			JSON.stringify(
+				{
+					taskId: "autoresearch-loop",
+					title: "Autoresearch loop",
+					taskFile: ".pi/loops/tasks/autoresearch-loop.md",
+					kind: "autoresearch",
+					lifecycle: "paused",
+					createdAt: "2026-01-01T00:00:00.000Z",
+					updatedAt: "2026-01-01T00:00:00.000Z",
+					startedAt: "2026-01-01T00:00:00.000Z",
+					completedAt: null,
+					archivedAt: null,
+					ownership: { controller: null, child: null },
+					autoresearch: {
+						phaseId: null,
+						pendingRunId: null,
+						runCount: 0,
+						maxIterations: 20,
+						benchmarkCommand: "npm run bench",
+						checksCommand: "npm run test",
+						metricName: "latency_ms",
+						metricUnit: "ms",
+						metricDirection: "lower",
+						scopeRoot: ".",
+						scopePaths: ["src"],
+						offLimits: ["vendor"],
+						constraints: ["no-new-deps"],
+						pinnedExecutionProfile: makeExecutionProfile(),
+					},
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+		fs.mkdirSync(path.dirname(autoresearchPhasePath), { recursive: true });
+		fs.mkdirSync(path.dirname(autoresearchRunPath), { recursive: true });
+		fs.writeFileSync(autoresearchPhasePath, "{}", "utf-8");
+		fs.writeFileSync(autoresearchRunPath, "{}", "utf-8");
+		fs.writeFileSync(unsafeRalphTaskPath, "# Unsafe Ralph loop\n", "utf-8");
+		fs.writeFileSync(
+			unsafeRalphStatePath,
+			JSON.stringify(
+				{
+					taskId: "",
+					kind: "ralph",
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const context = makeContext(cwd, notifications);
+		await expect(command?.handler("nuke --yes", context)).resolves.toBeUndefined();
+
+		expect(fs.existsSync(invalidStatePath)).toBe(false);
+		expect(fs.existsSync(invalidTaskPath)).toBe(false);
+		expect(fs.existsSync(unsafeRalphStatePath)).toBe(false);
+		expect(fs.existsSync(unsafeRalphTaskPath)).toBe(false);
+		expect(fs.existsSync(autoresearchStatePath)).toBe(true);
+		expect(fs.existsSync(autoresearchTaskPath)).toBe(true);
+		expect(fs.existsSync(autoresearchPhasePath)).toBe(true);
+		expect(fs.existsSync(autoresearchRunPath)).toBe(true);
+		expect(
+			notifications.some((entry) =>
+				entry.message.includes("Removed Ralph loop data under .pi/loops."),
+			),
+		).toBe(true);
+	});
+
+	it("nukes legacy Ralph directory even when canonical loops directory is absent", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+
+		const notifications: Notifications = [];
+		const { pi, commands } = makePiStub();
+		const ralphRuntime = makeRalphRuntime();
+		runtimes.push(ralphRuntime);
+		initRalph(pi, ralphRuntime.run);
+		const command = commands.get("ralph");
+		expect(command).toBeDefined();
+
+		const legacyDir = path.join(cwd, ".pi", "ralph");
+		fs.mkdirSync(legacyDir, { recursive: true });
+		fs.writeFileSync(path.join(legacyDir, "legacy-loop.state.json"), "{}", "utf-8");
+
+		const context = makeContext(cwd, notifications);
+		await command?.handler("nuke --yes", context);
+
+		expect(fs.existsSync(legacyDir)).toBe(false);
+		expect(
+			notifications.some((entry) =>
+				entry.message.includes("Removed Ralph loop data under .pi/loops."),
+			),
+		).toBe(true);
+	});
 });

@@ -20,7 +20,9 @@ import {
 } from "./ralph-test-helpers.js";
 
 async function makeWorkspace(): Promise<string> {
-	return fs.mkdtemp(path.join(os.tmpdir(), "tau-agents-settings-"));
+	const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tau-agents-settings-"));
+	await fs.mkdir(path.join(workspace, ".git"), { recursive: true });
+	return workspace;
 }
 
 async function writeRalphState(

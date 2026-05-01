@@ -12,7 +12,13 @@ import type {
 	LoopSessionRef,
 	RalphLoopPersistedState,
 } from "../loops/schema.js";
-import { RALPH_ARCHIVE_TASKS_DIR, RALPH_DIR, RALPH_TASKS_DIR } from "./paths.js";
+import {
+	RALPH_ARCHIVE_STATE_DIR,
+	RALPH_ARCHIVE_TASKS_DIR,
+	RALPH_DIR,
+	RALPH_STATE_DIR,
+	RALPH_TASKS_DIR,
+} from "./paths.js";
 import { RalphContractValidationError } from "./errors.js";
 import type { LoopState } from "./schema.js";
 import { emptyRalphLoopMetrics } from "./schema.js";
@@ -46,6 +52,32 @@ const nowIso = Effect.sync(() => new Date().toISOString());
 
 const LEGACY_LAYOUT_MESSAGE =
 	"Legacy Ralph layout detected under .pi/ralph. Import or remove old flat files, then retry.";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isSafeRawTaskDirectoryName(taskId: string): boolean {
+	return taskId.length > 0 && taskId !== "." && taskId !== "..";
+}
+
+function rawRalphTaskId(value: unknown, expectedTaskId: string): string | undefined {
+	if (!isRecord(value)) {
+		return undefined;
+	}
+	const kind = value["kind"];
+	const previousKind = value["previousKind"];
+	if (!(kind === "ralph" || (kind === "blocked_manual_resolution" && previousKind === "ralph"))) {
+		return undefined;
+	}
+	const taskId = value["taskId"];
+	return taskId === expectedTaskId ? expectedTaskId : undefined;
+}
+
+interface RawRalphStateFile {
+	readonly taskId: string;
+	readonly safeForDirectoryDeletion: boolean;
+}
 
 function toContractError(entity: string, reason: string): RalphContractValidationError {
 	return new RalphContractValidationError({
@@ -176,13 +208,6 @@ function ensureRalphState(
 	);
 }
 
-function isRalphOwnedState(state: LoopPersistedState): boolean {
-	return (
-		state.kind === "ralph" ||
-		(state.kind === "blocked_manual_resolution" && state.previousKind === "ralph")
-	);
-}
-
 export function loopOwnsSessionFile(loop: LoopState, sessionFile: string | undefined): boolean {
 	return (
 		optionContains(loop.controllerSessionFile, sessionFile) ||
@@ -192,6 +217,10 @@ export function loopOwnsSessionFile(loop: LoopState, sessionFile: string | undef
 
 export function ralphDir(cwd: string): string {
 	return path.resolve(cwd, RALPH_DIR);
+}
+
+function legacyRalphDir(cwd: string): string {
+	return path.resolve(cwd, ".pi", "ralph");
 }
 
 const readOptionalFile = (
@@ -522,7 +551,7 @@ const RalphRepoBase = Layer.effect(
 		const existsRalphDirectory: RalphRepoService["existsRalphDirectory"] = Effect.fn(
 			"RalphRepo.existsRalphDirectory",
 		)(function* (cwd) {
-			return yield* fs
+			const canonicalExists = yield* fs
 				.exists(ralphDir(cwd))
 				.pipe(
 					Effect.mapError((error) =>
@@ -534,39 +563,112 @@ const RalphRepoBase = Layer.effect(
 						),
 					),
 				);
+			if (canonicalExists) {
+				return true;
+			}
+			return yield* fs
+				.exists(legacyRalphDir(cwd))
+				.pipe(
+					Effect.mapError((error) =>
+						toStorageError(
+							"exists-legacy-ralph-dir",
+							legacyRalphDir(cwd),
+							`Failed to inspect ${legacyRalphDir(cwd)}`,
+							error,
+						),
+					),
+				);
 		});
 
 		const removeRalphDirectory: RalphRepoService["removeRalphDirectory"] = Effect.fn(
 			"RalphRepo.removeRalphDirectory",
 		)(function* (cwd) {
-			const active = yield* loopRepo
-				.listStates(cwd, false)
-				.pipe(Effect.mapError(mapLoopRepoError));
-			for (const state of active) {
-				if (!isRalphOwnedState(state)) {
-					continue;
+			const readRawRalphStateFiles = Effect.fn("RalphRepo.readRawRalphStateFiles")(function* (
+				stateDirectory: string,
+			) {
+				const absoluteStateDirectory = path.resolve(cwd, stateDirectory);
+				const exists = yield* fs
+					.exists(absoluteStateDirectory)
+					.pipe(
+						Effect.mapError((error) =>
+							toStorageError(
+								"exists-ralph-state-dir",
+								absoluteStateDirectory,
+								`Failed to inspect ${absoluteStateDirectory}`,
+								error,
+							),
+						),
+					);
+				if (!exists) {
+					return [];
 				}
-				yield* loopRepo.deleteState(cwd, state.taskId, false);
-				yield* loopRepo.deleteTaskFile(cwd, state.taskId, false);
-				yield* loopRepo.deletePhaseDirectory(cwd, state.taskId, false);
-				yield* loopRepo.deleteRunDirectory(cwd, state.taskId, false);
+
+				const entries = yield* fs
+					.readDirectory(absoluteStateDirectory)
+					.pipe(
+						Effect.mapError((error) =>
+							toStorageError(
+								"read-ralph-state-dir",
+								absoluteStateDirectory,
+								`Failed to read ${absoluteStateDirectory}`,
+								error,
+							),
+						),
+					);
+
+				const stateFiles: RawRalphStateFile[] = [];
+				for (const entry of [...entries].sort((left, right) => left.localeCompare(right))) {
+					if (!entry.endsWith(".json")) {
+						continue;
+					}
+					const expectedTaskId = entry.slice(0, -".json".length);
+					const filePath = path.join(absoluteStateDirectory, entry);
+					const content = yield* readOptionalFile(fs, filePath);
+					if (Option.isNone(content)) {
+						continue;
+					}
+
+					let parsed: unknown;
+					try {
+						parsed = JSON.parse(content.value) as unknown;
+					} catch {
+						continue;
+					}
+
+					const taskId = rawRalphTaskId(parsed, expectedTaskId);
+					if (taskId !== undefined) {
+						stateFiles.push({
+							taskId,
+							safeForDirectoryDeletion: isSafeRawTaskDirectoryName(taskId),
+						});
+					}
+				}
+
+				return stateFiles;
+			});
+
+			const activeStateFiles = yield* readRawRalphStateFiles(RALPH_STATE_DIR);
+			for (const stateFile of activeStateFiles) {
+				yield* loopRepo.deleteState(cwd, stateFile.taskId, false);
+				yield* loopRepo.deleteTaskFile(cwd, stateFile.taskId, false);
+				if (stateFile.safeForDirectoryDeletion) {
+					yield* loopRepo.deletePhaseDirectory(cwd, stateFile.taskId, false);
+					yield* loopRepo.deleteRunDirectory(cwd, stateFile.taskId, false);
+				}
 			}
 
-			const archived = yield* loopRepo
-				.listStates(cwd, true)
-				.pipe(Effect.mapError(mapLoopRepoError));
-			for (const state of archived) {
-				if (!isRalphOwnedState(state)) {
-					continue;
+			const archivedStateFiles = yield* readRawRalphStateFiles(RALPH_ARCHIVE_STATE_DIR);
+			for (const stateFile of archivedStateFiles) {
+				yield* loopRepo.deleteState(cwd, stateFile.taskId, true);
+				yield* loopRepo.deleteTaskFile(cwd, stateFile.taskId, true);
+				if (stateFile.safeForDirectoryDeletion) {
+					yield* loopRepo.deletePhaseDirectory(cwd, stateFile.taskId, true);
+					yield* loopRepo.deleteRunDirectory(cwd, stateFile.taskId, true);
 				}
-				yield* loopRepo.deleteState(cwd, state.taskId, true);
-				yield* loopRepo.deleteTaskFile(cwd, state.taskId, true);
-				yield* loopRepo.deletePhaseDirectory(cwd, state.taskId, true);
-				yield* loopRepo.deleteRunDirectory(cwd, state.taskId, true);
 			}
 
 			yield* fs
-				.remove(path.resolve(cwd, ".pi", "ralph"), {
+				.remove(legacyRalphDir(cwd), {
 					recursive: true,
 					force: true,
 				})
@@ -574,8 +676,8 @@ const RalphRepoBase = Layer.effect(
 					Effect.mapError((error) =>
 						toStorageError(
 							"remove-ralph-dir",
-							path.resolve(cwd, ".pi", "ralph"),
-							`Failed to remove ${path.resolve(cwd, ".pi", "ralph")}`,
+							legacyRalphDir(cwd),
+							`Failed to remove ${legacyRalphDir(cwd)}`,
 							error,
 						),
 					),
