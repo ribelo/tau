@@ -48,25 +48,3 @@ Do not start new substantive work.
 Wrap up the current state concisely: what is complete, what remains, and any verification or blockers.
 Call update_goal with status "complete" only if the objective is actually achieved.`;
 }
-
-export function goalSystemPrompt(goal: GoalSnapshot): string {
-	if (goal.status === "budget_limited") {
-		return `[THREAD GOAL - BUDGET LIMITED]
-
-<goal>
-${escapeXml(goal.objective)}
-</goal>
-
-Current goal usage: ${formatGoalUsage(goal)}
-Do not start new substantive work toward this goal. Summarize or wrap up unless the user explicitly redirects.`;
-	}
-
-	return `[THREAD GOAL - ACTIVE]
-
-<goal>
-${escapeXml(goal.objective)}
-</goal>
-
-Current goal usage: ${formatGoalUsage(goal)}
-Keep work aligned with this goal. Call update_goal with status "complete" only when the objective is actually achieved.`;
-}

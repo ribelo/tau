@@ -29,12 +29,11 @@ type SentMessage = {
 	};
 };
 
+type EventHandler = (event: unknown, ctx: ExtensionContext) => Promise<unknown> | unknown;
+
 type GoalAdapterHarness = {
 	readonly commands: Map<string, RegisteredCommand>;
-	readonly events: Map<
-		string,
-		Array<(event: unknown, ctx: ExtensionContext) => Promise<void> | void>
-	>;
+	readonly events: Map<string, EventHandler[]>;
 	readonly sentMessages: SentMessage[];
 	readonly ctx: ExtensionCommandContext;
 	readonly run: <A, E>(effect: Effect.Effect<A, E, Goal>) => Promise<A>;
@@ -43,16 +42,10 @@ type GoalAdapterHarness = {
 
 function makeGoalAdapterHarness(): GoalAdapterHarness {
 	const commands = new Map<string, RegisteredCommand>();
-	const events = new Map<
-		string,
-		Array<(event: unknown, ctx: ExtensionContext) => Promise<void> | void>
-	>();
+	const events = new Map<string, EventHandler[]>();
 	const sentMessages: SentMessage[] = [];
 	const piBase = {
-		on: (
-			name: string,
-			handler: (event: unknown, ctx: ExtensionContext) => Promise<void> | void,
-		) => {
+		on: (name: string, handler: EventHandler) => {
 			const handlers = events.get(name) ?? [];
 			handlers.push(handler);
 			events.set(name, handlers);
@@ -130,10 +123,12 @@ async function fireEvent(
 	name: string,
 	event: unknown,
 	ctx: ExtensionContext = harness.ctx,
-): Promise<void> {
+): Promise<unknown[]> {
+	const results: unknown[] = [];
 	for (const handler of harness.events.get(name) ?? []) {
-		await handler(event, ctx);
+		results.push(await handler(event, ctx));
 	}
+	return results;
 }
 
 async function runGoalCommand(
@@ -217,5 +212,18 @@ describe("goal adapter", () => {
 		);
 
 		expect(snapshot?.tokensUsed).toBe(120);
+	});
+
+	it("does not modify the system prompt when a goal is active", async () => {
+		const harness = makeGoalAdapterHarness();
+		harnesses.push(harness);
+
+		await runGoalCommand(harness, "ship the feature");
+		const results = await fireEvent(harness, "before_agent_start", {
+			type: "before_agent_start",
+			systemPrompt: "base prompt",
+		});
+
+		expect(results).toEqual([undefined]);
 	});
 });
