@@ -6,6 +6,7 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
+import type { AssistantMessage } from "@mariozechner/pi-ai";
 
 import { PiAPILive } from "../src/effect/pi.js";
 import initGoal from "../src/goal/index.js";
@@ -30,16 +31,32 @@ type SentMessage = {
 
 type GoalAdapterHarness = {
 	readonly commands: Map<string, RegisteredCommand>;
+	readonly events: Map<
+		string,
+		Array<(event: unknown, ctx: ExtensionContext) => Promise<void> | void>
+	>;
 	readonly sentMessages: SentMessage[];
 	readonly ctx: ExtensionCommandContext;
+	readonly run: <A, E>(effect: Effect.Effect<A, E, Goal>) => Promise<A>;
 	readonly dispose: () => Promise<void>;
 };
 
 function makeGoalAdapterHarness(): GoalAdapterHarness {
 	const commands = new Map<string, RegisteredCommand>();
+	const events = new Map<
+		string,
+		Array<(event: unknown, ctx: ExtensionContext) => Promise<void> | void>
+	>();
 	const sentMessages: SentMessage[] = [];
 	const piBase = {
-		on: () => undefined,
+		on: (
+			name: string,
+			handler: (event: unknown, ctx: ExtensionContext) => Promise<void> | void,
+		) => {
+			const handlers = events.get(name) ?? [];
+			handlers.push(handler);
+			events.set(name, handlers);
+		},
 		registerTool: () => undefined,
 		registerCommand: (name: string, command: RegisteredCommand) => {
 			commands.set(name, command);
@@ -50,7 +67,10 @@ function makeGoalAdapterHarness(): GoalAdapterHarness {
 		appendEntry: () => undefined,
 	} as unknown as ExtensionAPI;
 	const runtime = ManagedRuntime.make(GoalLive.pipe(Layer.provide(PiAPILive(piBase))));
-	initGoal(piBase, (effect) => runtime.runPromise(effect));
+	initGoal(piBase, {
+		runPromise: (effect) => runtime.runPromise(effect),
+		runFork: (effect) => runtime.runFork(effect),
+	});
 
 	const ctx = {
 		cwd: process.cwd(),
@@ -71,10 +91,49 @@ function makeGoalAdapterHarness(): GoalAdapterHarness {
 
 	return {
 		commands,
+		events,
 		sentMessages,
 		ctx,
+		run: (effect) => runtime.runPromise(effect),
 		dispose: () => runtime.dispose(),
 	};
+}
+
+function makeAssistantMessage(tokens: number): AssistantMessage {
+	return {
+		role: "assistant",
+		api: "openai-responses",
+		provider: "openai",
+		model: "gpt-test",
+		content: [{ type: "text", text: "done" }],
+		usage: {
+			input: tokens,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: tokens,
+			cost: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				total: 0,
+			},
+		},
+		stopReason: "stop",
+		timestamp: 0,
+	};
+}
+
+async function fireEvent(
+	harness: GoalAdapterHarness,
+	name: string,
+	event: unknown,
+	ctx: ExtensionContext = harness.ctx,
+): Promise<void> {
+	for (const handler of harness.events.get(name) ?? []) {
+		await handler(event, ctx);
+	}
 }
 
 async function runGoalCommand(
@@ -138,5 +197,25 @@ describe("goal adapter", () => {
 
 		expect(harness.sentMessages).toHaveLength(1);
 		expect(harness.sentMessages[0]?.message.customType).toBe("tau:goal-continuation");
+	});
+
+	it("accounts assistant token usage on turn_end", async () => {
+		const harness = makeGoalAdapterHarness();
+		harnesses.push(harness);
+
+		await runGoalCommand(harness, "ship the feature");
+		await fireEvent(harness, "turn_end", {
+			type: "turn_end",
+			message: makeAssistantMessage(120),
+		});
+
+		const snapshot = await harness.run(
+			Effect.gen(function* () {
+				const goal = yield* Goal;
+				return yield* goal.get("session-1");
+			}),
+		);
+
+		expect(snapshot?.tokensUsed).toBe(120);
 	});
 });

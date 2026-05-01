@@ -139,7 +139,7 @@ describe("goal service", () => {
 		expect(snapshot?.tokenBudget).toBe(100);
 	});
 
-	it("accounts agent usage and budget-limits the goal", async () => {
+	it("accounts turn usage and budget-limits the goal before agent end", async () => {
 		const harness = makeGoalRuntime();
 		runtimes.push(harness);
 
@@ -148,7 +148,11 @@ describe("goal service", () => {
 				const goal = yield* Goal;
 				yield* goal.create("session-1", "finish", 100);
 				yield* goal.markAgentStart("session-1", 0);
-				return yield* goal.accountAgentEnd("session-1", makeAgentEnd(150), 2_500);
+				return yield* goal.accountTurnEnd(
+					"session-1",
+					makeAssistantMessage(150, false),
+					2_500,
+				);
 			}),
 		);
 
@@ -156,6 +160,22 @@ describe("goal service", () => {
 		expect(result.snapshot?.status).toBe("budget_limited");
 		expect(result.snapshot?.tokensUsed).toBe(150);
 		expect(result.snapshot?.timeUsedSeconds).toBe(2);
+	});
+
+	it("returns a live snapshot while a goal turn is running", async () => {
+		const harness = makeGoalRuntime();
+		runtimes.push(harness);
+
+		const snapshot = await harness.run(
+			Effect.gen(function* () {
+				const goal = yield* Goal;
+				yield* goal.create("session-1", "finish", null);
+				yield* goal.markAgentStart("session-1", 1_000);
+				return yield* goal.liveSnapshot("session-1", 6_200);
+			}),
+		);
+
+		expect(snapshot?.timeUsedSeconds).toBe(5);
 	});
 
 	it("updates the same non-complete command goal without replacing accounting", async () => {
@@ -167,7 +187,7 @@ describe("goal service", () => {
 				const goal = yield* Goal;
 				yield* goal.create("session-1", "finish", 100);
 				yield* goal.markAgentStart("session-1", 0);
-				yield* goal.accountAgentEnd("session-1", makeAgentEnd(25), 1_500);
+				yield* goal.accountTurnEnd("session-1", makeAssistantMessage(25, false), 1_500);
 				return yield* goal.create("session-1", "finish", 200);
 			}),
 		);

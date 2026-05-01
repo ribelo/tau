@@ -4,10 +4,11 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 	SessionEntry,
+	TurnEndEvent,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { Text } from "@mariozechner/pi-tui";
-import { Effect } from "effect";
+import { Effect, Fiber } from "effect";
 
 import { Goal, type GoalService } from "../services/goal.js";
 import { defineDecodedTool, textToolResult } from "../shared/decoded-tool.js";
@@ -17,7 +18,10 @@ import { GoalConflictError, GoalValidationError } from "./errors.js";
 import { budgetLimitPrompt, continuationPrompt, goalSystemPrompt } from "./prompts.js";
 import type { GoalSnapshot, GoalStatus } from "./schema.js";
 
-type RunGoal = <A, E>(effect: Effect.Effect<A, E, Goal>) => Promise<A>;
+export type GoalRuntime = {
+	readonly runPromise: <A, E>(effect: Effect.Effect<A, E, Goal>) => Promise<A>;
+	readonly runFork: <A, E>(effect: Effect.Effect<A, E, Goal>) => Fiber.Fiber<A, E>;
+};
 
 const GOAL_CONTINUATION_MESSAGE_TYPE = "tau:goal-continuation";
 const GOAL_BUDGET_MESSAGE_TYPE = "tau:goal-budget-limit";
@@ -129,7 +133,7 @@ function clearGoalUi(ctx: ExtensionContext): void {
 	ctx.ui.setWidget("goal", undefined);
 }
 
-function updateGoalUi(ctx: ExtensionContext, goal: GoalSnapshot | null): void {
+function renderGoalUi(ctx: ExtensionContext, goal: GoalSnapshot | null): void {
 	if (!ctx.hasUI) {
 		return;
 	}
@@ -202,10 +206,10 @@ function parseGoalCommand(args: string): {
 }
 
 async function withGoal<A>(
-	runGoal: RunGoal,
+	runtime: GoalRuntime,
 	effect: (goal: GoalService) => Effect.Effect<A, unknown, never>,
 ): Promise<A> {
-	return runGoal(
+	return runtime.runPromise(
 		Effect.gen(function* () {
 			const goal = yield* Goal;
 			return yield* effect(goal);
@@ -214,26 +218,26 @@ async function withGoal<A>(
 }
 
 async function rehydrateAndUpdate(
-	runGoal: RunGoal,
+	runtime: GoalRuntime,
 	ctx: ExtensionContext,
 ): Promise<GoalSnapshot | null> {
-	const snapshot = await withGoal(runGoal, (goal) =>
+	const snapshot = await withGoal(runtime, (goal) =>
 		goal.rehydrate(sessionIdFromContext(ctx), branchFromContext(ctx)),
 	);
-	updateGoalUi(ctx, snapshot);
+	renderGoalUi(ctx, snapshot);
 	return snapshot;
 }
 
 async function dispatchGoalContinuation(
 	pi: ExtensionAPI,
-	runGoal: RunGoal,
+	runtime: GoalRuntime,
 	ctx: ExtensionContext,
 	snapshot: GoalSnapshot | null,
 ): Promise<void> {
 	if (!shouldAutoContinue(snapshot, ctx)) {
 		return;
 	}
-	await withGoal(runGoal, (goal) => goal.markContinuationDispatched(sessionIdFromContext(ctx)));
+	await withGoal(runtime, (goal) => goal.markContinuationDispatched(sessionIdFromContext(ctx)));
 	pi.sendMessage(
 		{
 			customType: GOAL_CONTINUATION_MESSAGE_TYPE,
@@ -245,7 +249,53 @@ async function dispatchGoalContinuation(
 	);
 }
 
-export default function initGoal(pi: ExtensionAPI, runGoal: RunGoal): void {
+export default function initGoal(pi: ExtensionAPI, runtime: GoalRuntime): void {
+	let tickerFiber: Fiber.Fiber<void, never> | undefined;
+	let tickerCtx: ExtensionContext | undefined;
+
+	const stopGoalTicker = (): void => {
+		if (tickerFiber !== undefined) {
+			const fiber = tickerFiber;
+			tickerFiber = undefined;
+			void runtime.runPromise(Fiber.interrupt(fiber).pipe(Effect.asVoid));
+		}
+		tickerCtx = undefined;
+	};
+
+	const updateGoalUi = async (ctx: ExtensionContext): Promise<GoalSnapshot | null> => {
+		const snapshot = await withGoal(runtime, (goal) =>
+			goal.liveSnapshot(sessionIdFromContext(ctx), Date.now()),
+		);
+		renderGoalUi(ctx, snapshot);
+		if (snapshot?.status === "active" || snapshot?.status === "budget_limited") {
+			startGoalTicker(ctx);
+		} else {
+			stopGoalTicker();
+		}
+		return snapshot;
+	};
+
+	const startGoalTicker = (ctx: ExtensionContext): void => {
+		if (!ctx.hasUI) {
+			return;
+		}
+		tickerCtx = ctx;
+		if (tickerFiber !== undefined) {
+			return;
+		}
+		tickerFiber = runtime.runFork(
+			Effect.gen(function* () {
+				while (true) {
+					yield* Effect.sleep("1 second");
+					const ctx = tickerCtx;
+					if (ctx !== undefined) {
+						yield* Effect.promise(() => updateGoalUi(ctx)).pipe(Effect.ignore);
+					}
+				}
+			}),
+		);
+	};
+
 	pi.registerTool(
 		defineDecodedTool({
 			name: "get_goal",
@@ -256,7 +306,7 @@ export default function initGoal(pi: ExtensionAPI, runGoal: RunGoal): void {
 			formatInvalidParamsResult: (message) =>
 				goalToolResult(message, null, { isError: true }),
 			execute: async (_params, { ctx }) => {
-				const snapshot = await withGoal(runGoal, (goal) =>
+				const snapshot = await withGoal(runtime, (goal) =>
 					goal.get(sessionIdFromContext(ctx)),
 				);
 				return goalToolResult(describeGoal(snapshot), snapshot);
@@ -293,7 +343,7 @@ export default function initGoal(pi: ExtensionAPI, runGoal: RunGoal): void {
 			formatExecuteErrorResult: (error) =>
 				goalToolResult(errorText(error), null, { isError: true }),
 			execute: async (params, { ctx }) => {
-				const snapshot = await withGoal(runGoal, (goal) =>
+				const snapshot = await withGoal(runtime, (goal) =>
 					goal.create(
 						sessionIdFromContext(ctx),
 						params.objective,
@@ -303,7 +353,7 @@ export default function initGoal(pi: ExtensionAPI, runGoal: RunGoal): void {
 						},
 					),
 				);
-				updateGoalUi(ctx, snapshot);
+				await updateGoalUi(ctx);
 				return goalToolResult(`Created thread goal.\n${describeGoal(snapshot)}`, snapshot);
 			},
 			renderCall: (_args, theme) =>
@@ -335,13 +385,13 @@ export default function initGoal(pi: ExtensionAPI, runGoal: RunGoal): void {
 			formatExecuteErrorResult: (error) =>
 				goalToolResult(errorText(error), null, { isError: true }),
 			execute: async (_params, { ctx }) => {
-				const snapshot = await withGoal(runGoal, (goal) =>
+				const snapshot = await withGoal(runtime, (goal) =>
 					goal.setStatus(sessionIdFromContext(ctx), "complete"),
 				);
 				if (snapshot === null) {
 					return goalToolResult("No thread goal is set.", snapshot, { isError: true });
 				}
-				updateGoalUi(ctx, snapshot);
+				await updateGoalUi(ctx);
 				return goalToolResult(
 					`Goal complete. Final usage: ${formatTokenCount(snapshot.tokensUsed)} tokens, ${formatDuration(snapshot.timeUsedSeconds * 1_000)}.`,
 					snapshot,
@@ -364,13 +414,14 @@ export default function initGoal(pi: ExtensionAPI, runGoal: RunGoal): void {
 				const parsed = parseGoalCommand(args);
 				const sessionId = sessionIdFromContext(ctx);
 				if (parsed.command === "show") {
-					const snapshot = await rehydrateAndUpdate(runGoal, ctx);
+					const snapshot = await rehydrateAndUpdate(runtime, ctx);
 					ctx.ui.notify(describeGoal(snapshot), "info");
 					return;
 				}
 				if (parsed.command === "clear") {
-					await withGoal(runGoal, (goal) => goal.clear(sessionId));
+					await withGoal(runtime, (goal) => goal.clear(sessionId));
 					clearGoalUi(ctx);
+					stopGoalTicker();
 					ctx.ui.notify("Cleared thread goal.", "info");
 					return;
 				}
@@ -385,19 +436,19 @@ export default function initGoal(pi: ExtensionAPI, runGoal: RunGoal): void {
 							: parsed.command === "pause"
 								? "paused"
 								: "complete";
-					const snapshot = await withGoal(runGoal, (goal) =>
+					const snapshot = await withGoal(runtime, (goal) =>
 						goal.setStatus(sessionId, status),
 					);
-					updateGoalUi(ctx, snapshot);
+					await updateGoalUi(ctx);
 					ctx.ui.notify(describeGoal(snapshot), "info");
 					if (status === "active") {
-						await dispatchGoalContinuation(pi, runGoal, ctx, snapshot);
+						await dispatchGoalContinuation(pi, runtime, ctx, snapshot);
 					}
 					return;
 				}
 
 				const objective = parsed.objective ?? "";
-				const existing = await withGoal(runGoal, (goal) => goal.get(sessionId));
+				const existing = await withGoal(runtime, (goal) => goal.get(sessionId));
 				if (existing !== null) {
 					const confirmed = await ctx.ui.confirm(
 						"Replace thread goal?",
@@ -407,12 +458,12 @@ export default function initGoal(pi: ExtensionAPI, runGoal: RunGoal): void {
 						return;
 					}
 				}
-				const snapshot = await withGoal(runGoal, (goal) =>
+				const snapshot = await withGoal(runtime, (goal) =>
 					goal.create(sessionId, objective, parsed.tokenBudget ?? null),
 				);
-				updateGoalUi(ctx, snapshot);
+				await updateGoalUi(ctx);
 				ctx.ui.notify(`Set thread goal.\n${describeGoal(snapshot)}`, "info");
-				await dispatchGoalContinuation(pi, runGoal, ctx, snapshot);
+				await dispatchGoalContinuation(pi, runtime, ctx, snapshot);
 			} catch (error) {
 				ctx.ui.notify(errorText(error), "error");
 			}
@@ -421,7 +472,8 @@ export default function initGoal(pi: ExtensionAPI, runGoal: RunGoal): void {
 
 	const onSessionReady = async (_event: unknown, ctx: ExtensionContext) => {
 		try {
-			await rehydrateAndUpdate(runGoal, ctx);
+			await rehydrateAndUpdate(runtime, ctx);
+			await updateGoalUi(ctx);
 		} catch (error) {
 			ctx.ui.notify(errorText(error), "error");
 		}
@@ -433,11 +485,12 @@ export default function initGoal(pi: ExtensionAPI, runGoal: RunGoal): void {
 	pi.on("session_tree", onSessionReady);
 
 	pi.on("before_agent_start", async (event: BeforeAgentStartEvent, ctx) => {
-		const snapshot = await withGoal(runGoal, (goal) =>
+		const snapshot = await withGoal(runtime, (goal) =>
 			goal
 				.markAgentStart(sessionIdFromContext(ctx), Date.now())
 				.pipe(Effect.andThen(goal.get(sessionIdFromContext(ctx)))),
 		);
+		await updateGoalUi(ctx);
 		if (snapshot?.status !== "active" && snapshot?.status !== "budget_limited") {
 			return;
 		}
@@ -446,15 +499,36 @@ export default function initGoal(pi: ExtensionAPI, runGoal: RunGoal): void {
 		};
 	});
 
+	pi.on("turn_end", async (event: TurnEndEvent, ctx) => {
+		const result = await withGoal(runtime, (goal) =>
+			goal.accountTurnEnd(sessionIdFromContext(ctx), event.message, Date.now()),
+		);
+		await updateGoalUi(ctx);
+		if (result.budgetLimitReached && result.snapshot !== null) {
+			await withGoal(runtime, (goal) =>
+				goal.markBudgetLimitPromptSent(sessionIdFromContext(ctx)),
+			);
+			pi.sendMessage(
+				{
+					customType: GOAL_BUDGET_MESSAGE_TYPE,
+					content: budgetLimitPrompt(result.snapshot),
+					display: false,
+					details: { objective: result.snapshot.objective },
+				},
+				{ triggerTurn: true, deliverAs: "followUp" },
+			);
+		}
+	});
+
 	pi.on("agent_end", async (event: AgentEndEvent, ctx) => {
 		const sessionId = sessionIdFromContext(ctx);
-		const result = await withGoal(runGoal, (goal) =>
+		const result = await withGoal(runtime, (goal) =>
 			goal.accountAgentEnd(sessionId, event, Date.now()),
 		);
-		updateGoalUi(ctx, result.snapshot);
+		await updateGoalUi(ctx);
 
 		if (result.budgetLimitReached && result.snapshot !== null) {
-			await withGoal(runGoal, (goal) => goal.markBudgetLimitPromptSent(sessionId));
+			await withGoal(runtime, (goal) => goal.markBudgetLimitPromptSent(sessionId));
 			pi.sendMessage(
 				{
 					customType: GOAL_BUDGET_MESSAGE_TYPE,
@@ -470,6 +544,10 @@ export default function initGoal(pi: ExtensionAPI, runGoal: RunGoal): void {
 		if (!shouldAutoContinue(result.snapshot, ctx)) {
 			return;
 		}
-		await dispatchGoalContinuation(pi, runGoal, ctx, result.snapshot);
+		await dispatchGoalContinuation(pi, runtime, ctx, result.snapshot);
+	});
+
+	pi.on("session_shutdown", () => {
+		stopGoalTicker();
 	});
 }

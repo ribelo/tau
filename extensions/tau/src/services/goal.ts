@@ -1,5 +1,6 @@
 import type { AgentEndEvent } from "@mariozechner/pi-coding-agent";
 import type { SessionEntry } from "@mariozechner/pi-coding-agent";
+import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { Context, Effect, Layer, Ref } from "effect";
 
 import { PiAPI } from "../effect/pi.js";
@@ -29,6 +30,10 @@ export interface GoalService {
 		entries: ReadonlyArray<SessionEntry>,
 	) => Effect.Effect<GoalSnapshot | null, GoalError, never>;
 	readonly get: (sessionId: string) => Effect.Effect<GoalSnapshot | null, never, never>;
+	readonly liveSnapshot: (
+		sessionId: string,
+		nowMs: number,
+	) => Effect.Effect<GoalSnapshot | null, never, never>;
 	readonly create: (
 		sessionId: string,
 		objective: string,
@@ -47,6 +52,11 @@ export interface GoalService {
 	readonly accountAgentEnd: (
 		sessionId: string,
 		event: AgentEndEvent,
+		nowMs: number,
+	) => Effect.Effect<GoalAgentEndResult, never, never>;
+	readonly accountTurnEnd: (
+		sessionId: string,
+		message: AgentMessage,
 		nowMs: number,
 	) => Effect.Effect<GoalAgentEndResult, never, never>;
 	readonly markContinuationDispatched: (
@@ -113,20 +123,15 @@ function validateTokenBudget(
 	return Effect.succeed(tokenBudget);
 }
 
-function assistantUsageTokens(event: AgentEndEvent): number {
-	let total = 0;
-	for (const message of event.messages) {
-		if (message.role !== "assistant") {
-			continue;
-		}
-		if (message.stopReason === "aborted" || message.stopReason === "error") {
-			continue;
-		}
-		const { usage } = message;
-		total +=
-			usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+function assistantMessageUsageTokens(message: AgentMessage): number {
+	if (message.role !== "assistant") {
+		return 0;
 	}
-	return total;
+	if (message.stopReason === "aborted" || message.stopReason === "error") {
+		return 0;
+	}
+	const { usage } = message;
+	return usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
 }
 
 function hasAssistantToolCall(event: AgentEndEvent): boolean {
@@ -148,6 +153,19 @@ function elapsedSeconds(runtime: GoalRuntime, nowMs: number): number {
 		return 0;
 	}
 	return Math.max(0, Math.floor((nowMs - runtime.activeTurnStartedAtMs) / 1_000));
+}
+
+function liveRuntimeSnapshot(runtime: GoalRuntime, nowMs: number): GoalSnapshot | null {
+	if (runtime.snapshot === null) {
+		return null;
+	}
+	if (runtime.snapshot.status !== "active" && runtime.snapshot.status !== "budget_limited") {
+		return runtime.snapshot;
+	}
+	return {
+		...runtime.snapshot,
+		timeUsedSeconds: runtime.snapshot.timeUsedSeconds + elapsedSeconds(runtime, nowMs),
+	};
 }
 
 function withUpdatedSnapshot(
@@ -183,6 +201,13 @@ export const GoalLive = Layer.effect(
 
 		const get: GoalService["get"] = (sessionId) =>
 			Ref.get(runtimes).pipe(Effect.map((state) => state.get(sessionId)?.snapshot ?? null));
+
+		const liveSnapshot: GoalService["liveSnapshot"] = (sessionId, nowMs) =>
+			Ref.get(runtimes).pipe(
+				Effect.map((state) =>
+					liveRuntimeSnapshot(state.get(sessionId) ?? emptyRuntime, nowMs),
+				),
+			);
 
 		const create: GoalService["create"] = Effect.fn("Goal.create")(
 			function* (sessionId, objectiveInput, tokenBudgetInput, options) {
@@ -282,10 +307,16 @@ export const GoalLive = Layer.effect(
 				}),
 			);
 
-		const accountAgentEnd: GoalService["accountAgentEnd"] = (sessionId, event, nowMs) =>
+		const accountUsage = (
+			sessionId: string,
+			tokens: number,
+			nowMs: number,
+			options: {
+				readonly finishActiveAccounting: boolean;
+				readonly continuationHadToolCall: boolean | null;
+			},
+		): Effect.Effect<GoalAgentEndResult, never, never> =>
 			Effect.gen(function* () {
-				const tokens = assistantUsageTokens(event);
-				const hadToolCall = hasAssistantToolCall(event);
 				const nowIso = new Date(nowMs).toISOString();
 				let nextSnapshot: GoalSnapshot | null = null;
 				let shouldPersist = false;
@@ -296,7 +327,9 @@ export const GoalLive = Layer.effect(
 						if (runtime.snapshot === null) {
 							return {
 								...runtime,
-								activeTurnStartedAtMs: null,
+								activeTurnStartedAtMs: options.finishActiveAccounting
+									? null
+									: runtime.activeTurnStartedAtMs,
 								continuationInFlight: false,
 							};
 						}
@@ -306,7 +339,9 @@ export const GoalLive = Layer.effect(
 						) {
 							return {
 								...runtime,
-								activeTurnStartedAtMs: null,
+								activeTurnStartedAtMs: options.finishActiveAccounting
+									? null
+									: runtime.activeTurnStartedAtMs,
 								continuationInFlight: false,
 							};
 						}
@@ -316,7 +351,10 @@ export const GoalLive = Layer.effect(
 							tokensUsed: runtime.snapshot.tokensUsed + tokens,
 							timeUsedSeconds: runtime.snapshot.timeUsedSeconds + seconds,
 						});
-						if (runtime.continuationInFlight && !hadToolCall) {
+						if (
+							runtime.continuationInFlight &&
+							options.continuationHadToolCall === false
+						) {
 							snapshot = withUpdatedSnapshot(snapshot, nowIso, {
 								continuationSuppressed: true,
 							});
@@ -339,7 +377,7 @@ export const GoalLive = Layer.effect(
 							budgetLimitReached;
 						return {
 							snapshot,
-							activeTurnStartedAtMs: null,
+							activeTurnStartedAtMs: options.finishActiveAccounting ? null : nowMs,
 							continuationInFlight: false,
 						};
 					}),
@@ -348,6 +386,18 @@ export const GoalLive = Layer.effect(
 					yield* saveSnapshot(nextSnapshot);
 				}
 				return { snapshot: nextSnapshot, budgetLimitReached };
+			});
+
+		const accountTurnEnd: GoalService["accountTurnEnd"] = (sessionId, message, nowMs) =>
+			accountUsage(sessionId, assistantMessageUsageTokens(message), nowMs, {
+				finishActiveAccounting: false,
+				continuationHadToolCall: null,
+			});
+
+		const accountAgentEnd: GoalService["accountAgentEnd"] = (sessionId, event, nowMs) =>
+			accountUsage(sessionId, 0, nowMs, {
+				finishActiveAccounting: true,
+				continuationHadToolCall: hasAssistantToolCall(event),
 			});
 
 		const markContinuationDispatched: GoalService["markContinuationDispatched"] = (sessionId) =>
@@ -387,11 +437,13 @@ export const GoalLive = Layer.effect(
 		return Goal.of({
 			rehydrate,
 			get,
+			liveSnapshot,
 			create,
 			setStatus,
 			clear,
 			markAgentStart,
 			accountAgentEnd,
+			accountTurnEnd,
 			markContinuationDispatched,
 			markBudgetLimitPromptSent,
 		});

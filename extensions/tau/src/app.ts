@@ -216,9 +216,16 @@ export const startTau = (pi: ExtensionAPI) => {
 		currentRuntime.runPromise(effect);
 	const runRalph = <A, E>(effect: Effect.Effect<A, E, Ralph | ExecutionRuntime>) =>
 		currentRuntime.runPromise(effect);
-	const runGoal = <A, E>(effect: Effect.Effect<A, E, Goal>) => currentRuntime.runPromise(effect);
+	const goalRuntime = {
+		runPromise: <A, E>(effect: Effect.Effect<A, E, Goal>) => currentRuntime.runPromise(effect),
+		runFork: <A, E>(effect: Effect.Effect<A, E, Goal>) => currentRuntime.runFork(effect),
+	};
 	const runAutoresearch = <A, E>(
-		effect: Effect.Effect<A, E, LoopEngine | Sandbox | ExecutionRuntime | AutoresearchLoopRunner>,
+		effect: Effect.Effect<
+			A,
+			E,
+			LoopEngine | Sandbox | ExecutionRuntime | AutoresearchLoopRunner
+		>,
 	) => currentRuntime.runPromise(effect);
 
 	const startup = Effect.gen(function* () {
@@ -263,7 +270,7 @@ export const startTau = (pi: ExtensionAPI) => {
 			initRequestUserInput(pi);
 			initRalph(pi, runRalph);
 			initAutoresearch(pi, runAutoresearch);
-			initGoal(pi, runGoal);
+			initGoal(pi, goalRuntime);
 			initThreadTools(pi);
 		});
 
@@ -272,19 +279,22 @@ export const startTau = (pi: ExtensionAPI) => {
 		const agentToolDescription = buildToolDescription(agentRegistry);
 		yield* Effect.sync(() => {
 			const agentToolHandle = initAgent(pi, agentRuntimeBridge, agentToolDescription);
-			const configureRalphAgents: import("./agents-menu/index.js").RalphAgentConfigRunner = async (cwd, loopName, enabledNames) => {
-				try {
-					const result = await runRalph(Effect.gen(function* () {
-						const ralph = yield* Ralph;
-						return yield* ralph.configureLoopMany(cwd, loopName, [
-							{ kind: "capabilityContractAgents", enabledNames },
-						]);
-					}));
-					return { ok: true as const, status: result.status };
-				} catch (error) {
-					return { ok: false as const, reason: String(error) };
-				}
-			};
+			const configureRalphAgents: import("./agents-menu/index.js").RalphAgentConfigRunner =
+				async (cwd, loopName, enabledNames) => {
+					try {
+						const result = await runRalph(
+							Effect.gen(function* () {
+								const ralph = yield* Ralph;
+								return yield* ralph.configureLoopMany(cwd, loopName, [
+									{ kind: "capabilityContractAgents", enabledNames },
+								]);
+							}),
+						);
+						return { ok: true as const, status: result.status };
+					} catch (error) {
+						return { ok: false as const, reason: String(error) };
+					}
+				};
 			initAgentsMenu(pi, agentToolHandle, configureRalphAgents);
 
 			// The tau ManagedRuntime is created once per process in the extension
