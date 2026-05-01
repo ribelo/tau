@@ -11,6 +11,7 @@ import { ExecutionState, ExecutionStateLive } from "./services/execution-state.j
 import { ExecutionRuntime, ExecutionRuntimeLive } from "./services/execution-runtime.js";
 import { CuratedMemory, CuratedMemoryLive } from "./services/curated-memory.js";
 import { Ralph, RalphLive } from "./services/ralph.js";
+import { Goal, GoalLive } from "./services/goal.js";
 import { SkillManager, SkillManagerLive } from "./services/skill-manager.js";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import initExa from "./exa/index.js";
@@ -28,6 +29,7 @@ import initAgent from "./agent/index.js";
 import initRequestUserInput from "./request-user-input/index.js";
 import initRalph from "./ralph/index.js";
 import initAutoresearch from "./autoresearch/index.js";
+import initGoal from "./goal/index.js";
 import initAgentsMenu from "./agents-menu/index.js";
 import initThreadTools from "./thread/index.js";
 import { AgentConfig, AgentControl } from "./agent/services.js";
@@ -135,6 +137,7 @@ const createMainLayer = (agentRuntimeBridge: AgentRuntimeBridgeService) => {
 		SkillManagerLayer,
 		AgentLayer,
 		RalphLayer,
+		GoalLive,
 	).pipe(Layer.provide(PiLoggerLive));
 };
 
@@ -148,6 +151,7 @@ type TauRuntime = ManagedRuntime.ManagedRuntime<
 	| AgentControl
 	| SkillManager
 	| Ralph
+	| Goal
 	| LoopEngine
 	| AutoresearchLoopRunner
 	| DreamLock
@@ -212,6 +216,7 @@ export const startTau = (pi: ExtensionAPI) => {
 		currentRuntime.runPromise(effect);
 	const runRalph = <A, E>(effect: Effect.Effect<A, E, Ralph | ExecutionRuntime>) =>
 		currentRuntime.runPromise(effect);
+	const runGoal = <A, E>(effect: Effect.Effect<A, E, Goal>) => currentRuntime.runPromise(effect);
 	const runAutoresearch = <A, E>(
 		effect: Effect.Effect<A, E, LoopEngine | Sandbox | ExecutionRuntime | AutoresearchLoopRunner>,
 	) => currentRuntime.runPromise(effect);
@@ -258,6 +263,7 @@ export const startTau = (pi: ExtensionAPI) => {
 			initRequestUserInput(pi);
 			initRalph(pi, runRalph);
 			initAutoresearch(pi, runAutoresearch);
+			initGoal(pi, runGoal);
 			initThreadTools(pi);
 		});
 

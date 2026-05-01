@@ -115,12 +115,16 @@ describe("runTau runtime", () => {
 			await new Promise((resolve) => setTimeout(resolve, 200));
 
 			expect(pi.__registeredTools).toContain("backlog");
+			expect(pi.__registeredTools).toContain("get_goal");
+			expect(pi.__registeredTools).toContain("create_goal");
+			expect(pi.__registeredTools).toContain("update_goal");
 			expect(pi.__registeredTools).toContain("autoresearch_run");
 			expect(pi.__registeredTools).toContain("autoresearch_done");
 			expect(pi.__registeredTools).not.toContain("init_experiment");
 			expect(pi.__registeredTools).not.toContain("run_experiment");
 			expect(pi.__registeredTools).not.toContain("log_experiment");
 			expect(pi.__registeredCommands).toContain("backlog");
+			expect(pi.__registeredCommands).toContain("goal");
 			expect(pi.__registeredRenderers).toContain("backlog");
 			expect(pi.__registeredTools).not.toContain("bd");
 			expect(pi.__registeredCommands).not.toContain("bd");

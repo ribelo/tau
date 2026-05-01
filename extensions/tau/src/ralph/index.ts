@@ -34,6 +34,7 @@ import { RalphContractValidationError } from "./errors.js";
 import { RALPH_TASKS_DIR } from "./paths.js";
 import { sanitizeLoopName, type LoopState, type LoopStatus } from "./schema.js";
 import { setToolEnabled } from "../shared/tool-activation.js";
+import { formatTokenCount } from "../shared/format-tokens.js";
 import { loadPersistedState, TAU_PERSISTED_STATE_TYPE } from "../shared/state.js";
 import { captureCapabilityContract, effectiveToolNames } from "./resolver.js";
 import {
@@ -657,12 +658,6 @@ function formatLoop(loop: LoopState): string {
 	const iter =
 		loop.maxIterations > 0 ? `${loop.iteration}/${loop.maxIterations}` : `${loop.iteration}`;
 	return `${loop.name}: ${status.icon} ${status.label} (iteration ${iter})`;
-}
-
-function formatTokenCount(tokens: number): string {
-	if (tokens < 1_000) return `${tokens}`;
-	if (tokens < 1_000_000) return `${(tokens / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
-	return `${(tokens / 1_000_000).toFixed(2).replace(/\.00$/, "")}m`;
 }
 
 function formatCostUsd(cost: number): string {
