@@ -1,5 +1,6 @@
 import type {
 	AgentEndEvent,
+	BeforeAgentStartEvent,
 	ExtensionAPI,
 	ExtensionContext,
 	SessionEntry,
@@ -14,7 +15,7 @@ import { defineDecodedTool, textToolResult } from "../shared/decoded-tool.js";
 import { formatDuration } from "../shared/format-duration.js";
 import { formatTokenCount } from "../shared/format-tokens.js";
 import { GoalConflictError, GoalValidationError } from "./errors.js";
-import { budgetLimitPrompt, continuationPrompt } from "./prompts.js";
+import { budgetLimitPrompt, continuationPrompt, goalSystemPrompt } from "./prompts.js";
 import type { GoalSnapshot, GoalStatus } from "./schema.js";
 
 export type GoalRuntime = {
@@ -483,13 +484,19 @@ export default function initGoal(pi: ExtensionAPI, runtime: GoalRuntime): void {
 	pi.on("session_fork", onSessionReady);
 	pi.on("session_tree", onSessionReady);
 
-	pi.on("before_agent_start", async (_event: unknown, ctx) => {
-		await withGoal(runtime, (goal) =>
+	pi.on("before_agent_start", async (event: BeforeAgentStartEvent, ctx) => {
+		const snapshot = await withGoal(runtime, (goal) =>
 			goal
 				.markAgentStart(sessionIdFromContext(ctx), Date.now())
 				.pipe(Effect.andThen(goal.get(sessionIdFromContext(ctx)))),
 		);
 		await updateGoalUi(ctx);
+		if (snapshot?.status !== "active" && snapshot?.status !== "budget_limited") {
+			return;
+		}
+		return {
+			systemPrompt: `${event.systemPrompt}\n\n${goalSystemPrompt(snapshot)}`,
+		};
 	});
 
 	pi.on("turn_end", async (event: TurnEndEvent, ctx) => {

@@ -214,7 +214,7 @@ describe("goal adapter", () => {
 		expect(snapshot?.tokensUsed).toBe(120);
 	});
 
-	it("does not modify the system prompt when a goal is active", async () => {
+	it("injects active goal context into the system prompt", async () => {
 		const harness = makeGoalAdapterHarness();
 		harnesses.push(harness);
 
@@ -224,6 +224,16 @@ describe("goal adapter", () => {
 			systemPrompt: "base prompt",
 		});
 
-		expect(results).toEqual([undefined]);
+		expect(results).toHaveLength(1);
+		const result = results[0];
+		expect(result).toMatchObject({
+			systemPrompt: expect.stringContaining("base prompt"),
+		});
+		expect(result).toMatchObject({
+			systemPrompt: expect.stringContaining("Active thread goal context."),
+		});
+		expect(result).toMatchObject({
+			systemPrompt: expect.stringContaining("<untrusted_objective>\nship the feature"),
+		});
 	});
 });
