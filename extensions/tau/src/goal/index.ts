@@ -224,6 +224,27 @@ async function rehydrateAndUpdate(
 	return snapshot;
 }
 
+async function dispatchGoalContinuation(
+	pi: ExtensionAPI,
+	runGoal: RunGoal,
+	ctx: ExtensionContext,
+	snapshot: GoalSnapshot | null,
+): Promise<void> {
+	if (!shouldAutoContinue(snapshot, ctx)) {
+		return;
+	}
+	await withGoal(runGoal, (goal) => goal.markContinuationDispatched(sessionIdFromContext(ctx)));
+	pi.sendMessage(
+		{
+			customType: GOAL_CONTINUATION_MESSAGE_TYPE,
+			content: continuationPrompt(snapshot),
+			display: false,
+			details: { objective: snapshot.objective },
+		},
+		{ triggerTurn: true, deliverAs: "followUp" },
+	);
+}
+
 export default function initGoal(pi: ExtensionAPI, runGoal: RunGoal): void {
 	pi.registerTool(
 		defineDecodedTool({
@@ -369,6 +390,9 @@ export default function initGoal(pi: ExtensionAPI, runGoal: RunGoal): void {
 					);
 					updateGoalUi(ctx, snapshot);
 					ctx.ui.notify(describeGoal(snapshot), "info");
+					if (status === "active") {
+						await dispatchGoalContinuation(pi, runGoal, ctx, snapshot);
+					}
 					return;
 				}
 
@@ -388,6 +412,7 @@ export default function initGoal(pi: ExtensionAPI, runGoal: RunGoal): void {
 				);
 				updateGoalUi(ctx, snapshot);
 				ctx.ui.notify(`Set thread goal.\n${describeGoal(snapshot)}`, "info");
+				await dispatchGoalContinuation(pi, runGoal, ctx, snapshot);
 			} catch (error) {
 				ctx.ui.notify(errorText(error), "error");
 			}
@@ -445,15 +470,6 @@ export default function initGoal(pi: ExtensionAPI, runGoal: RunGoal): void {
 		if (!shouldAutoContinue(result.snapshot, ctx)) {
 			return;
 		}
-		await withGoal(runGoal, (goal) => goal.markContinuationDispatched(sessionId));
-		pi.sendMessage(
-			{
-				customType: GOAL_CONTINUATION_MESSAGE_TYPE,
-				content: continuationPrompt(result.snapshot),
-				display: false,
-				details: { objective: result.snapshot.objective },
-			},
-			{ triggerTurn: true, deliverAs: "followUp" },
-		);
+		await dispatchGoalContinuation(pi, runGoal, ctx, result.snapshot);
 	});
 }

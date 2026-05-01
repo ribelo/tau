@@ -209,6 +209,23 @@ export const GoalLive = Layer.effect(
 						new GoalConflictError({ reason: "a thread goal already exists" }),
 					);
 				}
+				if (
+					existing !== null &&
+					existing.objective === objective &&
+					existing.status !== "complete"
+				) {
+					const nextSnapshot = withUpdatedSnapshot(existing, nowIso, {
+						status: "active",
+						tokenBudget,
+						continuationSuppressed: false,
+						budgetLimitPromptSent: false,
+					});
+					yield* Ref.update(runtimes, (state) =>
+						withRuntime(state, sessionId, () => runtimeWithSnapshot(nextSnapshot)),
+					);
+					yield* saveSnapshot(nextSnapshot);
+					return nextSnapshot;
+				}
 				yield* Ref.update(runtimes, (state) =>
 					withRuntime(state, sessionId, () => runtimeWithSnapshot(snapshot)),
 				);
