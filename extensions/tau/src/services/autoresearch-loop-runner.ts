@@ -40,6 +40,15 @@ type QueuedAgentEnd = {
 	readonly timeout: ReturnType<typeof setTimeout>;
 };
 
+type ActiveLoopEntry =
+	| {
+			readonly _tag: "starting";
+	  }
+	| {
+			readonly _tag: "running";
+			readonly fiber: Fiber.Fiber<void, never>;
+	  };
+
 export const AutoresearchLoopRunnerLive = Layer.effect(
 	AutoresearchLoopRunner,
 	Effect.gen(function* () {
@@ -47,7 +56,7 @@ export const AutoresearchLoopRunnerLive = Layer.effect(
 		const backgroundScope = yield* Scope.make();
 		yield* Scope.addFinalizer(serviceScope, Scope.close(backgroundScope, Exit.void));
 
-		const activeLoops = new Map<string, Fiber.Fiber<void, never>>();
+		const activeLoops = new Map<string, ActiveLoopEntry>();
 		const waitingAgentEnds = new Map<string, Deferred.Deferred<unknown>>();
 		const queuedAgentEnds = new Map<string, QueuedAgentEnd>();
 		yield* Scope.addFinalizer(
@@ -66,17 +75,28 @@ export const AutoresearchLoopRunnerLive = Layer.effect(
 			if (activeLoops.has(loopKey)) {
 				return;
 			}
+			activeLoops.set(loopKey, { _tag: "starting" });
+			let startedFiber: Fiber.Fiber<void, never> | undefined;
 
 			const fiber = yield* program.pipe(
 				Effect.ensuring(
 					Effect.sync(() => {
-						activeLoops.delete(loopKey);
+						const active = activeLoops.get(loopKey);
+						if (active?._tag !== "running" || active.fiber === startedFiber) {
+							activeLoops.delete(loopKey);
+						}
 					}),
 				),
 				Effect.forkIn(backgroundScope, { startImmediately: true }),
 			);
+			startedFiber = fiber;
 
-			activeLoops.set(loopKey, fiber);
+			const active = activeLoops.get(loopKey);
+			if (active?._tag === "starting") {
+				activeLoops.set(loopKey, { _tag: "running", fiber });
+				return;
+			}
+			yield* Fiber.interrupt(fiber).pipe(Effect.ignore);
 		});
 
 		const cancelLoop: AutoresearchLoopRunnerService["cancelLoop"] = Effect.fn(
@@ -86,8 +106,12 @@ export const AutoresearchLoopRunnerLive = Layer.effect(
 			if (active === undefined) {
 				return;
 			}
+			if (active._tag === "starting") {
+				activeLoops.delete(loopKey);
+				return;
+			}
 
-			yield* Fiber.interrupt(active).pipe(Effect.ignore);
+			yield* Fiber.interrupt(active.fiber).pipe(Effect.ignore);
 			activeLoops.delete(loopKey);
 		});
 

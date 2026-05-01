@@ -127,6 +127,33 @@ describe("loop repo", () => {
 		expect(fs.existsSync(path.join(cwd, ".pi", "loops", "tasks", "repo-loop.md"))).toBe(true);
 	});
 
+	it("ignores stale nested .pi/loops when a parent git root exists", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+		fs.mkdirSync(path.join(cwd, ".git"), { recursive: true });
+		const nestedCwd = path.join(cwd, "packages", "feature");
+		fs.mkdirSync(path.join(nestedCwd, ".pi", "loops"), { recursive: true });
+
+		const loopState = makeLoopState("nested-root-loop");
+		const loaded = await Effect.runPromise(
+			Effect.gen(function* () {
+				const repo = yield* LoopRepo;
+				yield* repo.saveState(nestedCwd, loopState);
+				return yield* repo.loadState(nestedCwd, loopState.taskId);
+			}).pipe(Effect.provide(loopRepoLayer)),
+		);
+
+		expect(Option.isSome(loaded)).toBe(true);
+		expect(
+			fs.existsSync(path.join(cwd, ".pi", "loops", "state", "nested-root-loop.json")),
+		).toBe(true);
+		expect(
+			fs.existsSync(
+				path.join(nestedCwd, ".pi", "loops", "state", "nested-root-loop.json"),
+			),
+		).toBe(false);
+	});
+
 	it("fails fast on legacy state files missing required ralph fields", async () => {
 		const cwd = makeTempDir();
 		tempDirs.push(cwd);

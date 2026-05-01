@@ -14,18 +14,21 @@ function pathExists(candidate: string): boolean {
 export function resolveLoopWorkspaceRoot(cwd: string): string {
 	const start = path.resolve(cwd);
 	let current = start;
+	const localLoopsRoot =
+		current !== os.tmpdir() && pathExists(path.join(current, ".pi", "loops"))
+			? current
+			: undefined;
 	for (;;) {
 		if (
 			current !== os.tmpdir() &&
 			(pathExists(path.join(current, ".git")) ||
-				pathExists(path.join(current, ".pi", "settings.json")) ||
-				(current === start && pathExists(path.join(current, ".pi", "loops"))))
+				pathExists(path.join(current, ".pi", "settings.json")))
 		) {
 			return current;
 		}
 		const parent = path.dirname(current);
 		if (parent === current) {
-			return start;
+			return localLoopsRoot ?? start;
 		}
 		current = parent;
 	}

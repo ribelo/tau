@@ -721,6 +721,41 @@ describe("ralph core service", () => {
 		}
 	});
 
+	it("pauses the current session loop when multiple loops are active", async () => {
+		const cwd = makeTempDir();
+		tempDirs.push(cwd);
+		const ownedSessionFile = path.join(cwd, ".pi", "sessions", "owned.session.json");
+		const otherSessionFile = path.join(cwd, ".pi", "sessions", "other.session.json");
+
+		const result = await Effect.runPromise(
+			Effect.gen(function* () {
+				const repo = yield* RalphRepo;
+				const ralph = yield* Ralph;
+				yield* repo.saveState(cwd, makeState("owned-loop", ownedSessionFile));
+				yield* repo.saveState(cwd, makeState("other-loop", otherSessionFile));
+				yield* ralph.syncCurrentLoopFromSession(cwd, ownedSessionFile);
+
+				const paused = yield* ralph.pauseCurrentLoop(cwd);
+				const owned = yield* repo.loadState(cwd, "owned-loop");
+				const other = yield* repo.loadState(cwd, "other-loop");
+				return { paused, owned, other };
+			}).pipe(Effect.provide(ralphLayer)),
+		);
+
+		expect(result.paused.status).toBe("paused");
+		if (result.paused.status === "paused") {
+			expect(result.paused.loopName).toBe("owned-loop");
+		}
+		expect(Option.isSome(result.owned)).toBe(true);
+		expect(Option.isSome(result.other)).toBe(true);
+		if (Option.isSome(result.owned)) {
+			expect(result.owned.value.status).toBe("paused");
+		}
+		if (Option.isSome(result.other)) {
+			expect(result.other.value.status).toBe("active");
+		}
+	});
+
 	it("pauses the active workspace loop without trusting stale current-loop memory", async () => {
 		const firstCwd = makeTempDir();
 		const secondCwd = makeTempDir();

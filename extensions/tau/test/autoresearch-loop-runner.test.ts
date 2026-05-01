@@ -67,6 +67,39 @@ describe("AutoresearchLoopRunner", () => {
 		);
 	});
 
+	it("deduplicates concurrent loop starts before the worker fiber is registered", async () => {
+		const runtime = makeRuntime();
+		runtimes.push(runtime);
+
+		await runtime.run(
+			Effect.gen(function* () {
+				const runner = yield* AutoresearchLoopRunner;
+				const starts = yield* Ref.make(0);
+				const started = yield* Deferred.make<void>();
+				const gate = yield* Deferred.make<void>();
+				const program = Effect.gen(function* () {
+					yield* Ref.update(starts, (count) => count + 1);
+					yield* Deferred.succeed(started, undefined);
+					yield* Deferred.await(gate);
+				});
+
+				yield* Effect.all(
+					[
+						runner.ensureLoopRunning("workspace:task-concurrent", program),
+						runner.ensureLoopRunning("workspace:task-concurrent", program),
+					],
+					{ concurrency: "unbounded" },
+				);
+				yield* Deferred.await(started);
+				yield* Effect.sleep("10 millis");
+
+				expect(yield* Ref.get(starts)).toBe(1);
+
+				yield* Deferred.succeed(gate, undefined);
+			}),
+		);
+	});
+
 	it("interrupts active loops when cancelled", async () => {
 		const runtime = makeRuntime();
 		runtimes.push(runtime);
