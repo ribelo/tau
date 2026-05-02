@@ -77,6 +77,25 @@ describe("shell renderer", () => {
 		expect(rendered).toContain("got input");
 	});
 
+	it("renders empty write_stdin calls as polling", () => {
+		const rendered = renderResult({
+			content: [{ type: "text", text: "" }],
+			details: {
+				kind: "write_stdin",
+				output: "",
+				sessionId: 39,
+				writtenChars: 0,
+				writtenText: "",
+			},
+		});
+
+		expect(rendered).toContain("↪ poll · session 39");
+		expect(rendered).toContain("session: 39");
+		expect(rendered).not.toContain("wrote:");
+		expect(rendered).toContain("(still running; no new output)");
+		expect(rendered).not.toContain("(no output)");
+	});
+
 	it("hides echoed TTY input in compact write_stdin results", () => {
 		const rendered = renderResult({
 			content: [{ type: "text", text: "echo hi\r\nhi\r\n$ " }],

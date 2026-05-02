@@ -104,6 +104,10 @@ function stripWrittenEcho(output: string, writtenText: string | undefined): stri
 	return lines.join("\n").trimStart();
 }
 
+function isPoll(details: ShellToolDetails): boolean {
+	return details.kind === "write_stdin" && (details.writtenChars ?? 0) === 0;
+}
+
 function statusParts(details: ShellToolDetails): { readonly mark: string; readonly ok: boolean | undefined } {
 	if (details.sessionId !== undefined) {
 		return { mark: "↪", ok: undefined };
@@ -121,10 +125,12 @@ function renderOutput(
 	output: string,
 	expanded: boolean,
 	theme: Theme,
-	options?: { readonly writtenText?: string | undefined },
+	options?: { readonly writtenText?: string | undefined; readonly poll?: boolean | undefined },
 ): string {
 	const cleaned = stripWrittenEcho(normalizeTerminalOutput(output), options?.writtenText).trimEnd();
-	if (cleaned.length === 0) return theme.fg("dim", "  (no output)");
+	if (cleaned.length === 0) {
+		return theme.fg("dim", options?.poll === true ? "  (still running; no new output)" : "  (no output)");
+	}
 	const maxLines = expanded ? EXPANDED_OUTPUT_LINES : COMPACT_OUTPUT_LINES;
 	const { lines, omitted } = tailLines(cleaned, maxLines);
 	let rendered = "";
@@ -148,6 +154,13 @@ function renderShellCallInline(details: ShellToolDetails, expanded: boolean): st
 		return truncate(oneLine(details.command ?? "exec_command"), expanded ? 400 : MAX_COMMAND_CHARS);
 	}
 
+	if (isPoll(details)) {
+		if (details.sessionId !== undefined) {
+			return `session ${details.sessionId}`;
+		}
+		return "no input";
+	}
+
 	const written = details.writtenText?.trim();
 	if (written !== undefined && written.length > 0) {
 		return truncate(oneLine(written), expanded ? 400 : MAX_COMMAND_CHARS);
@@ -166,7 +179,7 @@ function renderShellMetadata(details: ShellToolDetails, theme: Theme): string {
 	if (details.sessionId !== undefined) {
 		lines.push(`  ${theme.fg("muted", "session:")} ${theme.fg("accent", String(details.sessionId))}`);
 	}
-	if (details.kind === "write_stdin" && details.writtenChars !== undefined) {
+	if (details.kind === "write_stdin" && details.writtenChars !== undefined && !isPoll(details)) {
 		lines.push(`  ${theme.fg("muted", "wrote:")} ${theme.fg("dim", `${details.writtenChars} chars`)}`);
 	}
 	return lines.join("\n");
@@ -182,7 +195,8 @@ export function renderShellResult(result: unknown, options: ToolRenderResultOpti
 		return new Text(theme.fg("dim", readTextContent(result) ?? "(no shell details)"), 0, 0);
 	}
 
-	const title = details.kind === "exec_command" ? "exec_command" : "stdin";
+	const poll = isPoll(details);
+	const title = details.kind === "exec_command" ? "exec_command" : poll ? "poll" : "stdin";
 	const status = statusParts(details);
 	const mark =
 		status.ok === true
@@ -196,6 +210,6 @@ export function renderShellResult(result: unknown, options: ToolRenderResultOpti
 	if (metadata.length > 0) {
 		output += `\n${metadata}`;
 	}
-	output += `\n\n${renderOutput(details.output, options.expanded, theme, { writtenText: details.writtenText })}`;
+	output += `\n\n${renderOutput(details.output, options.expanded, theme, { writtenText: details.writtenText, poll })}`;
 	return new Text(output, 0, 0);
 }
