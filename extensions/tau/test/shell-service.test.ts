@@ -6,7 +6,12 @@ import * as path from "node:path";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { Shell, ShellExecutionError, ShellLive } from "../src/services/shell.js";
+import {
+	EXEC_DEFAULT_YIELD_TIME_MS,
+	Shell,
+	ShellExecutionError,
+	ShellLive,
+} from "../src/services/shell.js";
 
 function envRecord(): Record<string, string> {
 	const env: Record<string, string> = {};
@@ -82,6 +87,30 @@ describe("Shell service", () => {
 		expect(result.exitCode).toBe(0);
 		expect(result.sessionId).toBeUndefined();
 		expect(result.output).toContain("hello");
+		expect(result.wallTimeMs).toBeTypeOf("number");
+	});
+
+	it("uses the Codex exec default wait for invalid caller input", async () => {
+		const result = await Effect.runPromise(
+			Effect.gen(function* () {
+				const shell = yield* Shell;
+				return yield* shell.exec({
+					file: "bash",
+					args: ["-lc", "sleep 0.2; echo default-wait"],
+					cwd: process.cwd(),
+					env: envRecord(),
+					tty: false,
+					ownerId: "test-session",
+					yieldTimeMs: Number.NaN,
+					maxOutputTokens: 1_000,
+				});
+			}).pipe(Effect.provide(ShellLive)),
+		);
+
+		expect(EXEC_DEFAULT_YIELD_TIME_MS).toBe(10_000);
+		expect(result.exitCode).toBe(0);
+		expect(result.sessionId).toBeUndefined();
+		expect(result.output).toContain("default-wait");
 	});
 
 	it("keeps a tty session open and accepts stdin", async () => {
@@ -111,6 +140,72 @@ describe("Shell service", () => {
 
 		expect(result.exitCode).toBe(0);
 		expect(result.output).toContain("got:abc");
+	});
+
+	it("uses empty write_stdin calls to poll and wait for completion", async () => {
+		const result = await Effect.runPromise(
+			Effect.gen(function* () {
+				const shell = yield* Shell;
+				const started = yield* shell.exec({
+					file: "bash",
+					args: ["-lc", "sleep 0.5; echo delayed-output"],
+					cwd: process.cwd(),
+					env: envRecord(),
+					tty: false,
+					ownerId: "test-session",
+					yieldTimeMs: 250,
+					maxOutputTokens: 1_000,
+				});
+				expect(started.sessionId).toBeTypeOf("number");
+				expect(started.output).not.toContain("delayed-output");
+				return yield* shell.write({
+					sessionId: started.sessionId!,
+					ownerId: "test-session",
+					chars: "",
+					yieldTimeMs: 10,
+					maxOutputTokens: 1_000,
+				});
+			}).pipe(Effect.provide(ShellLive)),
+		);
+
+		expect(result.exitCode).toBe(0);
+		expect(result.sessionId).toBeUndefined();
+		expect(result.output).toContain("delayed-output");
+	});
+
+	it("rejects stdin writes for non-tty sessions", async () => {
+		const result = await Effect.runPromise(
+			Effect.gen(function* () {
+				const shell = yield* Shell;
+				const started = yield* shell.exec({
+					file: "bash",
+					args: ["-lc", "sleep 1"],
+					cwd: process.cwd(),
+					env: envRecord(),
+					tty: false,
+					ownerId: "test-session",
+					yieldTimeMs: 250,
+					maxOutputTokens: 1_000,
+				});
+				expect(started.sessionId).toBeTypeOf("number");
+				const writeResult = yield* shell.write({
+					sessionId: started.sessionId!,
+					ownerId: "test-session",
+					chars: "abc\n",
+					yieldTimeMs: 250,
+					maxOutputTokens: 1_000,
+				}).pipe(
+					Effect.catch((error: ShellExecutionError) => Effect.succeed(error)),
+				);
+				yield* shell.shutdownOwner("test-session");
+				return writeResult;
+			}).pipe(Effect.provide(ShellLive)),
+		);
+
+		expect(result).toBeInstanceOf(ShellExecutionError);
+		expect("reason" in result ? result.reason : "").toContain(
+			"stdin is closed for this session",
+		);
 	});
 
 	it("rejects writes from another owner", async () => {

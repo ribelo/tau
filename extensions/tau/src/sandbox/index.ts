@@ -49,7 +49,12 @@ import { loadPersistedState } from "../shared/state.js";
 import { setToolActivationTransform } from "../shared/tool-activation.js";
 import { type ApprovalBroker, getWorkerApprovalBroker } from "../agent/approval-broker.js";
 import { SANDBOX_PRESET_NAMES } from "../shared/policy.js";
-import type { ShellRunResult, ShellService } from "../services/shell.js";
+import {
+	EXEC_DEFAULT_YIELD_TIME_MS,
+	WRITE_STDIN_DEFAULT_YIELD_TIME_MS,
+	type ShellRunResult,
+	type ShellService,
+} from "../services/shell.js";
 
 type SandboxStateInternal = {
 	createSandboxedBashOperations?:
@@ -91,6 +96,31 @@ const SANDBOX_CHANGE_MESSAGE_TYPE = "sandbox:change";
 const SANDBOX_MUTATION_TOOLS_KEY = "sandbox.mutation-tools";
 
 const PRESET_VALUES: readonly SandboxPreset[] = SANDBOX_PRESET_NAMES;
+
+export const EXEC_COMMAND_TOOL_DESCRIPTION =
+	"Runs a command in a PTY, returning output or a session ID for ongoing interaction. Commands run sandboxed by default.";
+export const EXEC_COMMAND_TTY_PARAMETER_DESCRIPTION =
+	"Whether to allocate a TTY for the command. Defaults to false (plain pipes); set to true to open a PTY and access TTY process.";
+export const WRITE_STDIN_TOOL_DESCRIPTION =
+	"Writes characters to an existing unified exec session and returns recent output.";
+export const WRITE_STDIN_CHARS_PARAMETER_DESCRIPTION =
+	"Bytes to write to stdin (may be empty to poll).";
+
+export function formatShellResult(result: ShellRunResult): string {
+	const parts: string[] = [];
+	if (result.wallTimeMs !== undefined) {
+		parts.push(`Wall time: ${(result.wallTimeMs / 1_000).toFixed(4)} seconds`);
+	}
+	if (result.exitCode !== undefined) {
+		parts.push(`Process exited with code ${result.exitCode}`);
+	}
+	if (result.sessionId !== undefined) {
+		parts.push(`Process running with session ID ${result.sessionId}`);
+	}
+	parts.push("Output:");
+	parts.push(result.output);
+	return parts.join("\n");
+}
 
 const PRESET_LABELS: Record<SandboxPreset, string> = {
 	"read-only": "Read Only",
@@ -476,14 +506,23 @@ export default function initSandbox(
 		return env;
 	}
 
-	function normalizeYieldTimeMs(value: number | undefined): number {
-		if (value === undefined || !Number.isFinite(value) || value < 0) return 1_000;
+	function normalizeExecYieldTimeMs(value: number | undefined): number {
+		if (value === undefined || !Number.isFinite(value) || value < 0) {
+			return EXEC_DEFAULT_YIELD_TIME_MS;
+		}
+		return Math.round(value);
+	}
+
+	function normalizeWriteStdinYieldTimeMs(value: number | undefined): number {
+		if (value === undefined || !Number.isFinite(value) || value < 0) {
+			return WRITE_STDIN_DEFAULT_YIELD_TIME_MS;
+		}
 		return Math.min(Math.round(value), 600_000);
 	}
 
 	function normalizeMaxOutputTokens(value: number | undefined): number {
-		if (value === undefined || !Number.isFinite(value) || value <= 0) return 6_000;
-		return Math.min(Math.round(value), 50_000);
+		if (value === undefined || !Number.isFinite(value) || value <= 0) return 10_000;
+		return Math.min(Math.round(value), 250_000);
 	}
 
 	function resolveShellInvocation(opts: {
@@ -497,20 +536,6 @@ export default function initSandbox(
 			file: shellFile,
 			args: [login ? "-lc" : "-c", opts.command],
 		};
-	}
-
-	function formatShellResult(result: ShellRunResult): string {
-		const parts: string[] = [];
-		if (result.output.length > 0) {
-			parts.push(result.output);
-		}
-		if (result.sessionId !== undefined) {
-			parts.push(`session_id: ${result.sessionId}`);
-		}
-		if (result.exitCode !== undefined) {
-			parts.push(`exit_code: ${result.exitCode}`);
-		}
-		return parts.length > 0 ? parts.join("\n") : "(no output)";
 	}
 
 	function shellToolResult(result: ShellRunResult, details: Omit<ShellToolDetails, keyof ShellRunResult>) {
@@ -1029,7 +1054,7 @@ export default function initSandbox(
 			cwd,
 			tty: params.tty ?? false,
 			ownerId: ctx.sessionManager.getSessionId(),
-			yieldTimeMs: normalizeYieldTimeMs(params.yield_time_ms),
+			yieldTimeMs: normalizeExecYieldTimeMs(params.yield_time_ms),
 			maxOutputTokens: normalizeMaxOutputTokens(params.max_output_tokens),
 			...(abortSignal !== undefined ? { abortSignal } : {}),
 		};
@@ -1209,32 +1234,47 @@ export default function initSandbox(
 	pi.registerTool({
 		name: "exec_command",
 		label: "exec_command",
-		description:
-			"Run a shell command. Commands run sandboxed by default. With tty=true, starts a pseudo-terminal session that can be continued with write_stdin.",
+		description: EXEC_COMMAND_TOOL_DESCRIPTION,
 		promptSnippet:
-			"Run shell commands. Use tty=true for interactive or long-running terminal sessions.",
+			"Run shell commands, returning output or a session ID for ongoing interaction.",
 		promptGuidelines: [
 			"Use exec_command for file operations like ls, rg, find, builds, tests, and development commands.",
-			"Use tty=true for interactive commands or commands that need terminal behavior, then use write_stdin to send input or poll.",
+			"Use tty=true for interactive commands or commands that need terminal behavior, then use write_stdin to send input.",
+			"Use write_stdin with empty chars to poll or wait for an active session.",
 		],
 		parameters: Type.Object({
-			cmd: Type.String({ description: "Shell command to execute" }),
-			workdir: Type.Optional(Type.String({ description: "Working directory for the command" })),
+			cmd: Type.String({ description: "Shell command to execute." }),
+			workdir: Type.Optional(
+				Type.String({
+					description:
+						"Optional working directory to run the command in; defaults to the turn cwd.",
+				}),
+			),
 			yield_time_ms: Type.Optional(
 				Type.Number({
-					description: "Milliseconds to wait for output before returning an ongoing session",
+					description: "How long to wait (in milliseconds) for output before yielding.",
 				}),
 			),
 			max_output_tokens: Type.Optional(
-				Type.Number({ description: "Approximate maximum output tokens to return" }),
-			),
-			tty: Type.Optional(Type.Boolean({ description: "Run command in a pseudo-terminal" })),
-			login: Type.Optional(
-				Type.Boolean({
-					description: "Use login shell semantics; defaults to true",
+				Type.Number({
+					description: "Maximum number of tokens to return. Excess output will be truncated.",
 				}),
 			),
-			shell: Type.Optional(Type.String({ description: "Shell executable to use" })),
+			tty: Type.Optional(
+				Type.Boolean({
+					description: EXEC_COMMAND_TTY_PARAMETER_DESCRIPTION,
+				}),
+			),
+			login: Type.Optional(
+				Type.Boolean({
+					description: "Whether to run the shell with -l/-i semantics. Defaults to true.",
+				}),
+			),
+			shell: Type.Optional(
+				Type.String({
+					description: "Shell binary to launch. Defaults to the user's default shell.",
+				}),
+			),
 			sandbox_permissions: Type.Optional(Type.Literal("require_escalated")),
 			justification: Type.Optional(
 				Type.String({ description: "Reason shown to the user when requesting escalation" }),
@@ -1265,16 +1305,24 @@ export default function initSandbox(
 	pi.registerTool({
 		name: "write_stdin",
 		label: "write_stdin",
-		description: "Write input to an existing exec_command session and return recent output.",
+		description: WRITE_STDIN_TOOL_DESCRIPTION,
 		promptSnippet: "Send input to or poll an active shell session.",
 		parameters: Type.Object({
-			session_id: Type.Number({ description: "Session id returned by exec_command" }),
-			chars: Type.Optional(Type.String({ description: "Characters to write to stdin" })),
+			session_id: Type.Number({
+				description: "Identifier of the running unified exec session.",
+			}),
+			chars: Type.Optional(
+				Type.String({ description: WRITE_STDIN_CHARS_PARAMETER_DESCRIPTION }),
+			),
 			yield_time_ms: Type.Optional(
-				Type.Number({ description: "Milliseconds to wait for output before returning" }),
+				Type.Number({
+					description: "How long to wait (in milliseconds) for output before yielding.",
+				}),
 			),
 			max_output_tokens: Type.Optional(
-				Type.Number({ description: "Approximate maximum output tokens to return" }),
+				Type.Number({
+					description: "Maximum number of tokens to return. Excess output will be truncated.",
+				}),
 			),
 		}),
 		renderCall(args, theme) {
@@ -1297,7 +1345,7 @@ export default function initSandbox(
 						sessionId: typedParams.session_id,
 						ownerId: ctx.sessionManager.getSessionId(),
 						chars: typedParams.chars ?? "",
-						yieldTimeMs: normalizeYieldTimeMs(typedParams.yield_time_ms),
+						yieldTimeMs: normalizeWriteStdinYieldTimeMs(typedParams.yield_time_ms),
 						maxOutputTokens: normalizeMaxOutputTokens(typedParams.max_output_tokens),
 					}),
 				);

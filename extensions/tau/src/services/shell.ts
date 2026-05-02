@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import * as process from "node:process";
 
@@ -34,6 +34,7 @@ export type ShellRunResult = {
 	readonly output: string;
 	readonly sessionId?: number;
 	readonly exitCode?: number;
+	readonly wallTimeMs?: number;
 };
 
 type ManagedProcess =
@@ -45,7 +46,7 @@ type ManagedProcess =
 	  }
 	| {
 			readonly kind: "pipe";
-			readonly process: ChildProcessWithoutNullStreams;
+			readonly process: ChildProcess;
 			readonly write: (chars: string) => void;
 			readonly kill: () => void;
 	  };
@@ -69,6 +70,13 @@ export type ShellService = {
 
 export class Shell extends Context.Service<Shell, ShellService>()("tau/services/Shell") {}
 
+export const EXEC_DEFAULT_YIELD_TIME_MS = 10_000;
+export const WRITE_STDIN_DEFAULT_YIELD_TIME_MS = 250;
+export const MIN_YIELD_TIME_MS = 250;
+export const MAX_YIELD_TIME_MS = 30_000;
+export const MIN_EMPTY_WRITE_STDIN_YIELD_TIME_MS = 5_000;
+export const MAX_EMPTY_WRITE_STDIN_YIELD_TIME_MS = 300_000;
+
 function killProcessTree(pid: number): void {
 	try {
 		process.kill(-pid, "SIGTERM");
@@ -81,9 +89,28 @@ function killProcessTree(pid: number): void {
 	}
 }
 
-function normalizeYieldMs(value: number): number {
-	if (!Number.isFinite(value) || value < 0) return 1_000;
-	return Math.min(Math.round(value), 600_000);
+function clamp(value: number, min: number, max: number): number {
+	return Math.min(Math.max(value, min), max);
+}
+
+function normalizeExecYieldMs(value: number): number {
+	const normalized =
+		Number.isFinite(value) && value >= 0 ? Math.round(value) : EXEC_DEFAULT_YIELD_TIME_MS;
+	return clamp(normalized, MIN_YIELD_TIME_MS, MAX_YIELD_TIME_MS);
+}
+
+function normalizeWriteYieldMs(value: number, inputIsEmpty: boolean): number {
+	const normalized =
+		Number.isFinite(value) && value >= 0 ? Math.round(value) : WRITE_STDIN_DEFAULT_YIELD_TIME_MS;
+	const responsive = Math.max(normalized, MIN_YIELD_TIME_MS);
+	if (inputIsEmpty) {
+		return clamp(
+			responsive,
+			MIN_EMPTY_WRITE_STDIN_YIELD_TIME_MS,
+			MAX_EMPTY_WRITE_STDIN_YIELD_TIME_MS,
+		);
+	}
+	return Math.min(responsive, MAX_YIELD_TIME_MS);
 }
 
 function maxCharsFromTokens(tokens: number): number {
@@ -108,7 +135,7 @@ const waitForSettle = Effect.fn("Shell.waitForSettle")(function* (
 	session: ShellSession,
 	yieldTimeMs: number,
 ) {
-	const waitMs = normalizeYieldMs(yieldTimeMs);
+	const waitMs = yieldTimeMs;
 	if (session.exited || waitMs === 0) return;
 	const deadline = Date.now() + waitMs;
 	while (!session.exited) {
@@ -138,16 +165,19 @@ function waitForAbort(signal: AbortSignal | undefined): Effect.Effect<never, She
 function makeRunResult(
 	session: ShellSession,
 	output: string,
+	wallTimeMs: number,
 ): ShellRunResult {
 	if (session.exited) {
 		return {
 			output,
 			exitCode: session.exitCode ?? 1,
+			wallTimeMs,
 		};
 	}
 	return {
 		output,
 		sessionId: session.id,
+		wallTimeMs,
 	};
 }
 
@@ -159,14 +189,14 @@ function makePipeProcess(request: ShellSpawnRequest, session: ShellSession): Man
 		cwd: request.cwd,
 		env: request.env,
 		detached: true,
-		stdio: ["pipe", "pipe", "pipe"],
+		stdio: ["ignore", "pipe", "pipe"],
 	});
 
-	child.stdout.on("data", (data: Buffer) => {
+	child.stdout?.on("data", (data: Buffer) => {
 		session.output += data.toString("utf8");
 		Queue.offerUnsafe(session.notify, undefined);
 	});
-	child.stderr.on("data", (data: Buffer) => {
+	child.stderr?.on("data", (data: Buffer) => {
 		session.output += data.toString("utf8");
 		Queue.offerUnsafe(session.notify, undefined);
 	});
@@ -185,11 +215,7 @@ function makePipeProcess(request: ShellSpawnRequest, session: ShellSession): Man
 	return {
 		kind: "pipe",
 		process: child,
-		write: (chars) => {
-			if (!child.stdin.destroyed) {
-				child.stdin.write(chars);
-			}
-		},
+		write: () => undefined,
 		kill: () => {
 			if (child.pid) killProcessTree(child.pid);
 		},
@@ -258,6 +284,7 @@ export const ShellLive = Layer.effect(
 		});
 
 		const exec: Shell["Service"]["exec"] = Effect.fn("Shell.exec")(function* (request) {
+			const startedAt = Date.now();
 			const id = yield* Ref.getAndUpdate(nextId, (current) => current + 1);
 			const notify = yield* Queue.unbounded<void>();
 			const session: ShellSession = {
@@ -284,7 +311,7 @@ export const ShellLive = Layer.effect(
 				yield* insertSession(session);
 			}));
 			yield* Effect.raceFirst(
-				waitForSettle(session, request.yieldTimeMs),
+				waitForSettle(session, normalizeExecYieldMs(request.yieldTimeMs)),
 				waitForAbort(request.abortSignal),
 			).pipe(
 				Effect.catchTag(
@@ -299,10 +326,11 @@ export const ShellLive = Layer.effect(
 			if (session.exited) {
 				yield* deleteSession(session.id);
 			}
-			return makeRunResult(session, output);
+			return makeRunResult(session, output, Date.now() - startedAt);
 		});
 
 		const write: Shell["Service"]["write"] = Effect.fn("Shell.write")(function* (request) {
+			const startedAt = Date.now();
 			const current = yield* Ref.get(sessions);
 			const session = current.get(request.sessionId);
 			if (!session) {
@@ -316,6 +344,12 @@ export const ShellLive = Layer.effect(
 				});
 			}
 			if (request.chars.length > 0 && !session.exited) {
+				if (session.managed?.kind !== "pty") {
+					return yield* new ShellExecutionError({
+						reason:
+							"stdin is closed for this session; rerun exec_command with tty=true to keep stdin open",
+					});
+				}
 				yield* Effect.try({
 					try: () => session.managed?.write(request.chars),
 					catch: (cause) =>
@@ -324,12 +358,15 @@ export const ShellLive = Layer.effect(
 						}),
 				});
 			}
-			yield* waitForSettle(session, request.yieldTimeMs);
+			yield* waitForSettle(
+				session,
+				normalizeWriteYieldMs(request.yieldTimeMs, request.chars.length === 0),
+			);
 			const output = drainOutput(session, request.maxOutputTokens);
 			if (session.exited) {
 				yield* deleteSession(session.id);
 			}
-			return makeRunResult(session, output);
+			return makeRunResult(session, output, Date.now() - startedAt);
 		});
 
 		const shutdownOwner: Shell["Service"]["shutdownOwner"] = Effect.fn("Shell.shutdownOwner")(
