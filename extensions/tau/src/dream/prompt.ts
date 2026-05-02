@@ -10,10 +10,6 @@ export interface BuildDreamPromptOpts {
 	readonly mode: "manual" | "auto";
 	readonly nowIso: string;
 	readonly memorySnapshot: MemoryEntriesSnapshot;
-	readonly transcriptCandidates: ReadonlyArray<{
-		readonly sessionId: string;
-		readonly path: string;
-	}>;
 }
 
 function formatBucketForPrompt(bucket: MemoryBucketEntriesSnapshot): string {
@@ -38,15 +34,11 @@ function formatMemorySnapshotForPrompt(snapshot: MemoryEntriesSnapshot): string 
 }
 
 export function buildDreamPrompt(opts: BuildDreamPromptOpts): string {
-	const { runId, mode, nowIso, memorySnapshot, transcriptCandidates } = opts;
+	const { runId, mode, nowIso, memorySnapshot } = opts;
 
 	const modeNote = mode === "manual"
 		? "You are running in the current visible session (foreground mode)."
 		: "You are running in a background session (auto mode).";
-
-	const transcriptList = transcriptCandidates.length > 0
-		? transcriptCandidates.map((c) => `  - ${c.path} (session: ${c.sessionId})`).join("\n")
-		: "  (none -- no new sessions since last dream run)";
 
 	const memoryText = formatMemorySnapshotForPrompt(memorySnapshot);
 
@@ -55,29 +47,36 @@ Time: ${nowIso}
 
 ${modeNote}
 
-Your job is to consolidate durable memory from recent session transcripts.
+Your job is to curate the existing durable memory index.
 You have direct access to tools: \`memory\` (add/update/remove/read) and \`dream_finish\`.
+
+Do not read thread or session transcripts. Work only from the compact memory snapshot below and full memory entries fetched with \`memory read\`.
 
 ## Scope limits
 - project: 25000 chars (workspace-specific facts)
 - global: 25000 chars (cross-project notes)
 - user: 25000 chars (who the user is -- preferences, role, habits)
 
+## Scope rules
+- project: workspace-specific facts, local commands, repo conventions, local API quirks
+- global: cross-project facts, reusable workflow rules, durable environment facts
+- user: who the user is -- preferences, role, habits, communication style
+
 ## 4-phase procedure
 
 ### Phase 1: ORIENT
 - Review the memory snapshot below (shows id/scope/type/summary only)
 - Use \`memory read <id>\` to fetch the full content of entries you need to evaluate
-- Identify duplicates, stale facts, gaps
+- Identify duplicates, stale facts, overlap, and misplaced scopes
 
-### Phase 2: GATHER
-- Read the transcript files listed below
-- Prefer narrow reading; avoid exhaustive full-file scans
-- Look for new durable facts: user preferences, project conventions, API quirks, workflow rules
+### Phase 2: CLASSIFY
+- Decide whether each questionable entry belongs in project, global, or user memory
+- Move misplaced entries to the correct scope by adding the corrected entry and removing the old entry
+- Keep scope decisions strict and explicit
 
 ### Phase 3: CONSOLIDATE
 Mutate memory directly using the \`memory\` tool:
-- \`memory add\` -- new durable facts not currently stored
+- \`memory add\` -- recreate an entry in the correct scope when moving it
 - \`memory update\` -- correct/improve existing entries
 - \`memory remove\` -- delete stale, duplicate, or temporary entries
 
@@ -85,6 +84,7 @@ Rules for entries:
 - Keep entries compact and factual, not essays
 - Respect scope character limits
 - Prefer merging related entries over adding duplicates
+- Preserve useful facts when correcting scope mistakes
 
 ### Phase 4: PRUNE
 - Resolve remaining duplicates or overlapping entries
@@ -101,9 +101,6 @@ Rules for entries:
 - Session-specific progress snapshots
 - Verbose narratives when a compact fact is enough
 
-## Transcript paths to review
-${transcriptList}
-
 ## Current memory snapshot (compact index -- use \`memory read <id>\` for full content)
 ${memoryText}
 
@@ -112,11 +109,11 @@ When done, call \`dream_finish\` with:
 {
   "runId": "${runId}",
   "summary": "brief description of what was found and changed",
-  "reviewedSessions": ["session-id-1", ...],
+  "reviewedSessions": [],
   "noChanges": false
 }
 
-Set noChanges to true only if you reviewed transcripts and found nothing worth persisting.
+Always pass an empty reviewedSessions array. Set noChanges to true only if the current memory index needs no consolidation, pruning, or scope corrections.
 Do not end without calling dream_finish.`;
 }
 

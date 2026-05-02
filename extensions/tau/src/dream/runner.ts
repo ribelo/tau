@@ -2,10 +2,6 @@
 // subagent, and task registry to execute memory consolidation runs.
 // The model does the work directly through tools (memory + dream_finish).
 
-import * as fs from "node:fs/promises";
-import * as path from "node:path";
-import type { Dirent, Stats } from "node:fs";
-
 import { Clock, Effect, Exit, Layer, Option, Schema, Scope, Context } from "effect";
 import { nanoid } from "nanoid";
 import { Type, type Static } from "@sinclair/typebox";
@@ -19,7 +15,6 @@ import {
 	type DreamRunRequest,
 	type DreamRunResult,
 	type DreamTaskHandle,
-	type DreamTranscriptCandidate,
 } from "./domain.js";
 import type { DreamConfig } from "./config.js";
 import type {
@@ -36,11 +31,6 @@ import { readMemoryToolAction, shouldCountMemoryMutation } from "./memory-mutati
 import { DreamScheduler } from "./scheduler.js";
 import { DreamTaskRegistry } from "./task-registry.js";
 import { DreamSubagent } from "./subagent.js";
-import {
-	dreamTranscriptRoot,
-	isDreamTranscriptFile,
-	parseDreamTranscriptSessionId,
-} from "./transcripts.js";
 import { CuratedMemory } from "../services/curated-memory.js";
 import { createMemoryToolDefinition } from "../memory/index.js";
 
@@ -160,112 +150,6 @@ function createDreamFinishToolForSubagent(
 }
 
 // ---------------------------------------------------------------------------
-// Transcript scanning helpers
-// ---------------------------------------------------------------------------
-
-function isNodeError(err: unknown, code: string): boolean {
-	return (
-		typeof err === "object" &&
-		err !== null &&
-		"code" in err &&
-		(err as { code: unknown }).code === code
-	);
-}
-
-function readDirSafe(dirPath: string): Effect.Effect<ReadonlyArray<Dirent>, DreamLockIoError> {
-	return Effect.tryPromise({
-		try: () => fs.readdir(dirPath, { withFileTypes: true }),
-		catch: (cause) => cause,
-	}).pipe(
-		Effect.catchIf(
-			(cause) => isNodeError(cause, "ENOENT"),
-			() => Effect.succeed([] as ReadonlyArray<Dirent>),
-		),
-		Effect.mapError(
-			(cause) =>
-				new DreamLockIoError({
-					path: dirPath,
-					operation: "readdir",
-					reason: String(cause),
-				}),
-		),
-	);
-}
-
-function collectTranscriptFiles(dirPath: string): Effect.Effect<ReadonlyArray<string>, DreamLockIoError> {
-	return Effect.gen(function* () {
-		const entries = yield* readDirSafe(dirPath);
-		const files: string[] = [];
-
-		for (const entry of entries) {
-			const fullPath = path.join(dirPath, entry.name);
-			if (entry.isDirectory()) {
-				const nested = yield* collectTranscriptFiles(fullPath);
-				files.push(...nested);
-			} else if (entry.isFile() && isDreamTranscriptFile(entry.name)) {
-				files.push(fullPath);
-			}
-		}
-
-		return files;
-	});
-}
-
-function statMtimeMs(filePath: string): Effect.Effect<number | null, DreamLockIoError> {
-	return Effect.tryPromise({
-		try: () => fs.stat(filePath),
-		catch: (cause) => cause,
-	}).pipe(
-		Effect.catchIf(
-			(cause) => isNodeError(cause, "ENOENT"),
-			() => Effect.succeed<Stats | null>(null),
-		),
-		Effect.mapError(
-			(cause) =>
-				new DreamLockIoError({
-					path: filePath,
-					operation: "stat",
-					reason: String(cause),
-				}),
-		),
-		Effect.map((stats) => (stats !== null && stats.isFile() ? Math.trunc(stats.mtimeMs) : null)),
-	);
-}
-
-function scanTranscripts(
-	cwd: string,
-	sinceMs: number,
-	currentSessionId: string | undefined,
-): Effect.Effect<ReadonlyArray<DreamTranscriptCandidate>, DreamLockIoError> {
-	return Effect.gen(function* () {
-		const root = dreamTranscriptRoot(cwd);
-		const files = yield* collectTranscriptFiles(root);
-		const candidates: DreamTranscriptCandidate[] = [];
-
-		for (const filePath of files) {
-			const touchedAt = yield* statMtimeMs(filePath);
-			if (touchedAt === null || touchedAt <= sinceMs) {
-				continue;
-			}
-
-			const sessionId = parseDreamTranscriptSessionId(filePath);
-			if (sessionId === null) {
-				continue;
-			}
-
-			if (currentSessionId !== undefined && sessionId === currentSessionId) {
-				continue;
-			}
-
-			candidates.push({ sessionId, path: filePath, touchedAt });
-		}
-
-		candidates.sort((a, b) => b.touchedAt - a.touchedAt);
-		return candidates;
-	});
-}
-
-// ---------------------------------------------------------------------------
 // Live layer
 // ---------------------------------------------------------------------------
 
@@ -366,14 +250,6 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 
 					const memorySnapshot = yield* mem.getEntriesSnapshot(request.cwd);
 
-					const lastCompletedAt = yield* scheduler.readLastCompletedAt(request.cwd);
-					const sinceMs = lastCompletedAt ?? 0;
-					const transcriptCandidates = yield* scanTranscripts(
-						request.cwd,
-						sinceMs,
-						request.currentSessionId,
-					);
-
 					const runId = nanoid(12);
 					const finishCapture: DreamFinishCapture = { value: undefined };
 					const dreamFinishTool = createDreamFinishToolForSubagent(runId, finishCapture);
@@ -387,7 +263,6 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 								mode: request.mode,
 								model: dreamConfig.subagent,
 								memorySnapshot,
-								transcriptCandidates,
 								nowIso: new Date().toISOString(),
 							},
 							subagentContext,
@@ -480,25 +355,7 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 					yield* progress(taskId, {
 						_tag: "PhaseChanged",
 						phase: "gather",
-						message: "Scanning transcripts",
-					});
-
-					const lastCompletedAt = yield* scheduler.readLastCompletedAt(request.cwd).pipe(
-						Effect.catch((err: DreamLockError) => failTask(taskId, err)),
-					);
-					const sinceMs = lastCompletedAt ?? 0;
-
-					const transcriptCandidates = yield* scanTranscripts(
-						request.cwd,
-						sinceMs,
-						request.currentSessionId,
-					).pipe(
-						Effect.catch((err: DreamLockIoError) => failTask(taskId, err)),
-					);
-
-					yield* progress(taskId, {
-						_tag: "SessionsDiscovered",
-						total: transcriptCandidates.length,
+						message: "Preparing memory curation",
 					});
 
 					// Run subagent with memory tool and dream_finish
@@ -521,7 +378,6 @@ export const DreamRunnerLive = (runtimeConfig: DreamRunnerLiveConfig) =>
 								mode: request.mode,
 								model: dreamConfig.subagent,
 								memorySnapshot,
-								transcriptCandidates,
 								nowIso: new Date().toISOString(),
 							},
 							subagentContext,

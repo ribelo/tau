@@ -219,7 +219,7 @@ function makeMockSubagent(opts: {
 									{
 										runId: request.runId,
 										summary: opts.finishSummary ?? "Test plan",
-										reviewedSessions: opts.finishReviewedSessions ?? ["sess-1"],
+										reviewedSessions: opts.finishReviewedSessions ?? [],
 										noChanges: opts.finishNoChanges ?? false,
 									},
 									new AbortController().signal,
@@ -473,7 +473,7 @@ describe("DreamRunner", () => {
 
 			expect(result.memoryMutations).toBe(3);
 			expect(result.summary).toBe("Added 3 facts");
-			expect(result.reviewedSessions).toEqual(["sess-1"]);
+			expect(result.reviewedSessions).toEqual([]);
 		});
 
 		it("fails when dream is disabled", async () => {

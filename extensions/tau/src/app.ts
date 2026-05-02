@@ -32,7 +32,6 @@ import initRalph from "./ralph/index.js";
 import initAutoresearch from "./autoresearch/index.js";
 import initGoal from "./goal/index.js";
 import initAgentsMenu from "./agents-menu/index.js";
-import initThreadTools from "./thread/index.js";
 import { AgentConfig, AgentControl } from "./agent/services.js";
 import { AgentControlLive } from "./agent/control.js";
 import { AgentManagerLive } from "./agent/manager.js";
@@ -276,7 +275,6 @@ export const startTau = (pi: ExtensionAPI) => {
 			initRalph(pi, runRalph);
 			initAutoresearch(pi, runAutoresearch);
 			initGoal(pi, goalRuntime);
-			initThreadTools(pi);
 		});
 
 		const agentRegistry = yield* AgentRegistry.load(process.cwd());

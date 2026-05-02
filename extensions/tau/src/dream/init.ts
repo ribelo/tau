@@ -1,7 +1,3 @@
-import * as fs from "node:fs/promises";
-import * as path from "node:path";
-import type { Dirent } from "node:fs";
-
 import { Effect, Option, Schema } from "effect";
 import { nanoid } from "nanoid";
 import { Type, type Static } from "@sinclair/typebox";
@@ -20,16 +16,10 @@ import {
 	type DreamRunRequest,
 	type DreamRunResult,
 	type DreamTaskState,
-	type DreamTranscriptCandidate,
 } from "./domain.js";
 import { DreamLock, type ManualDreamLease } from "./lock.js";
 import { DreamRunner, DreamRunnerLive, type DreamRunnerApi } from "./runner.js";
 import { DreamScheduler, type DreamSchedulerApi } from "./scheduler.js";
-import {
-	dreamTranscriptRoot,
-	isDreamTranscriptFile,
-	parseDreamTranscriptSessionId,
-} from "./transcripts.js";
 import { CuratedMemory } from "../services/curated-memory.js";
 import { DreamTaskRegistry, type DreamTaskRegistryApi } from "./task-registry.js";
 import type { DreamSubagent } from "./subagent.js";
@@ -55,7 +45,7 @@ type DreamInitOptions = {
 
 const DEFAULT_POLL_MS = 2_000;
 const DEFAULT_MAX_POLLS = 300;
-const DREAM_SCOPED_TOOLS = ["dream_finish", "find_thread", "read_thread"] as const;
+const DREAM_SCOPED_TOOLS = ["dream_finish"] as const;
 
 // ---------------------------------------------------------------------------
 // dream_finish tool params (foreground mode)
@@ -101,7 +91,6 @@ interface ForegroundDreamRun {
 	readonly cwd: string;
 	readonly startedAt: number;
 	readonly lease: ManualDreamLease;
-	readonly transcriptCandidates: ReadonlyArray<DreamTranscriptCandidate>;
 	/** Set by /dream cancel. Prevents dream_finish from recording completion. */
 	cancelled: boolean;
 	/** Set by dream_finish. Distinguishes clean finish from agent_end without finish. */
@@ -305,16 +294,7 @@ export default function initDream(
 					return;
 				}
 
-				const [lastCompletedAt, memorySnapshot] = await Promise.all([
-					withDreamData((_memory, scheduler) => scheduler.readLastCompletedAt(ctx.cwd)),
-					withDreamData((memory) => memory.getEntriesSnapshot(ctx.cwd)),
-				]);
-
-				const transcriptCandidates = await scanForegroundTranscriptCandidates(
-					ctx.cwd,
-					lastCompletedAt ?? 0,
-					sessionId,
-				);
+				const memorySnapshot = await withDreamData((memory) => memory.getEntriesSnapshot(ctx.cwd));
 
 				const run: ForegroundDreamRun = {
 					runId: nanoid(12),
@@ -322,7 +302,6 @@ export default function initDream(
 					cwd: ctx.cwd,
 					startedAt: Date.now(),
 					lease,
-					transcriptCandidates,
 					cancelled: false,
 					finished: false,
 				};
@@ -340,7 +319,6 @@ export default function initDream(
 						mode: "manual",
 						nowIso: new Date().toISOString(),
 						memorySnapshot,
-						transcriptCandidates: run.transcriptCandidates,
 					}),
 					{ deliverAs: "followUp" },
 				);
@@ -726,92 +704,6 @@ function dreamWidgetLines(state: DreamTaskState): string[] {
 		`Status: ${state.status}`,
 		...(state.latestMessage === undefined ? [] : [`Note: ${state.latestMessage}`]),
 	];
-}
-
-// ---------------------------------------------------------------------------
-// Transcript scanning (foreground)
-// ---------------------------------------------------------------------------
-
-function isNodeError(error: unknown, code: string): boolean {
-	return (
-		typeof error === "object" &&
-		error !== null &&
-		"code" in error &&
-		(error as { readonly code?: unknown }).code === code
-	);
-}
-
-async function readDirEntriesSafe(dirPath: string): Promise<ReadonlyArray<Dirent>> {
-	try {
-		return await fs.readdir(dirPath, { withFileTypes: true });
-	} catch (error) {
-		if (isNodeError(error, "ENOENT")) {
-			return [];
-		}
-		throw error;
-	}
-}
-
-async function collectTranscriptFiles(dirPath: string): Promise<ReadonlyArray<string>> {
-	const entries = await readDirEntriesSafe(dirPath);
-	const files: string[] = [];
-
-	for (const entry of entries) {
-		const absolutePath = path.join(dirPath, entry.name);
-		if (entry.isDirectory()) {
-			const nested = await collectTranscriptFiles(absolutePath);
-			files.push(...nested);
-			continue;
-		}
-
-		if (entry.isFile() && isDreamTranscriptFile(entry.name)) {
-			files.push(absolutePath);
-		}
-	}
-
-	return files;
-}
-
-async function readTouchedAtMs(filePath: string): Promise<number | null> {
-	try {
-		const stats = await fs.stat(filePath);
-		if (!stats.isFile()) {
-			return null;
-		}
-		return Math.trunc(stats.mtimeMs);
-	} catch (error) {
-		if (isNodeError(error, "ENOENT")) {
-			return null;
-		}
-		throw error;
-	}
-}
-
-async function scanForegroundTranscriptCandidates(
-	cwd: string,
-	sinceMs: number,
-	currentSessionId: string,
-): Promise<ReadonlyArray<DreamTranscriptCandidate>> {
-	const root = dreamTranscriptRoot(cwd);
-	const files = await collectTranscriptFiles(root);
-	const candidates: DreamTranscriptCandidate[] = [];
-
-	for (const filePath of files) {
-		const touchedAt = await readTouchedAtMs(filePath);
-		if (touchedAt === null || touchedAt <= sinceMs) {
-			continue;
-		}
-
-		const sessionId = parseDreamTranscriptSessionId(filePath);
-		if (sessionId === null || sessionId === currentSessionId) {
-			continue;
-		}
-
-		candidates.push({ sessionId, path: filePath, touchedAt });
-	}
-
-	candidates.sort((left, right) => right.touchedAt - left.touchedAt);
-	return candidates;
 }
 
 // ---------------------------------------------------------------------------

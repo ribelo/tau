@@ -6,7 +6,10 @@ import {
 	_createTurnLimitGuard as createTurnLimitGuard,
 	_isAssistantMessage as isAssistantMessage,
 } from "../src/dream/subagent.js";
-import { _formatMemorySnapshotForPrompt as formatMemorySnapshotForPrompt } from "../src/dream/prompt.js";
+import {
+	buildDreamPrompt,
+	_formatMemorySnapshotForPrompt as formatMemorySnapshotForPrompt,
+} from "../src/dream/prompt.js";
 import { DreamFinishParams } from "../src/dream/domain.js";
 import { createMemoryEntry, type MemoryEntriesSnapshot, type MemoryBucketEntriesSnapshot } from "../src/memory/format.js";
 
@@ -165,6 +168,34 @@ describe("formatMemorySnapshotForPrompt", () => {
 	it("includes usage stats", () => {
 		const text = formatMemorySnapshotForPrompt(makeSnapshot());
 		expect(text).toContain("0/25000 chars");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// buildDreamPrompt
+// ---------------------------------------------------------------------------
+
+describe("buildDreamPrompt", () => {
+	it("directs dream to curate memory scopes without reading thread transcripts", () => {
+		const prompt = buildDreamPrompt({
+			runId: "dream-run-1",
+			mode: "manual",
+			nowIso: "2025-01-01T00:00:00Z",
+			memorySnapshot: makeSnapshot({
+				global: [makeEntry("glob12345678", "global", "Project uses npm run gate")],
+				user: [makeEntry("user12345678", "user", "User is in Poland")],
+			}),
+		});
+
+		expect(prompt).not.toContain("Transcript paths to review");
+		expect(prompt).not.toContain("Read the transcript files");
+		expect(prompt).not.toContain("read_thread");
+		expect(prompt).not.toContain("find_thread");
+		expect(prompt).toContain("Do not read thread or session transcripts");
+		expect(prompt).toContain("Move misplaced entries to the correct scope");
+		expect(prompt).toContain("project: workspace-specific facts");
+		expect(prompt).toContain("global: cross-project facts");
+		expect(prompt).toContain("user: who the user is");
 	});
 });
 

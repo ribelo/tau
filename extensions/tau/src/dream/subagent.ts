@@ -1,6 +1,5 @@
-// DreamSubagent -- forked agent session that reads transcripts, mutates
-// memory through the existing memory tool, and signals completion via
-// dream_finish.  No more plan/apply; the model does the work directly.
+// DreamSubagent -- forked agent session that curates memory through the
+// existing memory tool and signals completion via dream_finish.
 
 import { Effect, Layer, Context } from "effect";
 
@@ -20,7 +19,7 @@ import type {
 	ThinkingLevel,
 } from "@mariozechner/pi-ai";
 
-import type { DreamProgressEvent, DreamTranscriptCandidate } from "./domain.js";
+import type { DreamProgressEvent } from "./domain.js";
 import {
 	DreamSubagentSpawnFailed,
 	type DreamSubagentError,
@@ -48,7 +47,6 @@ export interface DreamSubagentRunRequest {
 		readonly maxTurns: number;
 	};
 	readonly memorySnapshot: MemoryEntriesSnapshot;
-	readonly transcriptCandidates: ReadonlyArray<DreamTranscriptCandidate>;
 	readonly nowIso: string;
 }
 
@@ -347,7 +345,6 @@ function runImpl(
 			mode: request.mode,
 			nowIso: request.nowIso,
 			memorySnapshot: request.memorySnapshot,
-			transcriptCandidates: request.transcriptCandidates,
 		});
 
 		// ── Create agent session ─────────────────────────────────────
@@ -440,7 +437,7 @@ function runImpl(
 		});
 
 		const promptPromise = session.prompt(
-			"Begin the 4-phase memory consolidation. Read the transcript files listed above, then use the memory tool to make changes, and finish with dream_finish.",
+			"Begin the 4-phase memory curation. Use only the memory tool to inspect and mutate memory entries, correct scope mistakes, then finish with dream_finish.",
 			{ source: "extension" },
 		);
 

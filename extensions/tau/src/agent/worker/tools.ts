@@ -5,7 +5,6 @@ import { createApplyPatchToolDefinition } from "../../sandbox/apply-patch.js";
 import { createBacklogToolDefinition } from "../../backlog/tool.js";
 import { createExaToolDefinitions } from "../../exa/index.js";
 import { createMemoryToolDefinition } from "../../memory/index.js";
-import { createThreadToolDefinitions } from "../../thread/index.js";
 import type { RunAgentControlPromise } from "../runtime.js";
 
 export const WORKER_DELEGATION_PROMPT = `## Worker Agent Instructions
@@ -32,7 +31,6 @@ export function createWorkerCustomTools(
 		createBacklogToolDefinition(),
 		createMemoryToolDefinition(runEffect),
 		...createExaToolDefinitions(),
-		...createThreadToolDefinitions(),
 	];
 }
 
