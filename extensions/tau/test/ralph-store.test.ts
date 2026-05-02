@@ -488,10 +488,10 @@ describe("ralph store behavior freeze", () => {
 
 		const notifications: Notifications = [];
 		const { pi, commands } = makePiStubWithTools({
-			activeTools: ["read", "bash", "todo_write", "thread", "edit", "write", "apply_patch"],
+			activeTools: ["read", "exec_command", "todo_write", "thread", "edit", "write", "apply_patch"],
 			allTools: [
 				{ name: "read", description: "Read files" },
-				{ name: "bash", description: "Run commands" },
+				{ name: "exec_command", description: "Run commands" },
 				{ name: "edit", description: "Edit files" },
 				{ name: "write", description: "Write files" },
 				{ name: "apply_patch", description: "Apply patches" },
@@ -524,7 +524,7 @@ describe("ralph store behavior freeze", () => {
 		}
 		expect(persisted.ralph.capabilityContract.tools.activeNames).toEqual([
 			"read",
-			"bash",
+			"exec_command",
 			"todo_write",
 			"thread",
 			"edit",

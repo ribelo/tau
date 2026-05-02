@@ -9,7 +9,7 @@ import {
 describe("Ralph session capabilities", () => {
 	it("restores the active tools that were present before Ralph applied its contract", () => {
 		clearPreRalphActiveToolSnapshots();
-		let activeTools = ["read", "bash", "agent", "memory"];
+		let activeTools = ["read", "exec_command", "agent", "memory"];
 		const runtime = {
 			getActiveTools: () => [...activeTools],
 			setActiveTools: (next: ReadonlyArray<string>) => {
@@ -18,16 +18,16 @@ describe("Ralph session capabilities", () => {
 		};
 
 		capturePreRalphActiveTools("/tmp/session.json", runtime);
-		activeTools = ["read", "bash", "ralph_continue", "ralph_finish"];
+		activeTools = ["read", "exec_command", "ralph_continue", "ralph_finish"];
 
 		expect(restorePreRalphActiveTools("/tmp/session.json", runtime)).toBe(true);
-		expect(activeTools).toEqual(["read", "bash", "agent", "memory"]);
+		expect(activeTools).toEqual(["read", "exec_command", "agent", "memory"]);
 		expect(restorePreRalphActiveTools("/tmp/session.json", runtime)).toBe(false);
 	});
 
 	it("keeps the first pre-Ralph snapshot for a session", () => {
 		clearPreRalphActiveToolSnapshots();
-		let activeTools = ["read", "bash", "agent"];
+		let activeTools = ["read", "exec_command", "agent"];
 		const runtime = {
 			getActiveTools: () => [...activeTools],
 			setActiveTools: (next: ReadonlyArray<string>) => {
@@ -41,6 +41,6 @@ describe("Ralph session capabilities", () => {
 		activeTools = ["ralph_continue", "ralph_finish"];
 
 		expect(restorePreRalphActiveTools("/tmp/session.json", runtime)).toBe(true);
-		expect(activeTools).toEqual(["read", "bash", "agent"]);
+		expect(activeTools).toEqual(["read", "exec_command", "agent"]);
 	});
 });

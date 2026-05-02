@@ -91,14 +91,15 @@ models:
     thinking: inherit
 tools:
   - read
-  - bash
+  - exec_command
+  - write_stdin
 sandbox: read-only
 approval_timeout: 60
 ---
 Find stuff.`;
 
 		const def = await Effect.runPromise(parseAgentDefinition(content));
-		expect(def.tools).toEqual(["read", "bash"]);
+		expect(def.tools).toEqual(["read", "exec_command", "write_stdin"]);
 	});
 
 	it("should parse spawn restrictions", async () => {

@@ -4,10 +4,10 @@ import { AgentRegistry, AgentRegistryConfigError } from "./agent-registry.js";
 const WORKER_AVAILABLE_TOOL_NAMES = [
 	"agent",
 	"apply_patch",
-	"bash",
 	"backlog",
 	"crawling_exa",
 	"edit",
+	"exec_command",
 	"find",
 	"find_thread",
 	"get_code_context_exa",
@@ -17,6 +17,7 @@ const WORKER_AVAILABLE_TOOL_NAMES = [
 	"read",
 	"read_thread",
 	"web_search_exa",
+	"write_stdin",
 	"write",
 ] as const;
 

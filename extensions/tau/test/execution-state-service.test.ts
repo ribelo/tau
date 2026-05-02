@@ -72,11 +72,11 @@ describe("execution-state service", () => {
 
 		await Effect.runPromise(Effect.scoped(service.setup));
 		service.update({
-			policy: { tools: { kind: "allowlist", tools: ["bash"] } },
+			policy: { tools: { kind: "allowlist", tools: ["exec_command"] } },
 		});
 
 		expect(getPersisted().execution?.policy).toEqual({
-			tools: { kind: "allowlist", tools: ["bash"] },
+			tools: { kind: "allowlist", tools: ["exec_command"] },
 		});
 	});
 

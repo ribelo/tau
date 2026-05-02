@@ -4,6 +4,7 @@ import { PiAPI } from "../effect/pi.js";
 import { SandboxConfigRequired } from "../schemas/config.js";
 import { SandboxState } from "./state.js";
 import { Persistence } from "./persistence.js";
+import { Shell } from "./shell.js";
 import initSandbox from "../sandbox/index.js";
 
 const decodeSandboxConfigRequired = Schema.decodeUnknownExit(SandboxConfigRequired);
@@ -22,6 +23,7 @@ export const SandboxLive = Layer.effect(
 		const pi = yield* PiAPI;
 		const state = yield* SandboxState;
 		const persistence = yield* Persistence;
+		const shell = yield* Shell;
 		const syncQueue = yield* Queue.sliding<SandboxConfigRequired>(1);
 
 		const publishConfig = (next: SandboxConfigRequired): void => {
@@ -40,7 +42,7 @@ export const SandboxLive = Layer.effect(
 				yield* Effect.forkScoped(drainSyncQueue);
 
 				yield* Effect.sync(() => {
-					initSandbox(pi, {
+					initSandbox(pi, shell, {
 						getSnapshot: persistence.getSnapshot,
 						update: persistence.update,
 					});

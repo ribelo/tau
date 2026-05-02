@@ -46,6 +46,11 @@ type WrapCommandResult =
 	| { success: true; file: string; args: string[]; home: string }
 	| { success: false; error: string };
 
+export type ShellInvocation = {
+	readonly file: string;
+	readonly args: readonly string[];
+};
+
 /**
  * Wrap a bash command with bwrap sandbox restrictions.
  *
@@ -53,11 +58,13 @@ type WrapCommandResult =
  */
 export async function wrapCommandWithSandbox(opts: {
 	command: string;
+	invocation?: ShellInvocation | undefined;
 	workspaceRoot: string;
 	filesystemMode: FilesystemMode;
 	networkMode: NetworkMode;
 }): Promise<WrapCommandResult> {
 	const { command, workspaceRoot, filesystemMode, networkMode } = opts;
+	const invocation = opts.invocation ?? { file: "bash", args: ["-lc", command] };
 
 	// Sandboxed execution is Linux-only. bubblewrap (bwrap) requires Linux
 	// namespaces; sandbox-exec on macOS is not implemented.
@@ -73,8 +80,8 @@ export async function wrapCommandWithSandbox(opts: {
 	if (filesystemMode === "danger-full-access" && networkMode === "allow-all") {
 		return {
 			success: true,
-			file: "bash",
-			args: ["-lc", command],
+			file: invocation.file,
+			args: [...invocation.args],
 			home: os.homedir(),
 		};
 	}
@@ -129,17 +136,28 @@ export async function wrapCommandWithSandbox(opts: {
 	// For read-only and workspace-write, we need the home directory readable
 	const home = os.homedir();
 	const resolvedHome = safeRealpath(home);
+	const resolvedHomeParent = path.dirname(resolvedHome);
 
 	if (filesystemMode === "read-only") {
-		// Entire home is read-only, workspace is read-only
-		args.push("--ro-bind", resolvedHome, resolvedHome);
+		// Bind the home parent read-only so writes to paths like /home/foo fail
+		// instead of succeeding inside bubblewrap's synthetic parent directory.
+		if (resolvedHomeParent !== "/" && exists(resolvedHomeParent)) {
+			args.push("--ro-bind", resolvedHomeParent, resolvedHomeParent);
+		} else {
+			args.push("--ro-bind", resolvedHome, resolvedHome);
+		}
 		// Workspace binding comes after home so it takes precedence if workspace is under home
 		if (!resolvedWorkspace.startsWith(resolvedHome)) {
 			args.push("--ro-bind", resolvedWorkspace, resolvedWorkspace);
 		}
 	} else if (filesystemMode === "workspace-write") {
-		// Home is read-only, workspace is writable
-		args.push("--ro-bind", resolvedHome, resolvedHome);
+		// Bind the home parent read-only so writes to paths like /home/foo fail
+		// instead of succeeding inside bubblewrap's synthetic parent directory.
+		if (resolvedHomeParent !== "/" && exists(resolvedHomeParent)) {
+			args.push("--ro-bind", resolvedHomeParent, resolvedHomeParent);
+		} else {
+			args.push("--ro-bind", resolvedHome, resolvedHome);
+		}
 		// Workspace binding comes after home so it takes precedence (writable overlay)
 		args.push("--bind", resolvedWorkspace, resolvedWorkspace);
 		// Protect sensitive subpaths as read-only within the writable workspace.
@@ -218,7 +236,7 @@ export async function wrapCommandWithSandbox(opts: {
 	// Tools that try to write to ~/.config, ~/.cache will fail - that's intended
 
 	// Final command assembly passed as argv to spawn (no shell string).
-	args.push("--", "bash", "-lc", command);
+	args.push("--", invocation.file, ...invocation.args);
 
 	return {
 		success: true,

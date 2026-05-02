@@ -1415,7 +1415,7 @@ describe("ralph service behavior freeze", () => {
 				requestedAt: "2026-01-01T00:00:00.000Z",
 			},
 			deferredConfigMutations: [
-				{ kind: "capabilityContractTools", activeNames: ["read", "bash"] },
+				{ kind: "capabilityContractTools", activeNames: ["read", "exec_command"] },
 			],
 		});
 
@@ -1434,7 +1434,7 @@ describe("ralph service behavior freeze", () => {
 		await expect(resumePromise).resolves.toBeUndefined();
 
 		const finalState = readLoopState(cwd, "deferred-resume");
-		expect(finalState.capabilityContract.tools.activeNames).toEqual(["read", "bash"]);
+		expect(finalState.capabilityContract.tools.activeNames).toEqual(["read", "exec_command"]);
 		expect(finalState.deferredConfigMutations).toEqual([]);
 		expect(finalState.iteration).toBe(2);
 	});

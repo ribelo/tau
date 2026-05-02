@@ -54,6 +54,7 @@ Goal: make `extensions/tau` as safe as rust.
 ## Effect Best Practices
 
 **IMPORTANT:** Always consult effect-solutions before writing Effect code.
+Also read and follow `.reference/effect-smol/LLMS.md` for the local Effect style guide.
 
 1. Run `effect-solutions list` to see available guides
 2. Run `effect-solutions show <topic>...` for relevant patterns (supports multiple topics)

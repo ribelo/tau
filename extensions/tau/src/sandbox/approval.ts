@@ -25,6 +25,10 @@ type ApprovalResult =
 interface ApprovalOptions {
 	/** Timeout in seconds (default: 60) */
 	timeoutSeconds?: number;
+	/** User-visible reason supplied by the model for escalation. */
+	justification?: string;
+	/** Optional command prefix rule proposed for future approvals. */
+	prefixRule?: readonly string[];
 }
 
 function canPrompt(ctx: ExtensionContext, broker: ApprovalBroker | undefined): boolean {
@@ -91,6 +95,8 @@ async function requestUnsandboxedApproval(
 	broker: ApprovalBroker | undefined,
 	commandPreview: string,
 	timeoutMs: number,
+	justification: string | undefined,
+	prefixRule: readonly string[] | undefined,
 ): Promise<ApprovalResult> {
 	if (!canPrompt(ctx, broker)) {
 		return denial("Cannot prompt for escalation in headless mode");
@@ -100,7 +106,17 @@ async function requestUnsandboxedApproval(
 		ctx,
 		broker,
 		"Escalation requested",
-		`Model requests to run without sandbox:\n\n${commandPreview}\n\nAllow?`,
+		[
+			"Model requests to run without sandbox:",
+			"",
+			commandPreview,
+			...(justification ? ["", `Reason: ${justification}`] : []),
+			...(prefixRule && prefixRule.length > 0
+				? ["", `Suggested prefix rule: ${prefixRule.join(" ")}`]
+				: []),
+			"",
+			"Allow?",
+		].join("\n"),
 		timeoutMs,
 	);
 
@@ -165,14 +181,28 @@ export async function checkBashApproval(
 			return { approved: true, runUnsandboxed: false };
 		}
 
-		return requestUnsandboxedApproval(ctx, broker, cmdPreview, timeoutMs);
+		return requestUnsandboxedApproval(
+			ctx,
+			broker,
+			cmdPreview,
+			timeoutMs,
+			options?.justification,
+			options?.prefixRule,
+		);
 	}
 
 	// "unless-trusted" - auto-approve safe commands, prompt for unsafe
 	if (policy === "unless-trusted") {
 		// If model explicitly requests escalation, prompt
 		if (escalate) {
-			return requestUnsandboxedApproval(ctx, broker, cmdPreview, timeoutMs);
+			return requestUnsandboxedApproval(
+				ctx,
+				broker,
+				cmdPreview,
+				timeoutMs,
+				options?.justification,
+				options?.prefixRule,
+			);
 		}
 
 		// Check if command is safe

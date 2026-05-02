@@ -214,7 +214,7 @@ describe("nudge module", () => {
 	});
 
 	it("suppresses nudge when tracked tools are not active (but other tools are)", async () => {
-		const { pi, fire } = makePiStub(["bash", "read", "edit"]);
+		const { pi, fire } = makePiStub(["exec_command", "read", "edit"]);
 		initNudge(pi);
 
 		await advanceTurns(fire, 15);
@@ -280,7 +280,7 @@ describe("nudge module", () => {
 	});
 
 	it("omits baseline when no tracked tools are active (other tools present)", async () => {
-		const { pi, fire } = makePiStub(["bash", "read"]);
+		const { pi, fire } = makePiStub(["exec_command", "read"]);
 		initNudge(pi);
 
 		const result = await fire("before_agent_start", {

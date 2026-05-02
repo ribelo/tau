@@ -290,7 +290,7 @@ broken
 				{
 					agents: {
 						oracle: {
-							tools: ["read", "bash"],
+							tools: ["read", "exec_command"],
 						},
 					},
 				},
@@ -303,7 +303,7 @@ broken
 
 		const registry = await Effect.runPromise(AgentRegistry.load(tempProject));
 		const resolved = registry.resolve("oracle");
-		expect(resolved?.tools).toEqual(["read", "bash"]);
+		expect(resolved?.tools).toEqual(["read", "exec_command"]);
 
 		fs.rmSync(tempHome, { recursive: true, force: true });
 		fs.rmSync(tempProject, { recursive: true, force: true });
@@ -539,7 +539,7 @@ broken
 				{
 					agents: {
 						smart: {
-							tools: ["read", "bash"],
+							tools: ["read", "exec_command"],
 						},
 					},
 				},
@@ -552,7 +552,7 @@ broken
 
 		const registry = await Effect.runPromise(AgentRegistry.load(tempProject));
 		const resolved = registry.resolve("smart");
-		expect(resolved?.tools).toEqual(["read", "bash"]);
+		expect(resolved?.tools).toEqual(["read", "exec_command"]);
 
 		fs.rmSync(tempHome, { recursive: true, force: true });
 		fs.rmSync(tempProject, { recursive: true, force: true });

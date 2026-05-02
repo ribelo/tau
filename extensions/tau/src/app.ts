@@ -4,6 +4,7 @@ import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import { PiAPILive } from "./effect/pi.js";
 import { PiLoggerLive } from "./effect/logger.js";
 import { Sandbox, SandboxLive } from "./services/sandbox.js";
+import { Shell, ShellLive } from "./services/shell.js";
 import { SandboxStateLive } from "./services/state.js";
 import { Footer, FooterLive } from "./services/footer.js";
 import { Persistence, PersistenceLive } from "./services/persistence.js";
@@ -60,7 +61,9 @@ import type { DreamTaskRegistry } from "./dream/task-registry.js";
 import type { DreamSubagent } from "./dream/subagent.js";
 
 const PersistenceLayer = PersistenceLive;
+const ShellLayer = ShellLive;
 const SandboxLayer = SandboxLive.pipe(
+	Layer.provide(ShellLayer),
 	Layer.provide(SandboxStateLive),
 	Layer.provide(PersistenceLayer),
 );
@@ -124,6 +127,7 @@ const createMainLayer = (agentRuntimeBridge: AgentRuntimeBridgeService) => {
 
 	return Layer.mergeAll(
 		PersistenceLayer,
+		ShellLayer,
 		ExecutionStateLayer,
 		ExecutionRuntimeLayer,
 		SandboxLayer,
@@ -145,6 +149,7 @@ type TauRuntime = ManagedRuntime.ManagedRuntime<
 	| Persistence
 	| ExecutionState
 	| ExecutionRuntime
+	| Shell
 	| Sandbox
 	| Footer
 	| CuratedMemory

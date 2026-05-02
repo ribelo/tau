@@ -21,10 +21,10 @@ describe("ralph capability contract", () => {
 
 	it("creates a populated contract from input", () => {
 		const contract = makeCapabilityContract({
-			toolsActiveNames: ["read", "bash"],
+			toolsActiveNames: ["read", "exec_command"],
 			toolsAvailableSnapshot: [
 				{ name: "read", label: "Read", description: "Read files" },
-				{ name: "bash", label: "Bash", description: "Run commands" },
+				{ name: "exec_command", label: "Bash", description: "Run commands" },
 			],
 			agentsEnabledNames: ["finder", "oracle"],
 			agentsRegistrySnapshot: [
@@ -33,7 +33,7 @@ describe("ralph capability contract", () => {
 			],
 		});
 		expect(contract.version).toBe("1");
-		expect(contract.tools.activeNames).toEqual(["read", "bash"]);
+		expect(contract.tools.activeNames).toEqual(["read", "exec_command"]);
 		expect(contract.agents.enabledNames).toEqual(["finder", "oracle"]);
 	});
 
@@ -41,30 +41,30 @@ describe("ralph capability contract", () => {
 		expect(isRalphSystemControlTool("ralph_continue")).toBe(true);
 		expect(isRalphSystemControlTool("ralph_finish")).toBe(true);
 		expect(isRalphSystemControlTool("read")).toBe(false);
-		expect(isRalphSystemControlTool("bash")).toBe(false);
+		expect(isRalphSystemControlTool("exec_command")).toBe(false);
 	});
 
 	it("excludes system control tools from user-configurable names", () => {
-		const names = ["read", "ralph_continue", "bash", "ralph_finish"];
-		expect(excludeRalphSystemControlTools(names)).toEqual(["read", "bash"]);
+		const names = ["read", "ralph_continue", "exec_command", "ralph_finish"];
+		expect(excludeRalphSystemControlTools(names)).toEqual(["read", "exec_command"]);
 	});
 
 	it("ensures system control tools are present in a names list", () => {
-		const names = ["read", "bash"];
+		const names = ["read", "exec_command"];
 		expect(ensureRalphSystemControlTools(names)).toEqual([
 			"read",
-			"bash",
+			"exec_command",
 			"ralph_continue",
 			"ralph_finish",
 		]);
 	});
 
 	it("deduplicates when ensuring system control tools", () => {
-		const names = ["read", "ralph_continue", "bash"];
+		const names = ["read", "ralph_continue", "exec_command"];
 		expect(ensureRalphSystemControlTools(names)).toEqual([
 			"read",
 			"ralph_continue",
-			"bash",
+			"exec_command",
 			"ralph_finish",
 		]);
 	});

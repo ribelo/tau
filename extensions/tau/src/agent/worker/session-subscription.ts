@@ -17,7 +17,12 @@ function formatToolArgs(toolName: string, args: unknown): string {
 	}
 
 	switch (toolName) {
-		case "bash":
+		case "exec_command":
+			return typeof args["cmd"] === "string" ? args["cmd"] : "";
+		case "write_stdin":
+			return typeof args["session_id"] === "number"
+				? `session ${args["session_id"]}`
+				: "";
 		case "backlog":
 			return typeof args["command"] === "string" ? args["command"] : "";
 		case "read":

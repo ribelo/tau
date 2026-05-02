@@ -29,7 +29,7 @@ describe("resolveAgentExecutionAtSpawn", () => {
 			name: "smart",
 			description: "Smart agent",
 			models: [{ model: "anthropic/claude-opus-4-5", thinking: "medium" }],
-			tools: ["read", "bash"],
+			tools: ["read", "exec_command"],
 			spawns: "*",
 			sandbox: { preset: "workspace-write" },
 			systemPrompt: "smart",
@@ -63,7 +63,7 @@ describe("resolveAgentExecutionAtSpawn", () => {
 				{ model: "inherit", thinking: "inherit" },
 				{ model: "openai-codex/gpt-5.4", thinking: "low" },
 			],
-			tools: ["read", "bash", "agent"],
+			tools: ["read", "exec_command", "agent"],
 			sandbox: { preset: "workspace-write" },
 			systemPrompt: "oracle",
 		};
@@ -88,7 +88,7 @@ describe("resolveAgentExecutionAtSpawn", () => {
 		expect(resolved.executionState.policy).toEqual({
 			tools: {
 				kind: "allowlist",
-				tools: ["read", "bash", "agent"],
+				tools: ["read", "exec_command", "agent"],
 			},
 		});
 	});
@@ -107,7 +107,7 @@ describe("resolveAgentExecutionAtSpawn", () => {
 			policy: {
 				tools: {
 					kind: "require",
-					tools: ["read", "bash"],
+					tools: ["read", "exec_command"],
 				},
 			},
 		};

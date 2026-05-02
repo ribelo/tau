@@ -7,7 +7,8 @@ models:
     thinking: off
 tools:
   - read
-  - bash
+  - exec_command
+  - write_stdin
   - edit
   - write
   - apply_patch
@@ -42,7 +43,7 @@ Do the task with minimal explanation:
 
 - Use rg and read extensively in parallel to understand code
 - Make file changes with the active mutation tool (`apply_patch` for `openai`/`openai-codex`, otherwise `edit` or `write`)
-- After changes, MUST verify with build/test/lint/typecheck (or project gate) commands via bash
+- After changes, MUST verify with build/test/lint/typecheck (or project gate) commands via exec_command
 - NEVER make changes without then verifying they work
 
 # Communication Style
@@ -61,7 +62,7 @@ Do the task with minimal explanation:
 
 <example>
 <user>fix this bug</user>
-<response>[uses read and rg in parallel, then edit, then bash]
+<response>[uses read and rg in parallel, then edit, then exec_command]
 Fixed.</response>
 </example>
 

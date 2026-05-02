@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	getLegacyMutationToolSelection,
 	rewriteMutationToolNames,
+	rewriteShellToolNames,
 	shouldUseApplyPatchForProvider,
 } from "../src/sandbox/mutation-tools.js";
 
@@ -16,10 +17,10 @@ describe("mutation tool routing", () => {
 
 	it("rewrites edit/write to apply_patch while preserving order", () => {
 		expect(
-			rewriteMutationToolNames(["read", "bash", "edit", "write", "bd"], {
+			rewriteMutationToolNames(["read", "exec_command", "edit", "write", "bd"], {
 				useApplyPatch: true,
 			}),
-		).toEqual(["read", "bash", "apply_patch", "bd"]);
+		).toEqual(["read", "exec_command", "apply_patch", "bd"]);
 	});
 
 	it("restores the remembered legacy mutation selection", () => {
@@ -33,16 +34,33 @@ describe("mutation tool routing", () => {
 
 	it("does not add mutation tools when none are active", () => {
 		expect(
-			rewriteMutationToolNames(["read", "bash", "bd"], {
+			rewriteMutationToolNames(["read", "exec_command", "bd"], {
 				useApplyPatch: true,
 			}),
-		).toEqual(["read", "bash", "bd"]);
+		).toEqual(["read", "exec_command", "bd"]);
 	});
 
 	it("captures the active legacy mutation selection", () => {
 		expect(getLegacyMutationToolSelection(["read", "write", "edit", "apply_patch"])).toEqual([
 			"write",
 			"edit",
+		]);
+	});
+
+	it("replaces built-in bash with codex-style shell tools", () => {
+		expect(rewriteShellToolNames(["read", "bash", "edit"])).toEqual([
+			"read",
+			"exec_command",
+			"write_stdin",
+			"edit",
+		]);
+	});
+
+	it("keeps shell tool activation deduplicated", () => {
+		expect(rewriteShellToolNames(["read", "bash", "exec_command", "write_stdin"])).toEqual([
+			"read",
+			"exec_command",
+			"write_stdin",
 		]);
 	});
 });

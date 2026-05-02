@@ -69,6 +69,19 @@ const applyPatchToolDefinition: ToolDefinition = {
 	},
 };
 
+const execCommandToolDefinition: ToolDefinition = {
+	name: "exec_command",
+	label: "exec_command",
+	description: "Run shell commands",
+	parameters: Type.Object({ cmd: Type.String() }),
+	async execute() {
+		return {
+			content: [{ type: "text" as const, text: "ok" }],
+			details: { ok: true },
+		};
+	},
+};
+
 function buildDefinition(tools: readonly string[] | undefined): AgentDefinition {
 	return {
 		name: "test-agent",
@@ -202,7 +215,7 @@ describe("agent tool allowlist", () => {
 				resourceLoader,
 				settingsManager,
 				sessionManager: SessionManager.inMemory(cwd),
-				customTools: [agentToolDefinition, applyPatchToolDefinition],
+				customTools: [agentToolDefinition, applyPatchToolDefinition, execCommandToolDefinition],
 				...(model ? { model } : {}),
 			});
 
@@ -243,7 +256,7 @@ describe("agent tool allowlist", () => {
 				resourceLoader,
 				settingsManager,
 				sessionManager: SessionManager.inMemory(cwd),
-				customTools: [agentToolDefinition, applyPatchToolDefinition],
+				customTools: [agentToolDefinition, applyPatchToolDefinition, execCommandToolDefinition],
 				...(model ? { model } : {}),
 			});
 
@@ -284,7 +297,7 @@ describe("agent tool allowlist", () => {
 				resourceLoader,
 				settingsManager,
 				sessionManager: SessionManager.inMemory(cwd),
-				customTools: [agentToolDefinition, applyPatchToolDefinition],
+				customTools: [agentToolDefinition, applyPatchToolDefinition, execCommandToolDefinition],
 				...(model ? { model } : {}),
 			});
 
@@ -317,7 +330,7 @@ describe("agent tool allowlist", () => {
 				resourceLoader,
 				settingsManager,
 				sessionManager: SessionManager.inMemory(cwd),
-				customTools: [agentToolDefinition, applyPatchToolDefinition],
+				customTools: [agentToolDefinition, applyPatchToolDefinition, execCommandToolDefinition],
 			});
 
 			session.setActiveToolsByName(["read"]);
@@ -327,11 +340,11 @@ describe("agent tool allowlist", () => {
 					session,
 					buildDefinition(undefined),
 					undefined,
-					requireToolsPolicy(["bash"]),
+					requireToolsPolicy(["exec_command"]),
 				),
 			);
 
-			expect(session.getActiveToolNames()).toEqual(["read", "bash"]);
+			expect(session.getActiveToolNames()).toEqual(["read", "exec_command"]);
 		});
 	});
 
@@ -356,7 +369,7 @@ describe("agent tool allowlist", () => {
 				resourceLoader,
 				settingsManager,
 				sessionManager: SessionManager.inMemory(cwd),
-				customTools: [agentToolDefinition, applyPatchToolDefinition],
+				customTools: [agentToolDefinition, applyPatchToolDefinition, execCommandToolDefinition],
 			});
 
 			await Effect.runPromise(
@@ -364,11 +377,11 @@ describe("agent tool allowlist", () => {
 					session,
 					buildDefinition(["read"]),
 					undefined,
-					requireToolsPolicy(["bash"]),
+					requireToolsPolicy(["exec_command"]),
 				),
 			);
 
-			expect(session.getActiveToolNames()).toEqual(["read", "bash"]);
+			expect(session.getActiveToolNames()).toEqual(["read", "exec_command"]);
 		});
 	});
 
@@ -393,13 +406,13 @@ describe("agent tool allowlist", () => {
 				resourceLoader,
 				settingsManager,
 				sessionManager: SessionManager.inMemory(cwd),
-				customTools: [agentToolDefinition, applyPatchToolDefinition],
+				customTools: [agentToolDefinition, applyPatchToolDefinition, execCommandToolDefinition],
 			});
 
 			await Effect.runPromise(
 				applyAgentToolAllowlist(
 					session,
-					buildDefinition(["read", "bash"]),
+					buildDefinition(["read", "exec_command"]),
 					undefined,
 					allowlistPolicy(["read"]),
 				),

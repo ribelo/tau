@@ -539,7 +539,7 @@ describe("ralph adapter boundary freeze", () => {
 		const context = makeContext(cwd, [{ cancelled: false }]);
 		const iterationSession = path.join(cwd, ".pi", "sessions", "iteration-tools.session.json");
 		context.setSessionFile(iterationSession);
-		context.setActiveTools(["read", "bash", "agent", "memory"]);
+		context.setActiveTools(["read", "exec_command", "agent", "memory"]);
 		capturePreRalphActiveTools(iterationSession, context.ctx);
 		context.setActiveTools(["read", "ralph_continue", "ralph_finish"]);
 
@@ -571,7 +571,7 @@ describe("ralph adapter boundary freeze", () => {
 
 		await piHarness.fire("agent_end", agentEndPayload("final response"), context.ctx);
 
-		expect(context.getActiveTools()).toEqual(["read", "bash", "agent", "memory"]);
+		expect(context.getActiveTools()).toEqual(["read", "exec_command", "agent", "memory"]);
 	});
 
 	it("completes cleanly without UI when a finish banner is emitted on agent_end", async () => {

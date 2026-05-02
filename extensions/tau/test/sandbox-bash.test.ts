@@ -110,4 +110,36 @@ describe("wrapCommandWithSandbox mount order", () => {
 		expect(tasksBindIndex).toBe(-1);
 		expect(findRoBindIndex(piPath)).toBeGreaterThan(-1);
 	});
+
+	it("binds the home parent read-only before the writable workspace", async () => {
+		const workspaceRoot = makeTempDir("tau-sandbox-bwrap-");
+
+		const result = await wrapCommandWithSandbox({
+			command: "echo hello",
+			workspaceRoot,
+			filesystemMode: "workspace-write",
+			networkMode: "deny",
+		});
+
+		expect(result.success).toBe(true);
+		if (!result.success) return;
+
+		const parts = result.args;
+		const homeParent = path.dirname(os.homedir());
+
+		function findMountIndex(flag: "--bind" | "--ro-bind", targetPath: string): number {
+			for (let i = 0; i < parts.length - 1; i++) {
+				if (parts[i] === flag && parts[i + 1] === targetPath) {
+					return i;
+				}
+			}
+			return -1;
+		}
+
+		const homeParentRoBindIndex = findMountIndex("--ro-bind", homeParent);
+		const workspaceBindIndex = findMountIndex("--bind", workspaceRoot);
+
+		expect(homeParentRoBindIndex).toBeGreaterThan(-1);
+		expect(workspaceBindIndex).toBeGreaterThan(homeParentRoBindIndex);
+	});
 });

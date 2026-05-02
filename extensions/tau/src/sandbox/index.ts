@@ -1,16 +1,17 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import * as os from "node:os";
+import * as path from "node:path";
 
 import type { BashOperations, ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import {
-	createBashTool,
 	createEditTool,
 	createWriteTool,
 	getSettingsListTheme,
 } from "@mariozechner/pi-coding-agent";
 import { Container, SettingsList, Text, type SettingItem } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
+import { Effect } from "effect";
 
 import {
 	checkBashApproval,
@@ -29,12 +30,15 @@ import type { ResolvedSandboxConfig, SandboxConfig, SandboxPreset } from "./conf
 import { DEFAULT_SANDBOX_CONFIG, computeEffectiveConfig, ensureUserDefaults } from "./config.js";
 import { checkWriteAllowed } from "./fs-policy.js";
 import { wrapCommandWithSandbox, isAsrtAvailable, getAsrtLoadError } from "./bash.js";
+import type { ShellInvocation } from "./bash.js";
 import { detectMissingSandboxDeps, formatMissingDepsMessage } from "./sandbox-prereqs.js";
 import { discoverWorkspaceRoot } from "./workspace-root.js";
 import { createApplyPatchToolDefinition } from "./apply-patch.js";
+import { renderShellCall, renderShellResult, type ShellToolDetails } from "./shell-render.js";
 import {
 	getLegacyMutationToolSelection,
 	rewriteMutationToolNames,
+	rewriteShellToolNames,
 	shouldUseApplyPatchForProvider,
 	type LegacyMutationToolName,
 } from "./mutation-tools.js";
@@ -45,6 +49,7 @@ import { loadPersistedState } from "../shared/state.js";
 import { setToolActivationTransform } from "../shared/tool-activation.js";
 import { type ApprovalBroker, getWorkerApprovalBroker } from "../agent/approval-broker.js";
 import { SANDBOX_PRESET_NAMES } from "../shared/policy.js";
+import type { ShellRunResult, ShellService } from "../services/shell.js";
 
 type SandboxStateInternal = {
 	createSandboxedBashOperations?:
@@ -225,7 +230,11 @@ export function getSandboxedBashOperations(
 	return getSandboxRuntimeState().createSandboxedBashOperations?.(ctx, escalate);
 }
 
-export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersistedAccess) {
+export default function initSandbox(
+	pi: ExtensionAPI,
+	shellRuntime: ShellService,
+	persistence: SandboxPersistedAccess,
+) {
 	// Register CLI flags
 	pi.registerFlag("sandbox-mode", {
 		description: "Sandbox preset (read-only, workspace-write, full-access)",
@@ -298,10 +307,10 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 		}
 
 		setToolActivationTransform(pi, SANDBOX_MUTATION_TOOLS_KEY, (toolNames) =>
-			rewriteMutationToolNames(toolNames, {
+			rewriteShellToolNames(rewriteMutationToolNames(toolNames, {
 				useApplyPatch: shouldUseApplyPatchForProvider(provider),
 				legacySelection: sessionState.legacyMutationTools,
-			}),
+			})),
 		);
 	}
 
@@ -444,7 +453,6 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 	}
 
 	const registrationToolCwd = os.homedir();
-	const baseBashTool = createBashTool(registrationToolCwd);
 	const baseEditTool = createEditTool(registrationToolCwd);
 	const baseWriteTool = createWriteTool(registrationToolCwd);
 
@@ -453,6 +461,106 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 			.replace(/[\r\n]+/g, " ")
 			.replace(/\s+/g, " ")
 			.trim();
+	}
+
+	function envRecord(extra?: Readonly<Record<string, string>>): Record<string, string> {
+		const env: Record<string, string> = {};
+		for (const [key, value] of Object.entries(process.env)) {
+			if (typeof value === "string") env[key] = value;
+		}
+		if (extra) {
+			for (const [key, value] of Object.entries(extra)) {
+				env[key] = value;
+			}
+		}
+		return env;
+	}
+
+	function normalizeYieldTimeMs(value: number | undefined): number {
+		if (value === undefined || !Number.isFinite(value) || value < 0) return 1_000;
+		return Math.min(Math.round(value), 600_000);
+	}
+
+	function normalizeMaxOutputTokens(value: number | undefined): number {
+		if (value === undefined || !Number.isFinite(value) || value <= 0) return 6_000;
+		return Math.min(Math.round(value), 50_000);
+	}
+
+	function resolveShellInvocation(opts: {
+		command: string;
+		shell?: string | undefined;
+		login?: boolean | undefined;
+	}): ShellInvocation {
+		const shellFile = opts.shell?.trim() || "bash";
+		const login = opts.login ?? true;
+		return {
+			file: shellFile,
+			args: [login ? "-lc" : "-c", opts.command],
+		};
+	}
+
+	function formatShellResult(result: ShellRunResult): string {
+		const parts: string[] = [];
+		if (result.output.length > 0) {
+			parts.push(result.output);
+		}
+		if (result.sessionId !== undefined) {
+			parts.push(`session_id: ${result.sessionId}`);
+		}
+		if (result.exitCode !== undefined) {
+			parts.push(`exit_code: ${result.exitCode}`);
+		}
+		return parts.length > 0 ? parts.join("\n") : "(no output)";
+	}
+
+	function shellToolResult(result: ShellRunResult, details: Omit<ShellToolDetails, keyof ShellRunResult>) {
+		return {
+			content: [{ type: "text" as const, text: formatShellResult(result) }],
+			details: { ...result, ...details },
+		};
+	}
+
+	function shellToolError(message: string) {
+		return {
+			isError: true,
+			content: [{ type: "text" as const, text: message }],
+			details: { error: message },
+		};
+	}
+
+	function appendSandboxDiagnostic(
+		result: ShellRunResult,
+		currentConfig: ResolvedSandboxConfig,
+	): ShellRunResult {
+		if (result.exitCode === undefined || result.exitCode === 0) return result;
+		const classification = classifySandboxFailure(result.output);
+		const gatedByConfig =
+			classification.kind !== "unknown" &&
+			(classification.kind !== "network" || currentConfig.networkMode !== "allow-all") &&
+			(classification.kind !== "filesystem" ||
+				currentConfig.filesystemMode !== "danger-full-access");
+		if (!gatedByConfig) return result;
+
+		const type =
+			classification.kind === "network"
+				? `network/${classification.subtype}`
+				: classification.kind === "filesystem"
+					? `filesystem/${classification.subtype}`
+					: "unknown";
+		const evidence = singleLine(classification.evidence);
+		const diagnostic = {
+			usingSandbox: true,
+			preset: currentConfig.preset,
+			filesystemMode: currentConfig.filesystemMode,
+			networkMode: currentConfig.networkMode,
+			classification,
+		};
+		const suffix =
+			`\n[sandbox] Command failed likely due to sandbox restrictions (${type}). ` +
+			`(preset=${currentConfig.preset}). Evidence: "${evidence}". ` +
+			"If this failure is caused by sandbox restrictions, retry the same command with sandbox_permissions=\"require_escalated\".\n" +
+			`SANDBOX_DIAGNOSTIC=${JSON.stringify(diagnostic)}`;
+		return { ...result, output: `${result.output}${suffix}\n` };
 	}
 
 	async function ensureUnsandboxedAllowedOnSandboxUnavailable(
@@ -474,8 +582,8 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 
 		const title = "Sandbox unavailable";
 		const message =
-			`Sandboxed bash is unavailable.\n\nReason: ${reason}\n\n` +
-			"Run bash without sandbox for this session?";
+			`Sandboxed shell is unavailable.\n\nReason: ${reason}\n\n` +
+			"Run shell commands without sandbox for this session?";
 		const timeoutMs = timeoutSeconds * 1000;
 
 		const approved = ctx.hasUI
@@ -569,7 +677,7 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 					if (!allowUnsandboxed) {
 						onData(
 							Buffer.from(
-								`[sandbox] Sandboxed bash unavailable (${reason}). Refusing to run without sandbox.\n`,
+								`[sandbox] Sandboxed shell unavailable (${reason}). Refusing to run without sandbox.\n`,
 							),
 						);
 						return { exitCode: 1 };
@@ -577,7 +685,7 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 
 					onData(
 						Buffer.from(
-							`[sandbox] Sandboxed bash unavailable (${reason}). Running without sandbox for this session.\n`,
+							`[sandbox] Sandboxed shell unavailable (${reason}). Running without sandbox for this session.\n`,
 						),
 					);
 					return runCommandDirect(command, cwd, process.env as Record<string, string>, {
@@ -883,56 +991,325 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 			},
 		);
 	}
+
+	type ExecCommandParams = {
+		readonly cmd: string;
+		readonly workdir?: string;
+		readonly yield_time_ms?: number;
+		readonly max_output_tokens?: number;
+		readonly tty?: boolean;
+		readonly login?: boolean;
+		readonly shell?: string;
+		readonly sandbox_permissions?: "require_escalated";
+		readonly justification?: string;
+		readonly prefix_rule?: readonly string[];
+	};
+
+	async function executeShellCommand(
+		ctx: ExtensionContext,
+		params: ExecCommandParams,
+		abortSignal?: AbortSignal,
+	): Promise<ShellRunResult> {
+		const command = params.cmd;
+		const currentConfig = effectiveConfig;
+		const currentWorkspace = workspaceRoot;
+		const approvalTimeout = currentConfig.approvalTimeoutSeconds;
+		const broker = getSandboxRuntimeState().approvalBroker;
+		const cwd = params.workdir
+			? path.isAbsolute(params.workdir)
+				? params.workdir
+				: path.resolve(ctx.cwd, params.workdir)
+			: ctx.cwd;
+		const invocation = resolveShellInvocation({
+			command,
+			shell: params.shell,
+			login: params.login,
+		});
+		const baseRequest = {
+			cwd,
+			tty: params.tty ?? false,
+			ownerId: ctx.sessionManager.getSessionId(),
+			yieldTimeMs: normalizeYieldTimeMs(params.yield_time_ms),
+			maxOutputTokens: normalizeMaxOutputTokens(params.max_output_tokens),
+			...(abortSignal !== undefined ? { abortSignal } : {}),
+		};
+
+		if (sandboxDisabled) {
+			return Effect.runPromise(
+				shellRuntime.exec({
+					...baseRequest,
+					file: invocation.file,
+					args: invocation.args,
+					env: envRecord(),
+				}),
+			);
+		}
+
+		if (currentConfig.subagent && /^git\s/.test(command.trim())) {
+			return {
+				output:
+					"[sandbox] Git commands are blocked in subagent mode. The orchestrator handles all git operations.\n",
+				exitCode: 1,
+			};
+		}
+
+		const approval = await checkBashApproval(
+			ctx,
+			currentConfig.approvalPolicy,
+			command,
+			params.sandbox_permissions === "require_escalated",
+			{
+				timeoutSeconds: approvalTimeout,
+				...(params.justification !== undefined
+					? { justification: params.justification }
+					: {}),
+				...(params.prefix_rule !== undefined ? { prefixRule: params.prefix_rule } : {}),
+			},
+			broker,
+		);
+
+		if (!approval.approved) {
+			return { output: `Sandbox: command blocked (${approval.reason})\n`, exitCode: 1 };
+		}
+
+		if (approval.runUnsandboxed) {
+			ctx.ui?.notify?.("Running without sandbox...", "info");
+			const result = await Effect.runPromise(
+				shellRuntime.exec({
+					...baseRequest,
+					file: invocation.file,
+					args: invocation.args,
+					env: envRecord(),
+				}),
+			);
+			return {
+				...result,
+				output:
+					`[sandbox] Running without sandbox restrictions (escalation approved).\n${result.output}`,
+			};
+		}
+
+		const prereqs = detectMissingSandboxDeps({ platform: os.platform() });
+		const asrtAvailable = await isAsrtAvailable();
+		if (!asrtAvailable || prereqs.missingRequired.length > 0) {
+			const parts: string[] = [];
+			if (!asrtAvailable) {
+				parts.push(getAsrtLoadError() ?? "ASRT module failed to load");
+			}
+			const depsMsg = formatMissingDepsMessage(prereqs);
+			if (depsMsg) parts.push(depsMsg);
+			const reason = parts.join("; ");
+			const allowUnsandboxed = await ensureUnsandboxedAllowedOnSandboxUnavailable(
+				ctx,
+				reason,
+				approvalTimeout,
+			);
+			if (!allowUnsandboxed) {
+				return {
+					output: `[sandbox] Sandboxed shell unavailable (${reason}). Refusing to run without sandbox.\n`,
+					exitCode: 1,
+				};
+			}
+			const result = await Effect.runPromise(
+				shellRuntime.exec({
+					...baseRequest,
+					file: invocation.file,
+					args: invocation.args,
+					env: envRecord(),
+				}),
+			);
+			return {
+				...result,
+				output:
+					`[sandbox] Sandboxed shell unavailable (${reason}). Running without sandbox for this session.\n${result.output}`,
+			};
+		}
+
+		const wrapResult = await wrapCommandWithSandbox({
+			command,
+			invocation,
+			workspaceRoot: currentWorkspace,
+			filesystemMode: currentConfig.filesystemMode,
+			networkMode: currentConfig.networkMode,
+		});
+
+		if (!wrapResult.success) {
+			const reason = singleLine(wrapResult.error);
+			const allowUnsandboxed = await ensureUnsandboxedAllowedOnSandboxUnavailable(
+				ctx,
+				reason,
+				approvalTimeout,
+			);
+			if (!allowUnsandboxed) {
+				return {
+					output: `[sandbox] Failed to start sandbox (${reason}). Refusing to run without sandbox.\n`,
+					exitCode: 1,
+				};
+			}
+			const result = await Effect.runPromise(
+				shellRuntime.exec({
+					...baseRequest,
+					file: invocation.file,
+					args: invocation.args,
+					env: envRecord(),
+				}),
+			);
+			return {
+				...result,
+				output:
+					`[sandbox] Failed to start sandbox (${reason}). Running without sandbox for this session.\n${result.output}`,
+			};
+		}
+
+		const result = await Effect.runPromise(
+			shellRuntime.exec({
+				...baseRequest,
+				file: wrapResult.file,
+				args: wrapResult.args,
+				env: envRecord({ HOME: wrapResult.home }),
+			}),
+		);
+		const decorated = appendSandboxDiagnostic(result, currentConfig);
+
+		if (
+			decorated.exitCode !== undefined &&
+			decorated.exitCode !== 0 &&
+			currentConfig.approvalPolicy === "on-failure" &&
+			looksLikePolicyViolation(decorated.output)
+		) {
+			const retryApproval = await requestApprovalAfterFailure(
+				ctx,
+				command,
+				decorated.output,
+				{ timeoutSeconds: approvalTimeout },
+				broker,
+			);
+			if (retryApproval.approved && retryApproval.runUnsandboxed) {
+				ctx.ui?.notify?.("Retrying without sandbox...", "info");
+				const retryResult = await Effect.runPromise(
+					shellRuntime.exec({
+						...baseRequest,
+						file: invocation.file,
+						args: invocation.args,
+						env: envRecord(),
+					}),
+				);
+				return {
+					...retryResult,
+					output:
+						"\n[sandbox] User approved retry without sandbox restrictions. Re-running command...\n\n" +
+						retryResult.output,
+				};
+			}
+		}
+
+		return decorated;
+	}
+
 	pi.registerTool({
-		...baseBashTool,
-		label: "bash",
-		promptSnippet: "Execute a bash command in the current working directory",
+		name: "exec_command",
+		label: "exec_command",
+		description:
+			"Run a shell command. Commands run sandboxed by default. With tty=true, starts a pseudo-terminal session that can be continued with write_stdin.",
+		promptSnippet:
+			"Run shell commands. Use tty=true for interactive or long-running terminal sessions.",
 		promptGuidelines: [
-			"Use bash for file operations like ls, rg, find",
-			"NEVER use background processes with the & operator in shell commands. Background processes will not continue running and may confuse users.",
+			"Use exec_command for file operations like ls, rg, find, builds, tests, and development commands.",
+			"Use tty=true for interactive commands or commands that need terminal behavior, then use write_stdin to send input or poll.",
 		],
-		// Extend schema to add escalate parameter
 		parameters: Type.Object({
-			command: Type.String({ description: "Bash command to execute" }),
-			timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional)" })),
-			escalate: Type.Optional(
-				Type.Boolean({
-					description:
-						"Request to run without sandbox restrictions. Only use when sandbox is blocking necessary operations.",
+			cmd: Type.String({ description: "Shell command to execute" }),
+			workdir: Type.Optional(Type.String({ description: "Working directory for the command" })),
+			yield_time_ms: Type.Optional(
+				Type.Number({
+					description: "Milliseconds to wait for output before returning an ongoing session",
 				}),
 			),
+			max_output_tokens: Type.Optional(
+				Type.Number({ description: "Approximate maximum output tokens to return" }),
+			),
+			tty: Type.Optional(Type.Boolean({ description: "Run command in a pseudo-terminal" })),
+			login: Type.Optional(
+				Type.Boolean({
+					description: "Use login shell semantics; defaults to true",
+				}),
+			),
+			shell: Type.Optional(Type.String({ description: "Shell executable to use" })),
+			sandbox_permissions: Type.Optional(Type.Literal("require_escalated")),
+			justification: Type.Optional(
+				Type.String({ description: "Reason shown to the user when requesting escalation" }),
+			),
+			prefix_rule: Type.Optional(
+				Type.Array(Type.String({ description: "Suggested command prefix rule" })),
+			),
 		}),
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
+		renderCall(args, theme) {
+			return renderShellCall(args, theme);
+		},
+		renderResult(result, options, theme) {
+			return renderShellResult(result, options, theme);
+		},
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			refreshConfig(ctx);
-
-			const typedParams = params as { command: string; timeout?: number; escalate?: boolean };
-			const escalate = typedParams.escalate ?? false;
-
-			// Create tool with operations that capture ctx in closure (no global state)
-			const tool = createBashTool(ctx.cwd, {
-				operations: createSandboxedBashOperationsInternal(ctx, escalate),
-			});
-
-			// Pass params without escalate to inner tool
-			const innerParams: { command: string; timeout?: number } = {
-				command: typedParams.command,
-			};
-			if (typedParams.timeout !== undefined) {
-				// Heuristic: models RL-trained on codex-rs pass timeout in milliseconds
-				// (codex-rs uses timeout_ms) but tau expects seconds. Values above 1800
-				// (30 min) are almost certainly milliseconds, so auto-convert.
-				if (typedParams.timeout > 1800) {
-					const corrected = Math.round(typedParams.timeout / 1000);
-					ctx.ui?.notify?.(
-						`Timeout ${typedParams.timeout}s looks like ms, using ${corrected}s`,
-						"warning",
-					);
-					innerParams.timeout = corrected;
-				} else {
-					innerParams.timeout = typedParams.timeout;
-				}
+			const typedParams = params as ExecCommandParams;
+			try {
+				const result = await executeShellCommand(ctx, typedParams, signal);
+				return shellToolResult(result, { kind: "exec_command", command: typedParams.cmd });
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return shellToolError(message);
 			}
-			return await tool.execute(toolCallId, innerParams, signal, onUpdate);
+		},
+	});
+
+	pi.registerTool({
+		name: "write_stdin",
+		label: "write_stdin",
+		description: "Write input to an existing exec_command session and return recent output.",
+		promptSnippet: "Send input to or poll an active shell session.",
+		parameters: Type.Object({
+			session_id: Type.Number({ description: "Session id returned by exec_command" }),
+			chars: Type.Optional(Type.String({ description: "Characters to write to stdin" })),
+			yield_time_ms: Type.Optional(
+				Type.Number({ description: "Milliseconds to wait for output before returning" }),
+			),
+			max_output_tokens: Type.Optional(
+				Type.Number({ description: "Approximate maximum output tokens to return" }),
+			),
+		}),
+		renderCall(args, theme) {
+			return renderShellCall(args, theme);
+		},
+		renderResult(result, options, theme) {
+			return renderShellResult(result, options, theme);
+		},
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			refreshConfig(ctx);
+			const typedParams = params as {
+				session_id: number;
+				chars?: string;
+				yield_time_ms?: number;
+				max_output_tokens?: number;
+			};
+			try {
+				const result = await Effect.runPromise(
+					shellRuntime.write({
+						sessionId: typedParams.session_id,
+						ownerId: ctx.sessionManager.getSessionId(),
+						chars: typedParams.chars ?? "",
+						yieldTimeMs: normalizeYieldTimeMs(typedParams.yield_time_ms),
+						maxOutputTokens: normalizeMaxOutputTokens(typedParams.max_output_tokens),
+					}),
+				);
+				return shellToolResult(result, {
+					kind: "write_stdin",
+					writtenChars: typedParams.chars?.length ?? 0,
+					writtenText: typedParams.chars ?? "",
+				});
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return shellToolError(message);
+			}
 		},
 	});
 
@@ -1091,6 +1468,10 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 		syncMutationToolActivation(ctx.model?.provider);
 	});
 
+	pi.on("session_shutdown", async (_event, ctx) => {
+		await Effect.runPromise(shellRuntime.shutdownOwner(ctx.sessionManager.getSessionId()));
+	});
+
 	pi.on("model_select", async (event) => {
 		syncMutationToolActivation(event.model.provider);
 	});
@@ -1132,10 +1513,10 @@ export default function initSandbox(pi: ExtensionAPI, persistence: SandboxPersis
 			"  - Do not attempt to run git commit, git push, git checkout, git reset, or similar\n" +
 			"\n" +
 			"Sandbox failure handling:\n" +
-			"  - When a sandboxed bash command fails, the output may contain a SANDBOX_DIAGNOSTIC=<json> line and a [sandbox] ... explanation.\n" +
-			"  - If you see clear evidence that the failure was caused by sandbox restrictions (e.g., \"Operation not permitted\", \"Permission denied\" outside the workspace, DNS/network unreachable), you MUST immediately retry the SAME command with `escalate: true`. Do not ask the user first.\n" +
-			"  - If the command failed for a reason unrelated to the sandbox (wrong arguments, a bug in the command, a test failure, missing file inside the allowed workspace), do NOT use escalate. Fix the underlying issue instead.\n" +
-			"  - Using escalate=true for the same command will prompt the user for approval to run unsandboxed.\n" +
+			"  - When a sandboxed exec_command fails, the output may contain a SANDBOX_DIAGNOSTIC=<json> line and a [sandbox] ... explanation.\n" +
+			"  - If you see clear evidence that the failure was caused by sandbox restrictions (e.g., \"Operation not permitted\", \"Permission denied\" outside the workspace, DNS/network unreachable), you MUST immediately retry the SAME command with `sandbox_permissions: \"require_escalated\"` and a justification. Do not ask the user first.\n" +
+			"  - If the command failed for a reason unrelated to the sandbox (wrong arguments, a bug in the command, a test failure, missing file inside the allowed workspace), do NOT request escalation. Fix the underlying issue instead.\n" +
+			"  - Using sandbox_permissions=require_escalated for the same command will prompt the user for approval to run unsandboxed.\n" +
 			"</permissions instructions>";
 
 		return {

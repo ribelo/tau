@@ -7,7 +7,8 @@ models:
     thinking: inherit
 tools:
   - read
-  - bash
+  - exec_command
+  - write_stdin
   - edit
   - write
   - backlog

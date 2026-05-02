@@ -1,6 +1,9 @@
 export const EDIT_TOOL_NAME = "edit";
 export const WRITE_TOOL_NAME = "write";
 export const APPLY_PATCH_TOOL_NAME = "apply_patch";
+export const BASH_TOOL_NAME = "bash";
+export const EXEC_COMMAND_TOOL_NAME = "exec_command";
+export const WRITE_STDIN_TOOL_NAME = "write_stdin";
 
 export type LegacyMutationToolName = typeof EDIT_TOOL_NAME | typeof WRITE_TOOL_NAME;
 export type MutationToolName = LegacyMutationToolName | typeof APPLY_PATCH_TOOL_NAME;
@@ -57,6 +60,35 @@ export function rewriteMutationToolNames(
 			continue;
 		}
 		nextToolNames.push(toolName);
+	}
+
+	return nextToolNames;
+}
+
+export function rewriteShellToolNames(toolNames: readonly string[]): string[] {
+	const nextToolNames: string[] = [];
+	let shellToolsInserted = false;
+
+	const pushUnique = (toolName: string): void => {
+		if (!nextToolNames.includes(toolName)) {
+			nextToolNames.push(toolName);
+		}
+	};
+
+	for (const toolName of toolNames) {
+		if (toolName === BASH_TOOL_NAME) {
+			if (!shellToolsInserted) {
+				pushUnique(EXEC_COMMAND_TOOL_NAME);
+				pushUnique(WRITE_STDIN_TOOL_NAME);
+				shellToolsInserted = true;
+			}
+			continue;
+		}
+		pushUnique(toolName);
+		if (toolName === EXEC_COMMAND_TOOL_NAME && !shellToolsInserted) {
+			pushUnique(WRITE_STDIN_TOOL_NAME);
+			shellToolsInserted = true;
+		}
 	}
 
 	return nextToolNames;

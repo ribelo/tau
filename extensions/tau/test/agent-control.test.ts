@@ -61,14 +61,14 @@ describe("agent tool contract clamping", () => {
 
 	it("intersects agent tool allowlists with the Ralph parent tool contract", () => {
 		const clamped = clampAgentDefinitionToolsToParentTools(
-			makeDefinition(["read", "bash", "write"]),
+			makeDefinition(["read", "exec_command", "write"]),
 			["read", "write"],
 		);
 		expect(clamped.tools).toEqual(["read", "write"]);
 	});
 
 	it("leaves non-Ralph agent definitions unchanged", () => {
-		const definition = makeDefinition(["read", "bash"]);
+		const definition = makeDefinition(["read", "exec_command"]);
 		const clamped = clampAgentDefinitionToolsToParentTools(definition, undefined);
 		expect(clamped).toBe(definition);
 	});

@@ -136,7 +136,7 @@ describe("ralph loop config service", () => {
 					activeNames: ["read"],
 					availableSnapshot: [
 						{ name: "read", label: "Read", description: "Read files" },
-						{ name: "bash", label: "Bash", description: "Run commands" },
+						{ name: "exec_command", label: "Bash", description: "Run commands" },
 					],
 				},
 				agents: {
@@ -148,11 +148,11 @@ describe("ralph loop config service", () => {
 		const service = makeRalphLoopConfigService(makeMockRepo(loop));
 		const result = await service.mutate("/tmp", "test-loop", {
 			kind: "capabilityContractTools",
-			activeNames: ["read", "bash"],
+			activeNames: ["read", "exec_command"],
 		});
 		expect(result.status).toBe("updated");
 		const loaded = await service.loadLoop("/tmp", "test-loop");
-		expect(loaded.capabilityContract.tools.activeNames).toEqual(["read", "bash"]);
+		expect(loaded.capabilityContract.tools.activeNames).toEqual(["read", "exec_command"]);
 	});
 
 	it("mutates capability contract agents", async () => {
@@ -227,7 +227,7 @@ describe("ralph loop config service", () => {
 	it("applies deferred contract edits when the next iteration begins", () => {
 		const loop = makeTestLoop({
 			deferredConfigMutations: [
-				{ kind: "capabilityContractTools", activeNames: ["read", "bash"] },
+				{ kind: "capabilityContractTools", activeNames: ["read", "exec_command"] },
 			],
 		});
 		let next = loop;
@@ -235,7 +235,7 @@ describe("ralph loop config service", () => {
 			next = applyRalphConfigMutation(next, mutation);
 		}
 		next = { ...next, deferredConfigMutations: [] };
-		expect(next.capabilityContract.tools.activeNames).toEqual(["read", "bash"]);
+		expect(next.capabilityContract.tools.activeNames).toEqual(["read", "exec_command"]);
 		expect(next.deferredConfigMutations).toEqual([]);
 	});
 

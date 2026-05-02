@@ -80,24 +80,24 @@ const resolverLayer = RalphContractResolverLive.pipe(
 describe("ralph contract resolver pure helpers", () => {
 	it("captures tool contract excluding system control tools", () => {
 		const contract = captureToolContract({
-			activeTools: ["read", "ralph_continue", "bash", "ralph_finish"],
+			activeTools: ["read", "ralph_continue", "exec_command", "ralph_finish"],
 			allTools: [
 				{ name: "read", description: "Read files" },
-				{ name: "bash", description: "Run commands" },
+				{ name: "exec_command", description: "Run commands" },
 				{ name: "ralph_continue", description: "Continue" },
 			],
 		});
-		expect(contract.activeNames).toEqual(["read", "bash"]);
+		expect(contract.activeNames).toEqual(["read", "exec_command"]);
 		expect(contract.availableSnapshot).toHaveLength(3);
 		expect(contract.availableSnapshot[0]?.label).toBe("read");
 	});
 
 	it("captures active tools from the current runtime state", () => {
 		const contract = captureToolContract({
-			activeTools: ["read", "bash", "todo_write", "thread", "unknown_custom_tool"],
+			activeTools: ["read", "exec_command", "todo_write", "thread", "unknown_custom_tool"],
 			allTools: [
 				{ name: "read", description: "Read files" },
-				{ name: "bash", description: "Run commands" },
+				{ name: "exec_command", description: "Run commands" },
 				{ name: "apply_patch", description: "Apply patches" },
 				{ name: "backlog", description: "Backlog" },
 				{ name: "web_search_exa", description: "Search" },
@@ -112,7 +112,7 @@ describe("ralph contract resolver pure helpers", () => {
 			],
 		});
 
-		expect(contract.activeNames).toEqual(["read", "bash", "todo_write", "thread"]);
+		expect(contract.activeNames).toEqual(["read", "exec_command", "todo_write", "thread"]);
 	});
 
 	it("does not invent mutation tools that are inactive in the current runtime", () => {
@@ -121,7 +121,7 @@ describe("ralph contract resolver pure helpers", () => {
 			{ name: "edit", description: "Edit files" },
 			{ name: "write", description: "Write files" },
 			{ name: "apply_patch", description: "Apply patches" },
-			{ name: "bash", description: "Run commands" },
+			{ name: "exec_command", description: "Run commands" },
 		];
 		const contract = captureToolContract({
 			activeTools: ["read"],
@@ -182,10 +182,10 @@ describe("ralph contract resolver pure helpers", () => {
 
 	it("validates a correct contract", () => {
 		const contract = makeCapabilityContract({
-			toolsActiveNames: ["read", "bash"],
+			toolsActiveNames: ["read", "exec_command"],
 			toolsAvailableSnapshot: [
 				{ name: "read", label: "Read", description: "Read files" },
-				{ name: "bash", label: "Bash", description: "Run commands" },
+				{ name: "exec_command", label: "Bash", description: "Run commands" },
 				{ name: "ralph_continue", label: "Continue", description: "Continue" },
 				{ name: "ralph_finish", label: "Finish", description: "Finish" },
 			],
@@ -198,7 +198,7 @@ describe("ralph contract resolver pure helpers", () => {
 
 	it("rejects system control tools in user-configurable activeNames", () => {
 		const contract = makeCapabilityContract({
-			toolsActiveNames: ["read", "ralph_continue", "bash"],
+			toolsActiveNames: ["read", "ralph_continue", "exec_command"],
 			toolsAvailableSnapshot: [{ name: "read", label: "Read", description: "Read files" }],
 			agentsEnabledNames: [],
 			agentsRegistrySnapshot: [],
@@ -334,24 +334,24 @@ describe("ralph contract resolver pure helpers", () => {
 
 	it("computes controller effective tools without system controls", () => {
 		const contract = makeCapabilityContract({
-			toolsActiveNames: ["read", "bash"],
+			toolsActiveNames: ["read", "exec_command"],
 			toolsAvailableSnapshot: [],
 			agentsEnabledNames: [],
 			agentsRegistrySnapshot: [],
 		});
-		expect(effectiveToolNames(contract, "controller")).toEqual(["read", "bash"]);
+		expect(effectiveToolNames(contract, "controller")).toEqual(["read", "exec_command"]);
 	});
 
 	it("computes child effective tools with system controls injected", () => {
 		const contract = makeCapabilityContract({
-			toolsActiveNames: ["read", "bash"],
+			toolsActiveNames: ["read", "exec_command"],
 			toolsAvailableSnapshot: [],
 			agentsEnabledNames: [],
 			agentsRegistrySnapshot: [],
 		});
 		const tools = effectiveToolNames(contract, "child");
 		expect(tools).toContain("read");
-		expect(tools).toContain("bash");
+		expect(tools).toContain("exec_command");
 		expect(tools).toContain("ralph_continue");
 		expect(tools).toContain("ralph_finish");
 	});

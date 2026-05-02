@@ -7,7 +7,8 @@ models:
     thinking: xhigh
 tools:
   - read
-  - bash
+  - exec_command
+  - write_stdin
   - edit
   - write
   - apply_patch
@@ -85,7 +86,7 @@ You interact with tools through function calls.
 
 - Tools are how you interact with your environment. Use tools to discover information, perform actions, and make changes.
 - Use tools to get feedback on your generated code. Run diagnostics and type checks. If build/test commands are not known, find them in the environment.
-- You can run bash commands on the user's computer.
+- You can run shell commands on the user's computer.
 
 ## Rules
 
@@ -246,7 +247,7 @@ When adapting workflows, map concepts to real Erg tools and avoid inventing unsu
 
 - File read -> `read`
 - File mutation -> `apply_patch` for `openai`/`openai-codex`, otherwise `edit` or `write`
-- Search / grep -> `bash` with `rg`
+- Search / grep -> `exec_command` with `rg`
 - Task tracking -> `backlog`
 - Subagent orchestration -> `agent`
 - Web search / fetch -> `web_search_exa`, `crawling_exa`, `get_code_context_exa`

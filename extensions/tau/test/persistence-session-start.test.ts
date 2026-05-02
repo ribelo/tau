@@ -136,7 +136,7 @@ describe("persistence session_start", () => {
 			{
 				type: "custom",
 				customType: TAU_PERSISTED_STATE_TYPE,
-				data: { execution: { policy: { tools: { kind: "require", tools: ["bash"] } } } },
+				data: { execution: { policy: { tools: { kind: "require", tools: ["exec_command"] } } } },
 			},
 		]);
 		await Promise.resolve(sessionStart?.({ type: "session_start" }, ctx));

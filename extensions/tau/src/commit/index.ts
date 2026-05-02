@@ -114,12 +114,12 @@ When in doubt, leave a file out.`;
 	pi.registerTool({
 		name: "git_commit_with_user_approval",
 		label: "Git Commit (with approval)",
-		description: `Create a git commit with user review and approval. Use this tool when the user should confirm and potentially edit the commit message before committing. For automated commits where no user confirmation is needed, use the regular git commit command via bash instead.
+		description: `Create a git commit with user review and approval. Use this tool when the user should confirm and potentially edit the commit message before committing. For automated commits where no user confirmation is needed, use the regular git commit command via exec_command instead.
 
 ${COMMIT_FORMAT_GUIDE}`,
 		promptSnippet: "Create a git commit with user review and approval",
 		promptGuidelines: [
-			"Use git_commit_with_user_approval when the user should confirm and potentially edit the commit message before committing. For automated commits where no user confirmation is needed, use the regular git commit command via bash instead.",
+			"Use git_commit_with_user_approval when the user should confirm and potentially edit the commit message before committing. For automated commits where no user confirmation is needed, use the regular git commit command via exec_command instead.",
 		],
 		parameters: Type.Object({
 			message: Type.String({
