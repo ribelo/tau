@@ -104,17 +104,17 @@ function stripWrittenEcho(output: string, writtenText: string | undefined): stri
 	return lines.join("\n").trimStart();
 }
 
-function statusParts(details: ShellToolDetails): { readonly mark: string; readonly text: string; readonly ok: boolean | undefined } {
+function statusParts(details: ShellToolDetails): { readonly mark: string; readonly ok: boolean | undefined } {
 	if (details.sessionId !== undefined) {
-		return { mark: "↪", text: `session ${details.sessionId}`, ok: undefined };
+		return { mark: "↪", ok: undefined };
 	}
 	if (details.exitCode === 0) {
-		return { mark: "✓", text: "exit 0", ok: true };
+		return { mark: "✓", ok: true };
 	}
 	if (details.exitCode !== undefined) {
-		return { mark: "✗", text: `exit ${details.exitCode}`, ok: false };
+		return { mark: "✗", ok: false };
 	}
-	return { mark: "✓", text: "done", ok: true };
+	return { mark: "✓", ok: true };
 }
 
 function renderOutput(
@@ -136,23 +136,40 @@ function renderOutput(
 }
 
 export function renderShellCall(args: unknown, theme: Theme): Text {
-	const record = isRecord(args) ? args : {};
-	const cmd = stringField(record, "cmd");
-	if (cmd !== undefined) {
-		let output = `${theme.fg("muted", "$")} ${theme.fg("toolOutput", truncate(oneLine(cmd), MAX_COMMAND_CHARS))}`;
-		const workdir = stringField(record, "workdir");
-		const meta: string[] = [];
-		if (workdir !== undefined) meta.push(`cwd ${workdir}`);
-		if (record["tty"] === true) meta.push("tty");
-		if (meta.length > 0) output += `\n${theme.fg("muted", `  ${meta.join(" · ")}`)}`;
-		return new Text(output, 0, 0);
+	// The result renderer carries the command and status. Rendering the call too
+	// duplicates the command in pi's transcript.
+	void args;
+	void theme;
+	return new Text("", 0, 0);
+}
+
+function renderShellCallInline(details: ShellToolDetails, expanded: boolean): string {
+	if (details.kind === "exec_command") {
+		return truncate(oneLine(details.command ?? "exec_command"), expanded ? 400 : MAX_COMMAND_CHARS);
 	}
 
-	const sessionId = numberField(record, "session_id");
-	const chars = stringField(record, "chars") ?? "";
-	const target = sessionId === undefined ? "session ?" : `session ${sessionId}`;
-	const action = chars.length > 0 ? `write ${chars.length} chars` : "poll";
-	return new Text(`${theme.fg("accent", "↪")} ${theme.fg("toolTitle", target)} ${theme.fg("muted", `· ${action}`)}`, 0, 0);
+	const written = details.writtenText?.trim();
+	if (written !== undefined && written.length > 0) {
+		return truncate(oneLine(written), expanded ? 400 : MAX_COMMAND_CHARS);
+	}
+	if (details.sessionId !== undefined) {
+		return `session ${details.sessionId}`;
+	}
+	return "stdin";
+}
+
+function renderShellMetadata(details: ShellToolDetails, theme: Theme): string {
+	const lines: string[] = [];
+	if (details.exitCode !== undefined) {
+		lines.push(`  ${theme.fg("muted", "exit:")} ${theme.fg(details.exitCode === 0 ? "success" : "error", String(details.exitCode))}`);
+	}
+	if (details.sessionId !== undefined) {
+		lines.push(`  ${theme.fg("muted", "session:")} ${theme.fg("accent", String(details.sessionId))}`);
+	}
+	if (details.kind === "write_stdin" && details.writtenChars !== undefined) {
+		lines.push(`  ${theme.fg("muted", "wrote:")} ${theme.fg("dim", `${details.writtenChars} chars`)}`);
+	}
+	return lines.join("\n");
 }
 
 export function renderShellResult(result: unknown, options: ToolRenderResultOptions, theme: Theme): Text {
@@ -173,13 +190,12 @@ export function renderShellResult(result: unknown, options: ToolRenderResultOpti
 			: status.ok === false
 				? theme.fg("error", status.mark)
 				: theme.fg("accent", status.mark);
-	let output = `${mark} ${theme.fg("toolTitle", title)} ${theme.fg("muted", `· ${status.text}`)}`;
-	if (details.command !== undefined) {
-		output += `\n  ${theme.fg("muted", "$")} ${theme.fg("toolOutput", truncate(oneLine(details.command), options.expanded ? 400 : MAX_COMMAND_CHARS))}`;
+	const inline = renderShellCallInline(details, options.expanded);
+	const metadata = renderShellMetadata(details, theme);
+	let output = `${mark} ${theme.fg("toolTitle", title)} ${theme.fg("muted", "·")} ${theme.fg("toolOutput", inline)}`;
+	if (metadata.length > 0) {
+		output += `\n${metadata}`;
 	}
-	if (details.kind === "write_stdin" && details.writtenChars !== undefined) {
-		output += `\n  ${theme.fg("muted", `wrote ${details.writtenChars} chars`)}`;
-	}
-	output += `\n${renderOutput(details.output, options.expanded, theme, { writtenText: details.writtenText })}`;
+	output += `\n\n${renderOutput(details.output, options.expanded, theme, { writtenText: details.writtenText })}`;
 	return new Text(output, 0, 0);
 }

@@ -32,9 +32,7 @@ describe("shell renderer", () => {
 			tty: true,
 		}, plainTheme));
 
-		expect(rendered).toContain("$ printf 'hello'");
-		expect(rendered).toContain("cwd /tmp/project");
-		expect(rendered).toContain("· tty");
+		expect(rendered).toBe("");
 	});
 
 	it("renders compact and expanded exec_command results for Ctrl+O", () => {
@@ -52,7 +50,9 @@ describe("shell renderer", () => {
 		const compact = renderResult(result, { expanded: false, isPartial: false });
 		const expanded = renderResult(result, { expanded: true, isPartial: false });
 
-		expect(compact).toContain("✓ exec_command · exit 0");
+		expect(compact).toContain("✓ exec_command · for i in {1..20}; do echo line $i; done");
+		expect(compact).toContain("exit: 0");
+		expect(compact).toContain("\n\n  ");
 		expect(compact).toContain("earlier lines");
 		expect(compact).toContain("line 20");
 		expect(`\n${compact}\n`).not.toContain("\nline 1\n");
@@ -72,7 +72,8 @@ describe("shell renderer", () => {
 		});
 
 		expect(rendered).toContain("↪ stdin · session 7");
-		expect(rendered).toContain("wrote 4 chars");
+		expect(rendered).toContain("session: 7");
+		expect(rendered).toContain("wrote: 4 chars");
 		expect(rendered).toContain("got input");
 	});
 
