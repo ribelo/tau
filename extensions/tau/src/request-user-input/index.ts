@@ -1,5 +1,5 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Text } from "@mariozechner/pi-tui";
+import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { Editor, type EditorTheme, Key, matchesKey, Text, truncateToWidth } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 
 const QuestionOption = Type.Object({
@@ -38,7 +38,173 @@ type QuestionInput = {
 	options: Array<{ label: string; description: string }>;
 };
 
-type AnswersMap = Record<string, string>;
+type AnswerEntry = {
+	answers: string[];
+};
+
+type AnswersMap = Record<string, AnswerEntry>;
+
+type QuestionAnswer = {
+	label: string;
+	note: string;
+};
+
+const OTHER_OPTION_LABEL = "None of the above";
+const OTHER_OPTION_DESCRIPTION = "Optionally, add details in notes (tab).";
+
+function answerToEntries(answer: QuestionAnswer): string[] {
+	const entries = [answer.label];
+	const note = answer.note.trim();
+	if (note.length > 0) {
+		entries.push(`user_note: ${note}`);
+	}
+	return entries;
+}
+
+function renderAnswer(answer: AnswerEntry): string {
+	return answer.answers.join(" · ");
+}
+
+async function askQuestionWithNotes(
+	ctx: ExtensionContext,
+	question: QuestionInput,
+	signal: AbortSignal | undefined,
+): Promise<QuestionAnswer | undefined> {
+	if (signal?.aborted) return undefined;
+
+	return ctx.ui.custom<QuestionAnswer | undefined>((tui, theme, _kb, done) => {
+		const options = [
+			...question.options,
+			{ label: OTHER_OPTION_LABEL, description: OTHER_OPTION_DESCRIPTION },
+		];
+		let optionIndex = 0;
+		let notesMode = false;
+		let cachedLines: string[] | undefined;
+
+		const editorTheme: EditorTheme = {
+			borderColor: (s) => theme.fg("accent", s),
+			selectList: {
+				selectedPrefix: (t) => theme.fg("accent", t),
+				selectedText: (t) => theme.fg("accent", t),
+				description: (t) => theme.fg("muted", t),
+				scrollInfo: (t) => theme.fg("dim", t),
+				noMatch: (t) => theme.fg("warning", t),
+			},
+		};
+		const editor = new Editor(tui, editorTheme);
+
+		function selectedLabel(): string {
+			return options[optionIndex]?.label ?? OTHER_OPTION_LABEL;
+		}
+
+		function refresh() {
+			cachedLines = undefined;
+			tui.requestRender();
+		}
+
+		function submit(note: string) {
+			done({ label: selectedLabel(), note });
+		}
+
+		const onAbort = () => {
+			done(undefined);
+		};
+		signal?.addEventListener("abort", onAbort, { once: true });
+
+		editor.onSubmit = (value) => {
+			submit(value);
+		};
+
+		return {
+			render(width: number): string[] {
+				if (cachedLines) return cachedLines;
+
+				const lines: string[] = [];
+				const add = (line: string) => lines.push(truncateToWidth(line, width));
+				const border = theme.fg("accent", "─".repeat(width));
+
+				add(border);
+				add(`${theme.fg("accent", question.header + ":")} ${theme.fg("text", question.question)}`);
+				lines.push("");
+
+				for (let i = 0; i < options.length; i++) {
+					const option = options[i];
+					if (!option) continue;
+					const selected = i === optionIndex;
+					const prefix = selected ? theme.fg("accent", "> ") : "  ";
+					const label = selected ? theme.fg("accent", option.label) : theme.fg("text", option.label);
+					add(`${prefix}${i + 1}. ${label}`);
+					add(`     ${theme.fg("muted", option.description)}`);
+				}
+
+				if (notesMode) {
+					lines.push("");
+					add(theme.fg("muted", " Notes:"));
+					for (const line of editor.render(Math.max(1, width - 2))) {
+						add(` ${line}`);
+					}
+				}
+
+				lines.push("");
+				if (notesMode) {
+					add(theme.fg("dim", " Enter to submit answer • Esc to clear notes"));
+				} else {
+					add(theme.fg("dim", " ↑↓ navigate • Tab to add notes • Enter to submit answer • Esc to cancel"));
+				}
+				add(border);
+
+				cachedLines = lines;
+				return lines;
+			},
+			invalidate() {
+				cachedLines = undefined;
+			},
+			handleInput(data: string) {
+				if (notesMode) {
+					if (matchesKey(data, Key.escape)) {
+						notesMode = false;
+						editor.setText("");
+						refresh();
+						return;
+					}
+					editor.handleInput(data);
+					refresh();
+					return;
+				}
+
+				if (matchesKey(data, Key.up) || data === "k") {
+					optionIndex = Math.max(0, optionIndex - 1);
+					refresh();
+					return;
+				}
+
+				if (matchesKey(data, Key.down) || data === "j") {
+					optionIndex = Math.min(options.length - 1, optionIndex + 1);
+					refresh();
+					return;
+				}
+
+				if (matchesKey(data, Key.tab)) {
+					notesMode = true;
+					refresh();
+					return;
+				}
+
+				if (matchesKey(data, Key.enter)) {
+					submit("");
+					return;
+				}
+
+				if (matchesKey(data, Key.escape)) {
+					done(undefined);
+				}
+			},
+			dispose() {
+				signal?.removeEventListener("abort", onAbort);
+			},
+		};
+	});
+}
 
 export default function initRequestUserInput(pi: ExtensionAPI) {
 	pi.registerTool({
@@ -81,7 +247,7 @@ export default function initRequestUserInput(pi: ExtensionAPI) {
 			for (let i = 0; i < entries.length; i++) {
 				const [id, answer] = entries[i]!;
 				if (i > 0) out += "\n";
-				out += `  ${theme.fg("accent", id + ":")} ${theme.fg("toolOutput", answer)}`;
+				out += `  ${theme.fg("accent", id + ":")} ${theme.fg("toolOutput", renderAnswer(answer))}`;
 			}
 			return new Text(out, 0, 0);
 		},
@@ -114,16 +280,9 @@ export default function initRequestUserInput(pi: ExtensionAPI) {
 					};
 				}
 
-				const optionLabels = question.options.map((o) => o.label);
-				optionLabels.push("Other (free-form)");
+				const answer = await askQuestionWithNotes(ctx, question, signal);
 
-				const choice = await ctx.ui.select(
-					`${question.header}: ${question.question}`,
-					optionLabels,
-					signal ? { signal } : undefined,
-				);
-
-				if (choice === undefined) {
+				if (answer === undefined) {
 					return {
 						content: [
 							{
@@ -135,16 +294,7 @@ export default function initRequestUserInput(pi: ExtensionAPI) {
 					};
 				}
 
-				if (choice === "Other (free-form)") {
-					const freeForm = await ctx.ui.input(
-						`${question.header}: ${question.question}`,
-						"Type your answer...",
-						signal ? { signal } : undefined,
-					);
-					answers[question.id] = freeForm ?? "(no response)";
-				} else {
-					answers[question.id] = choice;
-				}
+				answers[question.id] = { answers: answerToEntries(answer) };
 			}
 
 			const result = JSON.stringify({ answers }, null, 2);
