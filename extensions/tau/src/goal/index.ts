@@ -4,10 +4,11 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 	SessionEntry,
+	Theme,
 	TurnEndEvent,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { Text } from "@mariozechner/pi-tui";
+import { Text, type Component, type TUI } from "@mariozechner/pi-tui";
 import { Effect, Fiber } from "effect";
 
 import { Goal, type GoalService } from "../services/goal.js";
@@ -125,7 +126,45 @@ function shouldAutoContinue(
 	);
 }
 
-function clearGoalUi(ctx: ExtensionContext): void {
+class GoalWidget implements Component {
+	private snapshot: GoalSnapshot;
+
+	constructor(snapshot: GoalSnapshot) {
+		this.snapshot = snapshot;
+	}
+
+	setSnapshot(snapshot: GoalSnapshot): void {
+		this.snapshot = snapshot;
+		this.invalidate();
+	}
+
+	render(_width: number): string[] {
+		const goal = this.snapshot;
+		return [
+			` Goal: ${goal.objective}`,
+			` Status: ${goal.status}`,
+			` Usage: ${formatTokenCount(goal.tokensUsed)} tokens`,
+			` Time: ${formatDuration(goal.timeUsedSeconds * 1_000)}`,
+		];
+	}
+
+	invalidate(): void {
+		return;
+	}
+}
+
+type GoalUiState = {
+	mounted: boolean;
+	component: GoalWidget | undefined;
+	tui: TUI | undefined;
+	context: ExtensionContext | undefined;
+};
+
+function clearGoalUi(ctx: ExtensionContext, state: GoalUiState): void {
+	state.mounted = false;
+	state.component = undefined;
+	state.tui = undefined;
+	state.context = undefined;
 	if (!ctx.hasUI) {
 		return;
 	}
@@ -133,21 +172,27 @@ function clearGoalUi(ctx: ExtensionContext): void {
 	ctx.ui.setWidget("goal", undefined);
 }
 
-function renderGoalUi(ctx: ExtensionContext, goal: GoalSnapshot | null): void {
+function renderGoalUi(ctx: ExtensionContext, goal: GoalSnapshot | null, state: GoalUiState): void {
 	if (!ctx.hasUI) {
 		return;
 	}
 	if (goal === null || goal.status === "complete") {
-		clearGoalUi(ctx);
+		clearGoalUi(ctx, state);
 		return;
 	}
 	ctx.ui.setStatus("goal", describeGoalInline(goal));
-	ctx.ui.setWidget("goal", [
-		`Goal: ${goal.objective}`,
-		`Status: ${goal.status}`,
-		`Usage: ${formatTokenCount(goal.tokensUsed)} tokens`,
-		`Time: ${formatDuration(goal.timeUsedSeconds * 1_000)}`,
-	]);
+	if (state.mounted && state.context === ctx) {
+		state.component?.setSnapshot(goal);
+		state.tui?.requestRender();
+		return;
+	}
+	ctx.ui.setWidget("goal", (tui: TUI, _theme: Theme) => {
+		state.tui = tui;
+		state.component = new GoalWidget(goal);
+		return state.component;
+	});
+	state.context = ctx;
+	state.mounted = true;
 }
 
 function errorText(error: unknown): string {
@@ -220,11 +265,12 @@ async function withGoal<A>(
 async function rehydrateAndUpdate(
 	runtime: GoalRuntime,
 	ctx: ExtensionContext,
+	uiState: GoalUiState,
 ): Promise<GoalSnapshot | null> {
 	const snapshot = await withGoal(runtime, (goal) =>
 		goal.rehydrate(sessionIdFromContext(ctx), branchFromContext(ctx)),
 	);
-	renderGoalUi(ctx, snapshot);
+	renderGoalUi(ctx, snapshot, uiState);
 	return snapshot;
 }
 
@@ -252,6 +298,12 @@ async function dispatchGoalContinuation(
 export default function initGoal(pi: ExtensionAPI, runtime: GoalRuntime): void {
 	let tickerFiber: Fiber.Fiber<void, never> | undefined;
 	let tickerCtx: ExtensionContext | undefined;
+	const goalUiState: GoalUiState = {
+		mounted: false,
+		component: undefined,
+		tui: undefined,
+		context: undefined,
+	};
 
 	const stopGoalTicker = (): void => {
 		if (tickerFiber !== undefined) {
@@ -266,7 +318,7 @@ export default function initGoal(pi: ExtensionAPI, runtime: GoalRuntime): void {
 		const snapshot = await withGoal(runtime, (goal) =>
 			goal.liveSnapshot(sessionIdFromContext(ctx), Date.now()),
 		);
-		renderGoalUi(ctx, snapshot);
+		renderGoalUi(ctx, snapshot, goalUiState);
 		if (snapshot?.status === "active" || snapshot?.status === "budget_limited") {
 			startGoalTicker(ctx);
 		} else {
@@ -414,13 +466,13 @@ export default function initGoal(pi: ExtensionAPI, runtime: GoalRuntime): void {
 				const parsed = parseGoalCommand(args);
 				const sessionId = sessionIdFromContext(ctx);
 				if (parsed.command === "show") {
-					const snapshot = await rehydrateAndUpdate(runtime, ctx);
+					const snapshot = await rehydrateAndUpdate(runtime, ctx, goalUiState);
 					ctx.ui.notify(describeGoal(snapshot), "info");
 					return;
 				}
 				if (parsed.command === "clear") {
 					await withGoal(runtime, (goal) => goal.clear(sessionId));
-					clearGoalUi(ctx);
+					clearGoalUi(ctx, goalUiState);
 					stopGoalTicker();
 					ctx.ui.notify("Cleared thread goal.", "info");
 					return;
@@ -472,7 +524,7 @@ export default function initGoal(pi: ExtensionAPI, runtime: GoalRuntime): void {
 
 	const onSessionReady = async (_event: unknown, ctx: ExtensionContext) => {
 		try {
-			await rehydrateAndUpdate(runtime, ctx);
+			await rehydrateAndUpdate(runtime, ctx, goalUiState);
 			await updateGoalUi(ctx);
 		} catch (error) {
 			ctx.ui.notify(errorText(error), "error");

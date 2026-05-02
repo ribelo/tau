@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Theme } from "@mariozechner/pi-coding-agent";
-import { visibleWidth, type Component } from "@mariozechner/pi-tui";
+import { visibleWidth, type Component, type TUI } from "@mariozechner/pi-tui";
 import type { Message } from "@mariozechner/pi-ai";
 
 import { formatDuration } from "../shared/format-duration.js";
@@ -25,6 +25,12 @@ class WorkedForSeparator implements Component {
 		private durationText: string,
 		private theme: Theme,
 	) {}
+
+	setDurationText(durationText: string): void {
+		if (durationText === this.durationText) return;
+		this.durationText = durationText;
+		this.invalidate();
+	}
 
 	render(width: number): string[] {
 		if (width <= 0) return [""];
@@ -57,6 +63,10 @@ class WorkedForWidget implements Component {
 
 	constructor(durationText: string, theme: Theme) {
 		this.separator = new WorkedForSeparator(durationText, theme);
+	}
+
+	setDurationText(durationText: string): void {
+		this.separator.setDurationText(durationText);
 	}
 
 	render(width: number): string[] {
@@ -98,6 +108,16 @@ export default function initWorkedFor(pi: ExtensionAPI, persistence: PersistedAc
 
 	let tickInterval: ReturnType<typeof setInterval> | undefined;
 	let tickCtx: ExtensionContext | undefined;
+	let widgetMounted = false;
+	let widgetComponent: WorkedForWidget | undefined;
+	let widgetTui: TUI | undefined;
+
+	function clearWorkedForWidget(ctx: ExtensionContext): void {
+		widgetMounted = false;
+		widgetComponent = undefined;
+		widgetTui = undefined;
+		if (ctx.hasUI) ctx.ui.setWidget("worked-for-separator", undefined);
+	}
 
 	function stopTick(): void {
 		if (tickInterval) clearInterval(tickInterval);
@@ -111,14 +131,22 @@ export default function initWorkedFor(pi: ExtensionAPI, persistence: PersistedAc
 		if (promptStartTimestamp === undefined) return;
 		const elapsedMs = Math.max(0, Date.now() - promptStartTimestamp);
 		const durationText = formatDuration(elapsedMs);
-		if (durationText === lastRenderedDurationText) return;
+		if (durationText === lastRenderedDurationText && widgetMounted) return;
 		lastRenderedDurationText = durationText;
 
+		if (widgetMounted) {
+			widgetComponent?.setDurationText(durationText);
+			widgetTui?.requestRender();
+			return;
+		}
+
 		// Widgets do not participate in LLM context and won't enqueue follow-ups.
-		ctx.ui.setWidget(
-			"worked-for-separator",
-			(_tui, theme) => new WorkedForWidget(durationText, theme),
-		);
+		ctx.ui.setWidget("worked-for-separator", (tui, theme) => {
+			widgetTui = tui;
+			widgetComponent = new WorkedForWidget(durationText, theme);
+			return widgetComponent;
+		});
+		widgetMounted = true;
 	}
 
 	function startTick(ctx: ExtensionContext): void {
@@ -148,7 +176,7 @@ export default function initWorkedFor(pi: ExtensionAPI, persistence: PersistedAc
 			{ triggerTurn: false },
 		);
 
-		if (ctx.hasUI) ctx.ui.setWidget("worked-for-separator", undefined);
+		clearWorkedForWidget(ctx);
 	}
 
 	pi.registerMessageRenderer<WorkedForDetails>(
@@ -216,7 +244,7 @@ export default function initWorkedFor(pi: ExtensionAPI, persistence: PersistedAc
 
 			if (!next) {
 				stopTick();
-				if (ctx.hasUI) ctx.ui.setWidget("worked-for-separator", undefined);
+				clearWorkedForWidget(ctx);
 			} else {
 				renderWorkedForWidget(ctx);
 				if (agentRunning && ctx.hasUI) startTick(ctx);
@@ -232,9 +260,7 @@ export default function initWorkedFor(pi: ExtensionAPI, persistence: PersistedAc
 		lastRenderedDurationText = undefined;
 		stopTick();
 
-		if (ctx.hasUI) {
-			ctx.ui.setWidget("worked-for-separator", undefined);
-		}
+		clearWorkedForWidget(ctx);
 	});
 
 	pi.on("before_agent_start", async (_event, ctx) => {
@@ -245,7 +271,7 @@ export default function initWorkedFor(pi: ExtensionAPI, persistence: PersistedAc
 		agentRunning = true;
 		lastRenderedDurationText = undefined;
 
-		if (ctx.hasUI) ctx.ui.setWidget("worked-for-separator", undefined);
+		clearWorkedForWidget(ctx);
 		renderWorkedForWidget(ctx);
 		if (isEnabled() && ctx.hasUI) startTick(ctx);
 	});
