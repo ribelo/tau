@@ -8,7 +8,7 @@ import type {
 	TurnEndEvent,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { Text, type Component, type TUI } from "@mariozechner/pi-tui";
+import { Text, truncateToWidth, type Component, type TUI } from "@mariozechner/pi-tui";
 import { Effect, Fiber } from "effect";
 
 import { Goal, type GoalService } from "../services/goal.js";
@@ -138,14 +138,16 @@ class GoalWidget implements Component {
 		this.invalidate();
 	}
 
-	render(_width: number): string[] {
+	render(width: number): string[] {
 		const goal = this.snapshot;
-		return [
+		const maxWidth = Math.max(0, width);
+		const lines = [
 			` Goal: ${goal.objective}`,
 			` Status: ${goal.status}`,
 			` Usage: ${formatTokenCount(goal.tokensUsed)} tokens`,
 			` Time: ${formatDuration(goal.timeUsedSeconds * 1_000)}`,
 		];
+		return maxWidth === 0 ? lines.map(() => "") : lines.map((line) => truncateToWidth(line, maxWidth));
 	}
 
 	invalidate(): void {

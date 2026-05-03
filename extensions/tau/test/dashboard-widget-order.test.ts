@@ -11,7 +11,7 @@ import type {
 	ToolResultEvent,
 	TurnEndEvent,
 } from "@mariozechner/pi-coding-agent";
-import type { Component, TUI } from "@mariozechner/pi-tui";
+import { visibleWidth, type Component, type TUI } from "@mariozechner/pi-tui";
 
 import { PiAPILive } from "../src/effect/pi.js";
 import initGoal from "../src/goal/index.js";
@@ -28,10 +28,13 @@ type WidgetUpdate = {
 	readonly content: WidgetContent;
 };
 
+type MountedWidget = Component | string[];
+
 type WidgetHarness = {
 	readonly keys: () => readonly string[];
 	readonly updates: readonly WidgetUpdate[];
 	readonly renderRequests: () => number;
+	readonly renderLines: (key: string, width: number) => readonly string[];
 	readonly setWidget: (key: string, content: WidgetContent) => void;
 };
 
@@ -70,7 +73,7 @@ function makeAssistantMessage(tokens: number): AssistantMessage {
 }
 
 function makeWidgetHarness(): WidgetHarness {
-	const widgets = new Map<string, unknown>();
+	const widgets = new Map<string, MountedWidget>();
 	const updates: WidgetUpdate[] = [];
 	let renderRequestCount = 0;
 	const tui = {
@@ -87,6 +90,13 @@ function makeWidgetHarness(): WidgetHarness {
 		keys: () => Array.from(widgets.keys()),
 		updates,
 		renderRequests: () => renderRequestCount,
+		renderLines: (key, width) => {
+			const widget = widgets.get(key);
+			if (widget === undefined) {
+				throw new Error(`widget ${key} is not mounted`);
+			}
+			return Array.isArray(widget) ? widget : widget.render(width);
+		},
 		setWidget: (key, content) => {
 			updates.push({ key, content });
 			widgets.delete(key);
@@ -212,6 +222,41 @@ describe("dashboard widget order", () => {
 			expect(definedWidgetUpdateCount(harness.widgets, "worked-for-separator")).toBe(1);
 			expect(definedWidgetUpdateCount(harness.widgets, "goal")).toBe(1);
 			expect(harness.widgets.renderRequests()).toBeGreaterThan(0);
+		} finally {
+			await harness.fire("agent_end", {
+				type: "agent_end",
+				messages: [],
+			} satisfies AgentEndEvent);
+			await harness.dispose();
+		}
+	});
+
+	it("keeps goal widget lines within terminal width", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const harness = makeHarness();
+		const objective =
+			"effect-pie-b43 - Implement the epic and all the tasks under it, related to this epic, the children of this epic. Don't rush. We are not in a hurry. Make it right. Follow the plan. Trust the plan.";
+
+		try {
+			await harness.run(
+				Effect.gen(function* () {
+					const goal = yield* Goal;
+					return yield* goal.create("session-1", objective, null);
+				}),
+			);
+
+			await harness.fire("before_agent_start", {
+				type: "before_agent_start",
+				prompt: "go",
+				systemPrompt: "base",
+			} satisfies BeforeAgentStartEvent);
+
+			for (const width of [0, 1, 2, 3, 89]) {
+				const lines = harness.widgets.renderLines("goal", width);
+				expect(lines.length).toBeGreaterThan(0);
+				expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
+			}
 		} finally {
 			await harness.fire("agent_end", {
 				type: "agent_end",
