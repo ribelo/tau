@@ -15,7 +15,7 @@ import {
 	updateIssueFields,
 } from "./events.js";
 import { listDependencies, listDependents } from "./graph.js";
-import { type IssueQuery, type SortField, type SortOrder } from "./query.js";
+import { filterIssues, type IssueQuery, type SortField, type SortOrder } from "./query.js";
 import type { Comment, Issue } from "./schema.js";
 import { BacklogCommandService, type BacklogCommandServiceApi } from "./services.js";
 
@@ -79,7 +79,7 @@ export type BacklogToolDetails = {
 const BACKLOG_MESSAGE_TYPE = "backlog";
 
 const TOOL_DESCRIPTION =
-	"Backlog planning tool. Provide a CLI-style command without a leading tool name. Examples: `list`, `ready`, `blocked`, `show <id>`, `children <epic-id>`, `create \"Title\" --type task --priority 2`, `update <id> --title \"New title\"`, `close <id> --reason \"Done\"`, `dep list <id> --direction down`, `dep add <id-1> <id-2> --type blocks`, `comment <id> \"note\"`, `status`. Use `--limit N` with list/ready/blocked/search/children to cap results.";
+	"Backlog planning tool. Provide a CLI-style command without a leading tool name. Examples: `list`, `ready`, `blocked`, `show <id>`, `children <epic-id> --status open`, `create \"Title\" --type task --priority 2`, `update <id> --title \"New title\"`, `close <id> --reason \"Done\"`, `dep list <id> --direction down --status open`, `dep add <id-1> <id-2> --type blocks`, `comment <id> \"note\"`, `status`. Use `--status`, `--type`, `--priority`, and `--text` with issue-list commands. Use `--limit N` with list/ready/blocked/search/children to cap results.";
 
 const TOOL_PROMPT_SNIPPET =
 	"Backlog planning system for task tracking and event-sourced issue management";
@@ -303,13 +303,13 @@ function renderHelpBlock(theme: Theme): Text {
 		"backlog blocked [--limit 20]",
 		"backlog search <query> [--limit 20]",
 		"backlog show <id>",
-		"backlog children <id> [--recursive] [--limit 50]",
+		"backlog children <id> [--recursive] [--status open] [--type task] [--limit 50]",
 		'backlog create "Title" [--type task] [--priority 2] [--description "..."]',
 		'backlog update <id> [--title "..."] [--status open] [--priority 1] [--unset notes]',
 		'backlog close <id> [--reason "..."]',
 		"backlog reopen <id>",
-		"backlog dep list <id> [--direction up|down]",
-		"backlog dep tree <id> [--direction up|down]",
+		"backlog dep list <id> [--direction up|down] [--status open] [--type task]",
+		"backlog dep tree <id> [--direction up|down] [--status open] [--type task]",
 		"backlog dep add <id> <target> [--type blocks]",
 		"backlog dep remove <id> <target> [--type blocks]",
 		'backlog comment <id> "text"',
@@ -475,6 +475,31 @@ function parseNumber(value: string | undefined, flagName: string): number | unde
 		throw new Error(`Invalid numeric value for --${flagName.replace(/_/gu, "-")}: ${value}`);
 	}
 	return parsed;
+}
+
+function issueFilterQueryFromFlags(parsed: ParsedCommand): IssueQuery {
+	const status = flagValue(parsed, "status");
+	const issueType = flagValue(parsed, "type", "issue_type");
+	const priority = parseNumber(flagValue(parsed, "priority"), "priority");
+	const textQuery = flagValue(parsed, "text");
+	return {
+		...(status !== undefined ? { status } : {}),
+		...(issueType !== undefined ? { type: issueType } : {}),
+		...(priority !== undefined ? { priority } : {}),
+		...(textQuery ? { text: textQuery } : {}),
+	};
+}
+
+function filterIssueListByFlags(
+	issues: ReadonlyArray<Issue>,
+	parsed: ParsedCommand,
+): ReadonlyArray<Issue> {
+	const query = issueFilterQueryFromFlags(parsed);
+	if (Object.keys(query).length === 0) {
+		return issues;
+	}
+	const matchingIds = new Set(filterIssues(issues, query).map((issue) => issue.id));
+	return issues.filter((issue) => matchingIds.has(issue.id));
 }
 
 async function runWithBacklogCommandService<A>(
@@ -649,9 +674,7 @@ export async function runBacklogCommand(command: string, cwd: string): Promise<B
 			case "ready":
 			case "blocked":
 			case "search": {
-				const status = flagValue(parsed, "status");
-				const issueType = flagValue(parsed, "type", "issue_type");
-				const priority = parseNumber(flagValue(parsed, "priority"), "priority");
+				const issueFilters = issueFilterQueryFromFlags(parsed);
 				const textQuery =
 					kind === "search"
 						? parsed.positional.slice(1).join(" ") || flagValue(parsed, "text")
@@ -661,9 +684,7 @@ export async function runBacklogCommand(command: string, cwd: string): Promise<B
 				const limitInput = parseNumber(flagValue(parsed, "limit"), "limit");
 				const limit = limitInput ?? 20;
 				const query: IssueQuery = {
-					...(status !== undefined ? { status } : {}),
-					...(issueType !== undefined ? { type: issueType } : {}),
-					...(priority !== undefined ? { priority } : {}),
+					...issueFilters,
 					...(textQuery ? { text: textQuery } : {}),
 					...(kind === "ready" ? { ready: true } : {}),
 					...(kind === "blocked" ? { blocked: true } : {}),
@@ -686,13 +707,13 @@ export async function runBacklogCommand(command: string, cwd: string): Promise<B
 			case "children": {
 				const issueId = parsed.positional[1];
 				if (!issueId) {
-					throw new Error("Usage: backlog children <id> [--recursive] [--limit 50]");
+					throw new Error("Usage: backlog children <id> [--recursive] [--status open] [--limit 50]");
 				}
 				const issues = await runWithBacklogCommandService(workspaceRoot, (service) => service.list({}));
 				await runWithBacklogCommandService(workspaceRoot, (service) => service.show(issueId));
 				const recursive = parsed.flags.has("recursive");
 				const limit = parseNumber(flagValue(parsed, "limit"), "limit") ?? 50;
-				const children = listParentChildChildren(issueId, issues, recursive);
+				const children = filterIssueListByFlags(listParentChildChildren(issueId, issues, recursive), parsed);
 				return { command, kind, ok: true, data: children.slice(0, limit) };
 			}
 			case "create": {
@@ -844,14 +865,24 @@ export async function runBacklogCommand(command: string, cwd: string): Promise<B
 			case "dep_tree": {
 				const issueId = parsed.positional[2];
 				if (!issueId) {
-					throw new Error(`Usage: backlog dep ${kind === "dep_tree" ? "tree" : "list"} <id> [--direction up|down]`);
+					throw new Error(
+						`Usage: backlog dep ${kind === "dep_tree" ? "tree" : "list"} <id> [--direction up|down] [--status open]`,
+					);
 				}
 				const issues = await runWithBacklogCommandService(workspaceRoot, (service) => service.list({}));
 				await runWithBacklogCommandService(workspaceRoot, (service) => service.show(issueId));
 				const direction = dependencyDirection(parsed);
-				const related = direction === "up" ? listDependencies(issueId, issues) : listDependents(issueId, issues);
+				const related = filterIssueListByFlags(
+					direction === "up" ? listDependencies(issueId, issues) : listDependents(issueId, issues),
+					parsed,
+				);
 				if (kind === "dep_tree") {
-					return { command, kind, ok: true, data: buildDependencyTree(issueId, issues, direction) };
+					return {
+						command,
+						kind,
+						ok: true,
+						data: filterIssueListByFlags(buildDependencyTree(issueId, issues, direction), parsed),
+					};
 				}
 				return { command, kind, ok: true, data: related };
 			}

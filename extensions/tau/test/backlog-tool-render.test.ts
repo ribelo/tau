@@ -66,7 +66,7 @@ describe("backlog tool renderer", () => {
 			renderResult({ command: "help", kind: "help", ok: true, outputText: "help" }),
 		);
 		expect(rendered).toContain("backlog search <query> [--limit 20]");
-		expect(rendered).toContain("backlog children <id> [--recursive] [--limit 50]");
+		expect(rendered).toContain("backlog children <id> [--recursive] [--status open] [--type task] [--limit 50]");
 	});
 
 	it("renders update calls and results with the compact issue summary layout", () => {

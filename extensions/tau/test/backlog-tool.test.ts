@@ -99,6 +99,52 @@ describe("backlog tool", () => {
 		]);
 	});
 
+	it("filters direct and recursive children by status", async () => {
+		const workspaceRoot = await makeWorkspace();
+
+		await runBacklogCommand('create "Epic" --id tau-epic --type epic', workspaceRoot);
+		await runBacklogCommand('create "Open child" --id tau-open-child --type task', workspaceRoot);
+		await runBacklogCommand('create "Closed child" --id tau-closed-child --type task', workspaceRoot);
+		await runBacklogCommand('create "Open grandchild" --id tau-open-grandchild --type task', workspaceRoot);
+		await runBacklogCommand('dep add tau-open-child tau-epic --type parent-child', workspaceRoot);
+		await runBacklogCommand('dep add tau-closed-child tau-epic --type parent-child', workspaceRoot);
+		await runBacklogCommand('dep add tau-open-grandchild tau-closed-child --type parent-child', workspaceRoot);
+		await runBacklogCommand('close tau-closed-child --reason "Done"', workspaceRoot);
+
+		const directOpenChildren = await runBacklogCommand("children tau-epic --status open", workspaceRoot);
+		expect(directOpenChildren.ok).toBe(true);
+		expect((directOpenChildren.data as Array<{ id: string }>).map((issue) => issue.id)).toEqual([
+			"tau-open-child",
+		]);
+
+		const recursiveOpenChildren = await runBacklogCommand(
+			"children tau-epic --recursive --status open",
+			workspaceRoot,
+		);
+		expect(recursiveOpenChildren.ok).toBe(true);
+		expect((recursiveOpenChildren.data as Array<{ id: string }>).map((issue) => issue.id)).toEqual([
+			"tau-open-child",
+			"tau-open-grandchild",
+		]);
+	});
+
+	it("filters dependency issue views by status", async () => {
+		const workspaceRoot = await makeWorkspace();
+
+		await runBacklogCommand('create "Root" --id tau-root --type task', workspaceRoot);
+		await runBacklogCommand('create "Open child" --id tau-open-child --type task', workspaceRoot);
+		await runBacklogCommand('create "Closed child" --id tau-closed-child --type task', workspaceRoot);
+		await runBacklogCommand('dep add tau-open-child tau-root --type blocks', workspaceRoot);
+		await runBacklogCommand('dep add tau-closed-child tau-root --type blocks', workspaceRoot);
+		await runBacklogCommand('close tau-closed-child --reason "Done"', workspaceRoot);
+
+		const openDependents = await runBacklogCommand("dep list tau-root --direction down --status open", workspaceRoot);
+		expect(openDependents.ok).toBe(true);
+		expect((openDependents.data as Array<{ id: string }>).map((issue) => issue.id)).toEqual([
+			"tau-open-child",
+		]);
+	});
+
 	it("search matches issue ids and dependency ids", async () => {
 		const workspaceRoot = await makeWorkspace();
 
