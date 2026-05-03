@@ -503,167 +503,154 @@ export class SkillManager extends Context.Service<SkillManager, SkillManagerServ
 	"SkillManager",
 ) {}
 
-export const SkillManagerLive = (config: { onSkillMutated: (cwd: string) => void }) =>
-	Layer.effect(
-		SkillManager,
-		Effect.gen(function* () {
-			yield* Effect.void;
+export const SkillManagerLive = Layer.effect(
+	SkillManager,
+	Effect.gen(function* () {
+		yield* Effect.void;
 
-			const notifySkillMutated = Effect.fn("SkillManager.notifySkillMutated")(function* (
-				cwd: string,
-			) {
-				yield* Effect.sync(() => {
-					config.onSkillMutated(cwd);
-				});
-			});
+		const create: SkillManagerService["create"] = Effect.fn("SkillManager.create")(function* (
+			name: string,
+			content: string,
+			category?: string,
+			cwd?: string,
+		) {
+			const resolvedCwd = yield* requireWorkspaceCwd(cwd);
+			yield* ensureValidName(name);
+			yield* ensureValidContent(content);
+			yield* ensureNoInjectionPatterns(content);
+			const normalizedCategory = yield* ensureValidCategory(category);
 
-			const create: SkillManagerService["create"] = Effect.fn("SkillManager.create")(
-				function* (name: string, content: string, category?: string, cwd?: string) {
-					const resolvedCwd = yield* requireWorkspaceCwd(cwd);
-					yield* ensureValidName(name);
-					yield* ensureValidContent(content);
-					yield* ensureNoInjectionPatterns(content);
-					const normalizedCategory = yield* ensureValidCategory(category);
-
-					const existingSkill = yield* findSkill(name, resolvedCwd);
-					if (existingSkill !== undefined) {
-						return yield* Effect.fail(
-							new SkillAlreadyExists({ name, path: existingSkill.path }),
-						);
-					}
-
-					const baseDir =
-						normalizedCategory === undefined
-							? getSkillsDir()
-							: path.join(getSkillsDir(), normalizedCategory);
-					const skillPath = resolveChildPath(baseDir, name);
-					if (skillPath === undefined) {
-						return yield* Effect.fail(
-							new SkillInvalidContent({
-								reason: "skill path must stay within the skills directory.",
-							}),
-						);
-					}
-
-					yield* atomicWrite(path.join(skillPath, "SKILL.md"), content);
-					yield* notifySkillMutated(resolvedCwd);
-
-					const result: SkillCreateResult =
-						normalizedCategory === undefined
-							? { name, path: skillPath }
-							: { name, path: skillPath, category: normalizedCategory };
-					return result;
-				},
-			);
-
-			const edit: SkillManagerService["edit"] = Effect.fn("SkillManager.edit")(function* (
-				name: string,
-				content: string,
-				cwd?: string,
-			) {
-				const resolvedCwd = yield* requireWorkspaceCwd(cwd);
-				const skill = yield* findSkillOrFail(name, resolvedCwd);
-				yield* ensureValidContent(content);
-				yield* ensureNoInjectionPatterns(content);
-				yield* atomicWrite(path.join(skill.path, "SKILL.md"), content);
-				yield* notifySkillMutated(resolvedCwd);
-				return { name, path: skill.path } satisfies SkillEditResult;
-			});
-
-			const patch: SkillManagerService["patch"] = Effect.fn("SkillManager.patch")(function* (
-				name: string,
-				oldString: string,
-				newString: string,
-				filePath?: string,
-				replaceAll?: boolean,
-				cwd?: string,
-			) {
-				const resolvedCwd = yield* requireWorkspaceCwd(cwd);
-				if (oldString.length === 0) {
-					return yield* Effect.fail(
-						new SkillPatchFailed({ reason: "old_string must not be empty" }),
-					);
-				}
-
-				const skill = yield* findSkillOrFail(name, resolvedCwd);
-				if (filePath !== undefined) {
-					yield* ensureValidFilePath(filePath);
-				}
-
-				const targetPath =
-					filePath === undefined
-						? path.join(skill.path, "SKILL.md")
-						: yield* resolveSkillFileTarget(skill.path, filePath);
-				const currentContent = yield* tryFile(`failed to read ${targetPath}`, () =>
-					fs.readFile(targetPath, "utf8"),
+			const existingSkill = yield* findSkill(name, resolvedCwd);
+			if (existingSkill !== undefined) {
+				return yield* Effect.fail(
+					new SkillAlreadyExists({ name, path: existingSkill.path }),
 				);
+			}
 
-				const replacements = countOccurrences(currentContent, oldString);
-				if (replacements === 0) {
-					return yield* Effect.fail(
-						new SkillPatchFailed({ reason: "old_string not found" }),
-					);
-				}
-				if (replacements > 1 && replaceAll !== true) {
-					return yield* Effect.fail(
-						new SkillPatchFailed({
-							reason: `matched ${replacements} times, provide more context or set replaceAll`,
-						}),
-					);
-				}
+			const baseDir =
+				normalizedCategory === undefined
+					? getSkillsDir()
+					: path.join(getSkillsDir(), normalizedCategory);
+			const skillPath = resolveChildPath(baseDir, name);
+			if (skillPath === undefined) {
+				return yield* Effect.fail(
+					new SkillInvalidContent({
+						reason: "skill path must stay within the skills directory.",
+					}),
+				);
+			}
 
-				const nextContent =
-					replaceAll === true
-						? currentContent.split(oldString).join(newString)
-						: currentContent.replace(oldString, newString);
-				const diff = generateDiffString(currentContent, nextContent);
+			yield* atomicWrite(path.join(skillPath, "SKILL.md"), content);
 
-				yield* ensureNoInjectionPatterns(nextContent);
-				if (filePath === undefined) {
-					yield* ensureValidContent(nextContent);
-				}
+			const result: SkillCreateResult =
+				normalizedCategory === undefined
+					? { name, path: skillPath }
+					: { name, path: skillPath, category: normalizedCategory };
+			return result;
+		});
 
-				yield* atomicWrite(targetPath, nextContent);
-				yield* notifySkillMutated(resolvedCwd);
-				return {
-					name,
-					replacements: replaceAll === true ? replacements : 1,
-					filePath: filePath ?? "SKILL.md",
-					diff,
-				} satisfies SkillPatchResult;
-			});
+		const edit: SkillManagerService["edit"] = Effect.fn("SkillManager.edit")(function* (
+			name: string,
+			content: string,
+			cwd?: string,
+		) {
+			const resolvedCwd = yield* requireWorkspaceCwd(cwd);
+			const skill = yield* findSkillOrFail(name, resolvedCwd);
+			yield* ensureValidContent(content);
+			yield* ensureNoInjectionPatterns(content);
+			yield* atomicWrite(path.join(skill.path, "SKILL.md"), content);
+			return { name, path: skill.path } satisfies SkillEditResult;
+		});
 
-			const remove: SkillManagerService["remove"] = Effect.fn("SkillManager.remove")(
-				function* (name: string, cwd?: string) {
-					const resolvedCwd = yield* requireWorkspaceCwd(cwd);
-					const skill = yield* findSkillOrFail(name, resolvedCwd);
-					yield* tryFile(`failed to remove skill ${skill.path}`, () =>
-						fs.rm(skill.path, { recursive: true }),
-					);
-					yield* tryFile(`failed to clean up empty directories for ${skill.path}`, () =>
-						cleanupEmptyDirectories(path.dirname(skill.path), skill.root),
-					);
-					yield* notifySkillMutated(resolvedCwd);
-					return { name } satisfies SkillDeleteResult;
-				},
+		const patch: SkillManagerService["patch"] = Effect.fn("SkillManager.patch")(function* (
+			name: string,
+			oldString: string,
+			newString: string,
+			filePath?: string,
+			replaceAll?: boolean,
+			cwd?: string,
+		) {
+			const resolvedCwd = yield* requireWorkspaceCwd(cwd);
+			if (oldString.length === 0) {
+				return yield* Effect.fail(
+					new SkillPatchFailed({ reason: "old_string must not be empty" }),
+				);
+			}
+
+			const skill = yield* findSkillOrFail(name, resolvedCwd);
+			if (filePath !== undefined) {
+				yield* ensureValidFilePath(filePath);
+			}
+
+			const targetPath =
+				filePath === undefined
+					? path.join(skill.path, "SKILL.md")
+					: yield* resolveSkillFileTarget(skill.path, filePath);
+			const currentContent = yield* tryFile(`failed to read ${targetPath}`, () =>
+				fs.readFile(targetPath, "utf8"),
 			);
 
-			const writeFile: SkillManagerService["writeFile"] = Effect.fn("SkillManager.writeFile")(
-				function* (name: string, filePath: string, fileContent: string, cwd?: string) {
-					const resolvedCwd = yield* requireWorkspaceCwd(cwd);
-					yield* ensureValidFilePath(filePath);
-					const skill = yield* findSkillOrFail(name, resolvedCwd);
-					yield* ensureNoInjectionPatterns(fileContent);
-					const targetPath = yield* resolveSkillFileTarget(skill.path, filePath);
-					yield* atomicWrite(targetPath, fileContent);
-					yield* notifySkillMutated(resolvedCwd);
-					return { name, filePath } satisfies SkillWriteFileResult;
-				},
-			);
+			const replacements = countOccurrences(currentContent, oldString);
+			if (replacements === 0) {
+				return yield* Effect.fail(new SkillPatchFailed({ reason: "old_string not found" }));
+			}
+			if (replacements > 1 && replaceAll !== true) {
+				return yield* Effect.fail(
+					new SkillPatchFailed({
+						reason: `matched ${replacements} times, provide more context or set replaceAll`,
+					}),
+				);
+			}
 
-			const removeFile: SkillManagerService["removeFile"] = Effect.fn(
-				"SkillManager.removeFile",
-			)(function* (name: string, filePath: string, cwd?: string) {
+			const nextContent =
+				replaceAll === true
+					? currentContent.split(oldString).join(newString)
+					: currentContent.replace(oldString, newString);
+			const diff = generateDiffString(currentContent, nextContent);
+
+			yield* ensureNoInjectionPatterns(nextContent);
+			if (filePath === undefined) {
+				yield* ensureValidContent(nextContent);
+			}
+
+			yield* atomicWrite(targetPath, nextContent);
+			return {
+				name,
+				replacements: replaceAll === true ? replacements : 1,
+				filePath: filePath ?? "SKILL.md",
+				diff,
+			} satisfies SkillPatchResult;
+		});
+
+		const remove: SkillManagerService["remove"] = Effect.fn("SkillManager.remove")(function* (
+			name: string,
+			cwd?: string,
+		) {
+			const resolvedCwd = yield* requireWorkspaceCwd(cwd);
+			const skill = yield* findSkillOrFail(name, resolvedCwd);
+			yield* tryFile(`failed to remove skill ${skill.path}`, () =>
+				fs.rm(skill.path, { recursive: true }),
+			);
+			yield* tryFile(`failed to clean up empty directories for ${skill.path}`, () =>
+				cleanupEmptyDirectories(path.dirname(skill.path), skill.root),
+			);
+			return { name } satisfies SkillDeleteResult;
+		});
+
+		const writeFile: SkillManagerService["writeFile"] = Effect.fn("SkillManager.writeFile")(
+			function* (name: string, filePath: string, fileContent: string, cwd?: string) {
+				const resolvedCwd = yield* requireWorkspaceCwd(cwd);
+				yield* ensureValidFilePath(filePath);
+				const skill = yield* findSkillOrFail(name, resolvedCwd);
+				yield* ensureNoInjectionPatterns(fileContent);
+				const targetPath = yield* resolveSkillFileTarget(skill.path, filePath);
+				yield* atomicWrite(targetPath, fileContent);
+				return { name, filePath } satisfies SkillWriteFileResult;
+			},
+		);
+
+		const removeFile: SkillManagerService["removeFile"] = Effect.fn("SkillManager.removeFile")(
+			function* (name: string, filePath: string, cwd?: string) {
 				const resolvedCwd = yield* requireWorkspaceCwd(cwd);
 				yield* ensureValidFilePath(filePath);
 				const skill = yield* findSkillOrFail(name, resolvedCwd);
@@ -686,17 +673,17 @@ export const SkillManagerLive = (config: { onSkillMutated: (cwd: string) => void
 				yield* tryFile(`failed to clean up empty directories for ${targetPath}`, () =>
 					cleanupEmptyDirectories(path.dirname(targetPath), skill.path),
 				);
-				yield* notifySkillMutated(resolvedCwd);
 				return { name, filePath } satisfies SkillRemoveFileResult;
-			});
+			},
+		);
 
-			return SkillManager.of({
-				create,
-				edit,
-				patch,
-				remove,
-				writeFile,
-				removeFile,
-			});
-		}),
-	);
+		return SkillManager.of({
+			create,
+			edit,
+			patch,
+			remove,
+			writeFile,
+			removeFile,
+		});
+	}),
+);

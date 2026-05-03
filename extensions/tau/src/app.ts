@@ -24,8 +24,6 @@ import initWorkedFor from "./worked-for/index.js";
 import { initStatus } from "./status/index.js";
 import initCommit from "./commit/index.js";
 import initEditor from "./editor/index.js";
-import initSkillMarker from "./skill-marker/index.js";
-import { reloadSkills } from "./skill-marker/index.js";
 import initAgent from "./agent/index.js";
 import initRequestUserInput from "./request-user-input/index.js";
 import initRalph from "./ralph/index.js";
@@ -39,7 +37,6 @@ import { AgentRuntimeBridgeLive, type AgentRuntimeBridgeService } from "./agent/
 import { AgentRegistry } from "./agent/agent-registry.js";
 import { validateResolvedAgentConfiguration } from "./agent/startup-validation.js";
 import { buildToolDescription } from "./agent/tool.js";
-import { createSkillMarkerRuntime } from "./skill-marker/index.js";
 import { installSqliteExperimentalWarningFilter } from "./shared/sqlite-warning.js";
 import { RalphRepoLive } from "./ralph/repo.js";
 import { LoopRepoLive } from "./loops/repo.js";
@@ -77,10 +74,7 @@ const CuratedMemoryLayer = CuratedMemoryLive;
 const DreamSchedulerLayer = DreamSchedulerLive({ loadConfig: loadDreamConfig }).pipe(
 	Layer.provide(DreamLockLive),
 );
-const skillMutationCallback: { current: (cwd: string) => void } = { current: () => {} };
-const SkillManagerLayer = SkillManagerLive({
-	onSkillMutated: (cwd) => skillMutationCallback.current(cwd),
-});
+const SkillManagerLayer = SkillManagerLive;
 const AgentConfigLive = Layer.succeed(
 	AgentConfig,
 	AgentConfig.of({
@@ -240,10 +234,6 @@ export const startTau = (pi: ExtensionAPI) => {
 		const sandbox = yield* Sandbox;
 		const footer = yield* Footer;
 		const curatedMemory = yield* CuratedMemory;
-		const skillMarker = createSkillMarkerRuntime();
-		skillMutationCallback.current = (cwd) => {
-			void reloadSkills(skillMarker, cwd);
-		};
 		const persistedAccess = {
 			getSnapshot: persistence.getSnapshot,
 			update: persistence.update,
@@ -264,9 +254,7 @@ export const startTau = (pi: ExtensionAPI) => {
 			initCommit(pi);
 			initEditor(pi, {
 				getSnapshot: persistence.getSnapshot,
-				skillMarker,
 			});
-			initSkillMarker(pi, skillMarker);
 			initMemory(pi, runCuratedMemory);
 			initDream(pi, runDream);
 			initSkillManage(pi, runSkillManager);

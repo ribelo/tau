@@ -17,12 +17,7 @@ import {
 import { SkillManager, SkillManagerLive } from "../services/skill-manager.js";
 
 let tempDir = "";
-let mutationCount = 0;
-let testLayer = SkillManagerLive({
-	onSkillMutated: (_cwd) => {
-		mutationCount += 1;
-	},
-});
+let testLayer = SkillManagerLive;
 
 function makeSkillContent(name: string, body = "This is a test skill body."): string {
 	return [
@@ -127,12 +122,7 @@ describe("SkillManager", () => {
 	beforeEach(async () => {
 		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "skill-test-"));
 		process.env["TAU_SKILLS_DIR"] = tempDir;
-		mutationCount = 0;
-		testLayer = SkillManagerLive({
-			onSkillMutated: (_cwd) => {
-				mutationCount += 1;
-			},
-		});
+		testLayer = SkillManagerLive;
 	});
 
 	afterEach(async () => {
@@ -155,7 +145,6 @@ describe("SkillManager", () => {
 		expect(await fs.readFile(skillFilePath("test-skill"), "utf8")).toBe(
 			makeSkillContent("test-skill"),
 		);
-		expect(mutationCount).toBe(1);
 	});
 
 	it("creates a skill under a category subdirectory", async () => {
@@ -182,7 +171,6 @@ describe("SkillManager", () => {
 
 		expect(error).toBeInstanceOf(SkillAlreadyExists);
 		expect(error).toMatchObject({ name: "test-skill", path: skillDirPath("test-skill") });
-		expect(mutationCount).toBe(1);
 	});
 
 	it("rejects invalid names", async () => {
@@ -241,7 +229,6 @@ describe("SkillManager", () => {
 
 		expect(result).toEqual({ name: "test-skill", path: skillDirPath("test-skill") });
 		expect(await fs.readFile(skillFilePath("test-skill"), "utf8")).toBe(nextContent);
-		expect(mutationCount).toBe(2);
 	});
 
 	it("edits a project skill discovered from cwd/.pi/skills", async () => {
@@ -341,7 +328,6 @@ describe("SkillManager", () => {
 		expect(await fs.readFile(skillFilePath("test-skill"), "utf8")).toContain(
 			"patched skill body",
 		);
-		expect(mutationCount).toBe(2);
 	});
 
 	it("rejects patch when old_string not found", async () => {
@@ -429,7 +415,6 @@ describe("SkillManager", () => {
 
 		expect(result).toEqual({ name: "test-skill" });
 		expect(await pathExists(skillDirPath("test-skill"))).toBe(false);
-		expect(mutationCount).toBe(2);
 	});
 
 	it("cleans up empty category directories", async () => {
@@ -463,7 +448,6 @@ describe("SkillManager", () => {
 				"utf8",
 			),
 		).toBe("Support content");
-		expect(mutationCount).toBe(2);
 	});
 
 	it("rejects path traversal", async () => {

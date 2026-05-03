@@ -16,8 +16,7 @@
 
 `~/.pi/agent/skills/` — the same directory pi already scans. This means:
 - No new discovery path needed; pi's `loadSkills()` picks them up automatically.
-- The `$skill-name` marker and autocomplete work immediately after creation.
-- A `skillMarker.registry.refresh()` call after mutation is enough to make new skills visible.
+- New skills become available to future pi sessions through normal skill discovery.
 
 ### What about security scanning?
 
@@ -36,9 +35,9 @@ Three injection points, same as hermes:
 
 No runtime heuristic detection. The model decides based on prompt instructions.
 
-### Skill reload after mutation
+### Skill visibility after mutation
 
-After any successful create/edit/patch/delete, we call `reloadSkills()` on the `SkillMarkerRuntime` so the autocomplete and `$skill-name` injection see the new skill immediately. The `SkillMarkerRuntime` reference is already passed around in `app.ts`.
+After any successful create/edit/patch/delete, normal pi skill discovery makes the updated skill available to later sessions.
 
 ---
 
@@ -321,10 +320,9 @@ Key implementation details:
 - Skills directory: `~/.pi/agent/skills/` (use `path.join(os.homedir(), ".pi", "agent", "skills")`)
 - Finding skills: `rglob("SKILL.md")` equivalent via recursive `readdir`
 - Atomic writes: same pattern as curated-memory (temp file + rename)
-- After each mutation: call the `onSkillMutated` callback (provided via layer) to trigger skill reload
 - No file locking needed — skill creation is less contention-prone than memory
 
-The `SkillManagerLive` layer takes a callback `onSkillMutated: () => void` to notify the skill marker runtime.
+`SkillManagerLive` has no external mutation callback.
 
 **Result types** (define in same file or a small types file):
 
@@ -407,7 +405,7 @@ git commit -m "feat(skill-manage): add skill_manage tool registration"
 
 ## Task 5: Wire into app.ts
 
-**Objective:** Add SkillManager layer to the runtime, initialize the tool, and connect skill reload.
+**Objective:** Add SkillManager layer to the runtime and initialize the tool.
 
 **Files:**
 - Modify: `extensions/tau/src/app.ts`
@@ -417,17 +415,11 @@ git commit -m "feat(skill-manage): add skill_manage tool registration"
 Changes needed:
 1. Import `SkillManager, SkillManagerLive` from `./services/skill-manager.js`
 2. Import `initSkillManage` from `./skill-manage/index.js`
-3. Create `SkillManagerLayer` — the live layer needs `onSkillMutated` which calls `reloadSkills(skillMarker, cwd)`:
-   ```typescript
-   const SkillManagerLayer = SkillManagerLive({
-     onSkillMutated: () => reloadSkills(skillMarker, ctx.cwd),
-   });
-   ```
-   Since the callback depends on `skillMarker` and `cwd` which are available inside the `program` Effect.gen, the layer construction may need to happen there. Alternatively, use a `Ref` or callback-holder pattern.
-4. Add `SkillManagerLayer` to `Layer.mergeAll(...)` in `createMainLayer`
-5. Add `SkillManager` to the `TauRuntime` type union
-6. Create `runSkillManager` runner like `runCuratedMemory`
-7. Call `initSkillManage(pi, runSkillManager)` inside `Effect.sync`
+3. Create `SkillManagerLayer` from `SkillManagerLive`.
+4. Add `SkillManagerLayer` to `Layer.mergeAll(...)` in `createMainLayer`.
+5. Add `SkillManager` to the `TauRuntime` type union.
+6. Create `runSkillManager` runner like `runCuratedMemory`.
+7. Call `initSkillManage(pi, runSkillManager)` inside `Effect.sync`.
 
 **Step 2: Run gate**
 
@@ -476,37 +468,7 @@ git commit -m "feat(skill-manage): add system prompt nudging for automatic skill
 
 ---
 
-## Task 7: Skill reload integration with skill-marker
-
-**Objective:** After a skill is created/edited/deleted, the skill-marker registry refreshes so `$new-skill` works immediately.
-
-**Files:**
-- Modify: `extensions/tau/src/skill-marker/index.ts` — export `reloadSkills` function (currently module-private)
-- Modify: `extensions/tau/src/app.ts` — pass `reloadSkills` into the SkillManager callback
-
-**Step 1: Export reloadSkills**
-
-The `reloadSkills` function already exists in skill-marker/index.ts. Export it.
-
-**Step 2: Wire reload callback**
-
-In app.ts, after `createSkillMarkerRuntime()`, capture the reload function and pass it to the SkillManager layer factory.
-
-**Step 3: Run gate**
-
-Run: `cd extensions/tau && npm run gate`
-Expected: PASS
-
-**Step 4: Commit**
-
-```bash
-git add extensions/tau/src/skill-marker/index.ts extensions/tau/src/app.ts
-git commit -m "feat(skill-manage): reload skill-marker registry after skill mutations"
-```
-
----
-
-## Task 8: Integration tests
+## Task 7: Integration tests
 
 **Objective:** Test the full create → find → patch → delete lifecycle.
 
@@ -585,5 +547,5 @@ extensions/tau/src/
 
 - **No skill hub / remote installation** — that's a separate feature.
 - **No regex-based security scanner** — simple injection pattern check is enough for v1.
-- **No slash commands** — pi doesn't support those; `$skill-name` markers already work.
-- **No skill search API** — pi's loadSkills + skill-marker autocomplete already cover discovery.
+- **No slash commands** — skill management stays tool-based.
+- **No skill search API** — pi's built-in skill discovery covers this workflow.
