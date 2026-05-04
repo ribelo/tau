@@ -192,64 +192,397 @@ function normalizePatchPath(rawPath: string, lineNumber: number): string {
 	return trimmed;
 }
 
-function splitPatchLines(patch: string): string[] {
-	return patch.split(/\r?\n/);
+function stripHeredoc(input: string): string {
+	const match = input.match(/^(?:cat\s+)?<<['"]?(\w+)['"]?\s*\n([\s\S]*?)\n\1\s*$/);
+	return match?.[2] ?? input;
 }
 
-function checkPatchBoundariesLenient(lines: readonly string[]): readonly string[] {
-	const firstLine = lines[0];
-	const lastLine = lines[lines.length - 1];
-	if (
-		(firstLine === "<<EOF" || firstLine === "<<'EOF'" || firstLine === '<<"EOF"') &&
-		typeof lastLine === "string" &&
-		lastLine.endsWith("EOF") &&
-		lines.length >= 4
-	) {
-		return lines.slice(1, -1);
+function normalizePatchInput(input: string): string {
+	return stripHeredoc(input.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim());
+}
+
+function locatePatchBoundaries(text: string): { readonly lines: readonly string[]; readonly begin: number; readonly end: number } {
+	const lines = text.split("\n");
+	const begin = lines.findIndex((line) => line === BEGIN_PATCH_MARKER);
+	const explicitEnd = lines.findIndex((line) => line === END_PATCH_MARKER);
+	if (begin === -1) {
+		throw new Error("Invalid patch format: missing Begin/End markers");
 	}
-	return lines;
+	const end = explicitEnd === -1 ? lines.length : explicitEnd;
+	if (begin >= end) {
+		throw new Error("Invalid patch format: missing Begin/End markers");
+	}
+	return { lines, begin, end };
 }
 
 function normalizePatchBoundaries(patch: string): readonly string[] {
-	const initialLines = splitPatchLines(patch.trim());
-	const lines = checkPatchBoundariesLenient(initialLines);
-	const firstLine = lines[0]?.trim();
-	const lastLine = lines[lines.length - 1]?.trim();
-	if (firstLine !== BEGIN_PATCH_MARKER) {
-		throw new Error(`Invalid patch: first line must be '${BEGIN_PATCH_MARKER}'`);
+	const text = normalizePatchInput(patch);
+	if (text.length === 0) {
+		throw new Error("patchText is required");
 	}
-	if (lastLine !== END_PATCH_MARKER) {
-		throw new Error(`Invalid patch: last line must be '${END_PATCH_MARKER}'`);
+	if (text === `${BEGIN_PATCH_MARKER}\n${END_PATCH_MARKER}`) {
+		throw new Error("patch rejected: empty patch");
 	}
-	return lines;
+	if (text.startsWith(BEGIN_PATCH_MARKER)) {
+		const { lines } = locatePatchBoundaries(text);
+		return lines;
+	}
+	const lines = text.split("\n");
+	if (hasDiffHeaders(lines)) {
+		return lines;
+	}
+	throw new Error(`Invalid patch: first line must be '${BEGIN_PATCH_MARKER}'`);
 }
 
-function parsePatch(input: string): ParsePatchResult {
-	const lines = normalizePatchBoundaries(input);
-	const hunks: PatchHunk[] = [];
-	let index = 1;
-	let lineNumber = 2;
-	const lastContentIndex = Math.max(1, lines.length - 1);
+function hasDiffHeaders(lines: ReadonlyArray<string>): boolean {
+	return lines.some(
+		(line) =>
+			line.startsWith("diff --git ") ||
+			line.startsWith("--- ") ||
+			line.startsWith("rename from ") ||
+			line.startsWith("rename to "),
+	);
+}
 
-	while (index < lastContentIndex) {
-		const line = lines[index];
-		if (line === undefined) break;
-		const trimmed = line.trim();
-		if (trimmed.length === 0) {
-			index += 1;
-			lineNumber += 1;
+function normalizeDiffPath(filePath: string): string {
+	if (filePath === "/dev/null") return filePath;
+	if (filePath.startsWith("a/") || filePath.startsWith("b/")) return filePath.slice(2);
+	return filePath;
+}
+
+function parseDiffHeaderPath(line: string, prefix: "--- " | "+++ "): string {
+	const body = line.slice(prefix.length);
+	const tabIndex = body.indexOf("\t");
+	const value = tabIndex === -1 ? body : body.slice(0, tabIndex);
+	return normalizeDiffPath(value.trim());
+}
+
+function parseDiffGitPaths(line: string): readonly [string, string] | undefined {
+	const match = line.match(/^diff --git a\/(.+) b\/(.+)$/);
+	if (!match) return undefined;
+	return [match[1]!, match[2]!];
+}
+
+function parseChunkHeader(line: string): string | undefined {
+	if (line === "@@") return undefined;
+
+	const unified = line.match(/^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@(?:\s?(.*))?$/);
+	if (unified) {
+		const ctx = unified[1]?.trim();
+		return ctx === undefined || ctx.length === 0 ? undefined : ctx;
+	}
+
+	const ctx = line.slice(2).trim();
+	return ctx.length === 0 ? undefined : ctx;
+}
+
+function parseChunks(
+	lines: ReadonlyArray<string>,
+	start: number,
+	end = lines.length,
+): { readonly chunks: UpdateFileChunk[]; readonly next: number } {
+	const chunks: UpdateFileChunk[] = [];
+	let i = start;
+
+	while (i < end) {
+		const line = lines[i]!;
+		if (line.startsWith("***") || line.startsWith("diff --git ")) break;
+		if (!line.startsWith("@@")) {
+			i++;
 			continue;
 		}
 
-		const parsed = parseOneHunk(lines, index, lineNumber);
-		hunks.push(parsed.hunk);
-		index += parsed.linesConsumed;
-		lineNumber += parsed.linesConsumed;
+		const ctx = parseChunkHeader(line);
+		const oldLines: string[] = [];
+		const newLines: string[] = [];
+		let isEndOfFile = false;
+		i++;
+
+		while (i < end) {
+			const innerLine = lines[i]!;
+			if (innerLine === "*** End of File") {
+				isEndOfFile = true;
+				i++;
+				break;
+			}
+			if (innerLine.startsWith("@@") || innerLine.startsWith("***") || innerLine.startsWith("diff --git ")) {
+				break;
+			}
+			if (innerLine.startsWith(" ")) {
+				const text = innerLine.slice(1);
+				oldLines.push(text);
+				newLines.push(text);
+			} else if (innerLine.startsWith("-")) {
+				oldLines.push(innerLine.slice(1));
+			} else if (innerLine.startsWith("+")) {
+				newLines.push(innerLine.slice(1));
+			} else if (innerLine === "\\ No newline at end of file") {
+				// intentionally ignored
+			}
+			i++;
+		}
+
+		chunks.push({
+			oldLines,
+			newLines,
+			isEndOfFile,
+			...(ctx === undefined ? {} : { changeContext: ctx }),
+		});
 	}
 
+	return { chunks, next: i };
+}
+
+function parseAddContent(lines: ReadonlyArray<string>, start: number, end: number): { readonly content: string; readonly next: number } {
+	let contents = "";
+	let i = start;
+	while (i < end) {
+		const line = lines[i]!;
+		if (line.startsWith("***")) break;
+		if (line.startsWith("+")) {
+			contents += line.slice(1);
+			contents += "\n";
+		}
+		i++;
+	}
+	return { content: contents, next: i };
+}
+
+function derivePatchedContent(input: string, chunks: readonly UpdateFileChunk[]): string {
+	const eol = input.includes("\r\n") ? "\r\n" : "\n";
+	const lines = input.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+	if (lines[lines.length - 1] === "") {
+		lines.pop();
+	}
+
+	const replacements: Array<{ readonly startIndex: number; readonly oldLength: number; readonly newSegment: readonly string[] }> = [];
+	let lineIndex = 0;
+
+	for (const chunk of chunks) {
+		if (chunk.changeContext !== undefined) {
+			const contextIndex = seekSequence(lines, [chunk.changeContext], lineIndex, false);
+			if (contextIndex === undefined) {
+				throw new Error(`Failed to find context '${chunk.changeContext}' in file`);
+			}
+			lineIndex = contextIndex + 1;
+		}
+
+		if (chunk.oldLines.length === 0) {
+			replacements.push({ startIndex: lineIndex, oldLength: 0, newSegment: chunk.newLines });
+			continue;
+		}
+
+		let searchPattern = [...chunk.oldLines];
+		let newSegment = [...chunk.newLines];
+		let foundIndex = seekSequence(lines, searchPattern, lineIndex, chunk.isEndOfFile);
+		if (foundIndex === undefined && searchPattern[searchPattern.length - 1] === "") {
+			searchPattern = searchPattern.slice(0, -1);
+			if (newSegment[newSegment.length - 1] === "") {
+				newSegment = newSegment.slice(0, -1);
+			}
+			foundIndex = seekSequence(lines, searchPattern, lineIndex, chunk.isEndOfFile);
+		}
+
+		if (foundIndex === undefined) {
+			throw new Error(`Failed to find expected lines in file:\n${chunk.oldLines.join("\n")}`);
+		}
+
+		replacements.push({ startIndex: foundIndex, oldLength: searchPattern.length, newSegment });
+		lineIndex = foundIndex + searchPattern.length;
+	}
+
+	replacements.sort((left, right) => left.startIndex - right.startIndex);
+
+	const nextLines = [...lines];
+	for (const replacement of [...replacements].reverse()) {
+		nextLines.splice(replacement.startIndex, replacement.oldLength, ...replacement.newSegment);
+	}
+
+	if (nextLines[nextLines.length - 1] !== "") {
+		nextLines.push("");
+	}
+
+	const text = nextLines.join("\n");
+	return eol === "\r\n" ? text.replace(/\n/g, "\r\n") : text;
+}
+
+function parseGitPatch(text: string): PatchHunk[] {
+	const lines = text.split("\n");
+	const hunks: PatchHunk[] = [];
+	let i = 0;
+
+	while (i < lines.length) {
+		while (i < lines.length && lines[i]!.trim() === "") i++;
+		if (i >= lines.length) break;
+
+		let oldPath: string | undefined;
+		let newPath: string | undefined;
+		let renameFrom: string | undefined;
+		let renameTo: string | undefined;
+
+		if (lines[i]!.startsWith("diff --git ")) {
+			const parsedPaths = parseDiffGitPaths(lines[i]!);
+			if (!parsedPaths) throw new Error(`invalid git diff header: ${lines[i]}`);
+			const [parsedOldPath, parsedNewPath] = parsedPaths;
+			oldPath = parsedOldPath;
+			newPath = parsedNewPath;
+			i++;
+		}
+
+		while (i < lines.length) {
+			const line = lines[i]!;
+			if (line.startsWith("diff --git ")) break;
+			if (line.startsWith("rename from ")) {
+				renameFrom = line.slice("rename from ".length).trim();
+				i++;
+				continue;
+			}
+			if (line.startsWith("rename to ")) {
+				renameTo = line.slice("rename to ".length).trim();
+				i++;
+				continue;
+			}
+			if (line.startsWith("--- ")) {
+				oldPath = parseDiffHeaderPath(line, "--- ");
+				i++;
+				if (i >= lines.length || !lines[i]!.startsWith("+++ ")) {
+					throw new Error("missing new file header");
+				}
+				newPath = parseDiffHeaderPath(lines[i]!, "+++ ");
+				i++;
+				break;
+			}
+			if (line.startsWith("@@")) break;
+			i++;
+		}
+
+		const parsed = parseChunks(lines, i);
+		i = parsed.next;
+
+		const fromPath = normalizeDiffPath(renameFrom ?? oldPath ?? "/dev/null");
+		const toPath = normalizeDiffPath(renameTo ?? newPath ?? fromPath);
+
+		if (fromPath === "/dev/null") {
+			if (toPath === "/dev/null") throw new Error("invalid diff: both file paths are /dev/null");
+			hunks.push({
+				type: "add",
+				path: toPath,
+				contents: derivePatchedContent("", parsed.chunks),
+			});
+			continue;
+		}
+
+		if (toPath === "/dev/null") {
+			hunks.push({ type: "delete", path: fromPath });
+			continue;
+		}
+
+		if (parsed.chunks.length === 0 && fromPath === toPath) {
+			throw new Error(`no hunks found for ${fromPath}`);
+		}
+
+		hunks.push({
+			type: "update",
+			path: fromPath,
+			chunks: parsed.chunks,
+			...(toPath === fromPath ? {} : { movePath: toPath }),
+		});
+	}
+
+	if (hunks.length === 0) {
+		throw new Error("no hunks found");
+	}
+
+	return hunks;
+}
+
+function parsePatch(input: string): ParsePatchResult {
+	const text = normalizePatchInput(input);
+	if (text.length === 0) {
+		throw new Error("patchText is required");
+	}
+	if (text === `${BEGIN_PATCH_MARKER}\n${END_PATCH_MARKER}`) {
+		throw new Error("patch rejected: empty patch");
+	}
+
+	if (text.startsWith(BEGIN_PATCH_MARKER)) {
+		const { lines, begin, end } = locatePatchBoundaries(text);
+		const hunks: PatchHunk[] = [];
+		let i = begin + 1;
+		let lineNumber = 2;
+
+		while (i < end) {
+			while (i < end && lines[i]!.trim() === "") {
+				i++;
+				lineNumber++;
+			}
+			if (i === end) break;
+
+			const line = lines[i]!;
+			if (line.startsWith(ADD_FILE_MARKER)) {
+				const hunkPath = normalizePatchPath(line.slice(ADD_FILE_MARKER.length), lineNumber);
+				const parsed = parseAddContent(lines, i + 1, end);
+				hunks.push({ type: "add", path: hunkPath, contents: parsed.content });
+				lineNumber += parsed.next - i;
+				i = parsed.next;
+				continue;
+			}
+			if (line.startsWith(DELETE_FILE_MARKER)) {
+				const hunkPath = normalizePatchPath(line.slice(DELETE_FILE_MARKER.length), lineNumber);
+				hunks.push({ type: "delete", path: hunkPath });
+				i++;
+				lineNumber++;
+				continue;
+			}
+			if (line.startsWith(UPDATE_FILE_MARKER)) {
+				const hunkPath = normalizePatchPath(line.slice(UPDATE_FILE_MARKER.length), lineNumber);
+				i++;
+				lineNumber++;
+				let movePath: string | undefined;
+				if (i < end && lines[i]!.startsWith(MOVE_TO_MARKER)) {
+					movePath = normalizePatchPath(lines[i]!.slice(MOVE_TO_MARKER.length), lineNumber);
+					i++;
+					lineNumber++;
+				}
+				const parsed = parseChunks(lines, i, end);
+				if (parsed.chunks.length === 0) {
+					throw new Error(`Invalid patch hunk at line ${lineNumber}: no hunks found`);
+				}
+				hunks.push({
+					type: "update",
+					path: hunkPath,
+					chunks: parsed.chunks,
+					...(movePath === undefined ? {} : { movePath }),
+				});
+				lineNumber += parsed.next - i;
+				i = parsed.next;
+				continue;
+			}
+
+			throw new Error(`Invalid patch hunk at line ${lineNumber}: '${line}' is not a valid hunk header`);
+		}
+
+		if (hunks.length === 0) {
+			throw new Error("no hunks found");
+		}
+
+		return { patch: lines.join("\n"), hunks };
+	}
+
+	const lines = text.split("\n");
+	if (hasDiffHeaders(lines)) {
+		const hunks = parseGitPatch(text);
+		return { patch: text, hunks };
+	}
+
+	// Try raw hunk(s) without wrapper
+	const parsed = parseChunks(lines, 0);
+	if (parsed.chunks.length === 0) {
+		throw new Error("Invalid patch format: expected git/unified diff");
+	}
 	return {
-		patch: lines.join("\n"),
-		hunks,
+		patch: text,
+		hunks: [{ type: "update", path: "", chunks: parsed.chunks }],
 	};
 }
 
@@ -499,6 +832,7 @@ function seekSequence(
 			.replace(/[‐‑‒–—―−]/gu, "-")
 			.replace(/[‘’‚‛]/gu, "'")
 			.replace(/[“”„‟]/gu, '"')
+			.replace(/\u2026/gu, "...")
 			.replace(/[\u00A0\u2002-\u200A\u202F\u205F\u3000]/gu, " ");
 
 	for (let index = searchStart; index <= maxStart; index += 1) {
@@ -707,6 +1041,8 @@ async function validateAndPlanOperations(
 	operations: readonly ResolvedPatchOperation[],
 	cwd: string,
 ): Promise<readonly ValidatedOperation[]> {
+	const virtualState = new Map<string, string | null>();
+	const originalContents = new Map<string, string>();
 	const planned: ValidatedOperation[] = [];
 
 	for (const operation of operations) {
@@ -717,6 +1053,7 @@ async function validateAndPlanOperations(
 					`Cannot add file ${path.relative(cwd, operation.absolutePath) || path.basename(operation.absolutePath)}: file already exists`,
 				);
 			}
+			virtualState.set(operation.absolutePath, operation.contents);
 			planned.push({
 				type: "add",
 				absolutePath: operation.absolutePath,
@@ -727,7 +1064,28 @@ async function validateAndPlanOperations(
 		}
 
 		if (operation.type === "delete") {
-			const oldContents = await readFile(operation.absolutePath, "utf8").catch(() => "");
+			const current = virtualState.get(operation.absolutePath);
+			if (current === null) {
+				throw new Error(
+					`Cannot delete file ${path.relative(cwd, operation.absolutePath) || path.basename(operation.absolutePath)}: file does not exist`,
+				);
+			}
+			let oldContents: string;
+			if (current !== undefined) {
+				oldContents = current;
+			} else {
+				try {
+					oldContents = await readFile(operation.absolutePath, "utf8");
+				} catch {
+					throw new Error(
+						`Cannot delete file ${path.relative(cwd, operation.absolutePath) || path.basename(operation.absolutePath)}: file does not exist`,
+					);
+				}
+			}
+			if (!originalContents.has(operation.absolutePath)) {
+				originalContents.set(operation.absolutePath, oldContents);
+			}
+			virtualState.set(operation.absolutePath, null);
 			planned.push({
 				type: "delete",
 				absolutePath: operation.absolutePath,
@@ -737,8 +1095,23 @@ async function validateAndPlanOperations(
 			continue;
 		}
 
-		const oldContents = await readFile(operation.absolutePath, "utf8");
-		const nextContents = await deriveUpdatedFileContents(operation.absolutePath, operation.chunks);
+		const current = virtualState.get(operation.absolutePath);
+		let input: string;
+		if (current !== undefined) {
+			if (current === null) {
+				throw new Error(
+					`Cannot update file ${path.relative(cwd, operation.absolutePath) || path.basename(operation.absolutePath)}: file was deleted`,
+				);
+			}
+			input = current;
+		} else {
+			input = await readFile(operation.absolutePath, "utf8");
+		}
+		if (!originalContents.has(operation.absolutePath)) {
+			originalContents.set(operation.absolutePath, input);
+		}
+
+		const nextContents = derivePatchedContent(input, operation.chunks);
 
 		if (operation.movePath !== undefined) {
 			const moveExists = await access(operation.movePath).then(() => true, () => false);
@@ -747,10 +1120,12 @@ async function validateAndPlanOperations(
 					`Cannot move to ${path.relative(cwd, operation.movePath) || path.basename(operation.movePath)}: file already exists`,
 				);
 			}
+			virtualState.set(operation.movePath, nextContents);
+			virtualState.set(operation.absolutePath, null);
 			planned.push({
 				type: "update",
 				absolutePath: operation.absolutePath,
-				oldContents,
+				oldContents: originalContents.get(operation.absolutePath) ?? input,
 				nextContents,
 				relPath: path.relative(cwd, operation.movePath) || path.basename(operation.movePath),
 				movePath: operation.movePath,
@@ -758,10 +1133,11 @@ async function validateAndPlanOperations(
 			continue;
 		}
 
+		virtualState.set(operation.absolutePath, nextContents);
 		planned.push({
 			type: "update",
 			absolutePath: operation.absolutePath,
-			oldContents,
+			oldContents: originalContents.get(operation.absolutePath) ?? input,
 			nextContents,
 			relPath: path.relative(cwd, operation.absolutePath) || path.basename(operation.absolutePath),
 		});
@@ -782,20 +1158,44 @@ async function applyResolvedPatch(
 		throw new Error("No files were modified.");
 	}
 
-	// Phase 1: validate and plan every operation before mutating anything.
-	const planned = await validateAndPlanOperations(operations, cwd);
-
 	const added: string[] = [];
 	const modified: string[] = [];
 	const deleted: string[] = [];
 	const diffs: FileDiff[] = [];
 
-	// Phase 2: apply all mutations atomically (temp + rename for writes).
+	// Acquire queues BEFORE validation so no other mutation can race.
 	await withMutationQueues(collectMutationPaths(operations), async () => {
+		const planned = await validateAndPlanOperations(operations, cwd);
 		const temps: Array<{ temp: string; final: string }> = [];
+		const deletesToRun: ValidatedOperation[] = [];
+		const writtenFinalPaths = new Set<string>();
 
 		try {
-			for (const op of planned) {
+			// Build deduplicated write list (last planned op per final path wins).
+			const writesToRun: ValidatedOperation[] = [];
+			const writePathsSeen = new Set<string>();
+			const deletePathsSeen = new Set<string>();
+			for (let i = planned.length - 1; i >= 0; i--) {
+				const op = planned[i]!;
+				if (op.type === "delete") {
+					if (!deletePathsSeen.has(op.absolutePath)) {
+						deletePathsSeen.add(op.absolutePath);
+						deletesToRun.push(op);
+					}
+					continue;
+				}
+				const finalPath =
+				op.type === "add"
+					? op.absolutePath
+					: op.type === "update" && op.movePath !== undefined
+						? op.movePath
+						: op.absolutePath;
+				if (writePathsSeen.has(finalPath)) continue;
+				writePathsSeen.add(finalPath);
+				writesToRun.unshift(op);
+			}
+
+			for (const op of writesToRun) {
 				if (op.type === "add") {
 					await mkdir(path.dirname(op.absolutePath), { recursive: true });
 					const temp = makeTempPath(op.absolutePath);
@@ -804,26 +1204,20 @@ async function applyResolvedPatch(
 					continue;
 				}
 
-				if (op.type === "delete") {
-					await rm(op.absolutePath);
-					deleted.push(op.relPath);
-					diffs.push({ filePath: op.relPath, diff: generateDiffString(op.oldContents, "") });
-					continue;
-				}
-
 				// update
-				if (op.movePath !== undefined) {
+				if (op.type === "update" && op.movePath !== undefined) {
 					await mkdir(path.dirname(op.movePath), { recursive: true });
 					const temp = makeTempPath(op.movePath);
 					await writeFile(temp, op.nextContents, "utf8");
 					temps.push({ temp, final: op.movePath });
-					// defer deletion of source until after renames succeed
 					continue;
 				}
 
-				const temp = makeTempPath(op.absolutePath);
-				await writeFile(temp, op.nextContents, "utf8");
-				temps.push({ temp, final: op.absolutePath });
+				if (op.type === "update") {
+					const temp = makeTempPath(op.absolutePath);
+					await writeFile(temp, op.nextContents, "utf8");
+					temps.push({ temp, final: op.absolutePath });
+				}
 			}
 
 			// Commit all temp files via rename (atomic on POSIX).
@@ -831,28 +1225,48 @@ async function applyResolvedPatch(
 				await rename(temp, final);
 			}
 
-			// Collect diffs and classifications after successful renames.
-			for (const op of planned) {
+			// Perform deletes ONLY after successful renames.
+			for (const op of deletesToRun) {
+				await rm(op.absolutePath);
+			}
+
+			// Collect results. Deduplicate by keeping the last planned operation per path.
+			const seenPaths = new Set<string>();
+			for (let i = planned.length - 1; i >= 0; i--) {
+				const op = planned[i]!;
 				if (op.type === "add") {
-					added.push(op.relPath);
-					diffs.push({ filePath: op.relPath, diff: generateDiffString("", op.contents) });
+					if (!seenPaths.has(op.relPath)) {
+						seenPaths.add(op.relPath);
+						added.unshift(op.relPath);
+						diffs.unshift({ filePath: op.relPath, diff: generateDiffString("", op.contents) });
+					}
 					continue;
 				}
 
 				if (op.type === "delete") {
-					// already recorded above
+					if (!seenPaths.has(op.relPath)) {
+						seenPaths.add(op.relPath);
+						deleted.unshift(op.relPath);
+						diffs.unshift({ filePath: op.relPath, diff: generateDiffString(op.oldContents, "") });
+					}
 					continue;
 				}
 
-				if (op.movePath !== undefined) {
+				if (op.type === "update" && op.movePath !== undefined) {
 					await rm(op.absolutePath);
-					modified.push(op.relPath);
-					diffs.push({ filePath: op.relPath, diff: generateDiffString(op.oldContents, op.nextContents) });
+					if (!seenPaths.has(op.relPath)) {
+						seenPaths.add(op.relPath);
+						modified.unshift(op.relPath);
+						diffs.unshift({ filePath: op.relPath, diff: generateDiffString(op.oldContents, op.nextContents) });
+					}
 					continue;
 				}
 
-				modified.push(op.relPath);
-				diffs.push({ filePath: op.relPath, diff: generateDiffString(op.oldContents, op.nextContents) });
+				if (!seenPaths.has(op.relPath)) {
+					seenPaths.add(op.relPath);
+					modified.unshift(op.relPath);
+					diffs.unshift({ filePath: op.relPath, diff: generateDiffString(op.oldContents, op.nextContents) });
+				}
 			}
 		} catch (error) {
 			// Best-effort cleanup of temp files on failure.
@@ -1103,6 +1517,7 @@ export function createApplyPatchToolDefinition(
 export const __test__ = {
 	parsePatch,
 	seekSequence,
+	derivePatchedContent,
 	rewriteInputToOperations: (cwd: string, input: string): readonly ResolvedPatchOperation[] =>
 		resolveOperations(cwd, parsePatch(input).hunks),
 	applyResolvedPatch,
